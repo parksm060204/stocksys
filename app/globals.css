@@ -1,26 +1,104 @@
+@import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css");
+@import url("https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,100..900;1,100..900&display=swap");
 @import "tailwindcss";
 
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --bg-base: #06090e;
+  --bg-panel: rgba(13, 20, 32, 0.6);
+  --bg-panel-2: rgba(19, 28, 43, 0.7);
+  --bg-hover: rgba(24, 34, 52, 0.15);
+  --border: rgba(30, 42, 61, 0.4);
+  --border-soft: rgba(22, 34, 54, 0.2);
+  --text: #e6edf6;
+  --text-muted: #8a98ad;
+  --text-dim: #5e6b80;
+  --up: #ff4757;
+  --down: #3b82f6;
+  --accent: #34d399;
+  --warn: #fbbf24;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-bg: var(--bg-base);
+  --color-panel: var(--bg-panel);
+  --color-panel2: var(--bg-panel-2);
+  --color-border: var(--border);
+  --color-tx: var(--text);
+  --color-muted: var(--text-muted);
+  --color-dim: var(--text-dim);
+  --color-up: var(--up);
+  --color-down: var(--down);
+  --color-accent: var(--accent);
+  --color-warn: var(--warn);
+  --font-sans: "Montserrat", "Pretendard", system-ui, -apple-system, sans-serif;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html,
+body {
+  background: var(--bg-base);
+  color: var(--text);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: "Montserrat", "Pretendard", system-ui, -apple-system, sans-serif;
+  position: relative;
 }
+
+/* 배경 그레인 텍스처 */
+body::before {
+  content: "";
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+  opacity: 0.04;
+  pointer-events: none;
+  z-index: 9999;
+}
+
+/* 글래스모피즘 카드 & 마우스 오버 hover 인터랙션 */
+.bg-panel {
+  background: var(--bg-panel) !important;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid var(--border) !important;
+  transition: all 0.35s cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+
+.bg-panel:hover {
+  transform: translateY(-4px);
+  background: rgba(18, 27, 43, 0.75) !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.45), 0 0 20px rgba(255, 255, 255, 0.015);
+}
+
+/* thin scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #243049 transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #243049;
+  border-radius: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@keyframes flash-up {
+  0% { background-color: rgba(255, 71, 87, 0.25); }
+  100% { background-color: transparent; }
+}
+@keyframes flash-down {
+  0% { background-color: rgba(59, 130, 246, 0.25); }
+  100% { background-color: transparent; }
+}
+.flash-up { animation: flash-up 0.6s ease-out; }
+.flash-down { animation: flash-down 0.6s ease-out; }

@@ -476,3 +476,33 @@ git commit -m "first commit"
 git branch -M main
 git remote add origin https://github.com/parksm060204/stocksys.git
 git push -u origin main
+
+---
+## 2026-07-06 13:46
+
+netlify에 백엔드를 vercel로 프론트엔드를 수파베이스가 db역할을 할거야 이에 맞춰 업로드할때 분리해서 deploy될 수 있도록 로직을 건드려줘
+
+---
+## 2026-07-07 11:37
+
+백엔드를 구글 콘솔 vm으로 돌려도 됨?
+
+---
+## 2026-07-07 13:37
+
+지금 상황에서 Render를 써도 될까
+
+---
+## 2026-07-07 13:40
+
+렌더로 구동할 파일을 제작하자
+
+---
+## 2026-07-07 13:41
+
+Render를 위해 세팅해줘
+
+---
+## 2026-07-07 13:44
+
+너가 깃에 올려줘

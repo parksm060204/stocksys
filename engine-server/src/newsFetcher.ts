@@ -45,12 +45,12 @@ export class NewsFetcher {
         // 의미 없는 기사를 거르기 위한 금융/경제 키워드 필터
         const KEYWORDS = ['stock', 'market', 'economy', 'earnings', 'rate', 'fed', 'inflation', 'tech', 'finance', 'shares', 'dividend', 'ceo', 'revenue', 'wall street'];
         
-        const filteredItems = parsedFeed.items.filter(item => {
+        const filteredItems = parsedFeed.items.filter((item: any) => {
           const content = ((item.title || '') + ' ' + (item.contentSnippet || '')).toLowerCase();
           return KEYWORDS.some(keyword => content.includes(keyword));
         });
 
-        const newsItems = filteredItems.map(item => ({
+        const newsItems = filteredItems.map((item: any) => ({
           source: feed.source,
           title: item.title || 'No Title',
           link: item.link || '',

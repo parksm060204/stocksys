@@ -2,7 +2,7 @@
 
 CREATE TABLE IF NOT EXISTS public.active_manipulations (
   id uuid NOT NULL DEFAULT uuid_generate_v4(),
-  stock_id text NOT NULL REFERENCES public.stocks (id) ON DELETE CASCADE,
+  stock_id uuid NOT NULL REFERENCES public.stocks (id) ON DELETE CASCADE,
   status text NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'ACTIVE', 'COMPLETED', 'FAILED')),
   created_at timestamp with time zone NOT NULL DEFAULT now(),
   updated_at timestamp with time zone NOT NULL DEFAULT now(),

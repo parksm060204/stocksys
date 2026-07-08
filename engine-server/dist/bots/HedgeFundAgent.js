@@ -4,13 +4,34 @@ exports.HedgeFundAgent = void 0;
 const BaseAgent_1 = require("./BaseAgent");
 class HedgeFundAgent extends BaseAgent_1.BaseAgent {
     bot;
+    // Balance Sheet (대차대조표) 상태 변수
+    balanceSheet = {
+        cash: 0,
+        debt: 0,
+        targetLeverage: 3.0, // 3배 레버리지 타겟
+        holdings: {}
+    };
     constructor(bot) {
         super(bot.id, bot.capital);
         this.bot = bot;
+        // 초기 자본금 세팅: Capital = Equity. 
+        // Target Leverage 3.0 이면, Assets = 3 * Equity, Debt = 2 * Equity.
+        this.balanceSheet.cash = bot.capital * 3.0;
+        this.balanceSheet.debt = bot.capital * 2.0;
     }
     updateSentiment(newSentiment) {
         this.bot.currentSentiment = newSentiment;
         this.rebalancePortfolio();
+        // VIX 폭등(공포) 시 목표 레버리지를 축소 (디레버리징)
+        if (newSentiment === 'RISK_OFF') {
+            this.balanceSheet.targetLeverage = 1.5; // 강제 디레버리징
+        }
+        else if (newSentiment === 'RISK_ON') {
+            this.balanceSheet.targetLeverage = 4.0;
+        }
+        else {
+            this.balanceSheet.targetLeverage = 3.0;
+        }
     }
     rebalancePortfolio() {
         if (this.bot.currentSentiment === 'RISK_OFF') {
@@ -24,10 +45,59 @@ class HedgeFundAgent extends BaseAgent_1.BaseAgent {
         }
     }
     priceHistory = {};
-    executeAggressiveSweep(currentMarket, myHoldings) {
+    executeAggressiveSweep(currentMarket) {
         const orders = [];
         const availableStocks = currentMarket.stocks || [];
-        // Merton Jump-Diffusion 모델 적용
+        // 1. 대차대조표 MTM (Mark-to-Market) 및 레버리지 산출
+        let totalAssets = this.balanceSheet.cash;
+        for (const stock of availableStocks) {
+            if (this.balanceSheet.holdings[stock.id]) {
+                totalAssets += (this.balanceSheet.holdings[stock.id] || 0) * stock.current_price;
+            }
+        }
+        const equity = totalAssets - this.balanceSheet.debt;
+        if (equity <= 0) {
+            console.log(`[Margin Call] ☠️ ${this.bot.name} is BANKRUPT!`);
+            // 마진콜 청산 완료 상태 처리 (시뮬레이션 단순화)
+            return orders;
+        }
+        const currentLeverage = totalAssets / equity;
+        // 2. Margin Spiral (Fire Sale) 논리
+        // 현재 레버리지가 타겟 레버리지보다 매우 크면 강제 청산(Fire Sale) 수행
+        if (currentLeverage > this.balanceSheet.targetLeverage * 1.1) {
+            console.log(`🔥 [Margin Spiral] ${this.bot.name} Deleveraging! L=${currentLeverage.toFixed(2)} > Target=${this.balanceSheet.targetLeverage.toFixed(2)}`);
+            // 줄여야 할 자산 규모 (Deleveraging Amount)
+            const targetAssets = equity * this.balanceSheet.targetLeverage;
+            let assetsToSell = totalAssets - targetAssets;
+            for (const stock of availableStocks) {
+                if (assetsToSell <= 0)
+                    break;
+                if ((this.balanceSheet.holdings[stock.id] || 0) > 0) {
+                    const qtyOwned = this.balanceSheet.holdings[stock.id] || 0;
+                    const stockValue = qtyOwned * stock.current_price;
+                    const qtyToSell = Math.min(qtyOwned, Math.ceil((assetsToSell) / stock.current_price));
+                    if (qtyToSell > 0) {
+                        const tickSize = this.getTickSize(stock.current_price);
+                        // Fire Sale: 호가창 하단으로 무자비하게 던짐 (시장 충격 극대화, 비선형 Psi 효과)
+                        orders.push({
+                            stock_id: stock.id,
+                            user_id: this.botId,
+                            side: 'sell',
+                            price: stock.current_price - (tickSize * 10), // 매우 공격적 시장가 던지기
+                            size: qtyToSell,
+                            status: 'open',
+                            is_lp: true
+                        });
+                        assetsToSell -= qtyToSell * stock.current_price;
+                        // 시뮬레이션: 일단 팔았다고 가정 (실제로는 Engine이 inventory를 깎아야 함)
+                        this.balanceSheet.holdings[stock.id] = (this.balanceSheet.holdings[stock.id] || 0) - qtyToSell;
+                        this.balanceSheet.cash += qtyToSell * stock.current_price;
+                        this.balanceSheet.debt = Math.max(0, this.balanceSheet.debt - (qtyToSell * stock.current_price)); // 빚 갚음
+                    }
+                }
+            }
+        }
+        // 3. 기존 Merton Jump-Diffusion 모델 적용
         for (const stock of availableStocks) {
             if (!this.priceHistory[stock.id]) {
                 this.priceHistory[stock.id] = [];
@@ -70,39 +140,28 @@ class HedgeFundAgent extends BaseAgent_1.BaseAgent {
                 }
             }
         }
-        // 기존 포트폴리오 리밸런싱 로직 (Risk On / Off에 따른 매매)은 Jump가 없을 때 백그라운드에서 동작
-        const currentSafeBondsRatio = (myHoldings.safeBonds || 0) / this.bot.capital;
-        const sectorTargets = this.bot.sectorTargets || { 'TECH': 0.33, 'FINANCE': 0.33, 'BIO': 0.34 };
-        if (this.bot.currentSentiment === 'RISK_OFF' && currentSafeBondsRatio < this.bot.portfolioTarget.safeBonds) {
-            const defenseMoney = this.bot.capital * 0.05;
-            for (const stock of availableStocks) {
-                if (stock.sector === 'FINANCE' || stock.sector === 'CONSUMER') {
-                    const tickSize = this.getTickSize(stock.current_price);
-                    const baseQty = Math.floor((defenseMoney / 10) / stock.current_price);
-                    if (baseQty > 0) {
-                        const targetSellPrice = stock.current_price - (tickSize * 2);
-                        orders.push(...this.executeSmartOrder(stock, 'sell', targetSellPrice, baseQty, 0.7, currentMarket.activeEvents));
-                    }
-                }
-            }
-        }
-        else if (this.bot.currentSentiment === 'RISK_ON') {
-            const currentEquityRatio = (myHoldings.equity || 0) / this.bot.capital;
-            if (currentEquityRatio < this.bot.portfolioTarget.equity) {
-                const equityToBuy = this.bot.capital * 0.1;
-                for (const [sector, weight] of Object.entries(sectorTargets)) {
-                    const sectorStocks = availableStocks.filter((s) => s.sector === sector);
-                    if (sectorStocks.length > 0) {
-                        const moneyPerStock = (equityToBuy * weight) / sectorStocks.length;
-                        for (const stock of sectorStocks) {
-                            const totalQty = Math.floor(moneyPerStock / stock.current_price);
-                            if (totalQty > 0) {
-                                const tickSize = this.getTickSize(stock.current_price);
-                                const targetBuyPrice = stock.current_price + (tickSize * 2);
-                                orders.push(...this.executeSmartOrder(stock, 'buy', targetBuyPrice, totalQty, 0.7, currentMarket.activeEvents));
-                            }
-                        }
-                    }
+        // 4. 일반적인 포트폴리오 편입 (가짜 매수)
+        // 시뮬레이션을 위해 초기에 주식을 매수해서 홀딩스에 넣는 로직이 필요함
+        if (this.balanceSheet.cash > this.balanceSheet.debt * 0.5) {
+            const moneyToInvest = this.balanceSheet.cash * 0.1;
+            const stock = availableStocks[Math.floor(Math.random() * availableStocks.length)];
+            if (stock) {
+                const qty = Math.floor(moneyToInvest / stock.current_price);
+                if (qty > 0) {
+                    orders.push({
+                        stock_id: stock.id,
+                        user_id: this.botId,
+                        side: 'buy',
+                        price: stock.current_price,
+                        size: qty,
+                        status: 'open',
+                        is_lp: true
+                    });
+                    // 임시로 구매 처리
+                    this.balanceSheet.cash -= qty * stock.current_price;
+                    if (!this.balanceSheet.holdings[stock.id])
+                        this.balanceSheet.holdings[stock.id] = 0;
+                    this.balanceSheet.holdings[stock.id] = (this.balanceSheet.holdings[stock.id] || 0) + qty;
                 }
             }
         }

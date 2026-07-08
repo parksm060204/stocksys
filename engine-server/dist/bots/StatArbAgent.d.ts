@@ -7,6 +7,8 @@ export declare class StatArbAgent extends BaseAgent {
     private currentNAV;
     private isInitialized;
     private virtualEtfPrice;
+    private inventoryRisk;
+    private readonly MAX_INVENTORY;
     constructor(bot: StatArbBot);
     /**
      * O(1) ETF NAV 업데이트 및 차익거래 실행

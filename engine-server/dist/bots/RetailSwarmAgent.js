@@ -21,6 +21,7 @@ class RetailSwarmAgent {
             return 500;
         return 1000;
     }
+    // 3-State Kirman Model: Fundamentalists, Chartists, Noise Traders
     swarmState = {};
     executeSwarmBehavior(currentMarket, myHoldings) {
         const orders = [];
@@ -44,93 +45,110 @@ class RetailSwarmAgent {
             }
             const dayReturn = (stock.current_price - stock.previous_close) / stock.previous_close;
             const tickSize = this.getTickSize(stock.current_price);
-            // Kirman's Ant Model Initialization
+            // Kirman's 3-State Ant Model Initialization
             if (!this.swarmState[stock.id]) {
-                this.swarmState[stock.id] = { buyers: 50, sellers: 50, total: 100 };
+                this.swarmState[stock.id] = { fundamentalists: 20, chartists: 50, noise: 30, total: 100 };
             }
             const state = this.swarmState[stock.id];
-            // Herding parameter (b) and spontaneous parameter (a)
-            let a = 0.05;
-            let b = 0.2; // 기본 허딩은 낮음 (정규 분포에 가까움)
-            // 펌핑이나 급등락 시 군집 파라미터(b) 폭증 유발 (Bimodal 상전이 발생)
-            if (Math.abs(dayReturn) > 0.05 || fomoOverride || panicOverride) {
-                b = 0.8; // 허딩 파라미터 폭증 -> 쏠림 현상 가속
+            // 1. Core 에이전트의 동향 파악 (Periphery가 Core를 관측)
+            // 시뮬레이션에서는 최근 틱의 거시적 상승/하락 흐름(trend)을 Core의 포지션으로 간주합니다.
+            const coreTrend = dayReturn; // 단순화: Core가 만들고 있는 추세
+            // 2. 상태 전이 확률 연산 (Transition Rates)
+            let a = 0.05; // 자체 갱신 성향
+            let lambda = 0.2; // 군집 상호작용 강도
+            if (Math.abs(coreTrend) > 0.05 || fomoOverride || panicOverride) {
+                lambda = 0.8; // 코어의 움직임이나 외부 충격이 강하면 차티스트화(군집화) 급증
             }
-            // 상태 전이 확률 계산
-            const p_buyer_to_seller = a + b * (state.sellers / state.total);
-            const p_seller_to_buyer = a + b * (state.buyers / state.total);
-            let newBuyers = state.buyers;
-            let newSellers = state.sellers;
-            // 매수자 -> 매도자 전환
-            for (let i = 0; i < state.buyers; i++) {
-                if (Math.random() < p_buyer_to_seller) {
-                    newBuyers--;
-                    newSellers++;
+            // 상태 간의 이동 (간이 3상태 마르코프 체인)
+            let newF = state.fundamentalists;
+            let newC = state.chartists;
+            let newN = state.noise;
+            // Noise -> Chartist (코어 트렌드를 쫓아감)
+            const p_N_to_C = a + lambda * (state.chartists / state.total);
+            for (let i = 0; i < state.noise; i++) {
+                if (Math.random() < p_N_to_C) {
+                    newN--;
+                    newC++;
                 }
             }
-            // 매도자 -> 매수자 전환
-            for (let i = 0; i < state.sellers; i++) {
-                if (Math.random() < p_seller_to_buyer) {
-                    newSellers--;
-                    newBuyers++;
+            // Chartist -> Fundamentalist (괴리율이 클 때 가치 투자로 전환)
+            const fundamentalValue = currentMarket.fundamentals ? currentMarket.fundamentals[stock.id] : stock.previous_close;
+            const deviation = Math.abs((stock.current_price - fundamentalValue) / fundamentalValue);
+            const p_C_to_F = a + (deviation * 5); // 괴리율이 클수록 가치투자자로 전향할 확률 급등
+            for (let i = 0; i < state.chartists; i++) {
+                if (Math.random() < p_C_to_F) {
+                    newC--;
+                    newF++;
                 }
             }
-            // 강제 쏠림 보정 (외부 충격: 펌핑/패닉)
-            if (fomoOverride || dayReturn > 0.1) {
-                // 억지로 매수자로 변환
-                const converted = Math.floor(newSellers * 0.5);
-                newSellers -= converted;
-                newBuyers += converted;
+            // Fundamentalist -> Chartist (코어의 압도적인 모멘텀에 굴복)
+            const p_F_to_C = a + lambda * (Math.abs(coreTrend) * 10);
+            for (let i = 0; i < state.fundamentalists; i++) {
+                if (Math.random() < p_F_to_C) {
+                    newF--;
+                    newC++;
+                }
             }
-            else if (panicOverride || dayReturn < -0.1) {
-                // 억지로 매도자로 변환
-                const converted = Math.floor(newBuyers * 0.5);
-                newBuyers -= converted;
-                newSellers += converted;
+            // 강제 쏠림 보정 (외부 충격: 펌핑/패닉 시 노이즈 트레이더마저 차티스트로 강제 변환)
+            if (fomoOverride || dayReturn > 0.1 || panicOverride || dayReturn < -0.1) {
+                const converted = Math.floor(newN * 0.8);
+                newN -= converted;
+                newC += converted;
             }
-            state.buyers = Math.max(0, Math.min(state.total, newBuyers));
-            state.sellers = state.total - state.buyers;
-            // 실제 주문 생성 로직
-            // 개미들은 지정가 대신 현재가 근방을 무작위로 때리거나 허수성 주문을 남발함
-            let activeAnts = Math.floor(Math.random() * 10) + 5; // 이번 틱에 행동할 개미 수
-            // 극단적 쏠림 발생 시 참여 개미 수 폭발 (프랙탈적 연쇄 반응)
-            if (fomoOverride || dayReturn > 0.1) {
-                activeAnts = Math.floor(Math.random() * 30) + 15;
+            state.fundamentalists = Math.max(0, newF);
+            state.chartists = Math.max(0, newC);
+            state.noise = Math.max(0, newN);
+            // 정규화 (전체 합 100 유지)
+            const sum = state.fundamentalists + state.chartists + state.noise;
+            if (sum > 0) {
+                state.fundamentalists = Math.floor((state.fundamentalists / sum) * 100);
+                state.chartists = Math.floor((state.chartists / sum) * 100);
+                state.noise = 100 - state.fundamentalists - state.chartists; // 나머지
             }
-            else if (panicOverride || dayReturn < -0.1) {
-                activeAnts = Math.floor(Math.random() * 50) + 20; // 패닉셀일 때 개미가 더 많이 던짐
+            // 3. 실제 주문 생성 로직
+            let activeAnts = Math.floor(Math.random() * 10) + 5;
+            if (lambda > 0.5) { // 쏠림 발생 시 (Bimodal State)
+                activeAnts = Math.floor(Math.random() * 40) + 20;
             }
             for (let i = 0; i < activeAnts; i++) {
-                const isBuyer = Math.random() < (state.buyers / state.total);
-                const tinyQty = Math.floor(Math.random() * 5) + 1; // 1~5주 짤짤이 매매
-                if (isBuyer) {
-                    // FOMO 상태면 위로 긁고, 평소면 밑에서 받침
-                    const fomoOffset = (b > 0.5 && state.buyers > 70) ? Math.floor(Math.random() * 3) : -Math.floor(Math.random() * 3);
-                    const executionPrice = stock.current_price + (fomoOffset * tickSize);
-                    orders.push({
-                        stock_id: stock.id,
-                        user_id: null,
-                        side: 'buy',
-                        price: executionPrice,
-                        size: tinyQty,
-                        status: 'open',
-                        is_lp: true
-                    });
+                const rand = Math.random() * 100;
+                let antType = 'NOISE';
+                if (rand < state.fundamentalists)
+                    antType = 'FUNDAMENTALIST';
+                else if (rand < state.fundamentalists + state.chartists)
+                    antType = 'CHARTIST';
+                const tinyQty = Math.floor(Math.random() * 5) + 1;
+                let side = Math.random() < 0.5 ? 'buy' : 'sell';
+                let executionPrice = stock.current_price;
+                if (antType === 'FUNDAMENTALIST') {
+                    // 가치 투자자: 본질 가치보다 싸면 사고, 비싸면 판다.
+                    side = stock.current_price < fundamentalValue ? 'buy' : 'sell';
+                    executionPrice = side === 'buy' ? stock.current_price - tickSize : stock.current_price + tickSize;
+                }
+                else if (antType === 'CHARTIST') {
+                    // 추세 추종자: 오르면 더 사고, 내리면 패닉 셀
+                    if (coreTrend > 0 || fomoOverride) {
+                        side = 'buy';
+                        executionPrice = stock.current_price + tickSize * Math.floor(Math.random() * 3);
+                    }
+                    else if (coreTrend < 0 || panicOverride) {
+                        side = 'sell';
+                        executionPrice = stock.current_price - tickSize * Math.floor(Math.random() * 3);
+                    }
                 }
                 else {
-                    // 패닉 상태면 아래로 패대기, 평소면 위에다 걸어둠
-                    const panicOffset = (b > 0.5 && state.sellers > 70) ? -Math.floor(Math.random() * 3) : Math.floor(Math.random() * 3);
-                    const executionPrice = stock.current_price + (panicOffset * tickSize);
-                    orders.push({
-                        stock_id: stock.id,
-                        user_id: null,
-                        side: 'sell',
-                        price: executionPrice,
-                        size: tinyQty,
-                        status: 'open',
-                        is_lp: true
-                    });
+                    // 노이즈 트레이더: 무작위 방향, 스프레드 무작위
+                    executionPrice = stock.current_price + (side === 'buy' ? -tickSize : tickSize) * Math.floor(Math.random() * 5);
                 }
+                orders.push({
+                    stock_id: stock.id,
+                    user_id: null,
+                    side: side,
+                    price: executionPrice,
+                    size: tinyQty,
+                    status: 'open',
+                    is_lp: true
+                });
             }
         }
         return orders;

@@ -4,6 +4,12 @@ export declare class MarketEngine {
     private tickIntervalMs;
     private tickTimer;
     private manipulationCheckTimer;
+    fundamentals: Record<string, number>;
+    private readonly mjd_mu;
+    private readonly mjd_sigma;
+    private readonly mjd_lambda;
+    private readonly mjd_jump_mu;
+    private readonly mjd_jump_sigma;
     private hawkesIntensity;
     private readonly mu;
     private readonly alpha;
@@ -18,7 +24,8 @@ export declare class MarketEngine {
     private statArbBots;
     private optionsMMBots;
     private quantBots;
-    private marketMaker;
+    private asMarketMakers;
+    private adversarialAgent;
     private realWorldFetcher;
     constructor();
     injectEvent(event: MarketEvent): void;

@@ -10,7 +10,7 @@ class EventBusImpl {
     if (!this.subscribers[channel]) {
       this.subscribers[channel] = [];
     }
-    this.subscribers[channel].push(callback);
+    this.subscribers[channel]!.push(callback);
   }
 
   // 이벤트를 비동기적으로 브로드캐스팅합니다. O(1)에 가깝게 구독자에게만 전달됩니다.

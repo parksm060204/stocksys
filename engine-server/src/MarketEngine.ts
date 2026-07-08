@@ -4,7 +4,8 @@ import { CommercialBankAgent } from './bots/CommercialBankAgent';
 import { HedgeFundAgent } from './bots/HedgeFundAgent';
 import { PropDeskAgent } from './bots/PropDeskAgent';
 import { RetailSwarmAgent } from './bots/RetailSwarmAgent';
-import { MarketMakerAgent } from './bots/MarketMakerAgent';
+import { AdversarialAgent } from './bots/AdversarialAgent';
+import { ASMarketMakerAgent } from './bots/ASMarketMakerAgent';
 import { StatArbAgent } from './bots/StatArbAgent';
 import { OptionsMMAgent } from './bots/OptionsMMAgent';
 import { QuantAgent } from './bots/QuantAgent';
@@ -23,6 +24,14 @@ export class MarketEngine {
   private tickTimer: NodeJS.Timeout | null = null;
   private manipulationCheckTimer: NodeJS.Timeout | null = null;
 
+  // SDE: Fundamental Value (Merton Jump-Diffusion)
+  public fundamentals: Record<string, number> = {};
+  private readonly mjd_mu: number = 0.0; // 기본 드리프트
+  private readonly mjd_sigma: number = 0.005; // 틱당 변동성
+  private readonly mjd_lambda: number = 0.01; // 점프 발생 확률 (틱당 1%)
+  private readonly mjd_jump_mu: number = 0; // 점프 평균 크기 (로그 정규)
+  private readonly mjd_jump_sigma: number = 0.1; // 점프 크기 변동성
+
   // Hawkes Process 상태 변수
   private hawkesIntensity: number = 0; // 초과 틱 강도
   private readonly mu: number = 0.5; // 베이스라인 강도 (약 2초 간격)
@@ -40,7 +49,8 @@ export class MarketEngine {
   private statArbBots: StatArbAgent[] = [];
   private optionsMMBots: OptionsMMAgent[] = [];
   private quantBots: QuantAgent[] = [];
-  private marketMaker: MarketMakerAgent = new MarketMakerAgent();
+  private asMarketMakers: ASMarketMakerAgent[] = [];
+  private adversarialAgent: AdversarialAgent = new AdversarialAgent();
   
   private realWorldFetcher: RealWorldFetcher = new RealWorldFetcher();
 
@@ -113,6 +123,9 @@ export class MarketEngine {
         id: 'bot_quant_001', name: 'Informed Quant Fund', type: 'QUANT_FUND', capital: 20000000000, reactionSpeed: 1, tradingStyle: 'INFORMED_TRADER'
       }));
     }
+    if (this.asMarketMakers.length === 0) {
+      this.asMarketMakers.push(new ASMarketMakerAgent());
+    }
 
     console.log(`Successfully loaded ${botsData?.length || 0} bots (including Retail Swarms) from reality.`);
   }
@@ -181,7 +194,7 @@ export class MarketEngine {
         const { data: stockData } = await supabase.from('stocks').select('market_cap, current_price').eq('id', manip.stock_id).single();
         
         if (stockData) {
-          this.marketMaker.triggerManipulation(manip.stock_id, stockData.market_cap || 10000000000, stockData.current_price);
+          this.adversarialAgent.triggerManipulation(manip.stock_id, stockData.market_cap || 10000000000, stockData.current_price);
           
           // 상태를 'ACTIVE'로 변경
           await supabase.from('active_manipulations').update({ status: 'ACTIVE' }).eq('id', manip.id);
@@ -214,6 +227,36 @@ export class MarketEngine {
       
       let allOrders: any[] = [];
 
+      // 1. Update Fundamentals (Merton Jump-Diffusion)
+      for (const stock of marketState.stocks) {
+        if (!this.fundamentals[stock.id]) this.fundamentals[stock.id] = stock.current_price;
+        let F = this.fundamentals[stock.id];
+        
+        // 브라운 운동 (Brownian Motion)
+        const dW = (Math.random() + Math.random() + Math.random() + Math.random() - 2) * 1.732; // 근사 정규분포
+        const diffusion = this.mjd_sigma * dW;
+        
+        // 푸아송 점프 (Poisson Jump)
+        let jump = 0;
+        if (Math.random() < this.mjd_lambda) {
+          const jumpZ = (Math.random() + Math.random() + Math.random() + Math.random() - 2) * 1.732;
+          const J = Math.exp(this.mjd_jump_mu + this.mjd_jump_sigma * jumpZ);
+          jump = J - 1;
+          
+          // 점프 보상자 (Compensator) k = E[J - 1]
+          const k = Math.exp(this.mjd_jump_mu + (this.mjd_jump_sigma * this.mjd_jump_sigma) / 2) - 1;
+          const compensator = this.mjd_lambda * k;
+          
+          jump -= compensator; // 마틴게일 성질 유지
+
+          console.log(`💥 [MJD JUMP] ${stock.name} fundamental value jumped! F: ${(F || stock.current_price).toFixed(0)} -> ${((F || stock.current_price) * (1 + diffusion + jump)).toFixed(0)}`);
+        }
+        
+        const dF = (F || stock.current_price) * (this.mjd_mu + diffusion + jump);
+        this.fundamentals[stock.id] = (F || stock.current_price) + dF;
+      }
+
+      // 2. 봇들에게서 주문 수집
       for (const bot of this.pensionFunds) {
         allOrders.push(...bot.evaluateMarketAndPlaceOrders(marketState));
       }
@@ -228,8 +271,7 @@ export class MarketEngine {
           bot.updateSentiment('RISK_ON');
         }
         
-        const mockHoldings = { equity: 50000000000000, safeBonds: 30000000000000, highYield: 20000000000000 };
-        allOrders.push(...bot.executeAggressiveSweep(marketState, mockHoldings));
+        allOrders.push(...bot.executeAggressiveSweep(marketState));
       }
       for (const bot of this.propDesks) {
         allOrders.push(...bot.executeMarketMaking(marketState, marketState.orderBook, {}));
@@ -248,8 +290,12 @@ export class MarketEngine {
         allOrders.push(...bot.executeQuantStrategy(marketState, marketState.orderBook));
       }
       
-      // Market Maker (세력) 주문 개입
-      allOrders.push(...this.marketMaker.executeManipulation(marketState));
+      for (const bot of this.asMarketMakers) {
+        allOrders.push(...bot.executeMarketMaking(marketState));
+      }
+      
+      // 적대적 에이전트(작전 세력) 개입
+      allOrders.push(...this.adversarialAgent.executeManipulation(marketState));
 
       if (allOrders.length > 0) {
         await this.processBatchOrders(allOrders, marketState);
@@ -313,7 +359,8 @@ export class MarketEngine {
       sentiment: adminSettings.data?.market_sentiment || 'NEUTRAL',
       orderBook: {},
       realWorldMacro: macroData,
-      activeEvents: this.activeEvents
+      activeEvents: this.activeEvents,
+      fundamentals: this.fundamentals
     };
     if (Math.random() < 0.1) console.log(`[Debug] Fetched ${state.stocks.length} stocks from DB.`);
     return state;
@@ -356,9 +403,16 @@ export class MarketEngine {
     for (const stockId of Object.keys(orderBookByStock)) {
       const book = orderBookByStock[stockId]!;
 
-      // 매수(Buy)는 가격 내림차순, 매도(Sell)는 가격 오름차순
-      book.bids.sort((a, b) => b.price - a.price);
-      book.asks.sort((a, b) => a.price - b.price);
+      // 매수(Buy)는 가격 내림차순, 시간 오름차순 (먼저 온 주문 우선)
+      // 매도(Sell)는 가격 오름차순, 시간 오름차순
+      book.bids.sort((a, b) => {
+        if (b.price !== a.price) return b.price - a.price;
+        return (a.created_at || '').localeCompare(b.created_at || '');
+      });
+      book.asks.sort((a, b) => {
+        if (a.price !== b.price) return a.price - b.price;
+        return (a.created_at || '').localeCompare(b.created_at || '');
+      });
 
       let latestTradePrice = null;
 
@@ -381,15 +435,45 @@ export class MarketEngine {
             created_at: new Date().toISOString()
           });
 
+          // Maker-Taker 판별 (더 일찍 생성된 주문이 Maker)
+          const bidTime = new Date(highestBid.created_at || 0).getTime();
+          const askTime = new Date(lowestAsk.created_at || 0).getTime();
+          const isBidMaker = bidTime <= askTime;
+          
+          // Maker Rebate (-0.1%), Taker Fee (+0.25%)
+          const makerRebateRate = -0.001; 
+          const takerFeeRate = 0.0025;
+          
+          const bidFeeRate = isBidMaker ? makerRebateRate : takerFeeRate;
+          const askFeeRate = isBidMaker ? takerFeeRate : makerRebateRate;
+
           if (highestBid.user_id && highestBid.is_lp === false) {
-            cashChanges[highestBid.user_id] = (cashChanges[highestBid.user_id] || 0) - (tradePrice * tradeSize);
+            // 매수자는 체결 대금 + 수수료 지불
+            cashChanges[highestBid.user_id] = (cashChanges[highestBid.user_id] || 0) - (tradePrice * tradeSize * (1 + bidFeeRate));
           }
           if (lowestAsk.user_id && lowestAsk.is_lp === false) {
-            cashChanges[lowestAsk.user_id] = (cashChanges[lowestAsk.user_id] || 0) + (tradePrice * tradeSize);
+            // 매도자는 체결 대금 획득 - 수수료 차감
+            cashChanges[lowestAsk.user_id] = (cashChanges[lowestAsk.user_id] || 0) + (tradePrice * tradeSize * (1 - askFeeRate));
           }
 
           highestBid.size -= tradeSize;
           lowestAsk.size -= tradeSize;
+
+          // Iceberg Order (빙산 주문) 리필 및 시간 우선순위 초기화 (Loss-in-priority)
+          if (highestBid.size === 0 && highestBid.hidden_size && highestBid.hidden_size > 0) {
+            const replenish = Math.min(highestBid.hidden_size, highestBid.peak_size || 100);
+            highestBid.size = replenish;
+            highestBid.hidden_size -= replenish;
+            highestBid.created_at = new Date().toISOString(); // 우선순위 밀림
+            console.log(`🧊 [Iceberg] Bid replenished by ${replenish}. Remaining hidden: ${highestBid.hidden_size}`);
+          }
+          if (lowestAsk.size === 0 && lowestAsk.hidden_size && lowestAsk.hidden_size > 0) {
+            const replenish = Math.min(lowestAsk.hidden_size, lowestAsk.peak_size || 100);
+            lowestAsk.size = replenish;
+            lowestAsk.hidden_size -= replenish;
+            lowestAsk.created_at = new Date().toISOString(); // 우선순위 밀림
+            console.log(`🧊 [Iceberg] Ask replenished by ${replenish}. Remaining hidden: ${lowestAsk.hidden_size}`);
+          }
 
           if (highestBid.id && !highestBid._updated) {
             userOrdersToUpdate.push(highestBid);

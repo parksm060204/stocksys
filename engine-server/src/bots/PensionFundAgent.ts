@@ -3,7 +3,7 @@ import { BaseAgent } from "./BaseAgent";
 
 export class PensionFundAgent extends BaseAgent {
   private bot: PensionFundBot;
-  private executionState: Record<string, { remainingQty: number, targetTicks: number, currentTick: number, kappa: number }> = {};
+  private executionState: Record<string, { remainingQty: number, targetTicks: number, currentTick: number, kappa: number, totalQty: number }> = {};
 
   constructor(bot: PensionFundBot) {
     super(bot.id, bot.capital);
@@ -74,10 +74,11 @@ export class PensionFundAgent extends BaseAgent {
                   remainingQty: totalIntendedQty,
                   targetTicks: 60, // 60틱 동안 분할 매수
                   currentTick: 0,
-                  kappa: kappa
+                  kappa: Math.max(0.01, kappa), // 0 방지
+                  totalQty: totalIntendedQty
                 };
                 this.executionState[stock.id] = state;
-                console.log(`[Almgren-Chriss] ${this.bot.name} initiated execution for ${stock.name}. Kappa: ${kappa.toFixed(4)}, Qty: ${totalIntendedQty}`);
+                console.log(`[Almgren-Chriss] ${this.bot.name} initiated execution for ${stock.name}. Kappa: ${state.kappa.toFixed(4)}, Qty: ${totalIntendedQty}`);
               }
             }
           }
@@ -87,10 +88,20 @@ export class PensionFundAgent extends BaseAgent {
             const t = state.currentTick;
             const T = state.targetTicks;
             
-            // 궤적 생성: 잔여 물량 * (sinh(k * (T-t)) / sinh(k * T)) 변형 (간략화된 선형+곡률 모델)
-            // 간단한 구현: 곡률 k가 높을수록 초반에 많이 매수, 낮을수록 TWAP(균등 분할)
-            const baseQty = Math.ceil(state.remainingQty / (T - t + 1));
-            const executionQty = Math.min(state.remainingQty, Math.floor(baseQty * (1 + state.kappa * 0.1)));
+            // 궤적 생성: AC 최적 실행 궤도 (v_t^*)
+            // v_t^* = X * kappa * cosh[kappa * (T - t)] / sinh(kappa * T)
+            const k = state.kappa;
+            const X = state.totalQty;
+            const timeRemaining = T - t;
+            
+            const sinh_kT = Math.sinh(k * T);
+            const cosh_kt = Math.cosh(k * timeRemaining);
+            
+            let optimal_v_t = (X * k * cosh_kt) / sinh_kT;
+            
+            // 너무 크거나 작을 경우 보정
+            let executionQty = Math.ceil(optimal_v_t);
+            executionQty = Math.min(state.remainingQty, executionQty);
             
             state.remainingQty -= executionQty;
 
@@ -98,14 +109,20 @@ export class PensionFundAgent extends BaseAgent {
             const targetBuyPrice = stock.current_price - tickSize; // 1틱 아래 (Iceberg/Passive)
 
             if (executionQty > 0) {
-              orders.push(...this.executeSmartOrder(
-                stock,
-                'buy',
-                targetBuyPrice,
-                executionQty,
-                0.2, // 낮은 긴급성 (스푸핑/빙산 유도)
-                currentMarket.activeEvents
-              ));
+              const peakSize = Math.max(1, Math.floor(executionQty * 0.1)); // 빙산의 일각 (10%만 노출)
+              const hiddenSize = executionQty - peakSize;
+              
+              orders.push({
+                stock_id: stock.id,
+                user_id: this.botId, // 추적용
+                side: 'buy',
+                price: targetBuyPrice,
+                size: peakSize,
+                hidden_size: hiddenSize,
+                peak_size: peakSize,
+                status: 'open',
+                is_lp: true
+              });
             }
           }
         }

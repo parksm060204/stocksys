@@ -1,6 +1,6 @@
 import { BaseAgent } from "./BaseAgent";
 
-export class MarketMakerAgent extends BaseAgent {
+export class AdversarialAgent extends BaseAgent {
   private activePhase: number = 0; // 0: None, 1: Accumulation, 2: Markup, 3: Distribution
   private targetStockId: string | null = null;
   private inventory: number = 0;
@@ -24,7 +24,7 @@ export class MarketMakerAgent extends BaseAgent {
     this.targetInventory = Math.floor(assumedTotalShares * 0.03);
     this.phaseTicks = 0;
 
-    console.log(`[Market Maker] 🚨 MANIPULATION INITIATED on ${stockId}. Target 3% Float: ${this.targetInventory} shares.`);
+    console.log(`[Adversarial] 🚨 MANIPULATION INITIATED on ${stockId}. Target 3% Float: ${this.targetInventory} shares.`);
   }
 
   public executeManipulation(currentMarket: any) {
@@ -68,7 +68,7 @@ export class MarketMakerAgent extends BaseAgent {
         }
 
         if (this.inventory >= this.targetInventory || this.phaseTicks > 60) {
-          console.log(`[Market Maker] 🚀 Phase 1 Complete. Moving to Phase 2 (Markup). Inventory: ${this.inventory}`);
+          console.log(`[Adversarial] 🚀 Phase 1 Complete. Moving to Phase 2 (Markup). Inventory: ${this.inventory}`);
           this.activePhase = 2;
           this.phaseTicks = 0;
         }
@@ -91,7 +91,7 @@ export class MarketMakerAgent extends BaseAgent {
 
         // 평단가 대비 25% 이상 올랐거나 시간이 지나면 Phase 3로
         if (this.phaseTicks > 30) { // 임의의 30틱 동안 펌핑
-          console.log(`[Market Maker] 🛑 Phase 2 Complete. Moving to Phase 3 (Distribution).`);
+          console.log(`[Adversarial] 🛑 Phase 2 Complete. Moving to Phase 3 (Distribution).`);
           this.activePhase = 3;
           this.phaseTicks = 0;
         }
@@ -126,7 +126,7 @@ export class MarketMakerAgent extends BaseAgent {
 
         // 재고 소진 후 철수 (덤프 유도)
         if (this.inventory <= 0 || this.phaseTicks > 60) {
-          console.log(`[Market Maker] 💥 Manipulation Complete. Wall pulled, Dump imminent.`);
+          console.log(`[Adversarial] 💥 Manipulation Complete. Wall pulled, Dump imminent.`);
           this.activePhase = 0;
           this.targetStockId = null;
         }

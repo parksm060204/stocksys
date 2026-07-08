@@ -15,6 +15,10 @@ export class StatArbAgent extends BaseAgent {
   // 가상의 ETF 시장 가격 (초기엔 NAV와 동일하게 시작하며, 자체적으로 랜덤 워크를 타거나 시장 노이즈를 반영)
   // 실제 거래소에 상장된 ETF가 없으므로 봇 내부에서 가상으로 관리.
   private virtualEtfPrice: number = 0;
+  
+  // AP 에이전트 (Authorized Participant) 특화 상태 변수
+  private inventoryRisk: number = 0; // 현재 재고량 (Risk)
+  private readonly MAX_INVENTORY = 1000000000; // 최대 수용 한도 (10억)
 
   constructor(bot: StatArbBot) {
     super(bot.id, bot.capital);
@@ -81,7 +85,18 @@ export class StatArbAgent extends BaseAgent {
       if (diff > 0) {
         // ETF 고평가, 기초자산(NAV) 저평가 상태
         // 행동: ETF 공매도 (가상이므로 생략), 기초자산 바스켓 매수 (Creation)
-        console.log(`[StatArb] Premium Detected! ETF: ${this.virtualEtfPrice.toFixed(2)}, NAV: ${this.currentNAV.toFixed(2)}. Buying Basket.`);
+        // 위기 시 기초 자산을 흡수(매수)하여 시장 충격을 완충합니다.
+        
+        let discountMultiplier = 1.0;
+        
+        // AP의 재고 한도(Inventory Limit) 도달 시 할인율(Discount) 전가
+        if (this.inventoryRisk > this.MAX_INVENTORY * 0.8) {
+          // 재고 한도의 80%를 넘어가면 유동성 제공을 꺼리며 스프레드를 엄청나게 벌림
+          discountMultiplier = 0.8; // 20% 더 싼 가격에만 매수해주겠다 (Discount)
+          console.log(`[AP Agent] ⚠️ INVENTORY LIMIT REACHED! Demanding ${((1 - discountMultiplier) * 100).toFixed(0)}% discount to provide liquidity.`);
+        }
+
+        console.log(`[AP Agent] Premium Detected! ETF: ${this.virtualEtfPrice.toFixed(2)}, NAV: ${this.currentNAV.toFixed(2)}. Buying Basket (Creation).`);
         
         for (const stockId of Object.keys(this.basketWeights)) {
           const stock = availableStocks.find((s: any) => s.id === stockId);
@@ -90,8 +105,14 @@ export class StatArbAgent extends BaseAgent {
             const qty = Math.floor(allocateMoney / stock.current_price);
             if (qty > 0) {
               const tickSize = this.getTickSize(stock.current_price);
-              // 시장가에 가깝게 공격적 매수
-              orders.push(...this.executeSmartOrder(stock, 'buy', stock.current_price + tickSize * 3, qty, 0.9, currentMarket.activeEvents));
+              
+              // discountMultiplier 가 1 미만이면 현재가보다 훨씬 아래(할인된 가격)에 호가를 깔아버림
+              const targetBuyPrice = stock.current_price * discountMultiplier;
+              
+              orders.push(...this.executeSmartOrder(stock, 'buy', targetBuyPrice, qty, 0.9, currentMarket.activeEvents));
+              
+              // 재고 증가
+              this.inventoryRisk += (qty * stock.current_price);
             }
           }
         }
@@ -102,12 +123,11 @@ export class StatArbAgent extends BaseAgent {
       } else {
         // ETF 저평가, 기초자산(NAV) 고평가 상태
         // 행동: ETF 매수 (생략), 기초자산 바스켓 매도 (Redemption)
-        console.log(`[StatArb] Discount Detected! ETF: ${this.virtualEtfPrice.toFixed(2)}, NAV: ${this.currentNAV.toFixed(2)}. Selling Basket.`);
+        console.log(`[AP Agent] Discount Detected! ETF: ${this.virtualEtfPrice.toFixed(2)}, NAV: ${this.currentNAV.toFixed(2)}. Selling Basket (Redemption).`);
         
         for (const stockId of Object.keys(this.basketWeights)) {
           const stock = availableStocks.find((s: any) => s.id === stockId);
           if (stock && this.basketWeights[stockId] !== undefined) {
-            const holdingQty = myHoldings[stockId] || 0;
             const allocateMoney = tradeAmount * this.basketWeights[stockId]!;
             let qty = Math.floor(allocateMoney / stock.current_price);
             
@@ -116,6 +136,9 @@ export class StatArbAgent extends BaseAgent {
               const tickSize = this.getTickSize(stock.current_price);
               // 시장가에 가깝게 공격적 매도
               orders.push(...this.executeSmartOrder(stock, 'sell', stock.current_price - tickSize * 3, qty, 0.9, currentMarket.activeEvents));
+              
+              // 매도 시 재고 리스크 감소
+              this.inventoryRisk = Math.max(0, this.inventoryRisk - (qty * stock.current_price));
             }
           }
         }
@@ -123,6 +146,9 @@ export class StatArbAgent extends BaseAgent {
         // 차익거래로 인해 괴리율 축소
         this.virtualEtfPrice -= diff * 0.5;
       }
+    } else {
+      // 평시에는 재고 리스크를 서서히 줄임 (Inventory Decay)
+      this.inventoryRisk *= 0.95;
     }
 
     return orders;

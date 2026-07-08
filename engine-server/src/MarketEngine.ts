@@ -4,7 +4,9 @@ import { CommercialBankAgent } from './bots/CommercialBankAgent';
 import { HedgeFundAgent } from './bots/HedgeFundAgent';
 import { PropDeskAgent } from './bots/PropDeskAgent';
 import { RetailSwarmAgent } from './bots/RetailSwarmAgent';
-import { RealWorldFetcher, MacroData } from './realWorldFetcher';
+import { MarketMakerAgent } from './bots/MarketMakerAgent';
+import { RealWorldFetcher } from './realWorldFetcher';
+import type { MacroData } from './realWorldFetcher';
 import type { MarketEvent } from './types';
 import * as dotenv from 'dotenv';
 dotenv.config();
@@ -15,6 +17,7 @@ export class MarketEngine {
   private isRunning: boolean = false;
   private tickIntervalMs: number = 1000;
   private tickTimer: NodeJS.Timeout | null = null;
+  private manipulationCheckTimer: NodeJS.Timeout | null = null;
 
   private activeEvents: MarketEvent[] = [];
 
@@ -23,6 +26,7 @@ export class MarketEngine {
   private hedgeFunds: HedgeFundAgent[] = [];
   private propDesks: PropDeskAgent[] = [];
   private retailSwarms: RetailSwarmAgent[] = [];
+  private marketMaker: MarketMakerAgent = new MarketMakerAgent();
   
   private realWorldFetcher: RealWorldFetcher = new RealWorldFetcher();
 
@@ -78,12 +82,44 @@ export class MarketEngine {
     this.isRunning = true;
     console.log("🚀 Market Engine Started (1-second tick)...");
     this.tickTimer = setInterval(() => this.tick(), this.tickIntervalMs);
+    
+    // 10초마다 active_manipulations 테이블 폴링
+    this.manipulationCheckTimer = setInterval(() => this.checkManipulations(), 10000);
   }
 
   public stop() {
     this.isRunning = false;
     if (this.tickTimer) clearInterval(this.tickTimer);
+    if (this.manipulationCheckTimer) clearInterval(this.manipulationCheckTimer);
     console.log("🛑 Market Engine Stopped.");
+  }
+
+  private async checkManipulations() {
+    try {
+      // DB에 active_manipulations 테이블이 있다고 가정 (관리자가 행을 삽입)
+      // 상태가 'PENDING'인 작전을 하나 가져옵니다.
+      const { data, error } = await supabase
+        .from('active_manipulations')
+        .select('*')
+        .eq('status', 'PENDING')
+        .limit(1);
+
+      if (!error && data && data.length > 0) {
+        const manip = data[0];
+        
+        // 주식 정보를 가져와서 매집량 계산을 위해 marketCap을 넘겨줌
+        const { data: stockData } = await supabase.from('stocks').select('market_cap, current_price').eq('id', manip.stock_id).single();
+        
+        if (stockData) {
+          this.marketMaker.triggerManipulation(manip.stock_id, stockData.market_cap || 10000000000, stockData.current_price);
+          
+          // 상태를 'ACTIVE'로 변경
+          await supabase.from('active_manipulations').update({ status: 'ACTIVE' }).eq('id', manip.id);
+        }
+      }
+    } catch (e) {
+      // 테이블이 아직 없거나 오류 발생 시 무시 (Migration 필요)
+    }
   }
 
   private async tick() {
@@ -132,6 +168,9 @@ export class MarketEngine {
         const mockHoldings = {};
         allOrders.push(...bot.executeSwarmBehavior(marketState, mockHoldings));
       }
+      
+      // Market Maker (세력) 주문 개입
+      allOrders.push(...this.marketMaker.executeManipulation(marketState));
 
       if (allOrders.length > 0) {
         await this.processBatchOrders(allOrders, marketState);
@@ -213,9 +252,9 @@ export class MarketEngine {
         orderBookByStock[order.stock_id] = { bids: [], asks: [] };
       }
       if (order.side === 'buy') {
-        orderBookByStock[order.stock_id].bids.push(order);
+        orderBookByStock[order.stock_id]!.bids.push(order);
       } else {
-        orderBookByStock[order.stock_id].asks.push(order);
+        orderBookByStock[order.stock_id]!.asks.push(order);
       }
     }
 
@@ -227,7 +266,7 @@ export class MarketEngine {
 
     // 3. 종목별 매칭 엔진 로직 (In-memory Matching)
     for (const stockId of Object.keys(orderBookByStock)) {
-      const book = orderBookByStock[stockId];
+      const book = orderBookByStock[stockId]!;
 
       // 매수(Buy)는 가격 내림차순, 매도(Sell)는 가격 오름차순
       book.bids.sort((a, b) => b.price - a.price);

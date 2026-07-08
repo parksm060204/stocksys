@@ -17,6 +17,8 @@ export class RetailSwarmAgent {
     return 1000;
   }
 
+  private swarmState: Record<string, { buyers: number, sellers: number, total: number }> = {};
+
   public executeSwarmBehavior(currentMarket: any, myHoldings: any) {
     const orders: any[] = [];
     const availableStocks = currentMarket.stocks || [];
@@ -42,14 +44,72 @@ export class RetailSwarmAgent {
       const dayReturn = (stock.current_price - stock.previous_close) / stock.previous_close;
       const tickSize = this.getTickSize(stock.current_price);
 
-      // 1. FOMO Buy Logic (불나방 매수 - 호가창이 맞닿는 최우선 매도호가를 즉시 긁음)
-      if (this.bot.tradingStyle === 'MOMENTUM_CHASER' && (dayReturn >= this.bot.fomoThreshold || fomoOverride)) {
-        const antSwarmCount = fomoOverride ? Math.floor(Math.random() * 20) + 15 : Math.floor(Math.random() * 10) + 5; 
-        for (let i = 0; i < antSwarmCount; i++) {
-          const tinyQty = Math.floor(Math.random() * 3) + 1; // 1~3주
-          // 최우선 매도호가(현재가 + 1틱)를 즉시 타격하여 체결(Trade) 발생시킴
-          const executionPrice = stock.current_price + (Math.floor(Math.random() * 2) * tickSize); 
-          
+      // Kirman's Ant Model Initialization
+      if (!this.swarmState[stock.id]) {
+        this.swarmState[stock.id] = { buyers: 50, sellers: 50, total: 100 };
+      }
+      const state = this.swarmState[stock.id]!;
+
+      // Herding parameter (b) and spontaneous parameter (a)
+      let a = 0.05;
+      let b = 0.2; // 기본 허딩은 낮음 (정규 분포에 가까움)
+
+      // 펌핑이나 급등락 시 군집 파라미터(b) 폭증 유발 (Bimodal 상전이 발생)
+      if (Math.abs(dayReturn) > 0.05 || fomoOverride || panicOverride) {
+        b = 0.8; // 허딩 파라미터 폭증 -> 쏠림 현상 가속
+      }
+
+      // 상태 전이 확률 계산
+      const p_buyer_to_seller = a + b * (state.sellers / state.total);
+      const p_seller_to_buyer = a + b * (state.buyers / state.total);
+
+      let newBuyers = state.buyers;
+      let newSellers = state.sellers;
+
+      // 매수자 -> 매도자 전환
+      for (let i = 0; i < state.buyers; i++) {
+        if (Math.random() < p_buyer_to_seller) {
+          newBuyers--;
+          newSellers++;
+        }
+      }
+
+      // 매도자 -> 매수자 전환
+      for (let i = 0; i < state.sellers; i++) {
+        if (Math.random() < p_seller_to_buyer) {
+          newSellers--;
+          newBuyers++;
+        }
+      }
+
+      // 강제 쏠림 보정 (외부 충격: 펌핑/패닉)
+      if (fomoOverride || dayReturn > 0.1) {
+        // 억지로 매수자로 변환
+        const converted = Math.floor(newSellers * 0.5);
+        newSellers -= converted;
+        newBuyers += converted;
+      } else if (panicOverride || dayReturn < -0.1) {
+        // 억지로 매도자로 변환
+        const converted = Math.floor(newBuyers * 0.5);
+        newBuyers -= converted;
+        newSellers += converted;
+      }
+
+      state.buyers = Math.max(0, Math.min(state.total, newBuyers));
+      state.sellers = state.total - state.buyers;
+
+      // 실제 주문 생성 로직
+      // 개미들은 지정가 대신 현재가 근방을 무작위로 때리거나 허수성 주문을 남발함
+      const activeAnts = Math.floor(Math.random() * 10) + 5; // 이번 틱에 행동할 개미 수
+      
+      for (let i = 0; i < activeAnts; i++) {
+        const isBuyer = Math.random() < (state.buyers / state.total);
+        const tinyQty = Math.floor(Math.random() * 5) + 1; // 1~5주 짤짤이 매매
+
+        if (isBuyer) {
+          // FOMO 상태면 위로 긁고, 평소면 밑에서 받침
+          const fomoOffset = (b > 0.5 && state.buyers > 70) ? Math.floor(Math.random() * 3) : -Math.floor(Math.random() * 3);
+          const executionPrice = stock.current_price + (fomoOffset * tickSize);
           orders.push({
             stock_id: stock.id,
             user_id: null,
@@ -59,37 +119,10 @@ export class RetailSwarmAgent {
             status: 'open',
             is_lp: true
           });
-        }
-      }
-
-      // 2. Dip Buying Logic (동학개미 - 하락 시 최우선 매수호가에 주문을 넣거나 방어)
-      if (this.bot.tradingStyle === 'VALUE_DIP_BUYER' && dayReturn <= this.bot.panicThreshold && !panicOverride) {
-        const antSwarmCount = Math.floor(Math.random() * 10) + 5; 
-        for (let i = 0; i < antSwarmCount; i++) {
-          const tinyQty = Math.floor(Math.random() * 5) + 1;
-          // 매도세에 맞서기 위해 현재가(최우선 호가) 부근에서 체결 유도
-          const executionPrice = stock.current_price - (Math.floor(Math.random() * 2) * tickSize);
-          
-          orders.push({
-            stock_id: stock.id,
-            user_id: null,
-            side: 'buy',
-            price: executionPrice, 
-            size: tinyQty,
-            status: 'open',
-            is_lp: true
-          });
-        }
-      }
-
-      // 3. Panic Sell Logic (투매 - 호가창이 맞닿는 최우선 매수호가를 즉시 때림)
-      if (dayReturn <= this.bot.panicThreshold || panicOverride) {
-        const antSwarmCount = panicOverride ? Math.floor(Math.random() * 25) + 10 : Math.floor(Math.random() * 15) + 5; 
-        for (let i = 0; i < antSwarmCount; i++) {
-          const tinyQty = Math.floor(Math.random() * 3) + 1;
-          // 최우선 매수호가(현재가 - 1틱)를 즉시 타격하여 체결 발생시킴
-          const executionPrice = stock.current_price - (Math.floor(Math.random() * 2) * tickSize);
-          
+        } else {
+          // 패닉 상태면 아래로 패대기, 평소면 위에다 걸어둠
+          const panicOffset = (b > 0.5 && state.sellers > 70) ? -Math.floor(Math.random() * 3) : Math.floor(Math.random() * 3);
+          const executionPrice = stock.current_price + (panicOffset * tickSize);
           orders.push({
             stock_id: stock.id,
             user_id: null,
@@ -102,8 +135,7 @@ export class RetailSwarmAgent {
         }
       }
     }
-
+    
     return orders;
   }
 }
-

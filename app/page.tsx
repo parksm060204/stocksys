@@ -64,46 +64,6 @@ export default async function Home() {
         <IndexCard index={euroStoxx50} />
       </div>
 
-      <div className="mb-3 px-1 text-[11px] font-semibold uppercase tracking-wider text-dim">
-        시장별 현황
-      </div>
-
-      <div className="mb-8 grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-6">
-        {marketStats.map(({ market, count, up, down, avgPct }) => {
-          const href =
-            market.id === "domestic"
-              ? "/stocks?tab=kospi"
-              : market.id === "overseas"
-                ? "/stocks?tab=sp50"
-                : market.id === "europe"
-                  ? "/stocks?tab=eurostoxx50"
-                  : `/markets/${market.id}`;
-          return (
-            <Link
-              key={market.id}
-              href={href}
-              className="group rounded-xl border border-border bg-panel p-4 transition-colors hover:border-accent/40"
-            >
-              <div className="mb-2 flex items-center gap-2">
-                <span className="text-lg">{market.icon}</span>
-                <span className="text-[13px] font-semibold text-tx">{market.nameKo}</span>
-              </div>
-              <div className="text-[11px] text-dim">{count}종목</div>
-              <div
-                className={`mt-2 font-mono text-[15px] font-bold tabular-nums ${
-                  avgPct >= 0 ? "text-up" : "text-down"
-                }`}
-              >
-                {avgPct >= 0 ? "▲" : "▼"} {fmtSigned(avgPct)}%
-              </div>
-              <div className="mt-1 flex gap-2 text-[10px]">
-                <span className="text-up">▲{up}</span>
-                <span className="text-down">▼{down}</span>
-              </div>
-            </Link>
-          );
-        })}
-      </div>
 
       <div className="grid gap-6 lg:grid-cols-3">
         <MoverCard title="상승 TOP 5" stocks={gainers} />

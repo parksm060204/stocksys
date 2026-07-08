@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import type { Stock } from "@/lib/types";
 import { fmtPrice } from "@/lib/format";
-import { createBrowserClient } from '@supabase/ssr';
+import { createClient } from "@/lib/supabase/client";
 
 export default function OrderEntry({ stock }: { stock: Stock }) {
   const [side, setSide] = useState<"buy" | "sell">("buy");
@@ -12,10 +12,7 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
   const [stockId, setStockId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  const supabase = createBrowserClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-  );
+  const supabase = createClient();
 
   useEffect(() => {
     const initStock = async () => {

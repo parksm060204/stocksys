@@ -207,9 +207,12 @@ export class MarketEngine {
 
   private async tick() {
     try {
-      const currentKSTHour = (new Date().getUTCHours() + 9) % 24;
-      if (currentKSTHour < 18 || currentKSTHour >= 22.5) {
-        return; 
+      const isMarketHoursOnly = process.env.MARKET_HOURS_ONLY === 'true';
+      if (isMarketHoursOnly) {
+        const currentKSTHour = (new Date().getUTCHours() + 9) % 24;
+        if (currentKSTHour < 18 || currentKSTHour >= 22.5) {
+          return; 
+        }
       }
 
       // 틱 시작 시 이벤트 수명 차감

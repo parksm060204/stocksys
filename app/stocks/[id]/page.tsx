@@ -13,7 +13,50 @@ import BondDetailPanel from "@/app/components/BondDetailPanel";
 import { createClient } from "@/lib/supabase/server";
 import type { Stock } from "@/lib/types";
 
-export const revalidate = 0; // Disable static generation so it always fetches live data
+export const revalidate = 0;
+
+// 티커 기준 현실 상장일 (KRX + NYSE/NASDAQ 구분 없이 주요 종목)
+const REAL_IPO_DATES: Record<string, string> = {
+  // 한국
+  "005930": "1975-06-11", // 삼성전자
+  "000660": "1996-12-26", // SK하이닙스
+  "035420": "2008-11-28", // NAVER
+  "005380": "1994-11-16", // 현대자
+  "000270": "2000-12-29", // 기아자
+  "035720": "2010-11-11", // 카카오
+  "051910": "2003-02-03", // LG화학
+  "006400": "1994-08-08", // 삼성SDI
+  "068270": "2015-12-15", // 셀트리온
+  "207940": "2021-01-22", // 삼성바이오로직
+  // 미국
+  AAPL: "1980-12-12",
+  MSFT: "1986-03-13",
+  AMZN: "1997-05-15",
+  GOOGL: "2004-08-19",
+  META: "2012-05-18",
+  TSLA: "2010-06-29",
+  NVDA: "1999-01-22",
+  NFLX: "2002-05-23",
+  AMD: "1972-09-27",
+  INTC: "1971-10-13",
+  JPM: "1969-01-01",
+  BAC: "1969-01-01",
+  GS: "1999-05-04",
+  BRK: "1980-01-01",
+  // 유럽
+  ASML: "1995-03-30",
+  SAP: "1998-08-03",
+  LVMH: "1989-01-01",
+  NESN: "1994-01-01",
+  NOVO: "2023-09-01",
+};
+
+function formatListedAt(ticker: string, dbDate: string | null): string {
+  const real = REAL_IPO_DATES[ticker.toUpperCase()];
+  if (real) return real;
+  if (dbDate) return dbDate.slice(0, 10);
+  return "-";
+}
 
 export default async function StockDetail({
   params,
@@ -43,7 +86,7 @@ export default async function StockDetail({
     relevanceWeight: 1,
     targetPrice: row.current_price,
     isCore: false,
-    listedAt: new Date().toISOString(),
+    listedAt: formatListedAt(row.ticker, row.listed_at),
     financials: row.financials || null,
   };
 
@@ -108,7 +151,7 @@ export default async function StockDetail({
         </div>
 
         <div className="col-span-12 lg:col-span-5 space-y-5">
-          <TickChart ticker={stock.ticker} />
+          <TickChart ticker={stock.ticker} currentPrice={stock.currentPrice} />
           <div className="grid grid-cols-4 border-t border-border text-center text-[11px]">
             <Cell label="시가" value={fmtPrice(stock.openPrice, stock.market)} />
             <Cell label="고가" value={fmtPrice(stock.high, stock.market)} tone="up" />

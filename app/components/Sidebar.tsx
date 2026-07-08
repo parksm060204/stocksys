@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useState, useCallback, useEffect } from "react";
 import { MARKETS } from "@/lib/constants";
-import { createBrowserClient } from "@supabase/ssr";
+import { createClient } from "@/lib/supabase/client";
 
 const ADMIN_PASSWORD = "dlcks123";
 
@@ -28,10 +28,7 @@ export default function Sidebar() {
   const [unlockedFeatures, setUnlockedFeatures] = useState<string[]>([]);
   const [userId, setUserId] = useState<string | null>(null);
 
-  const supabase = createBrowserClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-  );
+  const supabase = createClient();
 
   useEffect(() => {
     const fetchProfile = async () => {

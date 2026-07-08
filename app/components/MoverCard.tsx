@@ -4,31 +4,16 @@ import { useState, useEffect } from "react";
 import Link from "next/link";
 import { change, fmtPrice, fmtSigned } from "@/lib/format";
 import type { Stock } from "@/lib/types";
-import { LP_ENGINE } from "@/lib/mock-data";
 
 export default function MoverCard({ title, stocks }: { title: string; stocks: Stock[] }) {
-  const [livePrices, setLivePrices] = useState<Record<string, number>>(() => {
-    const init: Record<string, number> = {};
-    for (const s of stocks) init[s.id] = s.currentPrice;
-    return init;
-  });
+  const [livePrices, setLivePrices] = useState<Record<string, number>>({});
 
   useEffect(() => {
-    const interval = setInterval(() => {
-      setLivePrices((prev) => {
-        let hasChanges = false;
-        const next = { ...prev };
-        for (const s of stocks) {
-          const state = LP_ENGINE.states.get(s.id);
-          if (state && state.currentPrice !== next[s.id]) {
-            next[s.id] = state.currentPrice;
-            hasChanges = true;
-          }
-        }
-        return hasChanges ? next : prev;
-      });
-    }, 500); // 0.5s polling
-    return () => clearInterval(interval);
+    const next: Record<string, number> = {};
+    for (const s of stocks) {
+      next[s.id] = s.currentPrice;
+    }
+    setLivePrices(next);
   }, [stocks]);
 
   return (

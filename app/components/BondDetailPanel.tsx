@@ -2,8 +2,8 @@
 
 import { useState, useEffect } from "react";
 import type { Stock } from "@/lib/types";
-import { getMarketData } from "@/lib/mock-data";
 import { calcYTM, calcMaturityProfit, fmtYTM, RISK_CATEGORY_KO } from "@/lib/bond-utils";
+import { createBrowserClient } from "@supabase/ssr";
 
 /**
  * 채권 상세 정보 패널
@@ -15,15 +15,31 @@ export default function BondDetailPanel({ stock }: { stock: Stock }) {
   const bm = stock.bondMeta;
   const [currentPrice, setCurrentPrice] = useState(stock.currentPrice);
   const [qty, setQty] = useState(10);
+  
+  const supabase = createBrowserClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+  );
 
-  // 실시간 가격 폴링 (YTM 동기화)
+  // 실시간 가격 구독 (YTM 동기화)
   useEffect(() => {
-    const id = setInterval(() => {
-      const data = getMarketData(stock);
-      if (data?.price) setCurrentPrice(data.price);
-    }, 500);
-    return () => clearInterval(id);
-  }, [stock]);
+    const channel = supabase
+      .channel(`realtime_bond_price_${stock.id}`)
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'stocks', filter: `id=eq.${stock.id}` },
+        (payload) => {
+          if (payload.new.current_price) {
+            setCurrentPrice(payload.new.current_price);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [stock.id, supabase]);
 
   if (!bm) return null;
 

@@ -1,22 +1,46 @@
 import Link from "next/link";
-import { MARKETS, NEWS, STOCKS, getStocksByMarket } from "@/lib/mock-data";
 import { change, fmtSigned } from "@/lib/format";
-import { getKOSPIIndex, getSP50Index, getEuroStoxx50Index } from "@/lib/index";
-import type { MarketIndex } from "@/lib/index";
+import { getKOSPIIndex, getSP50Index, getEuroStoxx50Index, type MarketIndex } from "@/lib/index";
 import MoverCard from "@/app/components/MoverCard";
 import EcoTerminal from "@/app/components/EcoTerminal";
+import { createClient } from "@/lib/supabase/server";
+import { MARKETS } from "@/lib/constants";
+import type { Stock } from "@/lib/types";
 
-export default function Home() {
-  const kospi = getKOSPIIndex();
-  const sp50 = getSP50Index();
-  const euroStoxx50 = getEuroStoxx50Index();
+export const revalidate = 0; // Disable caching to fetch live data from Supabase
+
+export default async function Home() {
+  const supabase = await createClient();
+  
+  // Fetch only necessary columns for the home page (we need all stocks to calculate index and top movers)
+  const [{ data: stocksData }, { data: newsData }] = await Promise.all([
+    supabase.from('stocks').select('id, name, ticker, market, sector, current_price, previous_close'),
+    supabase.from('news_v2').select('*').order('created_at', { ascending: false }).limit(5)
+  ]);
+    
+  const STOCKS: Stock[] = (stocksData || []).map(row => ({
+    id: row.id,
+    name: row.name,
+    ticker: row.ticker,
+    market: row.market,
+    sector: row.sector,
+    currentPrice: row.current_price,
+    previousClose: row.previous_close,
+    marketCap: row.current_price * 1000000, // placeholder since we didn't fetch shares_outstanding
+  } as Stock));
+
+  const NEWS = newsData || [];
+
+  const kospi = getKOSPIIndex(STOCKS);
+  const sp50 = getSP50Index(STOCKS);
+  const euroStoxx50 = getEuroStoxx50Index(STOCKS);
 
   const marketStats = MARKETS.map((m) => {
-    const list = getStocksByMarket(m.id);
+    const list = STOCKS.filter(s => s.market === m.id);
     const up = list.filter((s) => s.currentPrice > s.previousClose).length;
     const down = list.filter((s) => s.currentPrice < s.previousClose).length;
-    const avgPct =
-      list.reduce((a, s) => a + change(s.currentPrice, s.previousClose).percent, 0) / list.length;
+    const avgPct = list.length > 0 ?
+      list.reduce((a, s) => a + change(s.currentPrice, s.previousClose).percent, 0) / list.length : 0;
     return { market: m, count: list.length, up, down, avgPct };
   });
 
@@ -100,19 +124,17 @@ export default function Home() {
             </Link>
           </div>
           <div className="divide-y divide-border">
-            {NEWS.slice(0, 5).map((n) => (
+            {NEWS.map((n: any) => (
               <Link key={n.id} href="/news" className="block px-4 py-3 hover:bg-panel2/60">
                 <div className="flex items-center gap-2">
                   <span
                     className={`rounded px-1.5 py-px text-[9px] font-semibold ${
-                      n.source === "AI"
+                      n.publisher?.includes("블룸버그") || n.publisher?.includes("로이터")
                         ? "bg-accent/15 text-accent"
-                        : n.source === "DISCLOSURE"
-                          ? "bg-warn/15 text-warn"
-                          : "bg-up/15 text-up"
+                        : "bg-up/15 text-up"
                     }`}
                   >
-                    {n.source}
+                    {n.publisher || "언론사"}
                   </span>
                   <span
                     className={`text-[9px] ${
@@ -122,10 +144,11 @@ export default function Home() {
                     {n.sentiment === "positive" ? "호재" : n.sentiment === "negative" ? "악재" : "중립"}
                   </span>
                 </div>
-                <p className="mt-1 line-clamp-2 text-[12px] text-tx">{n.title}</p>
+                <p className="mt-1 line-clamp-2 text-[12px] text-tx">{n.headline}</p>
               </Link>
             ))}
           </div>
+
         </div>
       </div>
     </div>

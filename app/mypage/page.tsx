@@ -1,16 +1,38 @@
 import Link from "next/link";
-import { HOLDINGS, getStock } from "@/lib/mock-data";
 import { fmtPrice } from "@/lib/format";
+import { createClient } from "@/lib/supabase/server";
 
-export default function MyPage() {
+const HOLDINGS = [
+  { stockId: "d-core-1", ticker: "NOVA", name: "노바 에너지", quantity: 20, avgPrice: 298_000, currentPrice: 312_000 },
+  { stockId: "d-core-2", ticker: "HELIOS", name: "헬리오스 반도체", quantity: 50, avgPrice: 172_000, currentPrice: 184_500 },
+  { stockId: "d-core-4", ticker: "GAIA", name: "가이아 바이오", quantity: 100, avgPrice: 61_000, currentPrice: 58_300 },
+  { stockId: "c-WTI", ticker: "WTI", name: "WTI Crude Oil", quantity: 200, avgPrice: 76.5, currentPrice: 78.4 },
+];
+
+export const revalidate = 0; // Disable static generation so it always fetches live data
+
+export default async function MyPage() {
+  const supabase = await createClient();
+  const stockIds = HOLDINGS.map(h => h.stockId);
+  
+  const { data: stocksData } = await supabase
+    .from('stocks')
+    .select('id, market, current_price')
+    .in('id', stockIds);
+
+  const stockMap = new Map((stocksData || []).map(s => [s.id, s]));
+
   const rows = HOLDINGS.map((h) => {
-    const stock = getStock(h.stockId);
+    const stock = stockMap.get(h.stockId);
     const market = stock?.market ?? "domestic";
-    const value = h.currentPrice * h.quantity;
+    const currentPrice = stock?.current_price ?? h.currentPrice;
+    
+    const value = currentPrice * h.quantity;
     const cost = h.avgPrice * h.quantity;
     const pnl = value - cost;
     const pnlPct = cost !== 0 ? (pnl / cost) * 100 : 0;
-    return { ...h, market, value, cost, pnl, pnlPct };
+    
+    return { ...h, currentPrice, market, value, cost, pnl, pnlPct };
   });
 
   const totalValue = rows.reduce((a, r) => a + r.value, 0);

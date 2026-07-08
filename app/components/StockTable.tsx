@@ -5,31 +5,16 @@ import Link from "next/link";
 import type { Stock } from "@/lib/types";
 import { change, fmtCap, fmtPrice, fmtVolume, fmtSigned } from "@/lib/format";
 import { ChangeBadge } from "./PriceTag";
-import { LP_ENGINE } from "@/lib/mock-data";
 
 export default function StockTable({ stocks }: { stocks: Stock[] }) {
-  const [livePrices, setLivePrices] = useState<Record<string, number>>(() => {
-    const init: Record<string, number> = {};
-    for (const s of stocks) init[s.id] = s.currentPrice;
-    return init;
-  });
+  const [livePrices, setLivePrices] = useState<Record<string, number>>({});
 
   useEffect(() => {
-    const interval = setInterval(() => {
-      setLivePrices((prev) => {
-        let hasChanges = false;
-        const next = { ...prev };
-        for (const s of stocks) {
-          const state = LP_ENGINE.states.get(s.id);
-          if (state && state.currentPrice !== next[s.id]) {
-            next[s.id] = state.currentPrice;
-            hasChanges = true;
-          }
-        }
-        return hasChanges ? next : prev;
-      });
-    }, 500); // 0.5초 간격으로 리스트 업데이트 (성능 고려)
-    return () => clearInterval(interval);
+    const next: Record<string, number> = {};
+    for (const s of stocks) {
+      next[s.id] = s.currentPrice;
+    }
+    setLivePrices(next);
   }, [stocks]);
 
   return (

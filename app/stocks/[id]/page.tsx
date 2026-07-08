@@ -1,6 +1,5 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { STOCKS, getStock, getChatMessages, NEWS } from "@/lib/mock-data";
 import { change, fmtPrice, fmtSigned, fmtVolume, fmtCap } from "@/lib/format";
 import { ChangeBadge } from "@/app/components/PriceTag";
 import RealtimePriceHeader from "@/app/components/RealtimePriceHeader";
@@ -11,10 +10,10 @@ import OrderEntry from "@/app/components/OrderEntry";
 import TickChart from "@/app/components/TickChart";
 import FinancialPanel from "@/app/components/FinancialPanel";
 import BondDetailPanel from "@/app/components/BondDetailPanel";
+import { createClient } from "@/lib/supabase/server";
+import type { Stock } from "@/lib/types";
 
-export function generateStaticParams() {
-  return STOCKS.map((s) => ({ id: s.id }));
-}
+export const revalidate = 0; // Disable static generation so it always fetches live data
 
 export default async function StockDetail({
   params,
@@ -22,15 +21,46 @@ export default async function StockDetail({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const stock = getStock(id);
-  if (!stock) notFound();
+  const supabase = await createClient();
+
+  const { data: row } = await supabase.from('stocks').select('*').eq('id', id).single();
+  if (!row) notFound();
+
+  const stock: Stock = {
+    id: row.id,
+    name: row.name,
+    ticker: row.ticker,
+    market: row.market,
+    sector: row.sector,
+    currentPrice: row.current_price,
+    previousClose: row.previous_close,
+    description: row.description || "",
+    marketCap: row.current_price * 1000000, // placeholder
+    openPrice: row.previous_close,
+    high: row.current_price,
+    low: row.current_price,
+    volume: 0,
+    relevanceWeight: 1,
+    targetPrice: row.current_price,
+    isCore: false,
+    listedAt: new Date().toISOString(),
+    financials: row.financials || null,
+  };
 
   const { percent, amount, dir } = change(stock.currentPrice, stock.previousClose);
   const color = dir === "up" ? "text-up" : dir === "down" ? "text-down" : "text-muted";
-  const relatedNews = NEWS.filter(
-    (n) => n.sector === stock.sector || (n.sector && stock.sector.includes(n.sector)),
-  );
-  const messages = getChatMessages(stock.id);
+  
+  // Fetch news related to this stock or its sector
+  const { data: newsData } = await supabase
+    .from('news_v2')
+    .select('*')
+    .or(`sector.eq.${stock.sector},headline.ilike.%${stock.name}%,content.ilike.%${stock.name}%`)
+    .order('created_at', { ascending: false })
+    .limit(5);
+  const relatedNews = newsData || [];
+
+  // For now, chat messages are empty or we can fetch them if there's a chat table
+  const messages: any[] = [];
 
   const marketMap: Record<string, { href: string; label: string }> = {
     domestic: { href: "/stocks?tab=kospi", label: "국내주식" },
@@ -122,17 +152,17 @@ export default async function StockDetail({
                     <div className="flex items-center gap-2">
                       <span
                         className={`rounded px-1.5 py-px text-[9px] font-semibold ${
-                          n.source === "AI" ? "bg-accent/15 text-accent" : n.source === "DISCLOSURE" ? "bg-warn/15 text-warn" : "bg-up/15 text-up"
+                          n.publisher?.includes("블룸버그") || n.publisher?.includes("로이터") ? "bg-accent/15 text-accent" : "bg-up/15 text-up"
                         }`}
                       >
-                        {n.source}
+                        {n.publisher || "언론사"}
                       </span>
                       <span className={`text-[10px] ${n.sentiment === "positive" ? "text-up" : n.sentiment === "negative" ? "text-down" : "text-dim"}`}>
                         {n.sentiment === "positive" ? "호재" : n.sentiment === "negative" ? "악재" : "중립"}
                       </span>
                     </div>
-                    <p className="mt-1 text-[12px] text-tx">{n.title}</p>
-                    <p className="mt-0.5 line-clamp-2 text-[11px] text-muted">{n.body}</p>
+                    <p className="mt-1 text-[12px] text-tx">{n.headline}</p>
+                    <p className="mt-0.5 line-clamp-2 text-[11px] text-muted">{n.content}</p>
                   </div>
                 ))}
               </div>

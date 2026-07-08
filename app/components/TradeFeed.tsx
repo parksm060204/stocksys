@@ -2,18 +2,60 @@
 
 import { useEffect, useState } from "react";
 import type { Stock, Trade } from "@/lib/types";
-import { getRecentTrades } from "@/lib/mock-data";
 import { fmtPrice } from "@/lib/format";
+import { createClient } from "@/lib/supabase/client";
 
 export default function TradeFeed({ stock }: { stock: Stock }) {
   const [trades, setTrades] = useState<Trade[]>([]);
+  const supabase = createClient();
 
   useEffect(() => {
-    const tick = () => setTrades(getRecentTrades(stock, 18));
-    tick();
-    const t = setInterval(tick, 3000);
-    return () => clearInterval(t);
-  }, [stock]);
+    const fetchTrades = async () => {
+      const { data } = await supabase
+        .from('trades')
+        .select('*')
+        .eq('stock_id', stock.id)
+        .order('created_at', { ascending: false })
+        .limit(18);
+
+      if (data) {
+        setTrades(data.map(t => ({
+          id: t.id,
+          stockId: t.stock_id,
+          price: t.price,
+          size: t.size,
+          side: t.side,
+          time: new Date(t.created_at).toLocaleTimeString([], { hour12: false }),
+        } as Trade)));
+      }
+    };
+
+    fetchTrades();
+
+    const channel = supabase
+      .channel(`trades_feed_${stock.id}`)
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'trades', filter: `stock_id=eq.${stock.id}` },
+        (payload) => {
+          const t = payload.new;
+          const newTrade: Trade = {
+            id: t.id,
+            stockId: t.stock_id,
+            price: t.price,
+            size: t.size,
+            side: t.side,
+            time: new Date(t.created_at).toLocaleTimeString([], { hour12: false }),
+          };
+          setTrades(prev => [newTrade, ...prev].slice(0, 18));
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [stock.id, supabase]);
 
   return (
     <div className="rounded-xl border border-border bg-panel">

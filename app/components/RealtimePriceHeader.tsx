@@ -1,29 +1,36 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { LP_ENGINE } from "@/lib/mock-data";
 import { change, fmtPrice, fmtSigned } from "@/lib/format";
 import type { Stock } from "@/lib/types";
 import { PriceTag } from "@/app/components/PriceTag";
+import { createClient } from "@/lib/supabase/client";
 
 export default function RealtimePriceHeader({ stock }: { stock: Stock }) {
   const [currentPrice, setCurrentPrice] = useState(stock.currentPrice);
   const lastDisplayedPrice = useRef(stock.currentPrice);
+  const supabase = createClient();
 
   useEffect(() => {
-    const checkInterval = setInterval(() => {
-      // getLPEngine() state is mutated globally by OrderBookPanel ticking
-      const state = LP_ENGINE.states.get(stock.id);
-      if (!state) return;
+    const channel = supabase
+      .channel(`realtime_price_${stock.id}`)
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'stocks', filter: `id=eq.${stock.id}` },
+        (payload) => {
+          const newPrice = payload.new.current_price;
+          if (newPrice !== lastDisplayedPrice.current) {
+            setCurrentPrice(newPrice);
+            lastDisplayedPrice.current = newPrice;
+          }
+        }
+      )
+      .subscribe();
 
-      if (state.currentPrice !== lastDisplayedPrice.current) {
-        setCurrentPrice(state.currentPrice);
-        lastDisplayedPrice.current = state.currentPrice;
-      }
-    }, 100);
-
-    return () => clearInterval(checkInterval);
-  }, [stock.id]);
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [stock.id, supabase]);
 
   const { percent, amount, dir } = change(currentPrice, stock.previousClose);
   const color = dir === "up" ? "text-up" : dir === "down" ? "text-down" : "text-muted";

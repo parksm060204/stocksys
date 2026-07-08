@@ -12,7 +12,7 @@ export class CommercialBankAgent {
   }
 
   public executeArbitrage(currentMarket: any, adminBaseRate: number) {
-    const orders = [];
+    const orders: any[] = [];
     const now = Date.now();
 
     if (this.bot.lastSweepTime && this.bot.cooldownMs) {

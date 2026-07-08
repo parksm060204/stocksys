@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react";
 import type { Stock } from "@/lib/types";
-import { LP_ENGINE } from "@/lib/mock-data";
 import { fmtPrice } from "@/lib/format";
 import { createBrowserClient } from '@supabase/ssr';
 
@@ -27,7 +26,7 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
   }, [stock.ticker, supabase]);
 
   const total = (Number(price) || 0) * (Number(qty) || 0);
-  const emergency = LP_ENGINE?.emergencyClosed;
+  const emergency = false;
 
   const handleOrder = async () => {
     if (!stockId || loading) return;

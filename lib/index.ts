@@ -1,5 +1,4 @@
 import type { Stock, MarketId } from "./types";
-import { STOCKS, LP_ENGINE } from "./mock-data";
 import { fmtSigned } from "./format";
 
 export interface MarketIndex {
@@ -7,12 +6,12 @@ export interface MarketIndex {
   name: string;
   nameKo: string;
   market: MarketId;
-  baseValue: number;       // 기준 시점 지수
-  currentValue: number;    // 현재 지수
-  previousClose: number;   // 전일 지수
-  changePct: number;       // 등락률
-  changeAmount: number;    // 등락 폭
-  totalMarketCap: number;  // 구성 종목 총시총
+  baseValue: number;
+  currentValue: number;
+  previousClose: number;
+  changePct: number;
+  changeAmount: number;
+  totalMarketCap: number;
   constituentCount: number;
   topGainers: { name: string; ticker: string; changePct: number }[];
   topLosers: { name: string; ticker: string; changePct: number }[];
@@ -22,26 +21,21 @@ function calcIndex(stocks: Stock[], baseValue: number): {
   indexValue: number;
   totalCap: number;
 } {
-  // 시가총액 가중 지수
-  // 기준 시점의 총시총 대비 현재 총시총의 비율 × 기준 지수
-  const totalCap = stocks.reduce((sum, s) => sum + s.marketCap, 0);
+  const totalCap = stocks.reduce((sum, s) => sum + (s.marketCap || 0), 0);
 
-  // 각 종목의 시총 변화율을 가중 평균
-  // previousClose 기준으로 현재 가격의 가중 변화율 계산
   let weightedChange = 0;
   let totalPrevCap = 0;
   for (const s of stocks) {
-    const livePrice = LP_ENGINE?.states.get(s.id)?.currentPrice ?? s.currentPrice;
-    const prevCap = s.previousClose * (s.marketCap / s.currentPrice);
+    // We assume currentPrice is already updated from DB
+    const prevCap = s.previousClose * ((s.marketCap || 0) / (s.currentPrice || 1));
     totalPrevCap += prevCap;
-    weightedChange += (livePrice - s.previousClose) / s.previousClose * prevCap;
+    weightedChange += (s.currentPrice - s.previousClose) / s.previousClose * prevCap;
   }
   let indexChange = totalPrevCap > 0 ? weightedChange / totalPrevCap : 0;
   
-  // Enforce index movement boundaries: Novel events [-30%, +20%], Basic news [-10%, +10%]
-  const isNovel = LP_ENGINE?.activeEventIsNovel;
-  const maxLimit = isNovel ? 0.20 : 0.10;
-  const minLimit = isNovel ? -0.30 : -0.10;
+  // Hard limits
+  const maxLimit = 0.20;
+  const minLimit = -0.30;
   indexChange = Math.max(minLimit, Math.min(maxLimit, indexChange));
 
   const indexValue = baseValue * (1 + indexChange);
@@ -49,18 +43,13 @@ function calcIndex(stocks: Stock[], baseValue: number): {
   return { indexValue: +indexValue.toFixed(2), totalCap };
 }
 
-function getConstituents(market: MarketId): Stock[] {
-  return STOCKS.filter((s) => s.market === market);
-}
-
 function getMovers(stocks: Stock[], count: number, direction: "up" | "down") {
   const movers = stocks
     .map((s) => {
-      const livePrice = LP_ENGINE?.states.get(s.id)?.currentPrice ?? s.currentPrice;
       return {
         name: s.name,
         ticker: s.ticker,
-        changePct: ((livePrice - s.previousClose) / s.previousClose) * 100,
+        changePct: ((s.currentPrice - s.previousClose) / s.previousClose) * 100,
       };
     })
     .sort((a, b) => (direction === "up" ? b.changePct - a.changePct : a.changePct - b.changePct));
@@ -68,10 +57,10 @@ function getMovers(stocks: Stock[], count: number, direction: "up" | "down") {
   return movers.slice(0, count);
 }
 
-export function getKOSPIIndex(): MarketIndex {
-  const stocks = getConstituents("domestic");
-  const baseValue = 2500; // 가상 KOSPI 기준 지수
-  const { indexValue, totalCap } = calcIndex(stocks, baseValue);
+export function getKOSPIIndex(stocks: Stock[]): MarketIndex {
+  const domesticStocks = stocks.filter((s) => s.market === "domestic");
+  const baseValue = 2500;
+  const { indexValue, totalCap } = calcIndex(domesticStocks, baseValue);
 
   const previousClose = baseValue;
   const changeAmount = indexValue - previousClose;
@@ -88,16 +77,16 @@ export function getKOSPIIndex(): MarketIndex {
     changePct,
     changeAmount,
     totalMarketCap: totalCap,
-    constituentCount: stocks.length,
-    topGainers: getMovers(stocks, 5, "up"),
-    topLosers: getMovers(stocks, 5, "down"),
+    constituentCount: domesticStocks.length,
+    topGainers: getMovers(domesticStocks, 5, "up"),
+    topLosers: getMovers(domesticStocks, 5, "down"),
   };
 }
 
-export function getSP50Index(): MarketIndex {
-  const stocks = getConstituents("overseas");
-  const baseValue = 5000; // 가상 S&P 50 기준 지수
-  const { indexValue, totalCap } = calcIndex(stocks, baseValue);
+export function getSP50Index(stocks: Stock[]): MarketIndex {
+  const overseasStocks = stocks.filter((s) => s.market === "overseas");
+  const baseValue = 5000;
+  const { indexValue, totalCap } = calcIndex(overseasStocks, baseValue);
 
   const previousClose = baseValue;
   const changeAmount = indexValue - previousClose;
@@ -114,16 +103,16 @@ export function getSP50Index(): MarketIndex {
     changePct,
     changeAmount,
     totalMarketCap: totalCap,
-    constituentCount: stocks.length,
-    topGainers: getMovers(stocks, 5, "up"),
-    topLosers: getMovers(stocks, 5, "down"),
+    constituentCount: overseasStocks.length,
+    topGainers: getMovers(overseasStocks, 5, "up"),
+    topLosers: getMovers(overseasStocks, 5, "down"),
   };
 }
 
-export function getEuroStoxx50Index(): MarketIndex {
-  const stocks = getConstituents("europe");
-  const baseValue = 4000; // 가상 Euro Stoxx 50 기준 지수
-  const { indexValue, totalCap } = calcIndex(stocks, baseValue);
+export function getEuroStoxx50Index(stocks: Stock[]): MarketIndex {
+  const europeStocks = stocks.filter((s) => s.market === "europe");
+  const baseValue = 4000;
+  const { indexValue, totalCap } = calcIndex(europeStocks, baseValue);
 
   const previousClose = baseValue;
   const changeAmount = indexValue - previousClose;
@@ -140,14 +129,14 @@ export function getEuroStoxx50Index(): MarketIndex {
     changePct,
     changeAmount,
     totalMarketCap: totalCap,
-    constituentCount: stocks.length,
-    topGainers: getMovers(stocks, 5, "up"),
-    topLosers: getMovers(stocks, 5, "down"),
+    constituentCount: europeStocks.length,
+    topGainers: getMovers(europeStocks, 5, "up"),
+    topLosers: getMovers(europeStocks, 5, "down"),
   };
 }
 
-export function getAllIndices(): MarketIndex[] {
-  return [getKOSPIIndex(), getSP50Index(), getEuroStoxx50Index()];
+export function getAllIndices(stocks: Stock[]): MarketIndex[] {
+  return [getKOSPIIndex(stocks), getSP50Index(stocks), getEuroStoxx50Index(stocks)];
 }
 
 export function formatIndex(index: MarketIndex): string {
@@ -155,4 +144,4 @@ export function formatIndex(index: MarketIndex): string {
   return `${index.nameKo}: ${index.currentValue.toLocaleString()} ${dir} ${fmtSigned(index.changePct)}%`;
 }
 
-export { calcIndex, getConstituents, getMovers };
+export { calcIndex, getMovers };

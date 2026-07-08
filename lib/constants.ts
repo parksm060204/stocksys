@@ -1,0 +1,60 @@
+import type { Market } from "./types";
+
+export const MARKETS: Market[] = [
+  {
+    id: "domestic",
+    name: "Domestic Stocks",
+    nameKo: "국내 주식",
+    icon: "🇰🇷",
+    description: "소설 무대의 중심 기업들 (총시총 4000조)",
+    unit: "₩",
+  },
+  {
+    id: "overseas",
+    name: "US Stocks",
+    nameKo: "미국 주식",
+    icon: "🇺🇸",
+    description: "미국 다국적 기업 (총시총 5경)",
+    unit: "$",
+  },
+  {
+    id: "europe",
+    name: "European Stocks",
+    nameKo: "유럽 주식",
+    icon: "🇪🇺",
+    description: "유럽 다국적 기업 (총시총 3경)",
+    unit: "€",
+  },
+  {
+    id: "bonds",
+    name: "Government Bonds",
+    nameKo: "주요국 채권",
+    icon: "🏛️",
+    description: "거시경제의 안전 자산",
+    unit: "",
+  },
+  {
+    id: "options",
+    name: "Options",
+    nameKo: "옵션",
+    icon: "⚙️",
+    description: "고위험 파생상품·헤지 수단",
+    unit: "P",
+  },
+  {
+    id: "commodities",
+    name: "Commodities",
+    nameKo: "원자재",
+    icon: "🛢️",
+    description: "금·은·원유 등 실물 자산",
+    unit: "$",
+  },
+  {
+    id: "etf",
+    name: "ETFs / Indices",
+    nameKo: "지수/ETF",
+    icon: "📈",
+    description: "시장 전체를 추종하는 지수",
+    unit: "₩",
+  },
+];

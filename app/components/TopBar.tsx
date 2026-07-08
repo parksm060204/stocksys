@@ -4,8 +4,6 @@ import { useEffect, useState } from "react";
 import { createBrowserClient } from "@supabase/ssr";
 import type { User } from "@supabase/supabase-js";
 
-import { LP_ENGINE } from "@/lib/mock-data";
-
 function marketOpen(d: Date): boolean {
   const mins = d.getHours() * 60 + d.getMinutes();
   return mins >= 18 * 60 && mins < 22 * 60 + 30;
@@ -48,7 +46,7 @@ export default function TopBar() {
     };
   }, []);
 
-  const emergency = LP_ENGINE?.emergencyClosed;
+  const emergency = false; // Emergency closed logic removed temporarily
   const open = now ? (marketOpen(now) && !emergency) : false;
   const timeStr = now
     ? now.toLocaleTimeString("ko-KR", {

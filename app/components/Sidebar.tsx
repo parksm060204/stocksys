@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useState, useCallback } from "react";
-import { MARKETS } from "@/lib/mock-data";
+import { MARKETS } from "@/lib/constants";
 
 const ADMIN_PASSWORD = "dlcks123";
 

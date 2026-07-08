@@ -54,11 +54,11 @@ export default function FinancialPanel({ stock }: { stock: Stock }) {
                   <td className="px-4 py-2 font-mono">
                     {h.year} <span className="text-[9px] text-dim">({h.type === "ACTUAL" ? "확정" : h.type === "PRELIMINARY" ? "잠정" : "컨센서스"})</span>
                   </td>
-                  <td className="px-4 py-2 text-right font-mono">{fmtCap(h.operatingProfit, stock.market)}</td>
+                  <td className="px-4 py-2 text-right font-mono">{fmtCap(h.operatingProfit)}</td>
                   <td className={`px-4 py-2 text-right font-mono ${opColor}`}>
                     {h.opYoY > 0 ? "+" : ""}{h.opYoY.toFixed(1)}%
                   </td>
-                  <td className="px-4 py-2 text-right font-mono">{fmtCap(h.netIncome, stock.market)}</td>
+                  <td className="px-4 py-2 text-right font-mono">{fmtCap(h.netIncome)}</td>
                   <td className={`px-4 py-2 text-right font-mono ${niColor}`}>
                     {h.niYoY > 0 ? "+" : ""}{h.niYoY.toFixed(1)}%
                   </td>

@@ -1,15 +1,14 @@
 import { notFound, redirect } from "next/navigation";
 import Link from "next/link";
-import { MARKETS, getStocksByMarket } from "@/lib/mock-data";
+import { MARKETS } from "@/lib/constants";
 import { change, fmtSigned } from "@/lib/format";
 import StockTable from "@/app/components/StockTable";
-import type { MarketId } from "@/lib/types";
+import type { MarketId, Stock } from "@/lib/types";
+import { createClient } from "@/lib/supabase/server";
 
 const VALID = new Set(MARKETS.map((m) => m.id));
 
-export function generateStaticParams() {
-  return MARKETS.map((m) => ({ market: m.id }));
-}
+export const revalidate = 0; // Disable static generation so it always fetches live data
 
 export default async function MarketPage({
   params,
@@ -25,13 +24,29 @@ export default async function MarketPage({
 
   const id = market as MarketId;
   const meta = MARKETS.find((m) => m.id === id)!;
-  const stocks = getStocksByMarket(id);
+  
+  const supabase = await createClient();
+  const { data: stocksData } = await supabase
+    .from('stocks')
+    .select('id, name, ticker, market, sector, current_price, previous_close')
+    .eq('market', id);
+
+  const stocks: Stock[] = (stocksData || []).map(row => ({
+    id: row.id,
+    name: row.name,
+    ticker: row.ticker,
+    market: row.market,
+    sector: row.sector,
+    currentPrice: row.current_price,
+    previousClose: row.previous_close,
+    marketCap: row.current_price * 1000000,
+  } as Stock));
 
   const up = stocks.filter((s) => s.currentPrice > s.previousClose).length;
   const down = stocks.filter((s) => s.currentPrice < s.previousClose).length;
   const flat = stocks.length - up - down;
-  const avgPct =
-    stocks.reduce((a, s) => a + change(s.currentPrice, s.previousClose).percent, 0) / stocks.length;
+  const avgPct = stocks.length > 0 ?
+    stocks.reduce((a, s) => a + change(s.currentPrice, s.previousClose).percent, 0) / stocks.length : 0;
 
   return (
     <div className="mx-auto max-w-7xl px-6 py-6">

@@ -25,10 +25,16 @@ export class RealWorldFetcher {
     try {
       console.log("Fetching real-world macro data from Yahoo Finance...");
       
-      const [tnxResult, vixResult] = await Promise.all([
-        yahooFinance.quote('^TNX').catch(() => null),
-        yahooFinance.quote('^VIX').catch(() => null)
-      ]);
+      let tnxResult: any = null;
+      let vixResult: any = null;
+      
+      try {
+        tnxResult = await (yahooFinance.quote as any)('^TNX');
+      } catch (e) {}
+
+      try {
+        vixResult = await (yahooFinance.quote as any)('^VIX');
+      } catch (e) {}
 
       const tnx = tnxResult?.regularMarketPrice || 4.2; // Default fallback 4.2%
       const vix = vixResult?.regularMarketPrice || 20.0; // Default fallback 20.0

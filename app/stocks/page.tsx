@@ -3,12 +3,12 @@
 import { useState, useEffect, Suspense } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { getStocksByMarket } from "@/lib/mock-data";
 import { change, fmtSigned } from "@/lib/format";
 import { getKOSPIIndex, getSP50Index, getEuroStoxx50Index } from "@/lib/index";
 import type { MarketIndex } from "@/lib/index";
 import type { MarketId, Stock } from "@/lib/types";
 import StockTable from "@/app/components/StockTable";
+import { createClient } from "@/lib/supabase/client";
 
 type RegionTab = "kospi" | "sp50" | "eurostoxx50";
 
@@ -29,12 +29,37 @@ export default function StocksPage() {
 function StocksContent() {
   const searchParams = useSearchParams();
   const [tab, setTab] = useState<RegionTab>("kospi");
-  const [tick, setTick] = useState(0);
+  const [allStocks, setAllStocks] = useState<Stock[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const supabase = createClient();
 
   useEffect(() => {
-    const interval = setInterval(() => setTick((t) => t + 1), 500);
+    async function fetchStocks() {
+      const { data } = await supabase
+        .from('stocks')
+        .select('id, name, ticker, market, sector, current_price, previous_close');
+      
+      if (data) {
+        setAllStocks(data.map(row => ({
+          id: row.id,
+          name: row.name,
+          ticker: row.ticker,
+          market: row.market,
+          sector: row.sector,
+          currentPrice: row.current_price,
+          previousClose: row.previous_close,
+          marketCap: row.current_price * 1000000,
+        } as Stock)));
+      }
+      setLoading(false);
+    }
+    fetchStocks();
+
+    // Polling for live prices every 2 seconds
+    const interval = setInterval(fetchStocks, 2000);
     return () => clearInterval(interval);
-  }, []);
+  }, [supabase]);
 
   useEffect(() => {
     const tabParam = searchParams.get("tab") as RegionTab;
@@ -43,15 +68,17 @@ function StocksContent() {
     }
   }, [searchParams]);
 
+  if (loading) return <div className="mx-auto max-w-7xl px-6 py-6 text-center text-dim text-[13px]">데이터 로딩 중...</div>;
+
   const indices: Record<RegionTab, MarketIndex> = {
-    kospi: getKOSPIIndex(),
-    sp50: getSP50Index(),
-    eurostoxx50: getEuroStoxx50Index(),
+    kospi: getKOSPIIndex(allStocks),
+    sp50: getSP50Index(allStocks),
+    eurostoxx50: getEuroStoxx50Index(allStocks),
   };
 
   const currentTab = TABS.find((t) => t.id === tab)!;
   const index = indices[tab];
-  const stocks = getStocksByMarket(currentTab.market);
+  const stocks = allStocks.filter(s => s.market === currentTab.market);
 
   const up = stocks.filter((s) => s.currentPrice > s.previousClose).length;
   const down = stocks.filter((s) => s.currentPrice < s.previousClose).length;

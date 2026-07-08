@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "소설A — 가상 주식 거래소",
+  title: "무명 — 가상 주식 거래소",
   description: "웹소설과 연계된 가상 주식 거래 시스템",
 };
 

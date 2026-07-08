@@ -58,7 +58,7 @@ export default function Sidebar() {
             A
           </span>
           <div className="leading-tight">
-            <div className="text-[15px] font-bold tracking-tight text-tx">소설A</div>
+            <div className="text-[15px] font-bold tracking-tight text-tx">무명</div>
             <div className="text-[11px] text-dim">가상 주식 거래소</div>
           </div>
         </Link>

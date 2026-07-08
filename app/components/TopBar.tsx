@@ -14,6 +14,7 @@ function marketOpen(d: Date): boolean {
 export default function TopBar() {
   const [now, setNow] = useState<Date | null>(null);
   const [user, setUser] = useState<User | null>(null);
+  const [cash, setCash] = useState<number | null>(null);
 
   const supabase = createBrowserClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -21,9 +22,20 @@ export default function TopBar() {
   );
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => setUser(data.session?.user ?? null));
+    const fetchProfile = async (userId: string) => {
+      const { data } = await supabase.from('profiles').select('cash').eq('id', userId).single();
+      if (data) setCash(data.cash);
+    };
+
+    supabase.auth.getSession().then(({ data }) => {
+      setUser(data.session?.user ?? null);
+      if (data.session?.user) fetchProfile(data.session.user.id);
+    });
+
     const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null);
+      if (session?.user) fetchProfile(session.user.id);
+      else setCash(null);
     });
 
     const update = () => setNow(new Date());
@@ -77,9 +89,16 @@ export default function TopBar() {
                 className="h-7 w-7 rounded-full"
               />
             )}
-            <span className="text-[13px] font-medium text-tx">
-              {user.user_metadata?.full_name ?? user.email}
-            </span>
+            <div className="flex flex-col items-end">
+              <span className="text-[13px] font-medium text-tx leading-none">
+                {user.user_metadata?.full_name ?? user.email}
+              </span>
+              {cash !== null && (
+                <span className="text-[11px] text-up font-mono mt-1">
+                  ₩{cash.toLocaleString()}
+                </span>
+              )}
+            </div>
             <button
               onClick={logout}
               className="rounded-lg border border-border px-3 py-1.5 text-[12px] text-dim transition-colors hover:border-up/40 hover:text-up"

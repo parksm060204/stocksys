@@ -1,57 +1,51 @@
 import type { PropDeskBot } from "../types";
+import { BaseAgent } from "./BaseAgent";
 
-export class PropDeskAgent {
+export class PropDeskAgent extends BaseAgent {
   private bot: PropDeskBot;
 
   constructor(bot: PropDeskBot) {
+    super(bot.id, bot.capital);
     this.bot = bot;
   }
 
   public executeMarketMaking(currentMarket: any, orderBook: any, myHoldings: any) {
-    const orders = [];
+    const orders: any[] = [];
+    const availableStocks = currentMarket.stocks || [];
 
-    for (const bond of currentMarket.bonds) {
-      const currentInventory = myHoldings[bond.id] || 0;
+    for (const stock of availableStocks) {
+      const tickSize = this.getTickSize(stock.current_price);
       
-      if (!orderBook || !orderBook[bond.id]) continue;
+      // HFT 봇은 매우 낮은 긴급성(0.1)으로 3틱 위아래에서 매매를 시도합니다.
+      // 수량(목표 물량)을 크게 잡으면 BaseAgent의 자연스러운 판단 로직에 의해
+      // 높은 확률로 스푸핑(Spoofing) 메커니즘이 발동됩니다.
+      const targetQty = Math.floor((this.bot.capital * 0.05) / stock.current_price);
+      if (targetQty <= 0) continue;
 
-      const bestBid = orderBook[bond.id].bestBid;
-      const bestAsk = orderBook[bond.id].bestAsk;
+      const targetBuyPrice = stock.current_price - (tickSize * 3);
+      const targetSellPrice = stock.current_price + (tickSize * 3);
       
-      if (!bestBid || !bestAsk) continue;
+      // 매수 사이드 스마트 주문 판단
+      orders.push(...this.executeSmartOrder(
+        stock,
+        'buy',
+        targetBuyPrice,
+        targetQty,
+        0.1, // 낮은 긴급성 -> 스푸핑이나 빙산 유도
+        currentMarket.activeEvents
+      ));
 
-      const spreadGap = bestAsk - bestBid;
-      const tickSize = this.getTickSize(bond.currentPrice);
-
-      if (spreadGap >= tickSize * this.bot.mmConfig.targetSpreadHoga) {
-        let myBidPrice = bestBid + tickSize;
-        let myAskPrice = bestAsk - tickSize;
-
-        if (currentInventory > this.bot.mmConfig.maxInventory * 0.8) {
-          myBidPrice -= tickSize;
-          myAskPrice -= tickSize;
-        } else if (currentInventory <= 0) {
-          myBidPrice += tickSize; 
-          myAskPrice += tickSize; 
-        }
-
-        const orderVolume = Math.floor((this.bot.capital * 0.001) / bond.currentPrice);
-        
-        orders.push({ botId: this.bot.id, assetId: bond.id, orderType: 'LIMIT', side: 'BUY', price: myBidPrice, volume: orderVolume });
-        orders.push({ botId: this.bot.id, assetId: bond.id, orderType: 'LIMIT', side: 'SELL', price: myAskPrice, volume: orderVolume });
-      }
+      // 매도 사이드 스마트 주문 판단
+      orders.push(...this.executeSmartOrder(
+        stock,
+        'sell',
+        targetSellPrice,
+        targetQty,
+        0.1,
+        currentMarket.activeEvents
+      ));
     }
 
     return orders;
-  }
-
-  private getTickSize(price: number): number {
-    if (price < 2000) return 1;
-    if (price < 5000) return 5;
-    if (price < 20000) return 10;
-    if (price < 50000) return 50;
-    if (price < 200000) return 100;
-    if (price < 500000) return 500;
-    return 1000;
   }
 }

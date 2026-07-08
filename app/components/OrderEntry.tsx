@@ -1,17 +1,72 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Stock } from "@/lib/types";
 import { LP_ENGINE } from "@/lib/mock-data";
 import { fmtPrice } from "@/lib/format";
+import { createBrowserClient } from '@supabase/ssr';
 
 export default function OrderEntry({ stock }: { stock: Stock }) {
   const [side, setSide] = useState<"buy" | "sell">("buy");
   const [price, setPrice] = useState(String(stock.currentPrice));
   const [qty, setQty] = useState("10");
+  const [stockId, setStockId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const supabase = createBrowserClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+  );
+
+  useEffect(() => {
+    const initStock = async () => {
+      const { data } = await supabase.from('stocks').select('id').eq('ticker', stock.ticker).single();
+      if (data) setStockId(data.id);
+    };
+    initStock();
+  }, [stock.ticker, supabase]);
 
   const total = (Number(price) || 0) * (Number(qty) || 0);
   const emergency = LP_ENGINE?.emergencyClosed;
+
+  const handleOrder = async () => {
+    if (!stockId || loading) return;
+    setLoading(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.user) {
+        alert("로그인 후 이용 가능합니다.");
+        return;
+      }
+
+      if (side === 'buy') {
+        const { data: profile } = await supabase.from('profiles').select('cash').eq('id', session.user.id).single();
+        if (!profile || profile.cash < total) {
+          alert("예수금이 부족합니다.");
+          return;
+        }
+      }
+
+      const { error } = await supabase.from('orders').insert({
+        stock_id: stockId,
+        user_id: session.user.id,
+        side,
+        price: Number(price),
+        size: Number(qty),
+        is_lp: false,
+        status: 'open'
+      });
+
+      if (error) {
+        console.error(error);
+        alert("주문 접수 실패");
+      } else {
+        alert("주문이 접수되었습니다!");
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <div className="rounded-xl border border-border bg-panel">
@@ -75,15 +130,16 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
         </div>
 
         <button
-          disabled={emergency}
+          onClick={handleOrder}
+          disabled={emergency || loading}
           className={`w-full rounded-lg py-2.5 text-[14px] font-bold text-white transition-opacity hover:opacity-90 ${
             emergency ? "bg-dim cursor-not-allowed opacity-50" : side === "buy" ? "bg-up" : "bg-down"
           }`}
         >
-          {emergency ? "주문 불가 (서킷브레이커)" : side === "buy" ? "매수 주문" : "매도 주문"}
+          {emergency ? "주문 불가 (서킷브레이커)" : loading ? "접수 중..." : side === "buy" ? "매수 주문" : "매도 주문"}
         </button>
         <p className="text-center text-[10px] text-dim">
-          {emergency ? "⚠️ 서킷브레이커가 발동되어 시장이 폐쇄되었습니다." : "데모 모드 — 실제 체결되지 않습니다"}
+          {emergency ? "⚠️ 서킷브레이커가 발동되어 시장이 폐쇄되었습니다." : "실제 호가창에 주문이 전송됩니다"}
         </p>
       </div>
     </div>

@@ -4,11 +4,11 @@ import { STOCKS, getStock, getChatMessages, NEWS } from "@/lib/mock-data";
 import { change, fmtPrice, fmtSigned, fmtVolume, fmtCap } from "@/lib/format";
 import { ChangeBadge } from "@/app/components/PriceTag";
 import RealtimePriceHeader from "@/app/components/RealtimePriceHeader";
-import OrderBookPanel from "@/app/components/OrderBookPanel";
+import Orderbook from "@/app/components/Orderbook";
 import TradeFeed from "@/app/components/TradeFeed";
 import ChatPanel from "@/app/components/ChatPanel";
 import OrderEntry from "@/app/components/OrderEntry";
-import StockChart from "@/app/components/StockChart";
+import TickChart from "@/app/components/TickChart";
 import FinancialPanel from "@/app/components/FinancialPanel";
 import BondDetailPanel from "@/app/components/BondDetailPanel";
 
@@ -73,24 +73,17 @@ export default async function StockDetail({
 
       <div className="grid grid-cols-12 gap-5">
         <div className="col-span-12 lg:col-span-3 space-y-5">
-          <OrderBookPanel stock={stock} />
+          <Orderbook ticker={stock.ticker} currentPrice={stock.currentPrice} />
           <OrderEntry stock={stock} />
         </div>
 
         <div className="col-span-12 lg:col-span-5 space-y-5">
-          <div className="rounded-xl border border-border bg-panel">
-            <div className="border-b border-border px-4 py-2.5">
-              <h3 className="text-[13px] font-semibold text-tx">가격 차트</h3>
-            </div>
-            <div className="relative p-4">
-              <StockChart stock={stock} />
-            </div>
-            <div className="grid grid-cols-4 border-t border-border text-center text-[11px]">
-              <Cell label="시가" value={fmtPrice(stock.openPrice, stock.market)} />
-              <Cell label="고가" value={fmtPrice(stock.high, stock.market)} tone="up" />
-              <Cell label="저가" value={fmtPrice(stock.low, stock.market)} tone="down" />
-              <Cell label="거래량" value={fmtVolume(stock.volume)} />
-            </div>
+          <TickChart ticker={stock.ticker} />
+          <div className="grid grid-cols-4 border-t border-border text-center text-[11px]">
+            <Cell label="시가" value={fmtPrice(stock.openPrice, stock.market)} />
+            <Cell label="고가" value={fmtPrice(stock.high, stock.market)} tone="up" />
+            <Cell label="저가" value={fmtPrice(stock.low, stock.market)} tone="down" />
+            <Cell label="거래량" value={fmtVolume(stock.volume)} />
           </div>
           <TradeFeed stock={stock} />
         </div>

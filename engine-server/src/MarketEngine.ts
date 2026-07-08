@@ -3,6 +3,9 @@ import { PensionFundAgent } from './bots/PensionFundAgent';
 import { CommercialBankAgent } from './bots/CommercialBankAgent';
 import { HedgeFundAgent } from './bots/HedgeFundAgent';
 import { PropDeskAgent } from './bots/PropDeskAgent';
+import { RetailSwarmAgent } from './bots/RetailSwarmAgent';
+import { RealWorldFetcher, MacroData } from './realWorldFetcher';
+import type { MarketEvent } from './types';
 import * as dotenv from 'dotenv';
 dotenv.config();
 
@@ -13,43 +16,65 @@ export class MarketEngine {
   private tickIntervalMs: number = 1000;
   private tickTimer: NodeJS.Timeout | null = null;
 
+  private activeEvents: MarketEvent[] = [];
+
   private pensionFunds: PensionFundAgent[] = [];
   private commercialBanks: CommercialBankAgent[] = [];
   private hedgeFunds: HedgeFundAgent[] = [];
   private propDesks: PropDeskAgent[] = [];
+  private retailSwarms: RetailSwarmAgent[] = [];
+  
+  private realWorldFetcher: RealWorldFetcher = new RealWorldFetcher();
 
-  constructor() {
-    this.initializeBots();
+  constructor() {}
+
+  public injectEvent(event: MarketEvent) {
+    this.activeEvents.push(event);
+    console.log(`[NEWS EVENT INJECTED] ${event.id}: Sector ${event.targetSector}, Impact ${event.impact}`);
   }
 
-  private initializeBots() {
-    this.pensionFunds.push(new PensionFundAgent({ 
-      id: 'bot_pf_01', name: '국민노후보장기금', type: 'PENSION_FUND', 
-      capital: 100000000000000, riskTolerance: 0.1, tradingStyle: 'LIMIT_HEAVY', 
-      targetYTM: { '10Y_BOND': 0.035, '30Y_BOND': 0.040, 'AAA_CORP': 0.045 }, rebalanceIntervalMs: 60000 
-    }));
+  public async initializeBots() {
+    console.log("Fetching bot configurations from Supabase...");
+    const { data: botsData, error } = await supabase.from('bots_config').select('*');
     
-    this.commercialBanks.push(new CommercialBankAgent({ 
-      id: 'bot_cb_01', name: '미래제일은행', type: 'COMMERCIAL_BANK', 
-      capital: 50000000000000, reactionSpeed: 1000, tradingStyle: 'SWEEP_AGGRESSIVE', 
-      targetSpread: { '1Y_BOND': 0.005, '3Y_BOND': 0.010, '1Y_CORP': 0.020 } 
-    }));
-    
-    this.hedgeFunds.push(new HedgeFundAgent({ 
-      id: 'bot_hf_01', name: '블랙록 IB', type: 'HEDGE_FUND', 
-      capital: 200000000000000, reactionSpeed: 500, tradingStyle: 'SWEEP_AGGRESSIVE', 
-      portfolioTarget: { equity: 0.5, safeBonds: 0.3, highYield: 0.2 }, currentSentiment: 'NEUTRAL' 
-    }));
-    
-    this.propDesks.push(new PropDeskAgent({ 
-      id: 'bot_pd_01', name: '키움증권 프랍', type: 'PROP_DESK', 
-      capital: 10000000000000, reactionSpeed: 300, tradingStyle: 'MARKET_MAKER', 
-      mmConfig: { maxInventory: 50000, targetSpreadHoga: 2, tickProfitTarget: 1 } 
-    }));
+    if (error || !botsData) {
+      console.error("Failed to load bots config from DB:", error);
+      return;
+    }
+
+    this.pensionFunds = [];
+    this.commercialBanks = [];
+    this.hedgeFunds = [];
+    this.propDesks = [];
+    this.retailSwarms = [];
+
+    for (const bot of botsData) {
+      const config = { id: bot.id, name: bot.name, type: bot.bot_type, capital: bot.capital, ...bot.traits };
+      
+      switch(bot.bot_type) {
+        case 'PENSION_FUND':
+          this.pensionFunds.push(new PensionFundAgent(config));
+          break;
+        case 'COMMERCIAL_BANK':
+          this.commercialBanks.push(new CommercialBankAgent(config));
+          break;
+        case 'HEDGE_FUND':
+          this.hedgeFunds.push(new HedgeFundAgent(config));
+          break;
+        case 'PROP_DESK':
+          this.propDesks.push(new PropDeskAgent(config as any));
+          break;
+        case 'RETAIL_SWARM':
+          this.retailSwarms.push(new RetailSwarmAgent(config as any));
+          break;
+      }
+    }
+    console.log(`Successfully loaded ${botsData.length} bots (including Retail Swarms) from reality.`);
   }
 
-  public start() {
+  public async start() {
     if (this.isRunning) return;
+    await this.initializeBots();
     this.isRunning = true;
     console.log("🚀 Market Engine Started (1-second tick)...");
     this.tickTimer = setInterval(() => this.tick(), this.tickIntervalMs);
@@ -68,7 +93,19 @@ export class MarketEngine {
         return; 
       }
 
-      const marketState = await this.fetchMarketState();
+      // 틱 시작 시 이벤트 수명 차감
+      this.activeEvents = this.activeEvents.filter(e => {
+        e.durationTicks -= 1;
+        return e.durationTicks > 0;
+      });
+
+      // 틱이 시작될 때마다 기존에 깔아둔 LP 호가(허수주문, 잔여 빙산 등)를 모두 걷어냅니다.
+      // 이렇게 해야 호가창이 실시간으로 새롭게 깜빡이며(Spoofing 등) 업데이트됩니다.
+      await supabase.from('orders').delete().eq('is_lp', true);
+
+      const macroData = await this.realWorldFetcher.getMacroData();
+      const marketState = await this.fetchMarketState(macroData);
+      
       let allOrders: any[] = [];
 
       for (const bot of this.pensionFunds) {
@@ -78,43 +115,219 @@ export class MarketEngine {
         allOrders.push(...bot.executeArbitrage(marketState, marketState.adminBaseRate));
       }
       for (const bot of this.hedgeFunds) {
+        // VIX 지수에 따른 Risk-On/Off 전환 로직 (VIX 25 이상이면 공포)
+        if (macroData && macroData.vix > 25) {
+          bot.updateSentiment('RISK_OFF');
+        } else {
+          bot.updateSentiment('RISK_ON');
+        }
+        
         const mockHoldings = { equity: 50000000000000, safeBonds: 30000000000000, highYield: 20000000000000 };
         allOrders.push(...bot.executeAggressiveSweep(marketState, mockHoldings));
       }
       for (const bot of this.propDesks) {
         allOrders.push(...bot.executeMarketMaking(marketState, marketState.orderBook, {}));
       }
+      for (const bot of this.retailSwarms) {
+        const mockHoldings = {};
+        allOrders.push(...bot.executeSwarmBehavior(marketState, mockHoldings));
+      }
 
       if (allOrders.length > 0) {
-        await this.processBatchOrders(allOrders);
+        await this.processBatchOrders(allOrders, marketState);
+      }
+
+      // Random Event Trigger (about 1% chance per tick)
+      if (Math.random() < 0.01) {
+        await this.triggerRandomEvents();
       }
     } catch (error) {
       console.error("Engine Tick Error:", error);
     }
   }
 
-  private async fetchMarketState() {
+  private async triggerRandomEvents() {
+    // 1. Get all events
+    const { data: events } = await supabase.from('player_events').select('*');
+    if (!events || events.length === 0) return;
+
+    // 2. Get random users (for demo, just all users who have cash < 100M to simulate stage 1)
+    const { data: users } = await supabase.from('profiles').select('id, cash').lt('cash', 100000000).limit(5);
+    if (!users || users.length === 0) return;
+
+    // 3. For each user, maybe 10% chance to actually get an event
+    for (const user of users) {
+      if (Math.random() < 0.1) {
+        const randomEvent = events[Math.floor(Math.random() * events.length)];
+        
+        // Insert active event
+        await supabase.from('active_player_events').insert({
+          user_id: user.id,
+          event_id: randomEvent.id,
+          status: 'pending'
+        });
+        console.log(`[ROGUE-LITE EVENT] Triggered event ${randomEvent.id} for user ${user.id}`);
+      }
+    }
+  }
+
+  private async fetchMarketState(macroData: MacroData | null) {
     const [bonds, stocks, adminSettings] = await Promise.all([
       supabase.from('bonds').select('*'),
       supabase.from('stocks').select('*'),
       supabase.from('admin_settings').select('base_rate, market_sentiment').single()
     ]);
 
+    // 현실의 US10Y 금리를 게임 내 기준 금리로 활용할 수 있도록 병합
+    const baseRate = macroData ? macroData.us10yYield / 100 : (adminSettings.data?.base_rate || 0.025);
+
     return {
       bonds: bonds.data || [],
       stocks: stocks.data || [],
-      adminBaseRate: adminSettings.data?.base_rate || 0.025,
+      adminBaseRate: baseRate,
       sentiment: adminSettings.data?.market_sentiment || 'NEUTRAL',
-      orderBook: {} 
+      orderBook: {},
+      realWorldMacro: macroData,
+      activeEvents: this.activeEvents
     };
   }
 
-  private async processBatchOrders(orders: any[]) {
-    const { error } = await supabase.from('orders').insert(orders);
-    if (error) {
-      console.error("Batch Order Insert Failed:", error);
-    } else {
-      console.log(`Successfully batch inserted ${orders.length} orders.`);
+  private async processBatchOrders(lpOrders: any[], marketState: any) {
+    // 1. 유저의 미체결(Open) 주문들을 가져옵니다.
+    const { data: userOrders, error: userOrdersError } = await supabase
+      .from('orders')
+      .select('*')
+      .eq('status', 'open')
+      .eq('is_lp', false);
+
+    if (userOrdersError) {
+      console.error("Failed to fetch user orders:", userOrdersError);
+      return;
+    }
+
+    const orderBookByStock: Record<string, { bids: any[], asks: any[] }> = {};
+    const allCombinedOrders = [...(userOrders || []), ...lpOrders];
+
+    for (const order of allCombinedOrders) {
+      if (!orderBookByStock[order.stock_id]) {
+        orderBookByStock[order.stock_id] = { bids: [], asks: [] };
+      }
+      if (order.side === 'buy') {
+        orderBookByStock[order.stock_id].bids.push(order);
+      } else {
+        orderBookByStock[order.stock_id].asks.push(order);
+      }
+    }
+
+    const tradesToInsert: any[] = [];
+    const updatedStocks: Record<string, number> = {}; // stock_id -> new price
+    const lpOrdersToInsert: any[] = [];
+    const userOrdersToUpdate: any[] = [];
+    const cashChanges: Record<string, number> = {}; // user_id -> net cash change
+
+    // 3. 종목별 매칭 엔진 로직 (In-memory Matching)
+    for (const stockId of Object.keys(orderBookByStock)) {
+      const book = orderBookByStock[stockId];
+
+      // 매수(Buy)는 가격 내림차순, 매도(Sell)는 가격 오름차순
+      book.bids.sort((a, b) => b.price - a.price);
+      book.asks.sort((a, b) => a.price - b.price);
+
+      let latestTradePrice = null;
+
+      while (book.bids.length > 0 && book.asks.length > 0) {
+        const highestBid = book.bids[0];
+        const lowestAsk = book.asks[0];
+
+        // 조건: 최우선 매수호가가 최우선 매도호가보다 크거나 같으면 체결(Cross)
+        if (highestBid.price >= lowestAsk.price) {
+          const tradeSize = Math.min(highestBid.size, lowestAsk.size);
+          const tradePrice = lowestAsk.price;
+          latestTradePrice = tradePrice;
+
+          tradesToInsert.push({
+            stock_id: stockId,
+            price: tradePrice,
+            size: tradeSize,
+            buyer_id: highestBid.user_id || null,
+            seller_id: lowestAsk.user_id || null,
+            created_at: new Date().toISOString()
+          });
+
+          if (highestBid.user_id && highestBid.is_lp === false) {
+            cashChanges[highestBid.user_id] = (cashChanges[highestBid.user_id] || 0) - (tradePrice * tradeSize);
+          }
+          if (lowestAsk.user_id && lowestAsk.is_lp === false) {
+            cashChanges[lowestAsk.user_id] = (cashChanges[lowestAsk.user_id] || 0) + (tradePrice * tradeSize);
+          }
+
+          highestBid.size -= tradeSize;
+          lowestAsk.size -= tradeSize;
+
+          if (highestBid.id && !highestBid._updated) {
+            userOrdersToUpdate.push(highestBid);
+            highestBid._updated = true;
+          }
+          if (lowestAsk.id && !lowestAsk._updated) {
+            userOrdersToUpdate.push(lowestAsk);
+            lowestAsk._updated = true;
+          }
+
+          if (highestBid.size === 0) {
+            book.bids.shift();
+            if (highestBid.id) highestBid.status = 'filled';
+          }
+          if (lowestAsk.size === 0) {
+            book.asks.shift();
+            if (lowestAsk.id) lowestAsk.status = 'filled';
+          }
+        } else {
+          break;
+        }
+      }
+
+      if (latestTradePrice) {
+        updatedStocks[stockId] = latestTradePrice;
+      }
+
+      // 4. 매칭 후 남은(미체결) 주문들 분류
+      for (const bid of book.bids) {
+        if (!bid.id) lpOrdersToInsert.push(bid);
+      }
+      for (const ask of book.asks) {
+        if (!ask.id) lpOrdersToInsert.push(ask);
+      }
+    }
+
+    // 5. DB 일괄 트랜잭션 반영 (Batch Commit)
+    // 5.1 체결 내역 Insert
+    if (tradesToInsert.length > 0) {
+      await supabase.from('trades').insert(tradesToInsert);
+    }
+
+    // 5.2 LP 잔여 주문 Insert
+    if (lpOrdersToInsert.length > 0) {
+      // is_lp가 명시되지 않은 객체가 있을 수 있으므로 방어 코드 추가
+      const safeLpOrders = lpOrdersToInsert.map(o => ({
+        stock_id: o.stock_id,
+        user_id: null,
+        side: o.side,
+        price: o.price,
+        size: o.size,
+        status: 'open',
+        is_lp: true
+      }));
+      await supabase.from('orders').insert(safeLpOrders);
+    }
+
+    // 5.3 유저 주문 잔량 Update
+    for (const uOrder of userOrdersToUpdate) {
+      await supabase.from('orders').update({ size: uOrder.size, status: uOrder.status }).eq('id', uOrder.id);
+    }
+
+    // 5.4 주식 현재가 Update
+    for (const [sId, newPrice] of Object.entries(updatedStocks)) {
+      await supabase.from('stocks').update({ current_price: newPrice }).eq('id', sId);
     }
   }
 }

@@ -11,7 +11,7 @@ interface SectorImpact {
 }
 
 export default function AdminPage() {
-  const [tab, setTab] = useState<"novel" | "ipo" | "actions" | "institution" | "marketTime" | "users" | "rates">("novel");
+  const [tab, setTab] = useState<"novel" | "ipo" | "actions" | "institution" | "priceLimits" | "marketTime" | "users" | "rates">("novel");
 
   return (
     <div className="mx-auto max-w-5xl px-6 py-6">

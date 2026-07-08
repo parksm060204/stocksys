@@ -726,17 +726,17 @@ export function generateAllStocks(): { stocks: Stock[]; metas: StockMeta[] } {
   }
 
   const EU_LARGE_DEFS = [
-    { name: "LVM Luxe", ticker: "LVMH", cap: 1200 * TRILLION, sector: "Consumer", price: 850.0 },
-    { name: "AMSL Litho", ticker: "ASML", cap: 1100 * TRILLION, sector: "Technology", price: 620.0 },
-    { name: "Novo Care", ticker: "NOVO", cap: 1000 * TRILLION, sector: "Biotech", price: 100.0 },
-    { name: "SAPP Software", ticker: "SAP", cap: 750 * TRILLION, sector: "Technology", price: 210.0 },
+    { name: "LVM Luxe", ticker: "LVMH.EU", cap: 1200 * TRILLION, sector: "Consumer", price: 850.0 },
+    { name: "AMSL Litho", ticker: "ASML.EU", cap: 1100 * TRILLION, sector: "Technology", price: 620.0 },
+    { name: "Novo Care", ticker: "NOVO.EU", cap: 1000 * TRILLION, sector: "Biotech", price: 100.0 },
+    { name: "SAPP Software", ticker: "SAP.EU", cap: 750 * TRILLION, sector: "Technology", price: 210.0 },
     { name: "Slemens AG", ticker: "SIEG", cap: 450 * TRILLION, sector: "Technology", price: 170.0 },
     { name: "TotalPower Energies", ticker: "TTE", cap: 420 * TRILLION, sector: "Energy", price: 65.0 },
     { name: "L'Oriel Cosmetics", ticker: "ORIL", cap: 400 * TRILLION, sector: "Consumer", price: 440.0 },
     { name: "Snyder Electric", ticker: "SNDR", cap: 380 * TRILLION, sector: "Technology", price: 210.0 },
     { name: "Allianze Insurance", ticker: "ALNZ", cap: 320 * TRILLION, sector: "Insurance", price: 260.0 },
     { name: "SanoPharma", ticker: "SNFI", cap: 300 * TRILLION, sector: "Biotech", price: 90.0 },
-    { name: "AeroParis Aero", ticker: "AIRB", cap: 280 * TRILLION, sector: "Defense", price: 140.0 },
+    { name: "AeroParis Aero", ticker: "AIRB.EU", cap: 280 * TRILLION, sector: "Defense", price: 140.0 },
     { name: "German Telecom", ticker: "DTEG", cap: 250 * TRILLION, sector: "Telecom", price: 22.0 },
     { name: "Inditext Fashion", ticker: "ITX", cap: 240 * TRILLION, sector: "Consumer", price: 45.0 },
     { name: "Iberdrol Power", ticker: "IBER", cap: 220 * TRILLION, sector: "Energy", price: 12.0 },

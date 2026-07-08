@@ -1,5 +1,5 @@
 services:
-  - type: worker
+  - type: web
     name: stock-matching-engine
     env: node
     rootDir: engine-server
@@ -9,4 +9,6 @@ services:
       - key: NEXT_PUBLIC_SUPABASE_URL
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: GEMINI_API_KEY
         sync: false

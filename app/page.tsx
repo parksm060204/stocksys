@@ -4,6 +4,7 @@ import { change, fmtSigned } from "@/lib/format";
 import { getKOSPIIndex, getSP50Index, getEuroStoxx50Index } from "@/lib/index";
 import type { MarketIndex } from "@/lib/index";
 import MoverCard from "@/app/components/MoverCard";
+import EcoTerminal from "@/app/components/EcoTerminal";
 
 export default function Home() {
   const kospi = getKOSPIIndex();
@@ -84,6 +85,11 @@ export default function Home() {
         <div className="lg:col-span-2 space-y-6">
           <MoverCard title="상승 TOP 5" stocks={gainers} />
           <MoverCard title="하락 TOP 5" stocks={losers} />
+          
+          {/* ECO 터미널 UI 추가 */}
+          <div className="mt-8">
+            <EcoTerminal />
+          </div>
         </div>
 
         <div className="rounded-xl border border-border bg-panel">

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { createBrowserClient } from "@supabase/ssr";
+import Link from "next/link";
 
 type Outlet = {
   id: number;
@@ -21,10 +22,8 @@ type PremiumNews = {
 
 export default function NewsPage() {
   const [newsList, setNewsList] = useState<PremiumNews[]>([]);
-  const [cash, setCash] = useState<number>(0);
-  const [subs, setSubs] = useState<number[]>([]);
+  const [subs, setSubs] = useState<Record<string, string>>({});
   const [userId, setUserId] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
 
   const supabase = createBrowserClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -37,10 +36,9 @@ export default function NewsPage() {
       
       if (session?.user) {
         setUserId(session.user.id);
-        const { data: profile } = await supabase.from('profiles').select('cash, subscriptions').eq('id', session.user.id).single();
-        if (profile) {
-          setCash(profile.cash);
-          setSubs(profile.subscriptions || []);
+        const { data: profile } = await supabase.from('profiles').select('news_subscriptions').eq('id', session.user.id).single();
+        if (profile && profile.news_subscriptions) {
+          setSubs(profile.news_subscriptions as Record<string, string>);
         }
       }
 
@@ -69,30 +67,10 @@ export default function NewsPage() {
     };
   }, [supabase]);
 
-  const handleSubscribe = async (outletId: number, fee: number, name: string) => {
-    if (!userId || loading) return;
-    if (cash < fee) {
-      alert("예수금이 부족합니다.");
-      return;
-    }
-
-    if (!confirm(`[${name}] 매체를 구독하시겠습니까?\n월 구독료: ₩${fee.toLocaleString()}`)) return;
-
-    setLoading(true);
-    try {
-      const newCash = cash - fee;
-      const newSubs = [...subs, outletId];
-      
-      await supabase.from('profiles').update({ cash: newCash, subscriptions: newSubs }).eq('id', userId);
-      setCash(newCash);
-      setSubs(newSubs);
-      alert("구독이 완료되었습니다!");
-    } catch (e) {
-      console.error(e);
-      alert("구독 실패");
-    } finally {
-      setLoading(false);
-    }
+  const getDday = (expiryDate: string) => {
+    const diff = new Date(expiryDate).getTime() - new Date().getTime();
+    const days = Math.ceil(diff / (1000 * 60 * 60 * 24));
+    return days >= 0 ? days : -1;
   };
 
   return (
@@ -104,28 +82,40 @@ export default function NewsPage() {
 
       <div className="space-y-4">
         {newsList.map((n) => {
-          const isSubscribed = subs.includes(n.media_outlet_id);
           const outlet = n.media_outlets;
+          const outletIdStr = String(outlet.id);
+          const expiry = subs[outletIdStr];
+          const dday = expiry ? getDday(expiry) : -1;
+          const isSubscribed = dday >= 0;
 
           return (
             <article
               key={n.id}
-              className="rounded-xl border border-border bg-panel p-5 transition-colors hover:border-border/80 relative overflow-hidden"
+              className="rounded-xl border border-border bg-panel glass-card p-5 transition-colors hover:border-border/80 relative overflow-hidden"
             >
-              <div className="mb-2 flex items-center gap-2">
-                <span
-                  className={`rounded px-2 py-0.5 text-[10px] font-semibold ${
-                    outlet.type === 'MACRO' ? "bg-accent/15 text-accent" : "bg-warn/15 text-warn"
-                  }`}
-                >
-                  {outlet.name}
-                </span>
-                <span className="ml-auto text-[11px] text-dim">
-                  {new Date(n.created_at).toLocaleString("ko-KR", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
-                </span>
+              <div className="mb-2 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span
+                    className={`rounded px-2 py-0.5 text-[10px] font-semibold ${
+                      outlet.type === 'MACRO' ? "bg-accent/15 text-accent" : "bg-warn/15 text-warn"
+                    }`}
+                  >
+                    {outlet.name}
+                  </span>
+                  <span className="text-[11px] text-dim">
+                    {new Date(n.created_at).toLocaleString("ko-KR", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                  </span>
+                </div>
+                
+                {isSubscribed && (
+                  <div className="px-2 py-0.5 rounded bg-panel2 border border-accent/30 text-accent text-[10px] font-bold flex items-center gap-1">
+                    <span>⏳</span>
+                    <span>D-{dday}</span>
+                  </div>
+                )}
               </div>
               
-              <h2 className="text-[16px] font-bold text-tx">{n.headline}</h2>
+              <h2 className="text-[16px] font-bold text-tx drop-shadow-sm">{n.headline}</h2>
               
               <div className="mt-3 text-[13px] leading-relaxed relative">
                 {isSubscribed ? (
@@ -134,20 +124,18 @@ export default function NewsPage() {
                   </p>
                 ) : (
                   <div className="relative">
-                    <p className="text-muted/30 whitespace-pre-line blur-[3px] select-none">
-                      이 기사의 내용은 프리미엄 구독자에게만 공개됩니다.<br/>
-                      이 기사의 내용은 프리미엄 구독자에게만 공개됩니다.<br/>
-                      이 기사의 내용은 프리미엄 구독자에게만 공개됩니다.
+                    <p className="text-muted/30 whitespace-pre-line blur-[4px] select-none pointer-events-none">
+                      {n.content_summary || "이 기사의 내용은 프리미엄 구독자에게만 공개됩니다.\n이 기사의 내용은 프리미엄 구독자에게만 공개됩니다.\n이 기사의 내용은 프리미엄 구독자에게만 공개됩니다."}
                     </p>
-                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-panel/60 backdrop-blur-[1px]">
+                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-panel/60 backdrop-blur-[2px] rounded-lg">
                       {userId ? (
-                        <button
-                          onClick={() => handleSubscribe(outlet.id, outlet.subscription_fee, outlet.name)}
-                          disabled={loading}
-                          className="px-4 py-2 bg-accent text-white rounded-lg font-medium text-[13px] hover:bg-accent/90 transition"
+                        <Link
+                          href="/shop"
+                          className="flex items-center gap-2 px-5 py-2.5 bg-accent text-white rounded-lg font-bold text-[13px] hover:bg-accent/90 transition shadow-lg hover:shadow-[0_0_15px_rgba(52,211,153,0.4)] hover:-translate-y-0.5"
                         >
-                          본문 보기 (구독료: ₩{outlet.subscription_fee.toLocaleString()})
-                        </button>
+                          <span>🔒</span>
+                          <span>상점에서 구독하고 본문 보기</span>
+                        </Link>
                       ) : (
                         <button disabled className="px-4 py-2 bg-panel2 text-dim border border-border rounded-lg font-medium text-[13px]">
                           로그인 후 구독 가능

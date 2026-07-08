@@ -100,7 +100,14 @@ export class RetailSwarmAgent {
 
       // 실제 주문 생성 로직
       // 개미들은 지정가 대신 현재가 근방을 무작위로 때리거나 허수성 주문을 남발함
-      const activeAnts = Math.floor(Math.random() * 10) + 5; // 이번 틱에 행동할 개미 수
+      let activeAnts = Math.floor(Math.random() * 10) + 5; // 이번 틱에 행동할 개미 수
+      
+      // 극단적 쏠림 발생 시 참여 개미 수 폭발 (프랙탈적 연쇄 반응)
+      if (fomoOverride || dayReturn > 0.1) {
+        activeAnts = Math.floor(Math.random() * 30) + 15;
+      } else if (panicOverride || dayReturn < -0.1) {
+        activeAnts = Math.floor(Math.random() * 50) + 20; // 패닉셀일 때 개미가 더 많이 던짐
+      }
       
       for (let i = 0; i < activeAnts; i++) {
         const isBuyer = Math.random() < (state.buyers / state.total);

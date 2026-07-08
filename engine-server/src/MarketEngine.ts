@@ -5,7 +5,11 @@ import { HedgeFundAgent } from './bots/HedgeFundAgent';
 import { PropDeskAgent } from './bots/PropDeskAgent';
 import { RetailSwarmAgent } from './bots/RetailSwarmAgent';
 import { MarketMakerAgent } from './bots/MarketMakerAgent';
+import { StatArbAgent } from './bots/StatArbAgent';
+import { OptionsMMAgent } from './bots/OptionsMMAgent';
+import { QuantAgent } from './bots/QuantAgent';
 import { RealWorldFetcher } from './realWorldFetcher';
+import { EventBus } from './EventBus';
 import type { MacroData } from './realWorldFetcher';
 import type { MarketEvent } from './types';
 import * as dotenv from 'dotenv';
@@ -19,6 +23,13 @@ export class MarketEngine {
   private tickTimer: NodeJS.Timeout | null = null;
   private manipulationCheckTimer: NodeJS.Timeout | null = null;
 
+  // Hawkes Process 상태 변수
+  private hawkesIntensity: number = 0; // 초과 틱 강도
+  private readonly mu: number = 0.5; // 베이스라인 강도 (약 2초 간격)
+  private readonly alpha: number = 0.05; // 주문 1건당 증가하는 강도
+  private readonly beta: number = 0.1; // 지수적 감쇠 계수
+  private lastTickTime: number = Date.now();
+
   private activeEvents: MarketEvent[] = [];
 
   private pensionFunds: PensionFundAgent[] = [];
@@ -26,6 +37,9 @@ export class MarketEngine {
   private hedgeFunds: HedgeFundAgent[] = [];
   private propDesks: PropDeskAgent[] = [];
   private retailSwarms: RetailSwarmAgent[] = [];
+  private statArbBots: StatArbAgent[] = [];
+  private optionsMMBots: OptionsMMAgent[] = [];
+  private quantBots: QuantAgent[] = [];
   private marketMaker: MarketMakerAgent = new MarketMakerAgent();
   
   private realWorldFetcher: RealWorldFetcher = new RealWorldFetcher();
@@ -34,6 +48,7 @@ export class MarketEngine {
 
   public injectEvent(event: MarketEvent) {
     this.activeEvents.push(event);
+    EventBus.publish('NEWS_ALERT', event);
     console.log(`[NEWS EVENT INJECTED] ${event.id}: Sector ${event.targetSector}, Impact ${event.impact}`);
   }
 
@@ -43,7 +58,7 @@ export class MarketEngine {
     
     if (error || !botsData) {
       console.error("Failed to load bots config from DB:", error);
-      return;
+      // DB가 없어도 시뮬레이션용 봇이 주입되도록 계속 진행합니다.
     }
 
     this.pensionFunds = [];
@@ -52,36 +67,63 @@ export class MarketEngine {
     this.propDesks = [];
     this.retailSwarms = [];
 
-    for (const bot of botsData) {
-      const config = { id: bot.id, name: bot.name, type: bot.bot_type, capital: bot.capital, ...bot.traits };
-      
-      switch(bot.bot_type) {
-        case 'PENSION_FUND':
-          this.pensionFunds.push(new PensionFundAgent(config));
-          break;
-        case 'COMMERCIAL_BANK':
-          this.commercialBanks.push(new CommercialBankAgent(config));
-          break;
-        case 'HEDGE_FUND':
-          this.hedgeFunds.push(new HedgeFundAgent(config));
-          break;
-        case 'PROP_DESK':
-          this.propDesks.push(new PropDeskAgent(config as any));
-          break;
-        case 'RETAIL_SWARM':
-          this.retailSwarms.push(new RetailSwarmAgent(config as any));
-          break;
+    if (botsData) {
+      for (const bot of botsData) {
+        const config = { id: bot.id, name: bot.name, type: bot.bot_type, capital: bot.capital, ...bot.traits };
+        
+        switch(bot.bot_type) {
+          case 'PENSION_FUND':
+            this.pensionFunds.push(new PensionFundAgent(config));
+            break;
+          case 'COMMERCIAL_BANK':
+            this.commercialBanks.push(new CommercialBankAgent(config));
+            break;
+          case 'HEDGE_FUND':
+            this.hedgeFunds.push(new HedgeFundAgent(config));
+            break;
+          case 'PROP_DESK':
+            this.propDesks.push(new PropDeskAgent(config as any));
+            break;
+          case 'RETAIL_SWARM':
+            this.retailSwarms.push(new RetailSwarmAgent(config as any));
+            break;
+          case 'STAT_ARB':
+            this.statArbBots.push(new StatArbAgent(config as any));
+            break;
+          case 'OPTIONS_MM':
+            this.optionsMMBots.push(new OptionsMMAgent(config as any));
+            break;
+        }
       }
     }
-    console.log(`Successfully loaded ${botsData.length} bots (including Retail Swarms) from reality.`);
+    
+    // DB에 없는 경우 강제로 1개씩 주입 (시뮬레이션 관측용)
+    if (this.statArbBots.length === 0) {
+      this.statArbBots.push(new StatArbAgent({
+        id: 'bot_stat_arb_001', name: 'Quant ETF Arbitrage', type: 'STAT_ARB', capital: 5000000000, reactionSpeed: 5, tradingStyle: 'ARBITRAGE', basketTarget: 'TECH_TOP3', transCostThreshold: 0.005
+      }));
+    }
+    if (this.optionsMMBots.length === 0) {
+      this.optionsMMBots.push(new OptionsMMAgent({
+        id: 'bot_options_mm_001', name: 'Gamma Squeezer MM', type: 'OPTIONS_MM', capital: 10000000000, reactionSpeed: 2, tradingStyle: 'DELTA_NEUTRAL', initialGammaNet: -50 // 거대한 숏 감마
+      }));
+    }
+    if (this.quantBots.length === 0) {
+      this.quantBots.push(new QuantAgent({
+        id: 'bot_quant_001', name: 'Informed Quant Fund', type: 'QUANT_FUND', capital: 20000000000, reactionSpeed: 1, tradingStyle: 'INFORMED_TRADER'
+      }));
+    }
+
+    console.log(`Successfully loaded ${botsData?.length || 0} bots (including Retail Swarms) from reality.`);
   }
 
   public async start() {
     if (this.isRunning) return;
     await this.initializeBots();
     this.isRunning = true;
-    console.log("🚀 Market Engine Started (1-second tick)...");
-    this.tickTimer = setInterval(() => this.tick(), this.tickIntervalMs);
+    console.log("🚀 Market Engine Started (Dynamic Tick via Hawkes Process)...");
+    this.lastTickTime = Date.now();
+    this.scheduleNextTick(2000);
     
     // 10초마다 active_manipulations 테이블 폴링
     this.manipulationCheckTimer = setInterval(() => this.checkManipulations(), 10000);
@@ -89,9 +131,37 @@ export class MarketEngine {
 
   public stop() {
     this.isRunning = false;
-    if (this.tickTimer) clearInterval(this.tickTimer);
+    if (this.tickTimer) clearTimeout(this.tickTimer);
     if (this.manipulationCheckTimer) clearInterval(this.manipulationCheckTimer);
     console.log("🛑 Market Engine Stopped.");
+  }
+
+  private scheduleNextTick(delayMs: number) {
+    if (!this.isRunning) return;
+    this.tickTimer = setTimeout(async () => {
+      const startTime = Date.now();
+      await this.tick();
+      const executionTime = Date.now() - startTime;
+      
+      const now = Date.now();
+      const dt = (now - this.lastTickTime) / 1000; // 초 단위 경과 시간
+      this.lastTickTime = now;
+
+      // Hawkes 감쇠(Decay) 적용
+      this.hawkesIntensity = this.hawkesIntensity * Math.exp(-this.beta * dt);
+
+      // 전체 강도 산출 및 다음 틱 지연 시간 계산
+      const totalIntensity = this.mu + this.hawkesIntensity;
+      let nextDelayMs = 1000 / totalIntensity;
+
+      // 실행 시간(Execution Time)을 보정하여 대기 시간 계산
+      nextDelayMs = nextDelayMs - executionTime;
+
+      // Clamp: 렌더 무료 서버 환경을 고려해 최소 250ms, 최대 3000ms 설정
+      nextDelayMs = Math.max(250, Math.min(3000, nextDelayMs));
+
+      this.scheduleNextTick(nextDelayMs);
+    }, delayMs);
   }
 
   private async checkManipulations() {
@@ -168,12 +238,28 @@ export class MarketEngine {
         const mockHoldings = {};
         allOrders.push(...bot.executeSwarmBehavior(marketState, mockHoldings));
       }
+      for (const bot of this.statArbBots) {
+        allOrders.push(...bot.executeArbitrage(marketState, {}));
+      }
+      for (const bot of this.optionsMMBots) {
+        allOrders.push(...bot.executeDeltaHedging(marketState, marketState.orderBook));
+      }
+      for (const bot of this.quantBots) {
+        allOrders.push(...bot.executeQuantStrategy(marketState, marketState.orderBook));
+      }
       
       // Market Maker (세력) 주문 개입
       allOrders.push(...this.marketMaker.executeManipulation(marketState));
 
       if (allOrders.length > 0) {
         await this.processBatchOrders(allOrders, marketState);
+        
+        // 자체 여기(Self-excitation) 발생: 주문량에 비례하여 강도 증가
+        this.hawkesIntensity += this.alpha * allOrders.length;
+        
+        if (this.hawkesIntensity > 5) { // 강도가 극단적으로 높아지면 경고 로그
+          console.log(`[Hawkes] Flash Crash Detected! Orders: ${allOrders.length}, Intensity: ${this.hawkesIntensity.toFixed(2)}`);
+        }
       }
 
       // Random Event Trigger (about 1% chance per tick)
@@ -220,7 +306,7 @@ export class MarketEngine {
     // 현실의 US10Y 금리를 게임 내 기준 금리로 활용할 수 있도록 병합
     const baseRate = macroData ? macroData.us10yYield / 100 : (adminSettings.data?.base_rate || 0.025);
 
-    return {
+    const state = {
       bonds: bonds.data || [],
       stocks: stocks.data || [],
       adminBaseRate: baseRate,
@@ -229,6 +315,8 @@ export class MarketEngine {
       realWorldMacro: macroData,
       activeEvents: this.activeEvents
     };
+    if (Math.random() < 0.1) console.log(`[Debug] Fetched ${state.stocks.length} stocks from DB.`);
+    return state;
   }
 
   private async processBatchOrders(lpOrders: any[], marketState: any) {

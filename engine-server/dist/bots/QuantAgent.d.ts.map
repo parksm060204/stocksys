@@ -1,0 +1,1 @@
+{"version":3,"file":"QuantAgent.d.ts","sourceRoot":"","sources":["../../src/bots/QuantAgent.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,QAAQ,EAAe,MAAM,UAAU,CAAC;AACtD,OAAO,EAAE,SAAS,EAAE,MAAM,aAAa,CAAC;AAQxC,qBAAa,UAAW,SAAQ,SAAS;IACvC,OAAO,CAAC,GAAG,CAAW;IACtB,OAAO,CAAC,WAAW,CAAqB;gBAE5B,GAAG,EAAE,QAAQ;IAclB,oBAAoB,CAAC,aAAa,EAAE,GAAG,EAAE,SAAS,EAAE,GAAG;CAsE/D"}

@@ -106,25 +106,18 @@ export default async function Home() {
       </div>
 
       <div className="grid gap-6 lg:grid-cols-3">
-        <div className="lg:col-span-2 space-y-6">
-          <MoverCard title="상승 TOP 5" stocks={gainers} />
-          <MoverCard title="하락 TOP 5" stocks={losers} />
-          
-          {/* ECO 터미널 UI 추가 */}
-          <div className="mt-8">
-            <EcoTerminal />
-          </div>
-        </div>
+        <MoverCard title="상승 TOP 5" stocks={gainers} />
+        <MoverCard title="하락 TOP 5" stocks={losers} />
 
-        <div className="rounded-xl border border-border bg-panel">
+        <div className="rounded-xl border border-border bg-panel glass-card hover-glass flex flex-col">
           <div className="flex items-center justify-between border-b border-border px-4 py-3">
             <h3 className="text-[13px] font-semibold text-tx">최신 뉴스</h3>
             <Link href="/news" className="text-[11px] text-accent hover:underline">
               전체 보기
             </Link>
           </div>
-          <div className="divide-y divide-border">
-            {NEWS.map((n: any) => (
+          <div className="divide-y divide-border flex-1 flex flex-col">
+            {NEWS.length > 0 ? NEWS.map((n: any) => (
               <Link key={n.id} href="/news" className="block px-4 py-3 hover:bg-panel2/60">
                 <div className="flex items-center gap-2">
                   <span
@@ -146,9 +139,13 @@ export default async function Home() {
                 </div>
                 <p className="mt-1 line-clamp-2 text-[12px] text-tx">{n.headline}</p>
               </Link>
-            ))}
+            )) : (
+              <div className="flex-1 flex flex-col items-center justify-center p-6 text-center">
+                <span className="text-2xl mb-2">🤖</span>
+                <p className="text-[12px] text-dim font-medium">AI가 시장을 분석 중입니다.</p>
+              </div>
+            )}
           </div>
-
         </div>
       </div>
     </div>
@@ -170,54 +167,28 @@ function IndexCard({ index }: { index: MarketIndex }) {
   return (
     <Link
       href={href}
-      className="group rounded-xl border border-border bg-panel p-5 transition-colors hover:border-accent/40"
+      className="group relative overflow-hidden rounded-xl border border-border bg-panel p-6 glass-card hover-glass flex flex-col justify-between h-full"
     >
-      <div className="flex items-start justify-between">
+      <div className="absolute inset-0 opacity-10 pointer-events-none" style={{
+        background: `linear-gradient(to top, ${dir === 'up' ? 'var(--up)' : dir === 'down' ? 'var(--down)' : 'transparent'} 0%, transparent 100%)`
+      }}></div>
+      
+      <div className="relative z-10 flex items-start justify-between">
         <div>
-          <div className="flex items-center gap-2">
-            <span className="text-xl">{flag}</span>
-            <span className="text-[16px] font-bold text-tx">{index.nameKo}</span>
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-2xl drop-shadow-md">{flag}</span>
+            <span className="text-[18px] font-bold text-tx drop-shadow-sm">{index.nameKo}</span>
           </div>
-          <div className="mt-0.5 text-[11px] text-dim">
+          <div className="text-[12px] text-dim font-medium">
             {index.constituentCount}개 종목 · 시가총액 가중
           </div>
         </div>
         <div className="text-right">
-          <div className={`font-mono text-[28px] font-bold tabular-nums ${color}`}>
+          <div className={`font-mono text-[32px] font-black tabular-nums tracking-tighter ${color} drop-shadow-sm`}>
             {index.currentValue.toLocaleString("ko-KR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </div>
-          <div className={`mt-0.5 font-mono text-[14px] tabular-nums ${color}`}>
+          <div className={`mt-1 font-mono text-[15px] font-semibold tabular-nums ${color}`}>
             {arrow} {index.changeAmount >= 0 ? "+" : ""}{index.changeAmount.toFixed(2)} ({fmtSigned(index.changePct)}%)
-          </div>
-        </div>
-      </div>
-
-      {/* 상승/하락 종목 */}
-      <div className="mt-4 grid grid-cols-2 gap-3">
-        <div>
-          <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-up">
-            상승 TOP 3
-          </div>
-          <div className="space-y-1">
-            {index.topGainers.slice(0, 3).map((g) => (
-              <div key={g.ticker} className="flex justify-between text-[11px]">
-                <span className="text-muted">{g.name}</span>
-                <span className="font-mono text-up">+{g.changePct.toFixed(2)}%</span>
-              </div>
-            ))}
-          </div>
-        </div>
-        <div>
-          <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-down">
-            하락 TOP 3
-          </div>
-          <div className="space-y-1">
-            {index.topLosers.slice(0, 3).map((l) => (
-              <div key={l.ticker} className="flex justify-between text-[11px]">
-                <span className="text-muted">{l.name}</span>
-                <span className="font-mono text-down">{l.changePct.toFixed(2)}%</span>
-              </div>
-            ))}
           </div>
         </div>
       </div>

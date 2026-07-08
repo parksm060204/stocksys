@@ -1,0 +1,1 @@
+{"version":3,"file":"newsFetcher.d.ts","sourceRoot":"","sources":["../src/newsFetcher.ts"],"names":[],"mappings":"AAcA,qBAAa,WAAW;IACtB,OAAO,CAAC,SAAS,CAAkB;IACnC,OAAO,CAAC,eAAe,CAA0B;IACjD,OAAO,CAAC,KAAK,CAA+B;;IAIrC,KAAK;IAUL,IAAI;YAMG,SAAS;CAwCxB"}

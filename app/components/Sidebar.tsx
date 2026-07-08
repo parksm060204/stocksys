@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { MARKETS } from "@/lib/constants";
+import { createBrowserClient } from "@supabase/ssr";
 
 const ADMIN_PASSWORD = "dlcks123";
 
@@ -23,6 +24,28 @@ export default function Sidebar() {
   const [showPrompt, setShowPrompt] = useState(false);
   const [password, setPassword] = useState("");
   const [error, setError] = useState(false);
+  
+  const [unlockedFeatures, setUnlockedFeatures] = useState<string[]>([]);
+  const [userId, setUserId] = useState<string | null>(null);
+
+  const supabase = createBrowserClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+  );
+
+  useEffect(() => {
+    const fetchProfile = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.user) {
+        setUserId(session.user.id);
+        const { data } = await supabase.from('profiles').select('unlocked_features').eq('id', session.user.id).single();
+        if (data && data.unlocked_features) {
+          setUnlockedFeatures(data.unlocked_features);
+        }
+      }
+    };
+    fetchProfile();
+  }, [supabase]);
 
   const handleAdminClick = useCallback(() => {
     const now = Date.now();
@@ -50,6 +73,8 @@ export default function Sidebar() {
   const isActive = (href: string) =>
     href === "/" ? pathname === "/" : pathname.startsWith(href);
 
+  const hasEcoCalendar = unlockedFeatures.includes("eco_calendar");
+
   return (
     <>
       <aside className="flex w-60 shrink-0 flex-col border-r border-border bg-panel">
@@ -63,8 +88,9 @@ export default function Sidebar() {
           </div>
         </Link>
 
-        <nav className="flex-1 overflow-y-auto px-3 py-4">
+        <nav className="flex-1 overflow-y-auto px-3 py-4 flex flex-col">
           <NavItem href="/" label="메인홈" icon="📈" active={isActive("/")} />
+          
           <div className="mt-4 mb-2 px-3 text-[10px] font-semibold uppercase tracking-wider text-dim">
             시장
           </div>
@@ -78,6 +104,7 @@ export default function Sidebar() {
               active={isActive(`/markets/${m.id}`)}
             />
           ))}
+
           <div className="mt-4 mb-2 px-3 text-[10px] font-semibold uppercase tracking-wider text-dim">
             기타
           </div>
@@ -102,6 +129,20 @@ export default function Sidebar() {
               />
             ),
           )}
+
+          {hasEcoCalendar && (
+            <NavItem href="/eco" label="경제지표 일정" icon="🗓️" active={isActive("/eco")} />
+          )}
+
+          <div className="mt-auto pt-4 pb-2">
+            <Link
+              href="/shop"
+              className="flex items-center gap-2 rounded-lg px-3 py-2 text-[12px] text-dim hover:bg-panel2/40 hover:text-tx transition-colors opacity-80"
+            >
+              <span>🔒</span>
+              <span>상점에서 프로 기능 해금하기</span>
+            </Link>
+          </div>
         </nav>
 
         <div className="border-t border-border px-4 py-3 text-[10px] text-dim">

@@ -18,8 +18,8 @@ DECLARE
   existing_expiry TIMESTAMPTZ;
   new_expiry TIMESTAMPTZ;
 BEGIN
-  -- 유저 예수금 조회 (portfolios 테이블 기준)
-  SELECT cash_balance INTO current_cash FROM public.portfolios WHERE user_id = user_uuid;
+  -- 유저 예수금 조회 (profiles 테이블 기준)
+  SELECT cash INTO current_cash FROM public.profiles WHERE id = user_uuid;
   
   -- 잔액 부족 시 FALSE 반환
   IF current_cash < total_price THEN 
@@ -27,7 +27,7 @@ BEGIN
   END IF;
   
   -- 잔액 차감
-  UPDATE public.portfolios SET cash_balance = cash_balance - total_price WHERE user_id = user_uuid;
+  UPDATE public.profiles SET cash = cash - total_price WHERE id = user_uuid;
 
   -- 현재 구독 상태 조회
   SELECT news_subscriptions INTO current_subs FROM public.profiles WHERE id = user_uuid;

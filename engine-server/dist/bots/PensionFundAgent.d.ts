@@ -1,7 +1,7 @@
 import type { PensionFundBot } from "../types";
 import { BaseAgent } from "./BaseAgent";
 export declare class PensionFundAgent extends BaseAgent {
-    private bot;
+    readonly config: PensionFundBot;
     private executionState;
     constructor(bot: PensionFundBot);
     private calculatePriceFromYTM;

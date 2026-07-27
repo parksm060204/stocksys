@@ -1,5 +1,6 @@
 import type { CommercialBankBot } from "../types";
-export declare class CommercialBankAgent {
+import { BaseAgent } from "./BaseAgent";
+export declare class CommercialBankAgent extends BaseAgent {
     private bot;
     constructor(bot: CommercialBankBot);
     private calculatePriceFromYTM;

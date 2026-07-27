@@ -30,11 +30,11 @@ export class RealWorldFetcher {
       
       try {
         tnxResult = await (yahooFinance.quote as any)('^TNX');
-      } catch (e) {}
+      } catch {}
 
       try {
         vixResult = await (yahooFinance.quote as any)('^VIX');
-      } catch (e) {}
+      } catch {}
 
       const tnx = tnxResult?.regularMarketPrice || 4.2; // Default fallback 4.2%
       const vix = vixResult?.regularMarketPrice || 20.0; // Default fallback 20.0

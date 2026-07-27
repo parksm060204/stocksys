@@ -3,7 +3,7 @@
 import { useState, useEffect, Suspense } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { change, fmtSigned } from "@/lib/format";
+import { fmtSigned } from "@/lib/format";
 import { getKOSPIIndex, getSP50Index, getEuroStoxx50Index } from "@/lib/index";
 import type { MarketIndex } from "@/lib/index";
 import type { MarketId, Stock } from "@/lib/types";
@@ -41,7 +41,7 @@ function StocksContent() {
         .select('id, name, ticker, market, sector, current_price, previous_close');
       
       if (data) {
-        setAllStocks(data.map(row => ({
+        setAllStocks(data.map((row: { id: string; name: string; ticker: string; market: string; sector: string; current_price: number; previous_close: number }) => ({
           id: row.id,
           name: row.name,
           ticker: row.ticker,
@@ -124,7 +124,7 @@ function StocksContent() {
                 </span>
               </div>
               <div className={`mt-1 font-mono text-[15px] font-bold tabular-nums ${tColor}`}>
-                {idx.currentValue.toLocaleString("ko-KR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                {Math.round(idx.currentValue).toLocaleString("ko-KR")}
                 <span className="ml-1.5 text-[11px]">
                   {tDir === "up" ? "▲" : tDir === "down" ? "▼" : "–"} {fmtSigned(idx.changePct)}%
                 </span>
@@ -148,10 +148,10 @@ function StocksContent() {
           </div>
           <div className="text-right">
             <div className={`font-mono text-[32px] font-bold tabular-nums ${color}`}>
-              {index.currentValue.toLocaleString("ko-KR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              {Math.round(index.currentValue).toLocaleString("ko-KR")}
             </div>
             <div className={`mt-0.5 font-mono text-[15px] tabular-nums ${color}`}>
-              {arrow} {index.changeAmount >= 0 ? "+" : ""}{index.changeAmount.toFixed(2)} ({fmtSigned(index.changePct)}%)
+              {arrow} {index.changeAmount >= 0 ? "+" : ""}{Math.round(index.changeAmount).toLocaleString("ko-KR")} ({fmtSigned(index.changePct)}%)
             </div>
           </div>
         </div>

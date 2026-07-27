@@ -29,7 +29,7 @@ async function main() {
   const port = process.env.PORT || 10000;
   const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('Antigravity Stock Engine is running.\n');
+    res.end('무명 Stock Engine is running.\n');
   });
 
   server.listen(port, () => {

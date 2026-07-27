@@ -25,9 +25,9 @@ export default function BondDetailPanel({ stock }: { stock: Stock }) {
       .on(
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'stocks', filter: `id=eq.${stock.id}` },
-        (payload) => {
+        (payload: { new: Record<string, unknown> }) => {
           if (payload.new.current_price) {
-            setCurrentPrice(payload.new.current_price);
+            setCurrentPrice(payload.new.current_price as number);
           }
         }
       )

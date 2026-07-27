@@ -30,3 +30,5 @@ INSERT INTO macro_calendar (trigger_time, event_name, period, impact_level, surv
 ('21:30', 'US Core CPI (MoM)', 'Jun', 'HIGH', '0.2%', '--', 'PENDING'),
 ('22:00', 'ISM Manufacturing PMI', 'Jun', 'HIGH', '48.5', '--', 'PENDING'),
 ('22:15', 'Fed Chair Powell Speaks', '', 'HIGH', '--', '--', 'PENDING');
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE macro_calendar TO anon, authenticated;

@@ -1,83 +1,126 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import type { Stock, Trade } from "@/lib/types";
-import { fmtPrice } from "@/lib/format";
-import { createClient } from "@/lib/supabase/client";
+import React from 'react';
+import { useOrderbookData } from '@/lib/hooks/useOrderbookData';
+import type { TradeRecord } from '@/lib/hooks/useOrderbookData';
+import type { SimTrade } from '@/lib/hooks/useStockBotSimulation';
+import type { Stock } from '@/lib/types';
 
-export default function TradeFeed({ stock }: { stock: Stock }) {
-  const [trades, setTrades] = useState<Trade[]>([]);
-  const supabase = createClient();
+interface TradeFeedProps {
+  stock?: Stock;
+  trades?: SimTrade[];
+  rolloverEvents?: Array<{
+    comboId: string;
+    botId: string;
+    quantity: number;
+    executedSpread: number;
+  }>;
+}
 
-  useEffect(() => {
-    const fetchTrades = async () => {
-      const { data } = await supabase
-        .from('trades')
-        .select('*')
-        .eq('stock_id', stock.id)
-        .order('created_at', { ascending: false })
-        .limit(18);
+export const TradeFeed: React.FC<TradeFeedProps> = ({ stock, trades: externalTrades, rolloverEvents = [] }) => {
+  // DB 기반 훅 (DB 없으면 시뮬레이션 fallback)
+  const { trades: dbTrades, source } = useOrderbookData(
+    stock?.id ?? '__none__',
+    stock?.ticker ?? '__none__',
+    stock?.currentPrice ?? 0,
+    800,
+  );
 
-      if (data) {
-        setTrades(data.map(t => ({
-          id: t.id,
-          stockId: t.stock_id,
-          price: t.price,
-          size: t.size,
-          side: t.side,
-          time: new Date(t.created_at).toLocaleTimeString([], { hour12: false }),
-        } as Trade)));
-      }
-    };
+  // 외부 trades 우선, 없으면 DB 시뮬레이션 결과 (stock이 없으면 빈 배열)
+  // SimTrade[] → TradeRecord[] 변환
+  const externalMapped: TradeRecord[] = externalTrades?.map((t: SimTrade) => ({
+    tradeId: t.tradeId,
+    price: t.price,
+    quantity: t.quantity,
+    side: t.side,
+    isLiquidation: t.isLiquidation,
+    timestamp: t.timestamp,
+  })) ?? [];
 
-    fetchTrades();
+  const trades = externalMapped.length > 0
+    ? externalMapped
+    : stock
+      ? dbTrades
+      : [];
 
-    const channel = supabase
-      .channel(`trades_feed_${stock.id}`)
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'trades', filter: `stock_id=eq.${stock.id}` },
-        (payload) => {
-          const t = payload.new;
-          const newTrade: Trade = {
-            id: t.id,
-            stockId: t.stock_id,
-            price: t.price,
-            size: t.size,
-            side: t.side,
-            time: new Date(t.created_at).toLocaleTimeString([], { hour12: false }),
-          };
-          setTrades(prev => [newTrade, ...prev].slice(0, 18));
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [stock.id, supabase]);
+  const fmtPrice = (priceVal: number) => {
+    const isUSD = stock?.market === 'overseas' || stock?.market === 'europe' || stock?.market === 'commodities';
+    return isUSD ? `$${priceVal.toFixed(2)}` : `₩${Math.round(priceVal).toLocaleString()}`;
+  };
 
   return (
-    <div className="rounded-xl border border-border bg-panel">
-      <div className="border-b border-border px-4 py-2.5">
-        <h3 className="text-[13px] font-semibold text-tx">체결 내역</h3>
+    <div className="flex flex-col h-full text-xs font-mono select-none">
+      {/* 헤더 */}
+      <div className="bg-[#1e222d] px-3 py-1.5 border-b border-[#2a2e39] flex justify-between items-center shrink-0">
+        <span className="font-bold text-gray-300 flex items-center gap-1.5">
+          <span>📡</span>
+          <span>실시간 체결</span>
+        </span>
+        <span
+          className={`text-[10px] font-bold flex items-center gap-1 ${
+            source === 'db' ? 'text-emerald-400' : 'text-amber-400'
+          }`}
+        >
+          <span className="w-1.5 h-1.5 rounded-full bg-current animate-ping" />
+          <span>{source === 'db' ? 'LIVE (DB)' : 'SIM'}</span>
+        </span>
       </div>
-      <div className="grid grid-cols-3 px-4 py-1.5 text-[10px] uppercase tracking-wider text-dim">
-        <span>시간</span>
-        <span className="text-center">체결가</span>
-        <span className="text-right">수량</span>
-      </div>
-      <div className="max-h-72 overflow-y-auto px-2 pb-2">
-        {trades.map((t) => (
-          <div key={t.id} className="grid grid-cols-3 items-center px-2 py-[3px] text-[12px]">
-            <span className="font-mono tabular-nums text-dim">{t.time}</span>
-            <span className={`text-center font-mono tabular-nums ${t.side === "buy" ? "text-up" : "text-down"}`}>
-              {fmtPrice(t.price, stock.market)}
-            </span>
-            <span className="text-right font-mono tabular-nums text-muted">{t.size.toLocaleString()}</span>
+
+      <div className="flex-1 overflow-y-auto p-1.5 space-y-1.5 bg-[#0d0e12] scrollbar-thin scrollbar-thumb-gray-800">
+        {/* 롤오버 특수 알림 */}
+        {rolloverEvents.length > 0 && (
+          <div className="p-2.5 bg-[#002b36] border border-[#005f73] rounded text-[11px] text-[#005f73] animate-pulse space-y-0.5">
+            <div className="font-bold text-[#94d2bd] flex justify-between">
+              <span>🔄 롤오버(Rollover) 수급 감지</span>
+              <span>스프레드: +₩{rolloverEvents[0].executedSpread.toFixed(0)}</span>
+            </div>
+            <div className="text-gray-300 text-[10.5px]">
+              세력 ID: <span className="text-amber-300 font-bold">{rolloverEvents[0].botId}</span> | {rolloverEvents[0].quantity.toLocaleString()}계약 원자적 이월 완료
+            </div>
           </div>
-        ))}
+        )}
+
+        {/* 체결 테이블 헤더 */}
+        <div className="grid grid-cols-3 text-[10px] text-gray-500 font-semibold px-2 py-1 border-b border-[#181b22]">
+          <span>시간</span>
+          <span className="text-right">체결가</span>
+          <span className="text-right">수량</span>
+        </div>
+
+        {/* 체결 피드 */}
+        {trades.length === 0 ? (
+          <div className="py-6 text-center text-[11px] text-gray-600">체결 대기 중...</div>
+        ) : (
+          trades.map((t) => {
+            if (t.isLiquidation) {
+              return (
+                <div key={t.tradeId} className="flex justify-between items-center px-2 py-1 bg-[#241335] border-l-2 border-purple-500 text-purple-300 font-bold rounded-xs">
+                  <span className="text-[10px] font-black">🚨 [LIQUIDATION]</span>
+                  <span className="tabular-nums">{fmtPrice(t.price)}</span>
+                  <span className="tabular-nums font-black">{t.quantity.toLocaleString()}주</span>
+                </div>
+              );
+            }
+
+            const isUp = t.side === 'BUY';
+            return (
+              <div key={t.tradeId} className="grid grid-cols-3 items-center px-2 py-[3px] border-b border-[#181b22] text-[11px] hover:bg-[#141721]">
+                <span className="text-gray-500 text-[10px]">
+                  {new Date(t.timestamp).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                </span>
+                <span className={`text-right font-bold tabular-nums ${isUp ? 'text-[#ef5350]' : 'text-[#42a5f5]'}`}>
+                  {fmtPrice(t.price)}
+                </span>
+                <span className={`text-right font-bold tabular-nums ${isUp ? 'text-[#ef5350]' : 'text-[#42a5f5]'}`}>
+                  {t.quantity.toLocaleString()}
+                </span>
+              </div>
+            );
+          })
+        )}
       </div>
     </div>
   );
-}
+};
+
+export default TradeFeed;

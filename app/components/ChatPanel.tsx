@@ -34,8 +34,7 @@ export default function ChatPanel({
   return (
     <div className="flex h-full flex-col rounded-xl border border-border bg-panel">
       <div className="flex items-center justify-between border-b border-border px-4 py-2.5">
-        <h3 className="text-[13px] font-semibold text-tx">종목 토론방</h3>
-        <span className="text-[11px] text-dim">주주 인증 표시</span>
+        <h3 className="text-[13px] font-semibold text-tx">주주톡</h3>
       </div>
       <div className="flex-1 space-y-3 overflow-y-auto p-4">
         {messages.map((m) => (

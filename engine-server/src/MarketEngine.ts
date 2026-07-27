@@ -1,14 +1,19 @@
 import { createClient } from '@supabase/supabase-js';
+import { BaseAgent } from './bots/BaseAgent';
+import { ExecutionTrader } from './bots/ExecutionTrader';
+import { REAL_WORLD_INSTITUTIONS } from './config/institutions';
+import { AdversarialAgent } from './bots/AdversarialAgent';
+import { WallBreakerAgent } from './bots/WallBreakerAgent';
+import { OptionsMMAgent } from './bots/OptionsMMAgent';
+import { CTAAgent, CommercialHedgerAgent } from './bots/CommodityBots';
+import { QuantAgent } from './bots/QuantAgent';
+import { ASMarketMakerAgent } from './bots/ASMarketMakerAgent';
+import { RetailSwarmAgent } from './bots/RetailSwarmAgent';
+import { HedgeFundAgent } from './bots/HedgeFundAgent';
+import { StatArbAgent } from './bots/StatArbAgent';
 import { PensionFundAgent } from './bots/PensionFundAgent';
 import { CommercialBankAgent } from './bots/CommercialBankAgent';
-import { HedgeFundAgent } from './bots/HedgeFundAgent';
 import { PropDeskAgent } from './bots/PropDeskAgent';
-import { RetailSwarmAgent } from './bots/RetailSwarmAgent';
-import { AdversarialAgent } from './bots/AdversarialAgent';
-import { ASMarketMakerAgent } from './bots/ASMarketMakerAgent';
-import { StatArbAgent } from './bots/StatArbAgent';
-import { OptionsMMAgent } from './bots/OptionsMMAgent';
-import { QuantAgent } from './bots/QuantAgent';
 import { RealWorldFetcher } from './realWorldFetcher';
 import { EventBus } from './EventBus';
 import type { MacroData } from './realWorldFetcher';
@@ -41,17 +46,25 @@ export class MarketEngine {
 
   private activeEvents: MarketEvent[] = [];
 
-  private pensionFunds: PensionFundAgent[] = [];
-  private commercialBanks: CommercialBankAgent[] = [];
-  private hedgeFunds: HedgeFundAgent[] = [];
-  private propDesks: PropDeskAgent[] = [];
-  private retailSwarms: RetailSwarmAgent[] = [];
-  private statArbBots: StatArbAgent[] = [];
-  private optionsMMBots: OptionsMMAgent[] = [];
-  private quantBots: QuantAgent[] = [];
-  private asMarketMakers: ASMarketMakerAgent[] = [];
-  private adversarialAgent: AdversarialAgent = new AdversarialAgent();
+  private institutionalBots: ExecutionTrader[] = [];
   
+  // Specific role bots
+  private optionsMMBots: OptionsMMAgent[] = [];
+  private ctaBots: CTAAgent[] = [];
+  private adversarialAgent: AdversarialAgent = new AdversarialAgent();
+  private wallBreakerAgent: WallBreakerAgent = new WallBreakerAgent();
+  private asMarketMakerAgent: ASMarketMakerAgent = new ASMarketMakerAgent();
+  
+  // New bots
+  private retailSwarmAgents: RetailSwarmAgent[] = [];
+  private hedgeFundAgents: HedgeFundAgent[] = [];
+  private statArbAgents: StatArbAgent[] = [];
+  private pensionFundAgents: PensionFundAgent[] = [];
+  private commercialBankAgents: CommercialBankAgent[] = [];
+  private propDeskAgents: PropDeskAgent[] = [];
+  private quantAgents: QuantAgent[] = [];
+  private commercialHedgerAgents: CommercialHedgerAgent[] = [];
+
   private realWorldFetcher: RealWorldFetcher = new RealWorldFetcher();
 
   constructor() {}
@@ -63,71 +76,84 @@ export class MarketEngine {
   }
 
   public async initializeBots() {
-    console.log("Fetching bot configurations from Supabase...");
-    const { data: botsData, error } = await supabase.from('bots_config').select('*');
+    console.log("Initializing Institutional Bots from DB...");
+    this.institutionalBots = [];
     
-    if (error || !botsData) {
-      console.error("Failed to load bots config from DB:", error);
-      // DB가 없어도 시뮬레이션용 봇이 주입되도록 계속 진행합니다.
+    const { data: configs, error } = await supabase.from('bots_config').select('*');
+    if (error || !configs || configs.length === 0) {
+      console.error("Failed to load bots from DB or table is empty.");
+      return;
     }
 
-    this.pensionFunds = [];
-    this.commercialBanks = [];
-    this.hedgeFunds = [];
-    this.propDesks = [];
-    this.retailSwarms = [];
+    this.retailSwarmAgents = [];
+    this.hedgeFundAgents = [];
+    this.statArbAgents = [];
+    this.pensionFundAgents = [];
+    this.optionsMMBots = [];
+    this.ctaBots = [];
+    this.commercialBankAgents = [];
+    this.propDeskAgents = [];
+    this.quantAgents = [];
+    this.commercialHedgerAgents = [];
 
-    if (botsData) {
-      for (const bot of botsData) {
-        const config = { id: bot.id, name: bot.name, type: bot.bot_type, capital: bot.capital, ...bot.traits };
-        
-        switch(bot.bot_type) {
-          case 'PENSION_FUND':
-            this.pensionFunds.push(new PensionFundAgent(config));
-            break;
-          case 'COMMERCIAL_BANK':
-            this.commercialBanks.push(new CommercialBankAgent(config));
-            break;
-          case 'HEDGE_FUND':
-            this.hedgeFunds.push(new HedgeFundAgent(config));
-            break;
-          case 'PROP_DESK':
-            this.propDesks.push(new PropDeskAgent(config as any));
-            break;
-          case 'RETAIL_SWARM':
-            this.retailSwarms.push(new RetailSwarmAgent(config as any));
-            break;
-          case 'STAT_ARB':
-            this.statArbBots.push(new StatArbAgent(config as any));
-            break;
-          case 'OPTIONS_MM':
-            this.optionsMMBots.push(new OptionsMMAgent(config as any));
-            break;
-        }
-      }
+    for (const config of configs) {
+       const botConfig = {
+           id: config.id,
+           name: config.name,
+           type: config.bot_type,
+           capital: config.capital,
+           ...config.traits
+       };
+
+       if (config.bot_type === 'PENSION_FUND') {
+          this.pensionFundAgents.push(new PensionFundAgent(botConfig as any));
+        } else if (config.bot_type === 'HEDGE_FUND') {
+           const hedgeConfig = {
+             ...botConfig,
+             portfolioTarget: (botConfig as any).portfolioTarget || { equity: 0.5, safeBonds: 0.3, highYield: 0.2 },
+             currentSentiment: (botConfig as any).currentSentiment || 'NEUTRAL'
+           };
+           this.hedgeFundAgents.push(new HedgeFundAgent(hedgeConfig as any));
+       } else if (config.bot_type === 'RETAIL_SWARM') {
+          this.retailSwarmAgents.push(new RetailSwarmAgent(botConfig as any));
+       } else if (config.bot_type === 'STAT_ARB') {
+          this.statArbAgents.push(new StatArbAgent(botConfig as any));
+       } else if (config.bot_type === 'COMMERCIAL_BANK') {
+          this.commercialBankAgents.push(new CommercialBankAgent(botConfig as any));
+       } else if (config.bot_type === 'PROP_DESK') {
+          this.propDeskAgents.push(new PropDeskAgent(botConfig as any));
+       } else if (config.bot_type === 'QUANT_FUND') {
+          this.quantAgents.push(new QuantAgent(botConfig as any));
+       } else if (config.bot_type === 'COMMERCIAL_HEDGER') {
+          this.commercialHedgerAgents.push(new CommercialHedgerAgent(botConfig as any));
+       } else {
+          this.institutionalBots.push(new ExecutionTrader(botConfig as any, config.capital));
+       }
     }
-    
-    // DB에 없는 경우 강제로 1개씩 주입 (시뮬레이션 관측용)
-    if (this.statArbBots.length === 0) {
-      this.statArbBots.push(new StatArbAgent({
-        id: 'bot_stat_arb_001', name: 'Quant ETF Arbitrage', type: 'STAT_ARB', capital: 5000000000, reactionSpeed: 5, tradingStyle: 'ARBITRAGE', basketTarget: 'TECH_TOP3', transCostThreshold: 0.005
-      }));
-    }
+
+    // 파생상품 특화 봇들은 기존 로직에 따라 하나씩 유지 (없으면 생성)
     if (this.optionsMMBots.length === 0) {
       this.optionsMMBots.push(new OptionsMMAgent({
-        id: 'bot_options_mm_001', name: 'Gamma Squeezer MM', type: 'OPTIONS_MM', capital: 10000000000, reactionSpeed: 2, tradingStyle: 'DELTA_NEUTRAL', initialGammaNet: -50 // 거대한 숏 감마
-      }));
+        id: 'bot_options_mm_001', name: 'Gamma Squeezer MM', type: 'OPTIONS_MM', capital: 10000000000, reactionSpeed: 2, tradingStyle: 'DELTA_NEUTRAL', initialGammaNet: -50
+      } as any));
     }
-    if (this.quantBots.length === 0) {
-      this.quantBots.push(new QuantAgent({
-        id: 'bot_quant_001', name: 'Informed Quant Fund', type: 'QUANT_FUND', capital: 20000000000, reactionSpeed: 1, tradingStyle: 'INFORMED_TRADER'
-      }));
+    if (this.ctaBots.length === 0) {
+      this.ctaBots.push(new CTAAgent({
+        id: 'bot_cta_001', name: 'Macro CTA Fund', type: 'CTA_MOMENTUM', capital: 20000000000, reactionSpeed: 1, breakoutThreshold: 0.02, tradingStyle: 'SWEEP_AGGRESSIVE'
+      } as any));
     }
-    if (this.asMarketMakers.length === 0) {
-      this.asMarketMakers.push(new ASMarketMakerAgent());
+    if (this.quantAgents.length === 0) {
+      this.quantAgents.push(new QuantAgent({
+        id: 'bot_quant_001', name: 'Aladdin Quant Fund', type: 'QUANT_FUND', capital: 30000000000, reactionSpeed: 2, tradingStyle: 'INFORMED_TRADER'
+      } as any));
+    }
+    if (this.commercialHedgerAgents.length === 0) {
+      this.commercialHedgerAgents.push(new CommercialHedgerAgent({
+        id: 'bot_hedger_001', name: 'Chevron Commercial Hedger', type: 'COMMERCIAL_HEDGER', capital: 50000000000, targetCommodity: 'WTI_CRUDE', supportLevel: 75, resistanceLevel: 90, tradingStyle: 'LIMIT_HEAVY'
+      } as any));
     }
 
-    console.log(`Successfully loaded ${botsData?.length || 0} bots (including Retail Swarms) from reality.`);
+    console.log(`Successfully loaded ${configs.length} master institutions from DB.`);
   }
 
   public async start() {
@@ -221,12 +247,38 @@ export class MarketEngine {
         return e.durationTicks > 0;
       });
 
+      // 1. 틱 시작 시점의 모든 미체결 주문(User + LP)을 가져와 orderBook 구성
+      const { data: initialOrders } = await supabase.from('orders').select('*').eq('status', 'open');
+      const orderBook: Record<string, { bids: any[], asks: any[] }> = {};
+      if (initialOrders) {
+        for (const order of initialOrders) {
+          const sId = order.stock_id;
+          let book = orderBook[sId];
+          if (!book) {
+            book = { bids: [], asks: [] };
+            orderBook[sId] = book;
+          }
+          if (order.side === 'buy') {
+            book.bids.push(order);
+          } else {
+            book.asks.push(order);
+          }
+        }
+        // 정렬
+        for (const sId of Object.keys(orderBook)) {
+          orderBook[sId]!.bids.sort((a, b) => b.price - a.price);
+          orderBook[sId]!.asks.sort((a, b) => a.price - b.price);
+        }
+      }
+
       // 틱이 시작될 때마다 기존에 깔아둔 LP 호가(허수주문, 잔여 빙산 등)를 모두 걷어냅니다.
       // 이렇게 해야 호가창이 실시간으로 새롭게 깜빡이며(Spoofing 등) 업데이트됩니다.
       await supabase.from('orders').delete().eq('is_lp', true);
+      await this.updateExchangeRates();
 
       const macroData = await this.realWorldFetcher.getMacroData();
       const marketState = await this.fetchMarketState(macroData);
+      marketState.orderBook = orderBook;
       
       let allOrders: any[] = [];
 
@@ -259,46 +311,76 @@ export class MarketEngine {
         this.fundamentals[stock.id] = (F || stock.current_price) + dF;
       }
 
-      // 2. 봇들에게서 주문 수집
-      for (const bot of this.pensionFunds) {
+      // 2. 봇들에게서 주문 수집 (3-Tier Portfolio Logic)
+      for (const bot of this.institutionalBots) {
         allOrders.push(...bot.evaluateMarketAndPlaceOrders(marketState));
       }
-      for (const bot of this.commercialBanks) {
+      for (const bot of this.commercialBankAgents) {
         allOrders.push(...bot.executeArbitrage(marketState, marketState.adminBaseRate));
       }
-      for (const bot of this.hedgeFunds) {
-        // VIX 지수에 따른 Risk-On/Off 전환 로직 (VIX 25 이상이면 공포)
-        if (macroData && macroData.vix > 25) {
-          bot.updateSentiment('RISK_OFF');
-        } else {
-          bot.updateSentiment('RISK_ON');
-        }
-        
-        allOrders.push(...bot.executeAggressiveSweep(marketState));
-      }
-      for (const bot of this.propDesks) {
+      for (const bot of this.propDeskAgents) {
         allOrders.push(...bot.executeMarketMaking(marketState, marketState.orderBook, {}));
       }
-      for (const bot of this.retailSwarms) {
-        const mockHoldings = {};
-        allOrders.push(...bot.executeSwarmBehavior(marketState, mockHoldings));
+      
+      for (const bot of this.retailSwarmAgents) {
+        allOrders.push(...bot.executeSwarmBehavior(marketState, {}));
       }
-      for (const bot of this.statArbBots) {
-        allOrders.push(...bot.executeArbitrage(marketState, {}));
+      for (const bot of this.hedgeFundAgents) {
+        allOrders.push(...bot.executeAggressiveSweep(marketState));
       }
+      for (const bot of this.statArbAgents) {
+        allOrders.push(...bot.executePairsTrading(marketState.stocks));
+      }
+      for (const bot of this.pensionFundAgents) {
+        allOrders.push(...bot.evaluateMarketAndPlaceOrders(marketState, false));
+      }
+      for (const bot of this.quantAgents) {
+        allOrders.push(...bot.executeQuantStrategy(marketState, marketState.orderBook));
+      }
+      for (const bot of this.commercialHedgerAgents) {
+        const cmd = (marketState.commodities || []).find((c: any) => c.commodity_id === bot.config.targetCommodity || c.id === bot.config.targetCommodity);
+        if (cmd) {
+          allOrders.push(...bot.executeHedging(cmd.current_price, cmd.id, cmd.tick_size));
+        }
+      }
+      
+      // 3. 파생상품 전용 봇 실행
       for (const bot of this.optionsMMBots) {
         allOrders.push(...bot.executeDeltaHedging(marketState, marketState.orderBook));
       }
-      for (const bot of this.quantBots) {
-        allOrders.push(...bot.executeQuantStrategy(marketState, marketState.orderBook));
+      for (const bot of this.ctaBots) {
+        for (const cmd of (marketState.commodities || [])) {
+          allOrders.push(...bot.executeMomentum(cmd.current_price, cmd.id, cmd.tick_size, marketState.activeEvents));
+        }
       }
       
-      for (const bot of this.asMarketMakers) {
-        allOrders.push(...bot.executeMarketMaking(marketState));
-      }
+      // 4. 고도화된 마켓메이커 및 적대적 봇
+      allOrders.push(...this.asMarketMakerAgent.executeMarketMaking(marketState));
       
       // 적대적 에이전트(작전 세력) 개입
       allOrders.push(...this.adversarialAgent.executeManipulation(marketState));
+
+      // WallBreakerAgent: 감마 스퀴즈 헌팅 (옵션 데이터 기반)
+      const currentHour = (new Date().getUTCHours() + 9) % 24;
+      const currentPrices: Record<string, number> = {};
+      for (const s of marketState.stocks) { currentPrices[s.id] = s.current_price; }
+      const optionsData = marketState.options_contracts || [];
+      allOrders.push(...this.wallBreakerAgent.executeGammaSqueezeHunt({ hour: currentHour }, currentPrices, optionsData));
+      
+      // Macro Linkage: WTI Inflation Shock
+      const wti = (marketState.commodities || []).find((c: any) => c.commodity_id === 'WTI_CRUDE');
+      if (wti && wti.current_price >= 83.0 && !this.activeEvents.find(e => e.id === 'INFLATION_SHOCK')) {
+        console.log(`🛢️ [MACRO SHOCK] WTI crude oil surged to ${wti.current_price}! Triggering INFLATION_SHOCK!`);
+        EventBus.publish('MARKET_SHOCK', { stockId: wti.id, volume: 0, pctChange: 0.1, marketState });
+        this.injectEvent({
+          id: 'INFLATION_SHOCK',
+          targetSector: 'ALL',
+          impact: 'STRONG_NEGATIVE',
+          urgencyMultiplier: 3.0,
+          durationTicks: 60,
+          reliability: 1.0
+        } as any);
+      }
 
       if (allOrders.length > 0) {
         await this.processBatchOrders(allOrders, marketState);
@@ -346,18 +428,21 @@ export class MarketEngine {
   }
 
   private async fetchMarketState(macroData: MacroData | null) {
-    const [bonds, stocks, adminSettings] = await Promise.all([
+    const [bonds, stocks, commodities, adminSettings, optionsContracts] = await Promise.all([
       supabase.from('bonds').select('*'),
       supabase.from('stocks').select('*'),
-      supabase.from('admin_settings').select('base_rate, market_sentiment').single()
+      supabase.from('commodities').select('*'),
+      supabase.from('admin_settings').select('base_rate, market_sentiment').single(),
+      supabase.from('options_contracts').select('*') // WallBreakerAgent 및 OptionsMMAgent용
     ]);
 
-    // 현실의 US10Y 금리를 게임 내 기준 금리로 활용할 수 있도록 병합
     const baseRate = macroData ? macroData.us10yYield / 100 : (adminSettings.data?.base_rate || 0.025);
 
     const state = {
       bonds: bonds.data || [],
       stocks: stocks.data || [],
+      commodities: commodities.data || [],
+      options_contracts: optionsContracts.data || [],
       adminBaseRate: baseRate,
       sentiment: adminSettings.data?.market_sentiment || 'NEUTRAL',
       orderBook: {},
@@ -365,7 +450,7 @@ export class MarketEngine {
       activeEvents: this.activeEvents,
       fundamentals: this.fundamentals
     };
-    if (Math.random() < 0.1) console.log(`[Debug] Fetched ${state.stocks.length} stocks from DB.`);
+    if (Math.random() < 0.1) console.log(`[Debug] Fetched ${state.stocks.length} stocks, ${state.commodities.length} commodities, ${state.options_contracts.length} options.`);
     return state;
   }
 
@@ -435,8 +520,37 @@ export class MarketEngine {
             size: tradeSize,
             buyer_id: highestBid.user_id || null,
             seller_id: lowestAsk.user_id || null,
+            buyer_is_bot: highestBid.is_lp || false,
+            seller_is_bot: lowestAsk.is_lp || false,
             created_at: new Date().toISOString()
           });
+
+          // ✅ Fix: 체결 후 기관 봇 포트폴리오 실제 업데이트 (Optimistic Update 대체)
+          // LP 봇 주문이 체결됐을 때 해당 봇을 찾아 confirmExecution() 호출
+          // LP 봇 주문은 user_id가 null이므로 botId 메타데이터를 주문 객체에서 확인
+          // Maker/Taker asset class detection
+          const getAssetClass = (order: any) => {
+            if (order._assetClass) return order._assetClass;
+            if (marketState.stocks.some((s: any) => s.id === order.stock_id)) return 'stock';
+            if (marketState.bonds.some((b: any) => b.id === order.stock_id)) return 'bond';
+            if (marketState.commodities.some((c: any) => c.id === order.stock_id)) return 'commodity';
+            return 'stock';
+          };
+          const bidAssetClass = getAssetClass(highestBid);
+          const askAssetClass = getAssetClass(lowestAsk);
+
+          if (highestBid.is_lp && highestBid._botId) {
+            const bot = this.findAgentById(highestBid._botId);
+            if (bot && typeof bot.confirmExecution === 'function') {
+              bot.confirmExecution(bidAssetClass, 'buy', tradeSize, tradePrice, highestBid.stock_id);
+            }
+          }
+          if (lowestAsk.is_lp && lowestAsk._botId) {
+            const bot = this.findAgentById(lowestAsk._botId);
+            if (bot && typeof bot.confirmExecution === 'function') {
+              bot.confirmExecution(askAssetClass, 'sell', tradeSize, tradePrice, lowestAsk.stock_id);
+            }
+          }
 
           // Maker-Taker 판별 (더 일찍 생성된 주문이 Maker)
           const bidTime = new Date(highestBid.created_at || 0).getTime();
@@ -514,34 +628,176 @@ export class MarketEngine {
     }
 
     // 5. DB 일괄 트랜잭션 반영 (Batch Commit)
+    const promises: any[] = [];
+
     // 5.1 체결 내역 Insert
     if (tradesToInsert.length > 0) {
-      await supabase.from('trades').insert(tradesToInsert);
+      promises.push(supabase.from('trades').insert(tradesToInsert).then(res => res));
     }
 
-    // 5.2 LP 잔여 주문 Insert
+    // 5.2 LP 잔여 주문 Insert (주식 FK 제약 조건 방어를 위해 valid stock_id만 필터링)
     if (lpOrdersToInsert.length > 0) {
-      // is_lp가 명시되지 않은 객체가 있을 수 있으므로 방어 코드 추가
-      const safeLpOrders = lpOrdersToInsert.map(o => ({
-        stock_id: o.stock_id,
-        user_id: null,
-        side: o.side,
-        price: o.price,
-        size: o.size,
-        status: 'open',
-        is_lp: true
-      }));
-      await supabase.from('orders').insert(safeLpOrders);
+      const validStockIds = new Set(marketState.stocks.map((s: any) => s.id));
+      const safeLpOrders = lpOrdersToInsert
+        .filter(o => validStockIds.has(o.stock_id))
+        .map(o => ({
+          stock_id: o.stock_id,
+          user_id: null,
+          side: o.side,
+          price: o.price,
+          size: Math.round(o.size),
+          status: 'open',
+          is_lp: true
+        }));
+
+      if (safeLpOrders.length > 0) {
+        promises.push(supabase.from('orders').insert(safeLpOrders).then(res => {
+          if (res.error) console.error("[Engine] Failed to insert LP orders:", res.error);
+          return res;
+        }));
+      }
     }
 
     // 5.3 유저 주문 잔량 Update
     for (const uOrder of userOrdersToUpdate) {
-      await supabase.from('orders').update({ size: uOrder.size, status: uOrder.status }).eq('id', uOrder.id);
+      promises.push(supabase.from('orders').update({ size: uOrder.size, status: uOrder.status }).eq('id', uOrder.id).then(res => res));
     }
 
-    // 5.4 주식 현재가 Update
+    // 5.4 현재가 Update (자산별 테이블 구분)
     for (const [sId, newPrice] of Object.entries(updatedStocks)) {
-      await supabase.from('stocks').update({ current_price: newPrice }).eq('id', sId);
+      if (marketState.stocks.some((s: any) => s.id === sId)) {
+        promises.push(supabase.from('stocks').update({ current_price: newPrice }).eq('id', sId).then(res => res));
+      } else if (marketState.bonds.some((b: any) => b.id === sId)) {
+        promises.push(supabase.from('bonds').update({ current_price: newPrice }).eq('id', sId).then(res => res));
+      } else if (marketState.commodities.some((c: any) => c.id === sId)) {
+        promises.push(supabase.from('commodities').update({ current_price: newPrice }).eq('id', sId).then(res => res));
+      }
     }
+
+     // 5.5 기관 포트폴리오 상태 동기화 (대시보드 용)
+     const allAgentsToSync = [
+       ...this.institutionalBots,
+       ...this.pensionFundAgents,
+       ...this.hedgeFundAgents,
+       ...this.statArbAgents,
+       ...this.commercialBankAgents,
+       ...this.propDeskAgents,
+       ...this.quantAgents,
+       ...this.commercialHedgerAgents,
+       ...this.optionsMMBots,
+       ...this.ctaBots
+     ];
+
+    if (allAgentsToSync.length > 0) {
+      const portfoliosToUpsert = allAgentsToSync.map(bot => {
+        const targetW = bot.calculateTargetWeights(marketState.sentiment, this.activeEvents);
+        const krRatio = targetW.kr_equity || 0;
+        const usRatio = targetW.us_equity || 0;
+        const euRatio = targetW.eu_equity || 0;
+        const totalEquityRatio = krRatio + usRatio + euRatio;
+        
+        let krVal = 0, usVal = 0, euVal = 0;
+        if (totalEquityRatio > 0) {
+          krVal = bot.currentPortfolio.stock * (krRatio / totalEquityRatio);
+          usVal = bot.currentPortfolio.stock * (usRatio / totalEquityRatio);
+          euVal = bot.currentPortfolio.stock * (euRatio / totalEquityRatio);
+        } else {
+          krVal = bot.currentPortfolio.stock;
+        }
+
+        return {
+          bot_id: bot.botId,
+          name: bot.agentConfig.name || bot.botId,
+          total_capital: bot.capital,
+          current_cash: bot.currentPortfolio.cash,
+          current_stock: bot.currentPortfolio.stock,
+          current_kr_equity: krVal,
+          current_us_equity: usVal,
+          current_eu_equity: euVal,
+          current_bond: bot.currentPortfolio.bond,
+          current_commodity: bot.currentPortfolio.commodity,
+          current_derivatives: bot.currentPortfolio.derivatives || 0,
+          target_weights: targetW,
+          updated_at: new Date().toISOString()
+        };
+      });
+      promises.push(supabase.from('institutional_portfolios').upsert(portfoliosToUpsert).then(res => res));
+    }
+
+    try {
+      await Promise.allSettled(promises);
+    } catch (e) {
+      console.error("[Engine] DB Batch Commit failed:", e);
+    }
+  }
+
+  private async updateExchangeRates() {
+    try {
+      const { data: rates, error } = await supabase.from('exchange_rates').select('*');
+      if (error || !rates) {
+        console.error('[Engine] Failed to fetch exchange rates:', error);
+        return;
+      }
+
+      const currencyLimits: Record<string, { min: number, max: number }> = {
+        USD: { min: 1100, max: 1600 },
+        EUR: { min: 1300, max: 1800 },
+        JPY: { min: 7.0, max: 12.0 },
+        CNY: { min: 160, max: 220 },
+        GBP: { min: 1500, max: 2000 },
+      };
+
+      for (const rate of rates) {
+        if (rate.currency_code === 'KRW') continue;
+        
+        const limits = currencyLimits[rate.currency_code] || { min: 1, max: 10000 };
+        
+        // 무작위 보행 (Random Walk): -0.1% ~ +0.1% 변동
+        const changePct = 1 + (Math.random() - 0.5) * 0.002;
+        let newRate = Number(rate.rate_to_krw) * changePct;
+        
+        // 실제 환율 범위를 벗어나지 않도록 클램프
+        newRate = Math.max(limits.min, Math.min(limits.max, newRate));
+        
+        await supabase
+          .from('exchange_rates')
+          .update({ rate_to_krw: parseFloat(newRate.toFixed(4)), updated_at: new Date().toISOString() })
+          .eq('currency_code', rate.currency_code);
+      }
+    } catch (err) {
+      console.error('[Engine] Error updating exchange rates:', err);
+    }
+  }
+
+  private findAgentById(botId: string): any {
+    let agent: any = this.institutionalBots.find(b => b.botId === botId);
+    if (agent) return agent;
+    agent = this.hedgeFundAgents.find(b => b.botId === botId);
+    if (agent) return agent;
+    agent = this.pensionFundAgents.find(b => b.botId === botId);
+    if (agent) return agent;
+    agent = this.statArbAgents.find(b => b.botId === botId);
+    if (agent) return agent;
+    agent = this.retailSwarmAgents.find(b => b.botId === botId);
+    if (agent) return agent;
+    agent = this.commercialBankAgents.find(b => b.botId === botId);
+    if (agent) return agent;
+    agent = this.propDeskAgents.find(b => b.botId === botId);
+    if (agent) return agent;
+    agent = this.optionsMMBots.find(b => b.botId === botId);
+    if (agent) return agent;
+    agent = this.ctaBots.find(b => b.botId === botId);
+    if (agent) return agent;
+    agent = this.quantAgents.find(b => b.botId === botId);
+    if (agent) return agent;
+    agent = this.commercialHedgerAgents.find(b => b.botId === botId);
+    if (agent) return agent;
+    
+    // 단일 에이전트 체크
+    if (this.asMarketMakerAgent && this.asMarketMakerAgent.botId === botId) return this.asMarketMakerAgent;
+    if (this.adversarialAgent && this.adversarialAgent.botId === botId) return this.adversarialAgent;
+    if (this.wallBreakerAgent && this.wallBreakerAgent.botId === botId) return this.wallBreakerAgent;
+    
+    return undefined;
   }
 }

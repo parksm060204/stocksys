@@ -1,0 +1,1 @@
+{"version":3,"file":"ExecutionTrader.d.ts","sourceRoot":"","sources":["../../src/bots/ExecutionTrader.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,SAAS,EAAE,MAAM,aAAa,CAAC;AACxC,OAAO,KAAK,EAAE,WAAW,EAAE,MAAM,UAAU,CAAC;AAE5C,qBAAa,eAAgB,SAAQ,SAAS;gBAChC,MAAM,EAAE,WAAW,EAAE,cAAc,EAAE,MAAM;IAKhD,4BAA4B,CAAC,WAAW,EAAE,GAAG,GAAG,GAAG,EAAE;CAK7D"}

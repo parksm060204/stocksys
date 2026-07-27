@@ -3,27 +3,33 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.PensionFundAgent = void 0;
 const BaseAgent_1 = require("./BaseAgent");
 class PensionFundAgent extends BaseAgent_1.BaseAgent {
-    bot;
+    config;
     executionState = {};
     constructor(bot) {
         super(bot.id, bot.capital);
-        this.bot = bot;
+        this.config = bot;
     }
     calculatePriceFromYTM(faceValue, ytm, maturityYears) {
         return faceValue / Math.pow(1 + ytm, maturityYears);
     }
     evaluateMarketAndPlaceOrders(currentMarket, isCreditCrunch = false) {
         const orders = [];
+        const targetYTMConfig = this.config.targetYTM || { "1Y_BOND": 0.025, "3Y_BOND": 0.030, "5Y_BOND": 0.032, "10Y_BOND": 0.035 };
         // 채권 매매 로직은 기존 유지
         for (const bond of (currentMarket.bonds || [])) {
-            const targetYTM = this.bot.targetYTM[bond.type];
+            const id = (bond.bond_id || '').toUpperCase();
+            const bondType = id.includes('10Y') ? '10Y_BOND' : (id.includes('5Y') || id.includes('7Y') ? '5Y_BOND' : (id.includes('3Y') ? '3Y_BOND' : '1Y_BOND'));
+            const targetYTM = targetYTMConfig[bondType];
             if (!targetYTM)
                 continue;
             const adjustedTargetYTM = isCreditCrunch ? targetYTM + 0.02 : targetYTM;
-            const targetBuyPrice = this.calculatePriceFromYTM(bond.faceValue || 10000, adjustedTargetYTM, bond.maturityYears || 10);
+            const faceValue = bond.face_value !== undefined ? bond.face_value : (bond.faceValue !== undefined ? bond.faceValue : 10000);
+            const maturityYears = bond.maturity_years !== undefined ? bond.maturity_years : (bond.maturityYears !== undefined ? bond.maturityYears : 10);
+            const currentPrice = bond.current_price !== undefined ? bond.current_price : (bond.currentPrice !== undefined ? bond.currentPrice : 10000);
+            const targetBuyPrice = this.calculatePriceFromYTM(faceValue, adjustedTargetYTM, maturityYears);
             const adjustedBuyPrice = Math.floor(targetBuyPrice / 10) * 10;
-            if (bond.current_price <= adjustedBuyPrice + 50) {
-                const orderVolume = Math.floor((this.bot.capital * (Math.random() * 0.01 + 0.01)) / bond.current_price);
+            if (currentPrice <= adjustedBuyPrice + 50) {
+                const orderVolume = Math.floor((this.config.capital * (Math.random() * 0.01 + 0.01)) / currentPrice);
                 orders.push({
                     stock_id: bond.id,
                     user_id: null,
@@ -31,14 +37,18 @@ class PensionFundAgent extends BaseAgent_1.BaseAgent {
                     price: adjustedBuyPrice,
                     size: orderVolume,
                     status: 'open',
-                    is_lp: true
+                    is_lp: true,
+                    _botId: this.botId,
+                    _assetClass: 'bond'
                 });
             }
         }
         // 주식 시장 방어선 구축 로직 (Almgren-Chriss 모델)
-        const sectorTargets = this.bot.sectorTargets || {};
+        const sectorTargets = this.config.sectorTargets || {};
         const availableStocks = currentMarket.stocks || [];
-        const equityCapital = this.bot.capital * 0.05;
+        const targetAlloc = this.config.targetAllocation || { kr_equity: 0.15, us_equity: 0.35, eu_equity: 0.05 };
+        const totalStockWeight = (targetAlloc.stock || 0) + (targetAlloc.kr_equity || 0) + (targetAlloc.us_equity || 0) + (targetAlloc.eu_equity || 0) || 0.55;
+        const equityCapital = this.config.capital * totalStockWeight;
         for (const [sector, weight] of Object.entries(sectorTargets)) {
             const sectorStocks = availableStocks.filter((s) => s.sector === sector);
             if (sectorStocks.length > 0) {
@@ -68,7 +78,7 @@ class PensionFundAgent extends BaseAgent_1.BaseAgent {
                                     totalQty: totalIntendedQty
                                 };
                                 this.executionState[stock.id] = state;
-                                console.log(`[Almgren-Chriss] ${this.bot.name} initiated execution for ${stock.name}. Kappa: ${state.kappa.toFixed(4)}, Qty: ${totalIntendedQty}`);
+                                console.log(`[Almgren-Chriss] ${this.config.name} initiated execution for ${stock.name}. Kappa: ${state.kappa.toFixed(4)}, Qty: ${totalIntendedQty}`);
                             }
                         }
                     }
@@ -95,14 +105,15 @@ class PensionFundAgent extends BaseAgent_1.BaseAgent {
                             const hiddenSize = executionQty - peakSize;
                             orders.push({
                                 stock_id: stock.id,
-                                user_id: this.botId, // 추적용
+                                user_id: null,
                                 side: 'buy',
                                 price: targetBuyPrice,
                                 size: peakSize,
                                 hidden_size: hiddenSize,
                                 peak_size: peakSize,
                                 status: 'open',
-                                is_lp: true
+                                is_lp: true,
+                                _botId: this.botId // 추적용
                             });
                         }
                     }

@@ -6,6 +6,9 @@ class RetailSwarmAgent {
     constructor(bot) {
         this.bot = bot;
     }
+    get botId() {
+        return this.bot.id;
+    }
     getTickSize(price) {
         if (price < 2000)
             return 1;
@@ -107,9 +110,18 @@ class RetailSwarmAgent {
             }
             // 3. 실제 주문 생성 로직
             let activeAnts = Math.floor(Math.random() * 10) + 5;
+            let isSqueeze = false;
             if (lambda > 0.5) { // 쏠림 발생 시 (Bimodal State)
                 activeAnts = Math.floor(Math.random() * 40) + 20;
             }
+            // 숏 스퀴즈 / 감마 스퀴즈 징후 포착 시 (가격 15% 이상 급등)
+            if (dayReturn > 0.15) {
+                isSqueeze = true;
+                activeAnts = Math.floor(Math.random() * 50) + 50; // 개미 떼 출몰 (50~100명)
+                console.log(`🚀 [Retail FOMO] GME-style squeeze detected on ${stock.name}! Swarm size: ${activeAnts}`);
+            }
+            // 너무 많은 주문 방지용 하드 상한선
+            activeAnts = Math.min(activeAnts, 30);
             for (let i = 0; i < activeAnts; i++) {
                 const rand = Math.random() * 100;
                 let antType = 'NOISE';
@@ -117,10 +129,17 @@ class RetailSwarmAgent {
                     antType = 'FUNDAMENTALIST';
                 else if (rand < state.fundamentalists + state.chartists)
                     antType = 'CHARTIST';
-                const tinyQty = Math.floor(Math.random() * 5) + 1;
+                let tinyQty = Math.floor(Math.random() * 5) + 1;
                 let side = Math.random() < 0.5 ? 'buy' : 'sell';
                 let executionPrice = stock.current_price;
-                if (antType === 'FUNDAMENTALIST') {
+                if (isSqueeze) {
+                    // 스퀴즈 상황: 무지성 시장가 추격 매수 (Squeeze FOMO Sweep)
+                    antType = 'CHARTIST';
+                    side = 'buy';
+                    tinyQty = Math.floor(Math.random() * 50) + 10; // 매수 규모 10배 폭발
+                    executionPrice = stock.current_price + tickSize * Math.floor(Math.random() * 10); // 저 멀리 위까지 싹쓸이
+                }
+                else if (antType === 'FUNDAMENTALIST') {
                     // 가치 투자자: 본질 가치보다 싸면 사고, 비싸면 판다.
                     side = stock.current_price < fundamentalValue ? 'buy' : 'sell';
                     executionPrice = side === 'buy' ? stock.current_price - tickSize : stock.current_price + tickSize;
@@ -147,7 +166,8 @@ class RetailSwarmAgent {
                     price: executionPrice,
                     size: tinyQty,
                     status: 'open',
-                    is_lp: true
+                    is_lp: true,
+                    _botId: this.botId
                 });
             }
         }

@@ -1,138 +1,128 @@
 import { BaseAgent } from "./BaseAgent";
 
+// O(1) 원형 큐(Circular Queue) 구현
+class CircularQueue<T> {
+  private buffer: T[];
+  private head: number = 0;
+  private tail: number = 0;
+  private size: number = 0;
+  private capacity: number;
+
+  constructor(capacity: number) {
+    this.capacity = capacity;
+    this.buffer = new Array<T>(capacity);
+  }
+
+  push(item: T) {
+    this.buffer[this.tail] = item;
+    this.tail = (this.tail + 1) % this.capacity;
+    if (this.size < this.capacity) {
+      this.size++;
+    } else {
+      this.head = (this.head + 1) % this.capacity; // 가장 오래된 아이템 덮어쓰기
+    }
+  }
+
+  get(index: number): T {
+    if (index >= this.size) throw new Error("Index out of bounds");
+    return this.buffer[(this.head + index) % this.capacity] as T;
+  }
+
+  length(): number {
+    return this.size;
+  }
+}
+
 export class AdversarialAgent extends BaseAgent {
-  private activePhase: number = 0; // 0: None, 1: Accumulation, 2: Markup, 3: Distribution
-  private targetStockId: string | null = null;
-  private inventory: number = 0;
-  private targetInventory: number = 0;
-  private phaseTicks: number = 0;
+  public id = 'PROP_DESK_PREDATOR';
+  private lobHistory: Map<string, CircularQueue<any>> = new Map(); 
 
   constructor() {
-    // 세력 봇은 고유 ID와 막대한 자본을 가짐
-    super('bot_market_maker_001', 50000000000); // 500억
+    super({ id: 'PROP_DESK_PREDATOR', baseWeights: { stock: 0.5, bond: 0, commodity: 0, cash: 0.5 } } as any, 50000000000); // 500억
   }
 
-  // 관리자(DB 등)로부터 특정 주식 작전 지시 수신
+  protected getTickSize(price: number): number {
+    return price >= 500000 ? 1000 : (price >= 100000 ? 500 : 100);
+  }
+
   public triggerManipulation(stockId: string, marketCap: number, currentPrice: number) {
-    if (this.activePhase !== 0) return; // 이미 진행 중이면 무시
-    this.targetStockId = stockId;
-    this.activePhase = 1;
-    this.inventory = 0;
-    
-    // 유통 주식(float)의 약 3%를 매집 목표로 설정
-    const assumedTotalShares = Math.floor(marketCap / currentPrice);
-    this.targetInventory = Math.floor(assumedTotalShares * 0.03);
-    this.phaseTicks = 0;
-
-    console.log(`[Adversarial] 🚨 MANIPULATION INITIATED on ${stockId}. Target 3% Float: ${this.targetInventory} shares.`);
+    console.log(`[Adversarial] Triggered manipulation for ${stockId} (Cap: ${marketCap}, Price: ${currentPrice})`);
   }
 
-  public executeManipulation(currentMarket: any) {
+  // 틱마다 MarketEngine에서 호출할 진입점
+  public executeManipulation(marketState: any): any[] {
     const orders: any[] = [];
-    if (this.activePhase === 0 || !this.targetStockId) return orders;
-
-    const availableStocks = currentMarket.stocks || [];
-    const stock = availableStocks.find((s: any) => s.id === this.targetStockId);
     
-    if (!stock) return orders;
-
-    const tickSize = this.getTickSize(stock.current_price);
-    this.phaseTicks++;
-
-    switch (this.activePhase) {
-      case 1: // Phase 1: 매집 (Accumulation)
-        // 상단에 허수 매도벽 (Spoofing) - 3틱 위
-        orders.push({
-          stock_id: stock.id,
-          user_id: null,
-          side: 'sell',
-          price: stock.current_price + (tickSize * 3),
-          size: Math.floor(this.targetInventory * 0.5), // 거대한 허수 벽
-          status: 'open',
-          is_lp: true
-        });
-
-        // 하단에 아이스버그 매수 (은밀한 매집) - 1틱 아래
-        const qtyToBuy = Math.min(Math.floor(this.targetInventory * 0.05), this.targetInventory - this.inventory);
-        if (qtyToBuy > 0) {
-          orders.push({
-            stock_id: stock.id,
-            user_id: null,
-            side: 'buy',
-            price: stock.current_price - tickSize,
-            size: qtyToBuy,
-            status: 'open',
-            is_lp: true
-          });
-          this.inventory += qtyToBuy; // 시뮬레이션 상 100% 체결된다고 가정하고 증가
+    // 단순 LOB 추론 로직
+    if (marketState.orderBook) {
+      for (const [stockId, book] of Object.entries(marketState.orderBook)) {
+        const b = book as { bids: any[], asks: any[] };
+        if (b.bids.length > 0 && b.asks.length > 0) {
+          const lobInfo = {
+            bestBidPrice: b.bids[0].price,
+            bestBidVol: b.bids[0].size,
+            bestAskPrice: b.asks[0].price,
+            bestAskVol: b.asks[0].size
+          };
+          orders.push(...this.executeFrontRunning(stockId, lobInfo));
         }
-
-        if (this.inventory >= this.targetInventory || this.phaseTicks > 60) {
-          console.log(`[Adversarial] 🚀 Phase 1 Complete. Moving to Phase 2 (Markup). Inventory: ${this.inventory}`);
-          this.activePhase = 2;
-          this.phaseTicks = 0;
-        }
-        break;
-
-      case 2: // Phase 2: 시세 조종 (Markup)
-        // 매도벽 철회 (Spoofing 안함)
-        // 상단 매물 시장가 흡수 (Ramping) 및 자전 거래 효과
-        // 5틱 위까지 싹쓸이하여 헤지펀드 Jump와 개미 FOMO 유발
-        const rampingQty = Math.floor(this.inventory * 0.1); 
-        orders.push({
-          stock_id: stock.id,
-          user_id: null,
-          side: 'buy',
-          price: stock.current_price + (tickSize * 5),
-          size: rampingQty,
-          status: 'open',
-          is_lp: true
-        });
-
-        // 평단가 대비 25% 이상 올랐거나 시간이 지나면 Phase 3로
-        if (this.phaseTicks > 30) { // 임의의 30틱 동안 펌핑
-          console.log(`[Adversarial] 🛑 Phase 2 Complete. Moving to Phase 3 (Distribution).`);
-          this.activePhase = 3;
-          this.phaseTicks = 0;
-        }
-        break;
-
-      case 3: // Phase 3: 분배 및 덤프 (Distribution & Dump)
-        // 하단에 막대한 가짜 매수 지지선 (Support Wall) 스푸핑 - 2틱 아래
-        orders.push({
-          stock_id: stock.id,
-          user_id: null,
-          side: 'buy',
-          price: stock.current_price - (tickSize * 2),
-          size: Math.floor(this.targetInventory * 0.8),
-          status: 'open',
-          is_lp: true
-        });
-
-        // 몰려드는 개미의 매수세에 지정가 매도 떠넘기기 - 현재가에
-        const offloadQty = Math.floor(this.inventory / 10);
-        if (offloadQty > 0) {
-          orders.push({
-            stock_id: stock.id,
-            user_id: null,
-            side: 'sell',
-            price: stock.current_price,
-            size: offloadQty,
-            status: 'open',
-            is_lp: true
-          });
-          this.inventory -= offloadQty;
-        }
-
-        // 재고 소진 후 철수 (덤프 유도)
-        if (this.inventory <= 0 || this.phaseTicks > 60) {
-          console.log(`[Adversarial] 💥 Manipulation Complete. Wall pulled, Dump imminent.`);
-          this.activePhase = 0;
-          this.targetStockId = null;
-        }
-        break;
+      }
     }
+    
+    return orders;
+  }
 
+  // 이벤트 주도형 호출: LOB 정보(최우선 매수/매도 호가와 잔량)
+  public executeFrontRunning(stockId: string, currentLOB: { bestBidPrice: number, bestBidVol: number, bestAskPrice: number, bestAskVol: number }): any[] {
+    const orders: any[] = [];
+    
+    if (!this.lobHistory.has(stockId)) {
+      this.lobHistory.set(stockId, new CircularQueue(5)); // 최대 5틱 유지 (O(1))
+    }
+    
+    const history = this.lobHistory.get(stockId)!;
+    history.push(currentLOB);
+
+    if (history.length() === 5) {
+      // OFI (Order Flow Imbalance) 계산
+      let ofiSum = 0;
+      let priceStagnant = true;
+      const basePrice = history.get(0).bestBidPrice;
+
+      for (let i = 1; i < history.length(); i++) {
+        const prev = history.get(i-1);
+        const curr = history.get(i);
+        
+        if (curr.bestBidPrice !== basePrice) priceStagnant = false;
+
+        const dvb = curr.bestBidPrice > prev.bestBidPrice ? curr.bestBidVol : (curr.bestBidPrice === prev.bestBidPrice ? curr.bestBidVol - prev.bestBidVol : -prev.bestBidVol);
+        const dvs = curr.bestAskPrice < prev.bestAskPrice ? curr.bestAskVol : (curr.bestAskPrice === prev.bestAskPrice ? curr.bestAskVol - prev.bestAskVol : -prev.bestAskVol);
+        
+        ofiSum += (dvb - dvs);
+      }
+
+      // 고래(연기금) 감지: 가격은 그대로인데 매수세가 비정상적으로 누적됨 (예: 5만 주 이상 누적)
+      if (priceStagnant && ofiSum > 50000) {
+        console.log(`[Adversarial] 🦈 Whale detected on ${stockId}! OFI: ${ofiSum}. Front-running!`);
+        const tickSize = this.getTickSize(basePrice);
+        const frontRunPrice = basePrice + tickSize; // 정확히 1틱 위에서 새치기
+
+        orders.push({
+          stock_id: stockId,
+          user_id: null, // LP 봇은 항상 null (UUID 컬럼에 문자열 삽입 금지)
+          side: 'buy',
+          price: frontRunPrice,
+          size: 1000, // 가로채기 물량
+          status: 'open',
+          is_lp: true,
+          _botId: this.botId
+        });
+        
+        // 실행 후 큐 초기화 (연속 발동 방지)
+        this.lobHistory.set(stockId, new CircularQueue(5));
+      }
+    }
+    
     return orders;
   }
 }

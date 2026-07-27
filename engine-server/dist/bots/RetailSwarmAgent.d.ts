@@ -2,6 +2,7 @@ import type { RetailSwarmBot } from "../types";
 export declare class RetailSwarmAgent {
     private bot;
     constructor(bot: RetailSwarmBot);
+    get botId(): string;
     private getTickSize;
     private swarmState;
     executeSwarmBehavior(currentMarket: any, myHoldings: any): any[];

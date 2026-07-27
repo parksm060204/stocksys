@@ -1,0 +1,19 @@
+[이전 모델의 사고 과정 요약]
+
+1. 24시간 거래가 안 되는 문제 진단:
+- DB의 trades(체결내역) 테이블에 데이터가 새로 추가되지 않음.
+- MarketEngine.ts의 tick() 함수 내부에서 매칭 시 finalBid와 finalAsk 스프레드가 너무 벌어지거나 어긋나서 체결이 안 되는 현상 발견 (ASMarketMakerAgent의 스프레드 상한 설정 부재). -> 수정 완료.
+- 추가로, 지정가 주문만 있고 시장가로 긁어주는 공격적인 봇(RetailSwarm 등)의 주문이 없어서 매칭이 안 됨을 확인.
+- 원인: bots_config 테이블 데이터가 없어서 PensionFund, HedgeFund 등 주요 봇들이 아예 초기화되지 않는 상태였음.
+- 해결: bots_config가 없더라도 강제로 기본 봇들을 주입(fallback)하도록 MarketEngine.ts의 initializeBots() 로직 수정.
+
+2. 컴파일 에러 발생:
+봇 초기화 코드를 추가하고 엔진을 재시작했으나, TypeScript 컴파일 에러가 발생함.
+- 에러 내용:
+  src/MarketEngine.ts(112,157): error TS2353: 'PensionFundBot' 타입에 'rebalancePeriod' 속성이 없음.
+  src/MarketEngine.ts(116,158): error TS2322: '"AGGRESSIVE"' 타입은 '"SWEEP_AGGRESSIVE"' 타입에 할당할 수 없음.
+  src/MarketEngine.ts(117,159): error TS2322: '"MACRO"' 타입은 '"SWEEP_AGGRESSIVE"' 타입에 할당할 수 없음.
+
+3. 다음 수행할 작업 계획 (중단된 부분):
+- engine-server/src/types.ts 혹은 각 봇의 클래스 파일을 확인하여 올바른 속성명(rebalancePeriod 대신 무엇을 쓰는지, HedgeFund의 tradingStyle로 허용되는 정확한 리터럴 타입이 무엇인지)을 파악하고 MarketEngine.ts의 하드코딩된 봇 주입 코드를 수정하려 했음.
+- 윈도우 PowerShell 환경에서 grep 명령어를 쓰려다 실패하고 중단됨. (이후부터는 grep_search 도구나 view_file을 통해 타입을 확인 후 MarketEngine.ts를 수정해야 함)

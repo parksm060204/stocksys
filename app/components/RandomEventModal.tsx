@@ -50,13 +50,13 @@ export default function RandomEventModal() {
       }
     };
 
-    supabase.auth.getSession().then(({ data }) => {
+    supabase.auth.getSession().then(({ data }: { data: { session: { user: { id: string } } | null } }) => {
       userId = data.session?.user?.id ?? null;
       if (userId) checkPendingEvents(userId);
     });
 
     const channel = supabase.channel('active_events_changes')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'active_player_events' }, (payload) => {
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'active_player_events' }, (payload: { new: Record<string, unknown> }) => {
         if (payload.new.user_id === userId && payload.new.status === 'pending') {
           if (!activeEvent) {
             checkPendingEvents(userId!);

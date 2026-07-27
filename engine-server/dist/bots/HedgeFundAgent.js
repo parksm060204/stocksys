@@ -18,6 +18,15 @@ class HedgeFundAgent extends BaseAgent_1.BaseAgent {
         // Target Leverage 3.0 이면, Assets = 3 * Equity, Debt = 2 * Equity.
         this.balanceSheet.cash = bot.capital * 3.0;
         this.balanceSheet.debt = bot.capital * 2.0;
+        this.currentPortfolio.cash = bot.capital * 3.0; // sync BaseAgent cash to leveraged assets 
+        // 포트폴리오의 모든 자산을 0으로 초기화하고 현금만 레버리지 자산으로 채움
+        this.currentPortfolio.stock = 0;
+        this.currentPortfolio.kr_equity = 0;
+        this.currentPortfolio.us_equity = 0;
+        this.currentPortfolio.eu_equity = 0;
+        this.currentPortfolio.bond = 0;
+        this.currentPortfolio.commodity = 0;
+        this.currentPortfolio.derivatives = 0;
     }
     updateSentiment(newSentiment) {
         this.bot.currentSentiment = newSentiment;
@@ -72,27 +81,45 @@ class HedgeFundAgent extends BaseAgent_1.BaseAgent {
             for (const stock of availableStocks) {
                 if (assetsToSell <= 0)
                     break;
-                if ((this.balanceSheet.holdings[stock.id] || 0) > 0) {
-                    const qtyOwned = this.balanceSheet.holdings[stock.id] || 0;
-                    const stockValue = qtyOwned * stock.current_price;
+                const qtyOwned = this.balanceSheet.holdings[stock.id] || 0;
+                if (qtyOwned > 0) {
+                    // Long Position Liquidation (Fire Sale)
                     const qtyToSell = Math.min(qtyOwned, Math.ceil((assetsToSell) / stock.current_price));
                     if (qtyToSell > 0) {
                         const tickSize = this.getTickSize(stock.current_price);
-                        // Fire Sale: 호가창 하단으로 무자비하게 던짐 (시장 충격 극대화, 비선형 Psi 효과)
+                        // Fire Sale: 호가창 하단으로 무자비하게 던짐 (시장 충격 극대화)
                         orders.push({
                             stock_id: stock.id,
-                            user_id: this.botId,
+                            user_id: null,
                             side: 'sell',
-                            price: stock.current_price - (tickSize * 10), // 매우 공격적 시장가 던지기
+                            price: stock.current_price - (tickSize * 10),
                             size: qtyToSell,
                             status: 'open',
-                            is_lp: true
+                            is_lp: true,
+                            _botId: this.botId
                         });
                         assetsToSell -= qtyToSell * stock.current_price;
-                        // 시뮬레이션: 일단 팔았다고 가정 (실제로는 Engine이 inventory를 깎아야 함)
-                        this.balanceSheet.holdings[stock.id] = (this.balanceSheet.holdings[stock.id] || 0) - qtyToSell;
-                        this.balanceSheet.cash += qtyToSell * stock.current_price;
-                        this.balanceSheet.debt = Math.max(0, this.balanceSheet.debt - (qtyToSell * stock.current_price)); // 빚 갚음
+                    }
+                }
+                else if (qtyOwned < 0) {
+                    // Short Position Liquidation (Short Squeeze)
+                    const qtyShort = Math.abs(qtyOwned);
+                    const qtyToCover = Math.min(qtyShort, Math.ceil((assetsToSell) / stock.current_price));
+                    if (qtyToCover > 0) {
+                        const tickSize = this.getTickSize(stock.current_price);
+                        console.log(`[Margin Call - Short Squeeze] ${this.bot.name} is forced to cover ${qtyToCover} shares of ${stock.name}!`);
+                        // Short Squeeze: 호가창 상단으로 무자비하게 삼 (시장가 매수)
+                        orders.push({
+                            stock_id: stock.id,
+                            user_id: null,
+                            side: 'buy',
+                            price: stock.current_price + (tickSize * 10),
+                            size: qtyToCover,
+                            status: 'open',
+                            is_lp: true, // MarketEngine이 매칭
+                            _botId: this.botId
+                        });
+                        assetsToSell -= qtyToCover * stock.current_price;
                     }
                 }
             }
@@ -140,32 +167,57 @@ class HedgeFundAgent extends BaseAgent_1.BaseAgent {
                 }
             }
         }
-        // 4. 일반적인 포트폴리오 편입 (가짜 매수)
-        // 시뮬레이션을 위해 초기에 주식을 매수해서 홀딩스에 넣는 로직이 필요함
-        if (this.balanceSheet.cash > this.balanceSheet.debt * 0.5) {
-            const moneyToInvest = this.balanceSheet.cash * 0.1;
-            const stock = availableStocks[Math.floor(Math.random() * availableStocks.length)];
-            if (stock) {
-                const qty = Math.floor(moneyToInvest / stock.current_price);
-                if (qty > 0) {
-                    orders.push({
-                        stock_id: stock.id,
-                        user_id: this.botId,
-                        side: 'buy',
-                        price: stock.current_price,
-                        size: qty,
-                        status: 'open',
-                        is_lp: true
-                    });
-                    // 임시로 구매 처리
-                    this.balanceSheet.cash -= qty * stock.current_price;
-                    if (!this.balanceSheet.holdings[stock.id])
-                        this.balanceSheet.holdings[stock.id] = 0;
-                    this.balanceSheet.holdings[stock.id] = (this.balanceSheet.holdings[stock.id] || 0) + qty;
+        // 4. 액티브 공매도 (Active Short Selling)
+        // 주가가 펀더멘털 대비 비상식적으로 높을 때(예: PBR > 1.3배) 공매도(Short Sell) 포지션을 구축합니다.
+        const fundamentals = currentMarket.fundamentals || {};
+        // 자금 여력이 있을 때만 신규 포지션 진입 (레버리지 비율 체크)
+        if (currentLeverage < this.balanceSheet.targetLeverage * 0.8) {
+            const moneyToDeploy = this.balanceSheet.cash * 0.05; // 한 번에 현금의 5% 투입
+            for (const stock of availableStocks) {
+                const fundamentalValue = fundamentals[stock.id];
+                if (!fundamentalValue)
+                    continue;
+                // 주가가 펀더멘털보다 30% 이상 고평가된 경우 공매도 타겟
+                if (stock.current_price > fundamentalValue * 1.3) {
+                    const qtyToShort = Math.floor(moneyToDeploy / stock.current_price);
+                    if (qtyToShort > 0 && Math.random() < 0.2) { // 20% 확률로 트리거 (전 종목에 무차별 공매도 방지)
+                        console.log(`[Active Short] ${this.bot.name} is shorting ${stock.name}! (Price: ${stock.current_price}, Funda: ${Math.round(fundamentalValue)})`);
+                        const tickSize = this.getTickSize(stock.current_price);
+                        const targetPrice = stock.current_price - tickSize * 2; // 약간 아래로 호가 제출
+                        orders.push({
+                            stock_id: stock.id,
+                            user_id: null,
+                            side: 'sell',
+                            price: targetPrice,
+                            size: qtyToShort,
+                            status: 'open',
+                            is_lp: true,
+                            _botId: this.botId
+                        });
+                        break; // 한 틱당 한 종목만 공매도 타겟팅
+                    }
                 }
             }
         }
         return orders;
+    }
+    confirmExecution(assetClass, side, filledQty, filledPrice, stockId) {
+        super.confirmExecution(assetClass, side, filledQty, filledPrice, stockId);
+        if (assetClass === 'stock' && stockId) {
+            const notional = filledQty * filledPrice;
+            if (side === 'buy') {
+                this.balanceSheet.cash = Math.max(0, this.balanceSheet.cash - notional);
+                this.balanceSheet.holdings[stockId] = (this.balanceSheet.holdings[stockId] || 0) + filledQty;
+            }
+            else {
+                this.balanceSheet.cash += notional;
+                this.balanceSheet.holdings[stockId] = (this.balanceSheet.holdings[stockId] || 0) - filledQty;
+                const debtRepay = Math.min(this.balanceSheet.debt, notional);
+                this.balanceSheet.debt -= debtRepay;
+                this.balanceSheet.cash -= debtRepay;
+                this.currentPortfolio.cash = Math.max(0, this.currentPortfolio.cash - debtRepay);
+            }
+        }
     }
 }
 exports.HedgeFundAgent = HedgeFundAgent;

@@ -1,4 +1,43 @@
 export type MarketSentiment = 'RISK_ON' | 'RISK_OFF' | 'NEUTRAL';
+export interface AgentPortfolio {
+    cash: number;
+    stock: number;
+    kr_equity?: number;
+    us_equity?: number;
+    eu_equity?: number;
+    bond: number;
+    commodity: number;
+    derivatives?: number;
+}
+export interface AgentWeights {
+    kr_equity?: number;
+    us_equity?: number;
+    eu_equity?: number;
+    stock?: number;
+    bond: number;
+    commodity: number;
+    derivatives?: number;
+    cash: number;
+}
+export interface RegimeStrategy {
+    kr_equity?: number;
+    us_equity?: number;
+    eu_equity?: number;
+    stock?: number;
+    bond: number;
+    commodity: number;
+    derivatives?: number;
+    cash: number;
+}
+export interface AgentConfig {
+    id: string;
+    name: string;
+    type: string;
+    riskTolerance: number;
+    baseWeights: AgentWeights;
+    executionStyle: 'AGGRESSIVE_MARKET' | 'HFT_LIMIT' | 'PASSIVE_TWAP';
+    regimeShifts: Record<string, RegimeStrategy>;
+}
 export interface MarketEvent {
     id: string;
     targetSector: string | 'ALL';
@@ -92,5 +131,24 @@ export interface QuantBot {
     capital: number;
     reactionSpeed: number;
     tradingStyle: 'INFORMED_TRADER';
+}
+export interface CommercialHedgerBot {
+    id: string;
+    name: string;
+    type: 'COMMERCIAL_HEDGER';
+    capital: number;
+    targetCommodity: string;
+    supportLevel: number;
+    resistanceLevel: number;
+    tradingStyle: 'LIMIT_HEAVY';
+}
+export interface CTABot {
+    id: string;
+    name: string;
+    type: 'CTA_MOMENTUM';
+    capital: number;
+    reactionSpeed: number;
+    breakoutThreshold: number;
+    tradingStyle: 'SWEEP_AGGRESSIVE';
 }
 //# sourceMappingURL=types.d.ts.map

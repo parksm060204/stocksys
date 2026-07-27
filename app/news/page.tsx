@@ -24,6 +24,7 @@ export default function NewsPage() {
   const [newsList, setNewsList] = useState<PremiumNews[]>([]);
   const [subs, setSubs] = useState<Record<string, string>>({});
   const [userId, setUserId] = useState<string | null>(null);
+  const [isAdmin, setIsAdmin] = useState<boolean>(false);
 
   const supabase = createClient();
 
@@ -33,9 +34,12 @@ export default function NewsPage() {
       
       if (session?.user) {
         setUserId(session.user.id);
-        const { data: profile } = await supabase.from('profiles').select('news_subscriptions').eq('id', session.user.id).single();
-        if (profile && profile.news_subscriptions) {
-          setSubs(profile.news_subscriptions as Record<string, string>);
+        const { data: profile } = await supabase.from('profiles').select('is_admin, news_subscriptions').eq('id', session.user.id).single();
+        if (profile) {
+          setIsAdmin(profile.is_admin || false);
+          if (profile.news_subscriptions) {
+            setSubs(profile.news_subscriptions as Record<string, string>);
+          }
         }
       }
 
@@ -83,7 +87,7 @@ export default function NewsPage() {
           const outletIdStr = String(outlet.id);
           const expiry = subs[outletIdStr];
           const dday = expiry ? getDday(expiry) : -1;
-          const isSubscribed = dday >= 0;
+          const isSubscribed = isAdmin || dday >= 0;
 
           return (
             <article

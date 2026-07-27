@@ -18,3 +18,5 @@ USING (true);
 
 -- 쓰기는 서비스 역할(Service Role)이나 관리자만 가능하도록 (일반 유저 쓰기 금지)
 -- 엔진 서버는 Service Role Key를 사용하므로 RLS를 우회하여 INSERT 가능합니다.
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE real_news TO anon, authenticated;

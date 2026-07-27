@@ -1,12 +1,16 @@
 import { BaseAgent } from "./BaseAgent";
 export declare class AdversarialAgent extends BaseAgent {
-    private activePhase;
-    private targetStockId;
-    private inventory;
-    private targetInventory;
-    private phaseTicks;
+    id: string;
+    private lobHistory;
     constructor();
+    protected getTickSize(price: number): number;
     triggerManipulation(stockId: string, marketCap: number, currentPrice: number): void;
-    executeManipulation(currentMarket: any): any[];
+    executeManipulation(marketState: any): any[];
+    executeFrontRunning(stockId: string, currentLOB: {
+        bestBidPrice: number;
+        bestBidVol: number;
+        bestAskPrice: number;
+        bestAskVol: number;
+    }): any[];
 }
 //# sourceMappingURL=AdversarialAgent.d.ts.map

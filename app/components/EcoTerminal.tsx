@@ -20,10 +20,9 @@ interface MacroEvent {
 
 export default function EcoTerminal() {
   const [events, setEvents] = useState<MacroEvent[]>([]);
-  const [now, setNow] = useState<Date | null>(null);
+  const [now, setNow] = useState<Date | null>(() => new Date());
 
   useEffect(() => {
-    setNow(new Date());
     const interval = setInterval(() => setNow(new Date()), 1000);
 
     // 1. 초기 데이터 로드
@@ -103,7 +102,7 @@ export default function EcoTerminal() {
 
       {/* 이벤트 리스트 */}
       <div style={{ marginTop: '5px' }}>
-        {events.map((ev, idx) => (
+        {events.map((ev) => (
           <div key={ev.id} style={{
             display: 'grid',
             gridTemplateColumns: '1fr 3fr 1fr 1.5fr 1.5fr',

@@ -13,7 +13,7 @@ export class EventDirector {
   private engine: MarketEngine;
   private isRunning: boolean = false;
   private timer: NodeJS.Timeout | null = null;
-  private lastGlobalEventTime: string = "";
+
 
   constructor(engine: MarketEngine) {
     this.engine = engine;
@@ -179,7 +179,7 @@ export class EventDirector {
       const parsedEvent = JSON.parse(resJson.candidates[0].content.parts[0].text);
       
       // 5. premium_news DB에 저장
-      const { data: insertedNews, error: insertError } = await supabase.from('premium_news').insert({
+      const { error: insertError } = await supabase.from('premium_news').insert({
         media_outlet_id: outlet.id,
         headline: parsedEvent.headline,
         content_summary: parsedEvent.content_summary,

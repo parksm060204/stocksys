@@ -10,10 +10,15 @@ export class PropDeskAgent extends BaseAgent {
   private ofiState: Record<string, OFISlidingWindow> = {};
   private prevOrderBookState: Record<string, { bidPrice: number, bidSize: number, askPrice: number, askSize: number }> = {};
   private prevPriceState: Record<string, number> = {};
+  private holdings: Record<string, number> = {};
 
   constructor(bot: PropDeskBot) {
     super(bot.id, bot.capital);
     this.bot = bot;
+    if ((bot as any).initialHoldings) {
+      this.holdings = { ...(bot as any).initialHoldings };
+      this.currentPortfolio.holdings = { ...(bot as any).initialHoldings };
+    }
   }
 
   public executeMarketMaking(currentMarket: any, orderBook: any, myHoldings: any) {
@@ -31,13 +36,13 @@ export class PropDeskAgent extends BaseAgent {
       
       // OFI 계산을 위한 호가창 파싱
       const stockBook = orderBook[stockId] || { bids: [], asks: [] };
-      const bestBid = stockBook.bids[0] || { price: 0, total_volume: 0 };
-      const bestAsk = stockBook.asks[0] || { price: 0, total_volume: 0 };
+      const bestBid = stockBook.bids[0] || { price: 0, size: 0 };
+      const bestAsk = stockBook.asks[0] || { price: 0, size: 0 };
       
       const pB_n = bestBid.price;
-      const qB_n = bestBid.total_volume;
+      const qB_n = bestBid.size;
       const pA_n = bestAsk.price;
-      const qA_n = bestAsk.total_volume;
+      const qA_n = bestAsk.size;
 
       const prev = this.prevOrderBookState[stockId];
       let e_n = 0;
@@ -63,22 +68,25 @@ export class PropDeskAgent extends BaseAgent {
       this.prevPriceState[stockId] = stock.current_price;
 
       // ==========================================
-      // 공격 모드 1: OFI Scalping
+      // 공격 모드 1: OFI Scalping (호가창 잔량 비대칭 0.5 이상 또는 absolute threshold)
       // ==========================================
       const ofiSum = this.ofiState[stockId]!.getSum();
-      const ofiThreshold = 50000; // 스캘핑 발동 임계값 (잔량 5만 주 이상 불균형)
-      const scalpingQty = Math.floor((this.bot.capital * 0.1) / stock.current_price); // 자본금의 10%
+      const top3Bids = stockBook.bids.slice(0, 3).reduce((sum: number, b: any) => sum + (b.size || 0), 0);
+      const top3Asks = stockBook.asks.slice(0, 3).reduce((sum: number, a: any) => sum + (a.size || 0), 0);
+      const totalVol = top3Bids + top3Asks;
+      const ofiRatio = totalVol > 0 ? (top3Bids - top3Asks) / totalVol : 0;
+
+      const ofiThreshold = 1000; // 스캘핑 발동 임계값
+      const scalpingQty = Math.max(10, Math.floor((this.bot.capital * 0.05) / stock.current_price));
 
       if (scalpingQty > 0) {
-        if (ofiSum > ofiThreshold) {
+        if (ofiSum > ofiThreshold || ofiRatio > 0.5) {
           // 매수 압력 폭발 -> 프론트 러닝 (추격 매수 스캘핑)
-          orders.push(...this.executeSmartOrder(stock, 'buy', pA_n + tickSize, scalpingQty, 0.9, currentMarket.activeEvents));
-          console.log(`[PropDesk] OFI Scalping BUY on ${stock.name} (OFI: ${ofiSum})`);
+          orders.push(...this.executeSmartOrder(stock, 'buy', (pA_n || stock.current_price) + tickSize, scalpingQty, 0.9, currentMarket.activeEvents));
           continue; // 스캘핑 발동 시 일반 마켓메이킹 생략
-        } else if (ofiSum < -ofiThreshold) {
+        } else if (ofiSum < -ofiThreshold || ofiRatio < -0.5) {
           // 매도 압력 폭발 -> 프론트 러닝 (패닉 셀 스캘핑)
-          orders.push(...this.executeSmartOrder(stock, 'sell', pB_n - tickSize, scalpingQty, 0.9, currentMarket.activeEvents));
-          console.log(`[PropDesk] OFI Scalping SELL on ${stock.name} (OFI: ${ofiSum})`);
+          orders.push(...this.executeSmartOrder(stock, 'sell', (pB_n || stock.current_price) - tickSize, scalpingQty, 0.9, currentMarket.activeEvents));
           continue; 
         }
       }
@@ -103,7 +111,7 @@ export class PropDeskAgent extends BaseAgent {
       // ==========================================
       // 기본 모드: Avellaneda-Stoikov Market Making
       // ==========================================
-      const holdingQty = myHoldings[stock.id] || 0;
+      const holdingQty = this.holdings[stock.id] || 0;
       const targetQty = Math.floor((this.bot.capital * 0.05) / stock.current_price); // 5% 비중
       if (targetQty <= 0) continue;
 
@@ -132,5 +140,16 @@ export class PropDeskAgent extends BaseAgent {
     }
 
     return orders;
+  }
+
+  public confirmExecution(assetClass: 'stock' | 'bond' | 'commodity', side: 'buy' | 'sell', filledQty: number, filledPrice: number, stockId?: string) {
+    super.confirmExecution(assetClass, side, filledQty, filledPrice, stockId);
+    if (assetClass === 'stock' && stockId) {
+      if (side === 'buy') {
+        this.holdings[stockId] = (this.holdings[stockId] || 0) + filledQty;
+      } else {
+        this.holdings[stockId] = (this.holdings[stockId] || 0) - filledQty;
+      }
+    }
   }
 }

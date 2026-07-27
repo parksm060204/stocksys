@@ -65,6 +65,20 @@ export interface Stock {
   };
 }
 
+export interface Commodity {
+  id: string;
+  commodityId: string;
+  name: string;
+  ticker: string;
+  currentPrice: number;
+  previousPrice: number;
+  unit: string;
+  tickSize: number;
+  tickValue: number;
+  marginRequirement: number;
+  description: string;
+}
+
 export interface OrderBookLevel {
   price: number;
   size: number;

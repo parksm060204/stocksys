@@ -16,16 +16,20 @@ export declare class MarketEngine {
     private readonly beta;
     private lastTickTime;
     private activeEvents;
-    private pensionFunds;
-    private commercialBanks;
-    private hedgeFunds;
-    private propDesks;
-    private retailSwarms;
-    private statArbBots;
+    private institutionalBots;
     private optionsMMBots;
-    private quantBots;
-    private asMarketMakers;
+    private ctaBots;
     private adversarialAgent;
+    private wallBreakerAgent;
+    private asMarketMakerAgent;
+    private retailSwarmAgents;
+    private hedgeFundAgents;
+    private statArbAgents;
+    private pensionFundAgents;
+    private commercialBankAgents;
+    private propDeskAgents;
+    private quantAgents;
+    private commercialHedgerAgents;
     private realWorldFetcher;
     constructor();
     injectEvent(event: MarketEvent): void;
@@ -38,5 +42,7 @@ export declare class MarketEngine {
     private triggerRandomEvents;
     private fetchMarketState;
     private processBatchOrders;
+    private updateExchangeRates;
+    private findAgentById;
 }
 //# sourceMappingURL=MarketEngine.d.ts.map

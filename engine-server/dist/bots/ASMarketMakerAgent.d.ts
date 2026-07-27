@@ -7,5 +7,6 @@ export declare class ASMarketMakerAgent extends BaseAgent {
     constructor();
     executeMarketMaking(currentMarket: any): any[];
     updateInventory(stockId: string, deltaQty: number): void;
+    confirmExecution(assetClass: 'stock' | 'bond' | 'commodity', side: 'buy' | 'sell', filledQty: number, filledPrice: number, stockId?: string): void;
 }
 //# sourceMappingURL=ASMarketMakerAgent.d.ts.map

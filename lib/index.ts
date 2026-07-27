@@ -57,9 +57,8 @@ function getMovers(stocks: Stock[], count: number, direction: "up" | "down") {
   return movers.slice(0, count);
 }
 
-export function getKOSPIIndex(stocks: Stock[]): MarketIndex {
+export function getKOSPIIndex(stocks: Stock[], baseValue: number = 2500): MarketIndex {
   const domesticStocks = stocks.filter((s) => s.market === "domestic");
-  const baseValue = 2500;
   const { indexValue, totalCap } = calcIndex(domesticStocks, baseValue);
 
   const previousClose = baseValue;
@@ -83,9 +82,8 @@ export function getKOSPIIndex(stocks: Stock[]): MarketIndex {
   };
 }
 
-export function getSP50Index(stocks: Stock[]): MarketIndex {
-  const overseasStocks = stocks.filter((s) => s.market === "overseas");
-  const baseValue = 5000;
+export function getSP50Index(stocks: Stock[], baseValue: number = 5000): MarketIndex {
+  const overseasStocks = stocks.filter((s) => s.market === "overseas" && s.sector !== "commodity");
   const { indexValue, totalCap } = calcIndex(overseasStocks, baseValue);
 
   const previousClose = baseValue;
@@ -109,10 +107,9 @@ export function getSP50Index(stocks: Stock[]): MarketIndex {
   };
 }
 
-export function getEuroStoxx50Index(stocks: Stock[]): MarketIndex {
-  const europeStocks = stocks.filter((s) => s.market === "europe");
-  const baseValue = 4000;
-  const { indexValue, totalCap } = calcIndex(europeStocks, baseValue);
+export function getEuroStoxx50Index(stocks: Stock[], baseValue: number = 4000): MarketIndex {
+  const euroStocks = stocks.filter((s) => s.market === "europe");
+  const { indexValue, totalCap } = calcIndex(euroStocks, baseValue);
 
   const previousClose = baseValue;
   const changeAmount = indexValue - previousClose;
@@ -121,7 +118,7 @@ export function getEuroStoxx50Index(stocks: Stock[]): MarketIndex {
   return {
     id: "eurostoxx50",
     name: "Euro Stoxx 50",
-    nameKo: "유로스톡스 50 지수",
+    nameKo: "유로 스톡스 50",
     market: "europe",
     baseValue,
     currentValue: indexValue,
@@ -129,9 +126,9 @@ export function getEuroStoxx50Index(stocks: Stock[]): MarketIndex {
     changePct,
     changeAmount,
     totalMarketCap: totalCap,
-    constituentCount: europeStocks.length,
-    topGainers: getMovers(europeStocks, 5, "up"),
-    topLosers: getMovers(europeStocks, 5, "down"),
+    constituentCount: euroStocks.length,
+    topGainers: getMovers(euroStocks, 5, "up"),
+    topLosers: getMovers(euroStocks, 5, "down"),
   };
 }
 

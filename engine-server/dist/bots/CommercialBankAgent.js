@@ -1,9 +1,11 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.CommercialBankAgent = void 0;
-class CommercialBankAgent {
+const BaseAgent_1 = require("./BaseAgent");
+class CommercialBankAgent extends BaseAgent_1.BaseAgent {
     bot;
     constructor(bot) {
+        super(bot.id, bot.capital);
         this.bot = bot;
     }
     calculatePriceFromYTM(faceValue, ytm, maturityYears) {
@@ -18,25 +20,36 @@ class CommercialBankAgent {
             }
         }
         let sweepOccurred = false;
+        const targetSpread = this.bot.targetSpread || { "1Y_BOND": 0.005, "3Y_BOND": 0.007, "5Y_BOND": 0.010, "10Y_BOND": 0.015 };
         for (const bond of currentMarket.bonds) {
-            const spread = this.bot.targetSpread[bond.type];
+            const id = (bond.bond_id || '').toUpperCase();
+            const bondType = id.includes('10Y') ? '10Y_BOND' : (id.includes('5Y') || id.includes('7Y') ? '5Y_BOND' : (id.includes('3Y') ? '3Y_BOND' : '1Y_BOND'));
+            const spread = targetSpread[bondType];
             if (!spread)
                 continue;
             const targetYTM = adminBaseRate + spread;
-            const fairPrice = this.calculatePriceFromYTM(bond.faceValue, targetYTM, bond.maturityYears);
-            const priceDifference = bond.currentPrice - fairPrice;
+            const faceValue = bond.face_value !== undefined ? bond.face_value : (bond.faceValue !== undefined ? bond.faceValue : 10000);
+            const maturityYears = bond.maturity_years !== undefined ? bond.maturity_years : (bond.maturityYears !== undefined ? bond.maturityYears : 10);
+            const currentPrice = bond.current_price !== undefined ? bond.current_price : (bond.currentPrice !== undefined ? bond.currentPrice : 10000);
+            const fairPrice = this.calculatePriceFromYTM(faceValue, targetYTM, maturityYears);
+            const priceDifference = currentPrice - fairPrice;
             const differenceRatio = Math.abs(priceDifference / fairPrice);
             if (differenceRatio > 0.005) {
-                const executionVolume = Math.floor((this.bot.capital * differenceRatio) / bond.currentPrice);
-                orders.push({
-                    botId: this.bot.id,
-                    assetId: bond.id,
-                    orderType: 'MARKET',
-                    side: priceDifference > 0 ? 'SELL' : 'BUY',
-                    volume: executionVolume,
-                    timestamp: now
-                });
-                sweepOccurred = true;
+                const executionVolume = Math.floor((this.bot.capital * differenceRatio) / currentPrice);
+                if (executionVolume > 0) {
+                    orders.push({
+                        stock_id: bond.id,
+                        user_id: null,
+                        side: priceDifference > 0 ? 'sell' : 'buy',
+                        price: priceDifference > 0 ? currentPrice - 10 : currentPrice + 10,
+                        size: executionVolume,
+                        status: 'open',
+                        is_lp: true,
+                        _botId: this.botId,
+                        _assetClass: 'bond'
+                    });
+                    sweepOccurred = true;
+                }
             }
         }
         if (sweepOccurred) {

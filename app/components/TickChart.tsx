@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { createChart, ColorType, IChartApi, ISeriesApi, CandlestickSeries } from 'lightweight-charts';
+import StrictWidget from './StrictWidget';
 
 const INTERVAL_MS = 10 * 60 * 1000; // 10분
 
@@ -95,7 +96,8 @@ export default function TenMinChart({ ticker, currentPrice }: { ticker: string; 
   const supabase = createClient();
 
   useEffect(() => {
-    supabase.from('stocks').select('id').eq('ticker', ticker).single().then(({ data }) => {
+    const client = createClient();
+    client.from('stocks').select('id').eq('ticker', ticker).single().then(({ data }: { data: { id: string } | null }) => {
       if (data) setStockId(data.id);
     });
   }, [ticker]);
@@ -112,7 +114,7 @@ export default function TenMinChart({ ticker, currentPrice }: { ticker: string; 
       },
       grid: { vertLines: { color: '#1f2937' }, horzLines: { color: '#1f2937' } },
       width: el.clientWidth || 600,
-      height: 340,
+      height: el.clientHeight || 340,
       timeScale: { timeVisible: true, secondsVisible: false },
       rightPriceScale: { borderColor: '#1f2937' },
     });
@@ -129,7 +131,12 @@ export default function TenMinChart({ ticker, currentPrice }: { ticker: string; 
     seriesRef.current = series;
 
     const ro = new ResizeObserver(() => {
-      if (el) chart.applyOptions({ width: el.clientWidth });
+      if (el) {
+        chart.applyOptions({
+          width: el.clientWidth,
+          height: el.clientHeight || 340,
+        });
+      }
     });
     ro.observe(el);
 
@@ -154,7 +161,7 @@ export default function TenMinChart({ ticker, currentPrice }: { ticker: string; 
       .eq('stock_id', stockId)
       .gte('created_at', since)
       .order('created_at', { ascending: true })
-      .then(({ data }) => {
+      .then(({ data }: { data: Array<{ price: number; created_at: string }> | null }) => {
         if (data && data.length >= 2) {
           const candles = groupToCandles(data);
           map.clear();
@@ -176,7 +183,7 @@ export default function TenMinChart({ ticker, currentPrice }: { ticker: string; 
     // 실시간 구독 (실 데이터 있을 때만 의미 있음)
     const channel = supabase
       .channel(`10m_${stockId}`)
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'trades', filter: `stock_id=eq.${stockId}` }, (payload) => {
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'trades', filter: `stock_id=eq.${stockId}` }, (payload: { new: Record<string, unknown> }) => {
         const t = payload.new as { price: number; created_at: string };
         const ts = Math.floor(floorToInterval(new Date(t.created_at).getTime()) / 1000);
         const c = map.get(ts);
@@ -195,19 +202,19 @@ export default function TenMinChart({ ticker, currentPrice }: { ticker: string; 
       .subscribe();
 
     return () => { supabase.removeChannel(channel); };
-  }, [stockId]);
+  }, [stockId, currentPrice, supabase]);
 
   return (
-    <div className="w-full bg-panel border border-border rounded-xl overflow-hidden">
-      <div className="bg-panel2 py-2 px-4 border-b border-border font-bold text-tx text-[13px] flex items-center gap-2">
+    <StrictWidget className="h-full" overflowClass="overflow-hidden">
+      <div className="bg-[#111] py-2 px-4 border-b border-[#222] font-bold text-white text-[13px] flex items-center gap-2">
         <span>10분봉 차트</span>
         {useFallback ? (
-          <span className="text-[10px] font-normal text-warn/80 bg-warn/10 px-1.5 py-px rounded">시뮬레이션</span>
+          <span className="text-[10px] font-normal text-yellow-500/80 bg-yellow-500/10 px-1.5 py-px rounded-none">시뮬레이션</span>
         ) : (
-          <span className="text-[10px] font-normal text-dim">실시간 체결 기반</span>
+          <span className="text-[10px] font-normal text-gray-500">실시간 체결 기반</span>
         )}
       </div>
-      <div ref={chartContainerRef} className="w-full" />
-    </div>
+      <div ref={chartContainerRef} className="w-full flex-1" />
+    </StrictWidget>
   );
 }

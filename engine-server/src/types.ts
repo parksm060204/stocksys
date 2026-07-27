@@ -1,5 +1,48 @@
 export type MarketSentiment = 'RISK_ON' | 'RISK_OFF' | 'NEUTRAL';
 
+export interface AgentPortfolio {
+  cash: number;
+  stock: number; // legacy fallback or total
+  kr_equity?: number;
+  us_equity?: number;
+  eu_equity?: number;
+  bond: number;
+  commodity: number;
+  derivatives?: number;
+  holdings?: Record<string, number>;
+}
+
+export interface AgentWeights {
+  kr_equity?: number;
+  us_equity?: number;
+  eu_equity?: number;
+  stock?: number; // legacy fallback
+  bond: number;
+  commodity: number;
+  derivatives?: number;
+  cash: number;
+}
+
+export interface RegimeStrategy {
+  kr_equity?: number;
+  us_equity?: number;
+  eu_equity?: number;
+  stock?: number;
+  bond: number;
+  commodity: number;
+  derivatives?: number;
+  cash: number;
+}
+
+export interface AgentConfig {
+  id: string;
+  name: string;
+  type: string; // 'GLOBAL_MACRO' | 'STATISTICAL_ARBITRAGE' | 'PENSION_FUND' | 'MARKET_MAKER' | 'PASSIVE_INDEX'
+  riskTolerance: number;
+  baseWeights: AgentWeights;
+  executionStyle: 'AGGRESSIVE_MARKET' | 'HFT_LIMIT' | 'PASSIVE_TWAP';
+  regimeShifts: Record<string, RegimeStrategy>;
+}
 export interface MarketEvent {
   id: string;
   targetSector: string | 'ALL'; // 특정 섹터(예: TECH, BIO) 혹은 시장 전체
@@ -101,4 +144,25 @@ export interface QuantBot {
   capital: number;
   reactionSpeed: number;
   tradingStyle: 'INFORMED_TRADER';
+}
+
+export interface CommercialHedgerBot {
+  id: string;
+  name: string;
+  type: 'COMMERCIAL_HEDGER';
+  capital: number;
+  targetCommodity: string; // e.g. "WTI_CRUDE"
+  supportLevel: number;
+  resistanceLevel: number;
+  tradingStyle: 'LIMIT_HEAVY';
+}
+
+export interface CTABot {
+  id: string;
+  name: string;
+  type: 'CTA_MOMENTUM';
+  capital: number;
+  reactionSpeed: number;
+  breakoutThreshold: number; // e.g. 0.05 (5% breakout)
+  tradingStyle: 'SWEEP_AGGRESSIVE';
 }

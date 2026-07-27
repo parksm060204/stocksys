@@ -58,9 +58,9 @@ class QuantAgent extends BaseAgent_1.BaseAgent {
             let liquidityDepth = 0;
             for (let i = 0; i < 3; i++) {
                 if (stockBook.asks[i])
-                    liquidityDepth += stockBook.asks[i].total_volume;
+                    liquidityDepth += stockBook.asks[i].size;
                 if (stockBook.bids[i])
-                    liquidityDepth += stockBook.bids[i].total_volume;
+                    liquidityDepth += stockBook.bids[i].size;
             }
             // lambda가 0에 가까워지는 것을 방지
             const lambda = Math.max(0.001, 1000 / (liquidityDepth + 1));

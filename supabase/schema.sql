@@ -1,5 +1,5 @@
 -- =====================================================================
--- Antigravity: Virtual Stock Trading System — Schema
+-- 무명: Virtual Stock Trading System — Schema
 -- Run in Supabase SQL editor. Follows AGENTS.md Supabase policies.
 -- =====================================================================
 
@@ -10,6 +10,8 @@ create table if not exists public.profiles (
   avatar_url text,
   is_admin boolean not null default false,
   cash bigint not null default 100000000, -- 1억 가상 시드 머니
+  news_subscriptions jsonb default '{}'::jsonb,
+  has_options_license boolean not null default false,
   created_at timestamptz not null default now()
 );
 
@@ -57,7 +59,7 @@ create policy "Admins can delete stocks" on public.stocks for delete to authenti
 create table if not exists public.orders (
   id uuid primary key default gen_random_uuid(),
   stock_id uuid not null references public.stocks(id) on delete cascade,
-  user_id uuid references auth.users(id) on delete set null, -- null = LP 더미
+  user_id uuid, -- null = LP 더미, otherwise either real user UUID or bots_config UUID
   side text not null check (side in ('buy','sell')),
   price numeric(18,4) not null,
   size bigint not null,
@@ -79,8 +81,10 @@ create policy "Users can delete their own orders" on public.orders for delete to
 create table if not exists public.trades (
   id uuid primary key default gen_random_uuid(),
   stock_id uuid not null references public.stocks(id) on delete cascade,
-  buyer_id uuid references auth.users(id),
-  seller_id uuid references auth.users(id),
+  buyer_id uuid,
+  seller_id uuid,
+  buyer_is_bot boolean not null default false,
+  seller_is_bot boolean not null default false,
   price numeric(18,4) not null,
   size bigint not null,
   created_at timestamptz not null default now()
@@ -112,26 +116,7 @@ create policy "Users can insert their own holdings" on public.holdings for inser
 create policy "Users can update their own holdings" on public.holdings for update to authenticated using (auth.uid() = user_id) with check (auth.uid() = user_id);
 create policy "Users can delete their own holdings" on public.holdings for delete to authenticated using (auth.uid() = user_id);
 
--- 6) NEWS (AI/공시/관리자) ------------------------------------------
-create table if not exists public.news (
-  id uuid primary key default gen_random_uuid(),
-  title text not null,
-  body text not null default '',
-  source text not null check (source in ('AI','DISCLOSURE','ADMIN')),
-  sector text,
-  sentiment text not null default 'neutral' check (sentiment in ('positive','negative','neutral')),
-  related_stock_ids uuid[] default '{}',
-  created_at timestamptz not null default now()
-);
-
-grant select, insert, update, delete on table public.news to anon, authenticated;
-alter table public.news enable row level security;
-
-create policy "Anyone can view news" on public.news for select to authenticated using (true);
-create policy "Anyone can view news anon" on public.news for select to anon using (true);
-create policy "Admins can insert news" on public.news for insert to authenticated with check (true);
-create policy "Admins can update news" on public.news for update to authenticated using (true) with check (true);
-create policy "Admins can delete news" on public.news for delete to authenticated using (true);
+-- 6) (Removed old news table) ----------------------------------------
 
 -- 7) NOVEL_EVENTS (웹소설 이벤트 + AI 판정) -------------------------
 create table if not exists public.novel_events (
@@ -175,7 +160,7 @@ create policy "Admins can insert financials" on public.financials for insert to 
 create policy "Admins can update financials" on public.financials for update to authenticated using (true) with check (true);
 create policy "Admins can delete financials" on public.financials for delete to authenticated using (true);
 
--- 9) CHAT (종목별 토론방) -------------------------------------------
+-- 9) CHAT (주주톡) -------------------------------------------
 create table if not exists public.chat_messages (
   id uuid primary key default gen_random_uuid(),
   stock_id uuid not null references public.stocks(id) on delete cascade,
@@ -242,5 +227,28 @@ create or replace trigger on_auth_user_created
 alter publication supabase_realtime add table public.orders;
 alter publication supabase_realtime add table public.trades;
 alter publication supabase_realtime add table public.chat_messages;
-alter publication supabase_realtime add table public.news;
 alter publication supabase_realtime add table public.stocks;
+
+-- 11) OPTIONS CONTRACTS (옵션) -------------------------------------------
+create table if not exists public.options_contracts (
+  id uuid primary key default gen_random_uuid(),
+  underlying_stock_id uuid not null references public.stocks(id) on delete cascade,
+  type text not null check (type in ('CALL','PUT')),
+  strike_price numeric(18,4) not null,
+  expiry_date timestamptz not null,
+  open_interest bigint not null default 0,
+  implied_volatility numeric(10,4) not null default 0.20,
+  created_at timestamptz not null default now(),
+  unique (underlying_stock_id, type, strike_price, expiry_date)
+);
+
+grant select, insert, update, delete on table public.options_contracts to anon, authenticated;
+alter table public.options_contracts enable row level security;
+
+create policy "Anyone can view options contracts" on public.options_contracts for select to authenticated using (true);
+create policy "Anyone can view options contracts anon" on public.options_contracts for select to anon using (true);
+create policy "Admins can insert options contracts" on public.options_contracts for insert to authenticated with check (true);
+create policy "Admins can update options contracts" on public.options_contracts for update to authenticated using (true) with check (true);
+create policy "Admins can delete options contracts" on public.options_contracts for delete to authenticated using (true);
+
+alter publication supabase_realtime add table public.options_contracts;

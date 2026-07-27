@@ -62,8 +62,8 @@ export class QuantAgent extends BaseAgent {
       const stockBook = orderBook[stock.id] || { asks: [], bids: [] };
       let liquidityDepth = 0;
       for (let i = 0; i < 3; i++) {
-        if (stockBook.asks[i]) liquidityDepth += stockBook.asks[i].total_volume;
-        if (stockBook.bids[i]) liquidityDepth += stockBook.bids[i].total_volume;
+        if (stockBook.asks[i]) liquidityDepth += stockBook.asks[i].size;
+        if (stockBook.bids[i]) liquidityDepth += stockBook.bids[i].size;
       }
       
       // lambda가 0에 가까워지는 것을 방지

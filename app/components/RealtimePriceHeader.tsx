@@ -17,8 +17,8 @@ export default function RealtimePriceHeader({ stock }: { stock: Stock }) {
       .on(
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'stocks', filter: `id=eq.${stock.id}` },
-        (payload) => {
-          const newPrice = payload.new.current_price;
+        (payload: { new: Record<string, unknown> }) => {
+          const newPrice = payload.new.current_price as number;
           if (newPrice !== lastDisplayedPrice.current) {
             setCurrentPrice(newPrice);
             lastDisplayedPrice.current = newPrice;

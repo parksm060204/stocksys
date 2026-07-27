@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useState, useMemo } from "react";
 import type { Stock } from "@/lib/types";
 import { fmtPrice } from "@/lib/format";
 

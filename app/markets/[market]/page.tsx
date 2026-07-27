@@ -19,6 +19,8 @@ export default async function MarketPage({
   if (market === "domestic") redirect("/stocks?tab=kospi");
   if (market === "overseas") redirect("/stocks?tab=sp50");
   if (market === "europe") redirect("/stocks?tab=eurostoxx50");
+  if (market === "etf") redirect("/etf");
+  if (market === "options") redirect("/options");
 
   if (!VALID.has(market as MarketId)) notFound();
 

@@ -2,12 +2,15 @@ import type { PensionFundBot } from "../types";
 import { BaseAgent } from "./BaseAgent";
 
 export class PensionFundAgent extends BaseAgent {
-  private bot: PensionFundBot;
+  public readonly config: PensionFundBot;
   private executionState: Record<string, { remainingQty: number, targetTicks: number, currentTick: number, kappa: number, totalQty: number }> = {};
 
   constructor(bot: PensionFundBot) {
     super(bot.id, bot.capital);
-    this.bot = bot;
+    this.config = bot;
+    if ((bot as any).initialHoldings) {
+      this.currentPortfolio.holdings = { ...(bot as any).initialHoldings };
+    }
   }
 
   private calculatePriceFromYTM(faceValue: number, ytm: number, maturityYears: number): number {
@@ -17,17 +20,25 @@ export class PensionFundAgent extends BaseAgent {
   public evaluateMarketAndPlaceOrders(currentMarket: any, isCreditCrunch: boolean = false) {
     const orders: any[] = [];
 
+    const targetYTMConfig = this.config.targetYTM || { "1Y_BOND": 0.025, "3Y_BOND": 0.030, "5Y_BOND": 0.032, "10Y_BOND": 0.035 };
+
     // 채권 매매 로직은 기존 유지
     for (const bond of (currentMarket.bonds || [])) {
-      const targetYTM = this.bot.targetYTM[bond.type];
+      const id = (bond.bond_id || '').toUpperCase();
+      const bondType = id.includes('10Y') ? '10Y_BOND' : (id.includes('5Y') || id.includes('7Y') ? '5Y_BOND' : (id.includes('3Y') ? '3Y_BOND' : '1Y_BOND'));
+      const targetYTM = targetYTMConfig[bondType];
       if (!targetYTM) continue;
 
       const adjustedTargetYTM = isCreditCrunch ? targetYTM + 0.02 : targetYTM;
-      const targetBuyPrice = this.calculatePriceFromYTM(bond.faceValue || 10000, adjustedTargetYTM, bond.maturityYears || 10);
+      const faceValue = bond.face_value !== undefined ? bond.face_value : (bond.faceValue !== undefined ? bond.faceValue : 10000);
+      const maturityYears = bond.maturity_years !== undefined ? bond.maturity_years : (bond.maturityYears !== undefined ? bond.maturityYears : 10);
+      const currentPrice = bond.current_price !== undefined ? bond.current_price : (bond.currentPrice !== undefined ? bond.currentPrice : 10000);
+
+      const targetBuyPrice = this.calculatePriceFromYTM(faceValue, adjustedTargetYTM, maturityYears);
       const adjustedBuyPrice = Math.floor(targetBuyPrice / 10) * 10;
 
-      if (bond.current_price <= adjustedBuyPrice + 50) {
-        const orderVolume = Math.floor((this.bot.capital * (Math.random() * 0.01 + 0.01)) / bond.current_price);
+      if (currentPrice <= adjustedBuyPrice + 50) {
+        const orderVolume = Math.floor((this.config.capital * (Math.random() * 0.01 + 0.01)) / currentPrice);
         orders.push({
           stock_id: bond.id,
           user_id: null,
@@ -35,15 +46,63 @@ export class PensionFundAgent extends BaseAgent {
           price: adjustedBuyPrice,
           size: orderVolume,
           status: 'open',
-          is_lp: true
+          is_lp: true,
+          _botId: this.botId,
+          _assetClass: 'bond'
         });
       }
     }
 
     // 주식 시장 방어선 구축 로직 (Almgren-Chriss 모델)
-    const sectorTargets = this.bot.sectorTargets || {};
+    const sectorTargets = this.config.sectorTargets || {};
     const availableStocks = currentMarket.stocks || [];
-    const equityCapital = this.bot.capital * 0.05;
+    const targetAlloc = (this.config as any).targetAllocation || { kr_equity: 0.15, us_equity: 0.35, eu_equity: 0.05 };
+    const totalStockWeight = (targetAlloc.stock || 0) + (targetAlloc.kr_equity || 0) + (targetAlloc.us_equity || 0) + (targetAlloc.eu_equity || 0) || 0.55;
+    const equityCapital = this.config.capital * totalStockWeight;
+
+    for (const stock of availableStocks) {
+      const holdingsQty = this.currentPortfolio.holdings?.[stock.id] || 0;
+      const stockVal = holdingsQty * stock.current_price;
+      const currentWeight = this.config.capital > 0 ? stockVal / this.config.capital : 0;
+      const targetWeightPerStock = totalStockWeight / Math.max(1, availableStocks.length);
+      const tolerance = 0.005; // 0.5% 오차
+      const tickSize = this.getTickSize(stock.current_price);
+
+      // 내생적 트리거 1: 목표 비중 초과 시 기계적 익절/리밸런싱 매도
+      if (currentWeight > targetWeightPerStock + tolerance && holdingsQty > 10) {
+        const excessVal = (currentWeight - targetWeightPerStock) * this.config.capital;
+        const sellQty = Math.min(holdingsQty, Math.floor(excessVal / stock.current_price));
+        if (sellQty > 0) {
+          orders.push({
+            stock_id: stock.id,
+            user_id: null,
+            side: 'sell',
+            price: stock.current_price + tickSize, // 1틱 위 지정가 매도
+            size: sellQty,
+            status: 'open',
+            is_lp: true,
+            _botId: this.botId
+          });
+        }
+      }
+      // 내생적 트리거 2: 목표 비중 미달 시 지정가 받침 매수 (물타기/리밸런싱)
+      else if (currentWeight < targetWeightPerStock - tolerance) {
+        const deficitVal = (targetWeightPerStock - currentWeight) * this.config.capital;
+        const buyQty = Math.floor(deficitVal / stock.current_price);
+        if (buyQty > 0) {
+          orders.push({
+            stock_id: stock.id,
+            user_id: null,
+            side: 'buy',
+            price: stock.current_price - tickSize, // 1틱 아래 받침 매수
+            size: buyQty,
+            status: 'open',
+            is_lp: true,
+            _botId: this.botId
+          });
+        }
+      }
+    }
 
     for (const [sector, weight] of Object.entries(sectorTargets)) {
       const sectorStocks = availableStocks.filter((s: any) => s.sector === sector);
@@ -64,21 +123,19 @@ export class PensionFundAgent extends BaseAgent {
             if (isCrash) {
               const totalIntendedQty = Math.floor(moneyPerStock / stock.current_price);
               if (totalIntendedQty > 0) {
-                // Almgren-Chriss Parameters
-                const lambda = 1e-4; // Risk aversion
-                const sigma2 = Math.pow(Math.abs(dayReturn) * 100, 2) || 1; // Variance approximation
-                const eta = 0.01; // Liquidity impact parameter
-                const kappa = Math.sqrt((lambda * sigma2) / eta); // 곡률 산출
+                const lambda = 1e-4;
+                const sigma2 = Math.pow(Math.abs(dayReturn) * 100, 2) || 1;
+                const eta = 0.01;
+                const kappa = Math.sqrt((lambda * sigma2) / eta);
                 
                 state = {
                   remainingQty: totalIntendedQty,
-                  targetTicks: 60, // 60틱 동안 분할 매수
+                  targetTicks: 60,
                   currentTick: 0,
-                  kappa: Math.max(0.01, kappa), // 0 방지
+                  kappa: Math.max(0.01, kappa),
                   totalQty: totalIntendedQty
                 };
                 this.executionState[stock.id] = state;
-                console.log(`[Almgren-Chriss] ${this.bot.name} initiated execution for ${stock.name}. Kappa: ${state.kappa.toFixed(4)}, Qty: ${totalIntendedQty}`);
               }
             }
           }
@@ -114,14 +171,15 @@ export class PensionFundAgent extends BaseAgent {
               
               orders.push({
                 stock_id: stock.id,
-                user_id: this.botId, // 추적용
+                user_id: null,
                 side: 'buy',
                 price: targetBuyPrice,
                 size: peakSize,
                 hidden_size: hiddenSize,
                 peak_size: peakSize,
                 status: 'open',
-                is_lp: true
+                is_lp: true,
+                _botId: this.botId // 추적용
               });
             }
           }

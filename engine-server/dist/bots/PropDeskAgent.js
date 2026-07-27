@@ -10,6 +10,7 @@ class PropDeskAgent extends BaseAgent_1.BaseAgent {
     ofiState = {};
     prevOrderBookState = {};
     prevPriceState = {};
+    holdings = {};
     constructor(bot) {
         super(bot.id, bot.capital);
         this.bot = bot;
@@ -28,12 +29,12 @@ class PropDeskAgent extends BaseAgent_1.BaseAgent {
                 this.ofiState[stockId] = new math_1.OFISlidingWindow(10000); // 10초 윈도우
             // OFI 계산을 위한 호가창 파싱
             const stockBook = orderBook[stockId] || { bids: [], asks: [] };
-            const bestBid = stockBook.bids[0] || { price: 0, total_volume: 0 };
-            const bestAsk = stockBook.asks[0] || { price: 0, total_volume: 0 };
+            const bestBid = stockBook.bids[0] || { price: 0, size: 0 };
+            const bestAsk = stockBook.asks[0] || { price: 0, size: 0 };
             const pB_n = bestBid.price;
-            const qB_n = bestBid.total_volume;
+            const qB_n = bestBid.size;
             const pA_n = bestAsk.price;
-            const qA_n = bestAsk.total_volume;
+            const qA_n = bestAsk.size;
             const prev = this.prevOrderBookState[stockId];
             let e_n = 0;
             if (prev) {
@@ -91,7 +92,7 @@ class PropDeskAgent extends BaseAgent_1.BaseAgent {
             // ==========================================
             // 기본 모드: Avellaneda-Stoikov Market Making
             // ==========================================
-            const holdingQty = myHoldings[stock.id] || 0;
+            const holdingQty = this.holdings[stock.id] || 0;
             const targetQty = Math.floor((this.bot.capital * 0.05) / stock.current_price); // 5% 비중
             if (targetQty <= 0)
                 continue;
@@ -114,6 +115,17 @@ class PropDeskAgent extends BaseAgent_1.BaseAgent {
             orders.push(...this.executeSmartOrder(stock, 'sell', targetSellPrice, orderQty, 0.1, currentMarket.activeEvents));
         }
         return orders;
+    }
+    confirmExecution(assetClass, side, filledQty, filledPrice, stockId) {
+        super.confirmExecution(assetClass, side, filledQty, filledPrice, stockId);
+        if (assetClass === 'stock' && stockId) {
+            if (side === 'buy') {
+                this.holdings[stockId] = (this.holdings[stockId] || 0) + filledQty;
+            }
+            else {
+                this.holdings[stockId] = (this.holdings[stockId] || 0) - filledQty;
+            }
+        }
     }
 }
 exports.PropDeskAgent = PropDeskAgent;

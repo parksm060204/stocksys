@@ -4,11 +4,6 @@ import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import type { User } from "@supabase/supabase-js";
 
-function marketOpen(d: Date): boolean {
-  const mins = d.getHours() * 60 + d.getMinutes();
-  return mins >= 18 * 60 && mins < 22 * 60 + 30;
-}
-
 export default function TopBar() {
   const [now, setNow] = useState<Date | null>(null);
   const [user, setUser] = useState<User | null>(null);
@@ -22,13 +17,13 @@ export default function TopBar() {
       if (data) setCash(data.cash);
     };
 
-    supabase.auth.getSession().then(({ data }) => {
-      setUser(data.session?.user ?? null);
+    supabase.auth.getSession().then(({ data }: { data: { session: { user: { id: string } } | null } }) => {
+      setUser((data.session?.user ?? null) as User | null);
       if (data.session?.user) fetchProfile(data.session.user.id);
     });
 
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null);
+    const { data: listener } = supabase.auth.onAuthStateChange((_event: unknown, session: { user: { id: string } } | null) => {
+      setUser((session?.user ?? null) as User | null);
       if (session?.user) fetchProfile(session.user.id);
       else setCash(null);
     });
@@ -41,10 +36,8 @@ export default function TopBar() {
       clearTimeout(id);
       listener?.subscription.unsubscribe();
     };
-  }, []);
+  }, [supabase]);
 
-  const emergency = false; // Emergency closed logic removed temporarily
-  const open = now ? (marketOpen(now) && !emergency) : false;
   const timeStr = now
     ? now.toLocaleTimeString("ko-KR", {
         hour: "2-digit",
@@ -67,7 +60,7 @@ export default function TopBar() {
   return (
     <header className="flex h-14 items-center justify-between border-b border-border bg-panel px-6">
       <div className="flex items-center gap-4">
-        {/* Market status removed as requested */}
+        {/* Market status */}
       </div>
 
       <div className="flex items-center gap-5">
@@ -78,6 +71,7 @@ export default function TopBar() {
         {user ? (
           <div className="flex items-center gap-3">
             {user.user_metadata?.avatar_url && (
+              /* eslint-disable-next-line @next/next/no-img-element */
               <img
                 src={user.user_metadata.avatar_url}
                 alt=""

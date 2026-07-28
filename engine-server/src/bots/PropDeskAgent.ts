@@ -109,7 +109,7 @@ export class PropDeskAgent extends BaseAgent {
       }
 
       // ==========================================
-      // 기본 모드: Avellaneda-Stoikov Market Making
+      // 기본 모드: Avellaneda-Stoikov Market Making (OFI Fade Filter 연동)
       // ==========================================
       const holdingQty = this.holdings[stock.id] || 0;
       const targetQty = Math.floor((this.bot.capital * 0.05) / stock.current_price); // 5% 비중
@@ -129,7 +129,10 @@ export class PropDeskAgent extends BaseAgent {
       const optimalSpread = (gamma * sigma2 * T_minus_t) + ((2 / gamma) * Math.log(1 + (gamma / k)));
       const halfSpread = (optimalSpread / 2) * tickSize; 
 
-      const targetBuyPrice = Math.floor((r - halfSpread) / tickSize) * tickSize;
+      // OFI Imbalance Filter: 매도 압력 극심(ofiRatio < -0.5) 시 매수 호가 2틱 후퇴 (Fade)
+      const fadeOffset = ofiRatio < -0.5 ? tickSize * 2 : 0;
+
+      const targetBuyPrice = Math.floor((r - halfSpread - fadeOffset) / tickSize) * tickSize;
       const targetSellPrice = Math.ceil((r + halfSpread) / tickSize) * tickSize;
       
       const orderQty = Math.floor(targetQty * 0.1); 

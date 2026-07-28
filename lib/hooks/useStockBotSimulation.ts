@@ -27,14 +27,22 @@ export function getTickSize(price: number): number {
   return 1000;
 }
 
-// ─── 로그정규분포 체결 수량 (대부분 소량, 가끔 대량) ─────────────────────────
-function randomQty(): number {
-  // 로그정규분포 근사: 대부분 5~60주, 가끔 수백~수천주
-  const u1 = Math.random();
-  const u2 = Math.random();
-  const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
-  const lognormal = Math.exp(1.6 + z * 0.85);
-  return Math.max(1, Math.round(lognormal));
+export function alignToTickSize(price: number): number {
+  if (price <= 0) return 1;
+  const tick = getTickSize(price);
+  return Math.round(price / tick) * tick;
+}
+
+// ─── 결정론적 의사 난수 생성기 (Deterministic Seeded PRNG) ──────────────────
+function deterministicPRNG(seed: number): number {
+  const x = Math.sin(seed * 12.9898 + 78.233) * 43758.5453;
+  return x - Math.floor(x);
+}
+
+// ─── 정규분포 수량 계산 (결정론적 산출) ─────────────────────────────────
+function deterministicQty(seed: number): number {
+  const r = deterministicPRNG(seed);
+  return Math.max(5, Math.floor(20 + r * 150));
 }
 
 // ─── 난수 기반 시뮬레이션 상태 ────────────────────────────────────────────────
@@ -47,7 +55,7 @@ interface EngineState {
 }
 
 /**
- * 초기 호가창 생성 — 스프레드 근처에 잔량 집중, 외곽은 얇게
+ * 초기 호가창 생성 — 스프레드 근처에 잔량 집중, 외곽은 결정론적 지수 감쇄
  */
 function buildLevels(mid: number): { bids: SimOrderbookLevel[]; asks: SimOrderbookLevel[] } {
   const tick = getTickSize(mid);
@@ -55,28 +63,24 @@ function buildLevels(mid: number): { bids: SimOrderbookLevel[]; asks: SimOrderbo
   const asks: SimOrderbookLevel[] = [];
 
   for (let i = 0; i < 10; i++) {
-    // 지수 감쇄: 1호가에 최대, 10호가로 갈수록 감소 (실제 HTS와 동일)
-    const depthFactor = Math.exp(-i * 0.42);
+    const depthFactor = Math.exp(-i * 0.35);
+    const bidBase = 1200 + (Math.abs(Math.sin(mid - (i + 1) * tick)) * 500);
+    const askBase = 1200 + (Math.abs(Math.cos(mid + (i + 1) * tick)) * 500);
+    
     bids.push({
       price: mid - (i + 1) * tick,
-      totalSize: Math.round((700 + Math.random() * 1600) * depthFactor) + 80,
+      totalSize: Math.max(20, Math.round(bidBase * depthFactor)),
     });
     asks.push({
       price: mid + (i + 1) * tick,
-      totalSize: Math.round((700 + Math.random() * 1600) * depthFactor) + 80,
+      totalSize: Math.max(20, Math.round(askBase * depthFactor)),
     });
   }
   return { bids, asks };
 }
 
 /**
- * 클라이언트 봇 시뮬레이션 훅 — 실제 매칭 엔진처럼 동작하는 호가창
- *
- * 핵심 원칙:
- * 1. 체결은 최우선 호가(스프레드 경계)에서만 발생
- * 2. 호가가 소진되면 가격이 한 틱 이동하고 호가창이 시프트
- * 3. 잔량은 체결 차감 + 스프레드 근처 소량 리필로만 변동 (외곽 고정)
- * 4. 주문 흐름에 모멘텀(추세)을 부여하여 가격이 연속적으로 움직임
+ * 클라이언트 봇 시뮬레이션 훅 — 결정론적 매칭 엔진
  */
 export function useStockBotSimulation(
   ticker: string,
@@ -111,7 +115,7 @@ export function useStockBotSimulation(
     }
   }, [ticker, currentPrice]);
 
-  // ─── 매 틱 실행 ──────────────────────────────────────────────────────────
+  // ─── 매 틱 실행 (결정론적 삼각함수 파동 모델) ──────────────────────────────────
   const runTick = useCallback(() => {
     const eng = engineRef.current;
     if (!eng || ticker === '__none__') return;
@@ -120,82 +124,73 @@ export function useStockBotSimulation(
     const newTrades: SimTrade[] = [];
     eng.tickCount++;
 
-    // ── 1. 모멘텀 업데이트 (EWMA + 노이즈 + 가끔 강한 추세) ──
-    const noise = (Math.random() - 0.5) * 0.22;
-    eng.momentum = eng.momentum * 0.93 + noise;
-    // 2% 확률로 강한 추세 임펄스 (뉴스 없이도 움직이는 시장)
-    if (Math.random() < 0.02) {
-      eng.momentum += (Math.random() > 0.5 ? 1 : -1) * (0.25 + Math.random() * 0.35);
-      eng.momentum = Math.max(-1, Math.min(1, eng.momentum));
-    }
+    const prng1 = deterministicPRNG(eng.tickCount * 1.1 + eng.midPrice);
+    const prng2 = deterministicPRNG(eng.tickCount * 2.3 + eng.midPrice);
 
-    // ── 2. 이번 틱 체결 건수 결정 (활동성 = 1~4건, 모멘텀 강할수록 많음) ──
-    const activity = 1 + Math.abs(eng.momentum) * 2.5 + Math.random() * 1.2;
-    const numTrades = Math.min(5, Math.floor(activity));
+    // ── 1. 삼각함도 파동 결정론적 모멘텀 ──
+    const wave = Math.sin(eng.tickCount * 0.1) * 0.5 + Math.cos(eng.tickCount * 0.05) * 0.3;
+    eng.momentum = eng.momentum * 0.85 + wave * 0.15;
 
-    // ── 3. 체결 엔진 ──────────────────────────────────────────
+    // ── 2. 체결 건수 산정 ──
+    const activity = 1 + Math.abs(eng.momentum) * 2;
+    const numTrades = Math.min(3, Math.floor(activity));
+
+    // ── 3. 결정론적 체결 ──
     for (let i = 0; i < numTrades; i++) {
-      // 체결 방향: 모멘텀 기반 확률 (모멘텀 > 0이면 매수 우세)
-      const buyProb = 0.5 + eng.momentum * 0.38;
-      const isBuy = Math.random() < buyProb;
+      const subPrng = deterministicPRNG(eng.tickCount * 10 + i);
+      const isBuy = subPrng < (0.5 + eng.momentum * 0.3);
 
       if (isBuy) {
-        // ─── 매수 체결: 최우선 매도호가 소진 ───
         const bestAsk = eng.asks[0];
         if (!bestAsk || bestAsk.totalSize <= 0) break;
 
-        const qty = Math.min(randomQty(), bestAsk.totalSize);
+        const qty = Math.min(deterministicQty(eng.tickCount + i), bestAsk.totalSize);
         bestAsk.totalSize -= qty;
 
         newTrades.push({
-          tradeId: `SIM-${eng.tickCount}-${i}-${Date.now() % 10000}`,
+          tradeId: `SIM-${eng.tickCount}-${i}`,
           price: bestAsk.price,
           quantity: qty,
           side: 'BUY',
-          isLiquidation: Math.random() < 0.02,
+          isLiquidation: false,
           timestamp: Date.now(),
         });
 
-        // 최우선 매도호가 완전 소진 → 가격 상승, 호가창 위로 시프트
         if (bestAsk.totalSize <= 0) {
           eng.asks.shift();
-          // 새 매도 외곽 추가 (상단)
           const topAsk = eng.asks[eng.asks.length - 1];
+          const newSize = Math.max(30, Math.round(200 + Math.abs(Math.sin(topAsk.price + tick)) * 400));
           eng.asks.push({
             price: topAsk.price + tick,
-            totalSize: Math.round(80 + Math.random() * 250),
+            totalSize: newSize,
           });
-          // 매수 쪽은 그대로 유지 (가격이 올라간 만큼 아래 매수는 상대적으로 더 아래가 됨)
-          // midPrice를 새 최우선 매도호가 기준으로 재설정
           if (eng.asks.length > 0) {
             eng.midPrice = eng.asks[0].price - tick * 0.5;
           }
         }
       } else {
-        // ─── 매도 체결: 최우선 매수호가 소진 ───
         const bestBid = eng.bids[0];
         if (!bestBid || bestBid.totalSize <= 0) break;
 
-        const qty = Math.min(randomQty(), bestBid.totalSize);
+        const qty = Math.min(deterministicQty(eng.tickCount + i + 50), bestBid.totalSize);
         bestBid.totalSize -= qty;
 
         newTrades.push({
-          tradeId: `SIM-${eng.tickCount}-${i}-${Date.now() % 10000}`,
+          tradeId: `SIM-${eng.tickCount}-${i}`,
           price: bestBid.price,
           quantity: qty,
           side: 'SELL',
-          isLiquidation: Math.random() < 0.02,
+          isLiquidation: false,
           timestamp: Date.now(),
         });
 
-        // 최우선 매수호가 완전 소진 → 가격 하락, 호가창 아래로 시프트
         if (bestBid.totalSize <= 0) {
           eng.bids.shift();
-          // 새 매수 외곽 추가 (하단)
           const bottomBid = eng.bids[eng.bids.length - 1];
+          const newSize = Math.max(30, Math.round(200 + Math.abs(Math.cos(bottomBid.price - tick)) * 400));
           eng.bids.push({
             price: bottomBid.price - tick,
-            totalSize: Math.round(80 + Math.random() * 250),
+            totalSize: newSize,
           });
           if (eng.bids.length > 0) {
             eng.midPrice = eng.bids[0].price + tick * 0.5;
@@ -204,22 +199,16 @@ export function useStockBotSimulation(
       }
     }
 
-    // ── 4. 신규 지정가 주문 유입 (최우선 3호가까지만, 소량 리필) ──
-    // 외곽 호가는 거의 고정 → 호가창이 안정적으로 보임
+    // ── 4. 신규 지정가 주문 유입 (결정론적 소량 리필) ──
     for (let i = 0; i < 3; i++) {
-      const maxBidRefill = Math.round((700 + 1600) * Math.exp(-i * 0.42)) + 120;
-      const maxAskRefill = maxBidRefill;
-      if (eng.bids[i] && Math.random() < 0.45) {
-        eng.bids[i].totalSize = Math.min(
-          eng.bids[i].totalSize + Math.round(Math.random() * 40),
-          maxBidRefill
-        );
+      const maxBidRefill = Math.round(1500 * Math.exp(-i * 0.35)) + 120;
+      if (eng.bids[i]) {
+        const addSize = Math.floor(10 * Math.abs(Math.sin(eng.tickCount + i)));
+        eng.bids[i].totalSize = Math.min(eng.bids[i].totalSize + addSize, maxBidRefill);
       }
-      if (eng.asks[i] && Math.random() < 0.45) {
-        eng.asks[i].totalSize = Math.min(
-          eng.asks[i].totalSize + Math.round(Math.random() * 40),
-          maxAskRefill
-        );
+      if (eng.asks[i]) {
+        const addSize = Math.floor(10 * Math.abs(Math.cos(eng.tickCount + i)));
+        eng.asks[i].totalSize = Math.min(eng.asks[i].totalSize + addSize, maxBidRefill);
       }
     }
 

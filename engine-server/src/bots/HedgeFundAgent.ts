@@ -108,7 +108,7 @@ export class HedgeFundAgent extends BaseAgent {
           if (qtyToSell > 0) {
             const tickSize = this.getTickSize(stock.current_price);
             // Fire Sale: 호가창 하단으로 무자비하게 던짐 (시장 충격 극대화)
-            orders.push({
+            orders.push(this.applyInstitutionalRiskControls({
               stock_id: stock.id,
               user_id: null,
               side: 'sell',
@@ -117,7 +117,7 @@ export class HedgeFundAgent extends BaseAgent {
               status: 'open',
               is_lp: true,
               _botId: this.botId
-            });
+            }, stock.current_price));
             
             assetsToSell -= qtyToSell * stock.current_price;
           }
@@ -131,7 +131,7 @@ export class HedgeFundAgent extends BaseAgent {
             console.log(`[Margin Call - Short Squeeze] ${this.bot.name} is forced to cover ${qtyToCover} shares of ${stock.name}!`);
             
             // Short Squeeze: 호가창 상단으로 무자비하게 삼 (시장가 매수)
-            orders.push({
+            orders.push(this.applyInstitutionalRiskControls({
               stock_id: stock.id,
               user_id: null,
               side: 'buy',
@@ -140,7 +140,7 @@ export class HedgeFundAgent extends BaseAgent {
               status: 'open',
               is_lp: true, // MarketEngine이 매칭
               _botId: this.botId
-            });
+            }, stock.current_price));
             
             assetsToSell -= qtyToCover * stock.current_price;
           }
@@ -230,7 +230,7 @@ export class HedgeFundAgent extends BaseAgent {
             const tickSize = this.getTickSize(stock.current_price);
             const targetPrice = stock.current_price - tickSize * 2; // 약간 아래로 호가 제출
 
-            orders.push({
+            orders.push(this.applyInstitutionalRiskControls({
               stock_id: stock.id,
               user_id: null,
               side: 'sell',
@@ -239,7 +239,7 @@ export class HedgeFundAgent extends BaseAgent {
               status: 'open',
               is_lp: true,
               _botId: this.botId
-            });
+            }, stock.current_price));
 
             break; // 한 틱당 한 종목만 공매도 타겟팅
           }

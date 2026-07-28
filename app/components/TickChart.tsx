@@ -90,6 +90,7 @@ export default function TenMinChart({ ticker, currentPrice }: { ticker: string; 
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
   const candleMapRef = useRef<Map<number, { time: number; open: number; high: number; low: number; close: number }>>(new Map());
+  const isDisposedRef = useRef(false);
   const [stockId, setStockId] = useState<string | null>(null);
   const [useFallback, setUseFallback] = useState(false);
 
@@ -98,13 +99,14 @@ export default function TenMinChart({ ticker, currentPrice }: { ticker: string; 
   useEffect(() => {
     const client = createClient();
     client.from('stocks').select('id').eq('ticker', ticker).single().then(({ data }: { data: { id: string } | null }) => {
-      if (data) setStockId(data.id);
+      if (data && !isDisposedRef.current) setStockId(data.id);
     });
   }, [ticker]);
 
   // 차트 초기화
   useEffect(() => {
     if (!chartContainerRef.current) return;
+    isDisposedRef.current = false;
 
     const el = chartContainerRef.current;
     const chart = createChart(el, {
@@ -131,24 +133,35 @@ export default function TenMinChart({ ticker, currentPrice }: { ticker: string; 
     seriesRef.current = series;
 
     const ro = new ResizeObserver(() => {
-      if (el) {
-        chart.applyOptions({
-          width: el.clientWidth,
-          height: el.clientHeight || 340,
-        });
+      if (el && !isDisposedRef.current && chartRef.current) {
+        try {
+          chart.applyOptions({
+            width: el.clientWidth,
+            height: el.clientHeight || 340,
+          });
+        } catch {
+          // ignore disposed errors
+        }
       }
     });
     ro.observe(el);
 
     return () => {
+      isDisposedRef.current = true;
       ro.disconnect();
-      chart.remove();
+      chartRef.current = null;
+      seriesRef.current = null;
+      try {
+        chart.remove();
+      } catch {
+        // ignore disposed errors
+      }
     };
   }, []);
 
   // 데이터 로드 & 실시간 구독
   useEffect(() => {
-    if (!stockId || !seriesRef.current) return;
+    if (!stockId || !seriesRef.current || isDisposedRef.current) return;
 
     const series = seriesRef.current;
     const map = candleMapRef.current;
@@ -162,21 +175,26 @@ export default function TenMinChart({ ticker, currentPrice }: { ticker: string; 
       .gte('created_at', since)
       .order('created_at', { ascending: true })
       .then(({ data }: { data: Array<{ price: number; created_at: string }> | null }) => {
-        if (data && data.length >= 2) {
-          const candles = groupToCandles(data);
-          map.clear();
-          candles.forEach((c) => map.set(c.time, c));
-          series.setData(candles as any);
-          chartRef.current?.timeScale().scrollToRealTime();
-          setUseFallback(false);
-        } else {
-          // 데이터 없음 → 시뮬레이션 폴백
-          const fallback = makeFallbackCandles(stockId, currentPrice);
-          map.clear();
-          fallback.forEach((c) => map.set(c.time, c));
-          series.setData(fallback as any);
-          chartRef.current?.timeScale().scrollToRealTime();
-          setUseFallback(true);
+        if (isDisposedRef.current || !seriesRef.current) return;
+        try {
+          if (data && data.length >= 2) {
+            const candles = groupToCandles(data);
+            map.clear();
+            candles.forEach((c) => map.set(c.time, c));
+            series.setData(candles as any);
+            chartRef.current?.timeScale().scrollToRealTime();
+            setUseFallback(false);
+          } else {
+            // 데이터 없음 → 시뮬레이션 폴백
+            const fallback = makeFallbackCandles(stockId, currentPrice);
+            map.clear();
+            fallback.forEach((c) => map.set(c.time, c));
+            series.setData(fallback as any);
+            chartRef.current?.timeScale().scrollToRealTime();
+            setUseFallback(true);
+          }
+        } catch {
+          // ignore disposed error during async setData
         }
       });
 
@@ -184,20 +202,25 @@ export default function TenMinChart({ ticker, currentPrice }: { ticker: string; 
     const channel = supabase
       .channel(`10m_${stockId}`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'trades', filter: `stock_id=eq.${stockId}` }, (payload: { new: Record<string, unknown> }) => {
-        const t = payload.new as { price: number; created_at: string };
-        const ts = Math.floor(floorToInterval(new Date(t.created_at).getTime()) / 1000);
-        const c = map.get(ts);
-        if (!c) {
-          const nc = { time: ts, open: t.price, high: t.price, low: t.price, close: t.price };
-          map.set(ts, nc);
-          series.update(nc as any);
-        } else {
-          c.close = t.price;
-          if (t.price > c.high) c.high = t.price;
-          if (t.price < c.low) c.low = t.price;
-          series.update(c as any);
+        if (isDisposedRef.current || !seriesRef.current) return;
+        try {
+          const t = payload.new as { price: number; created_at: string };
+          const ts = Math.floor(floorToInterval(new Date(t.created_at).getTime()) / 1000);
+          const c = map.get(ts);
+          if (!c) {
+            const nc = { time: ts, open: t.price, high: t.price, low: t.price, close: t.price };
+            map.set(ts, nc);
+            series.update(nc as any);
+          } else {
+            c.close = t.price;
+            if (t.price > c.high) c.high = t.price;
+            if (t.price < c.low) c.low = t.price;
+            series.update(c as any);
+          }
+          setUseFallback(false);
+        } catch {
+          // ignore disposed error during realtime update
         }
-        setUseFallback(false);
       })
       .subscribe();
 

@@ -3,9 +3,13 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { createBrowserClient } from '@supabase/ssr';
 import {
   useStockBotSimulation,
+  getTickSize,
+  alignToTickSize,
   type SimOrderbookLevel,
   type SimTrade,
 } from './useStockBotSimulation';
+
+import { createClient } from '@/lib/supabase/client';
 
 // ─── DB 행 타입 ──────────────────────────────────────────────────────────────
 interface DBOrder {
@@ -55,20 +59,8 @@ interface UseOrderbookDataResult {
 // ─── 틱 사이즈 (중복 정의 방지용 re-export) ─────────────────────────────────
 export { getTickSize } from './useStockBotSimulation';
 
-// ─── Supabase 클라이언트 (지연 초기화) ───────────────────────────────────────
-function getSupabase() {
-  return createBrowserClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-  );
-}
-
 /**
  * useOrderbookData — DB 우선, 시뮬레이션 fallback
- *
- * 1. Supabase `orders` 테이블에서 open 주문 읽기 → 호가창 구성
- * 2. Supabase `trades` 테이블에서 최근 체결 읽기 → 체결 피드
- * 3. DB에 데이터가 없으면(백엔드 미가동) → useStockBotSimulation fallback
  */
 export function useOrderbookData(
   stockId: string,
@@ -94,7 +86,7 @@ export function useOrderbookData(
   // ─── DB 폴링 ────────────────────────────────────────────────────────────
   const fetchFromDB = useCallback(async () => {
     if (!stockId || stockId === '__none__') return;
-    const supabase = getSupabase();
+    const supabase = createClient();
 
     try {
       // 1. 미체결 주문 조회 (호가창)
@@ -162,15 +154,18 @@ export function useOrderbookData(
         .sort((a, b) => a.price - b.price)
         .slice(0, 10);
 
-      // 만약 DB orders가 순간적으로 부족할 경우 최신 체결가 기반으로 10호가 촘촘히 래핑
+      // 만약 DB orders가 순간적으로 부족할 경우 최신 체결가 기반 결정론적 지수 감쇄 모델로 10호가 구성
       const tick = getTickSize(latestPrice);
       if (newBids.length < 5 || newAsks.length < 5) {
-        const basePrice = newBids[0]?.price || newAsks[0]?.price || latestPrice;
+        const basePrice = alignToTickSize(newBids[0]?.price || newAsks[0]?.price || latestPrice);
         if (newAsks.length < 5) {
           for (let i = 1; i <= 10; i++) {
             const p = basePrice + i * tick;
             if (!askMap.has(p)) {
-              newAsks.push({ price: p, totalSize: Math.floor(Math.random() * 500 + 100) });
+              // 결정론적 수학 호가 수량 (Exponential Depth Decay: BaseVolume * e^(-0.35 * i))
+              const baseVol = 800 + (Math.abs(Math.sin(p)) * 600);
+              const size = Math.max(10, Math.floor(baseVol * Math.exp(-0.3 * i)));
+              newAsks.push({ price: p, totalSize: size });
             }
           }
           newAsks = newAsks.sort((a, b) => a.price - b.price).slice(0, 10);
@@ -179,7 +174,9 @@ export function useOrderbookData(
           for (let i = 1; i <= 10; i++) {
             const p = Math.max(tick, basePrice - i * tick);
             if (!bidMap.has(p)) {
-              newBids.push({ price: p, totalSize: Math.floor(Math.random() * 500 + 100) });
+              const baseVol = 800 + (Math.abs(Math.cos(p)) * 600);
+              const size = Math.max(10, Math.floor(baseVol * Math.exp(-0.3 * i)));
+              newBids.push({ price: p, totalSize: size });
             }
           }
           newBids = newBids.sort((a, b) => b.price - a.price).slice(0, 10);

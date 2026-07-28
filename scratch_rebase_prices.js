@@ -91,6 +91,19 @@ const FAIR_TARGET_PRICES = {
   "KR10Y": 100.00,  // 한국 10년 국채 액면
 };
 
+function alignToTickSize(price) {
+  if (!price || price <= 0) return price;
+  let tick = 1;
+  if (price < 2000) tick = 1;
+  else if (price < 5000) tick = 5;
+  else if (price < 20000) tick = 10;
+  else if (price < 50000) tick = 50;
+  else if (price < 200000) tick = 100;
+  else if (price < 500000) tick = 500;
+  else tick = 1000;
+  return Math.round(price / tick) * tick;
+}
+
 async function rebasePrices() {
   console.log("🔄 Starting stock price rebase & fair target calculation...");
 
@@ -124,13 +137,21 @@ async function rebasePrices() {
       }
     }
 
-    // 적정 주가(target_price)를 기준으로 ±1% 내에서 현재가/종가/시가/고가/저가를 리베이스
-    const rebasedPrice = +(fairTarget * (0.995 + Math.random() * 0.01)).toFixed(stock.market === 'domestic' ? 0 : 2);
-    const prevClose = +(fairTarget * (0.99 + Math.random() * 0.02)).toFixed(stock.market === 'domestic' ? 0 : 2);
-    const openPrice = +(prevClose * (0.998 + Math.random() * 0.004)).toFixed(stock.market === 'domestic' ? 0 : 2);
-    const high = +Math.max(rebasedPrice, prevClose, openPrice * 1.005).toFixed(stock.market === 'domestic' ? 0 : 2);
-    const low = +Math.min(rebasedPrice, prevClose, openPrice * 0.995).toFixed(stock.market === 'domestic' ? 0 : 2);
-    const marketCap = stock.market === 'domestic' ? rebasedPrice * 100000000 : rebasedPrice * 10000000;
+    // 적정 주가(target_price)를 기준으로 ±1% 내에서 현재가/종가/시가/고가/저가를 리베이스 및 틱 정렬
+    const isDomestic = stock.market === 'domestic' || stock.market === 'kr' || !stock.market;
+    const rawRebased = +(fairTarget * (0.995 + Math.random() * 0.01)).toFixed(isDomestic ? 0 : 2);
+    const rawPrevClose = +(fairTarget * (0.99 + Math.random() * 0.02)).toFixed(isDomestic ? 0 : 2);
+    const rawOpenPrice = +(rawPrevClose * (0.998 + Math.random() * 0.004)).toFixed(isDomestic ? 0 : 2);
+    const rawHigh = +Math.max(rawRebased, rawPrevClose, rawOpenPrice * 1.005).toFixed(isDomestic ? 0 : 2);
+    const rawLow = +Math.min(rawRebased, rawPrevClose, rawOpenPrice * 0.995).toFixed(isDomestic ? 0 : 2);
+
+    const rebasedPrice = isDomestic ? alignToTickSize(rawRebased) : rawRebased;
+    const prevClose = isDomestic ? alignToTickSize(rawPrevClose) : rawPrevClose;
+    const openPrice = isDomestic ? alignToTickSize(rawOpenPrice) : rawOpenPrice;
+    const high = isDomestic ? alignToTickSize(rawHigh) : rawHigh;
+    const low = isDomestic ? alignToTickSize(rawLow) : rawLow;
+
+    const marketCap = isDomestic ? rebasedPrice * 100000000 : rebasedPrice * 10000000;
 
     const { error: updateError } = await supabase
       .from('stocks')

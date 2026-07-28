@@ -12,7 +12,7 @@ export class ASMarketMakerAgent extends BaseAgent {
     super('bot_as_mm_001', 100000000000); // 1000억
   }
 
-  public executeMarketMaking(currentMarket: any) {
+  public executeMarketMaking(currentMarket: any, orderBook?: any) {
     const orders: any[] = [];
     const availableStocks = currentMarket.stocks || [];
 
@@ -23,67 +23,83 @@ export class ASMarketMakerAgent extends BaseAgent {
       const baseQty = Math.floor(1000000 / s) || 1; // 100만 원 규모를 1단위로 정규화
       const q = (this.inventory[stock.id] || 0) / baseQty;
       
-      // 변동성 동적 추정 (최근 수익률 절대값 기반) 및 상한 5000 클램프
+      // 변동성 동적 추정 (최근 수익률 절대값 기반)
       const dayReturn = Math.abs((stock.current_price - stock.previous_close) / stock.previous_close);
-      const dynamicSigma2 = Math.min(5000, Math.max(10, dayReturn * 100000)); // 변동성이 커지면 스프레드 폭증
+      const dynamicSigma2 = Math.min(5000, Math.max(10, dayReturn * 100000));
 
-      // 위기 시 감마(위험 회피) 폭증 트리거
       let currentGamma = this.gamma;
       if (dynamicSigma2 > 500) {
-        currentGamma = 0.9; // DRL 정책망이 '위험'을 감지했다고 가정 (Extreme Risk Aversion)
+        currentGamma = 0.9; // Extreme Risk Aversion
       }
 
-      // AS 모델: 유보 가격 (Reservation Price)
+      // 1. Avellaneda-Stoikov Price Skewing
       // r = s - q * gamma * sigma^2
-      // 재고(q)가 많으면 r이 낮아져 매도(asks)를 시장가에 가깝게 붙이고 매수(bids)를 멀리 뺌
+      // 재고(q)가 부족하면(q < 0), r > s가 되어 매수 호가가 시장가에 가깝게 당겨지고 매도 호가는 뒤로 물러남
       const r = s - (q * currentGamma * dynamicSigma2);
 
-      // AS 모델: 최적 스프레드
-      // spread = gamma * sigma^2 + (2/gamma) * ln(1 + gamma/k)
+      // AS 모델 최적 스프레드
       const rawSpread = (currentGamma * dynamicSigma2) + (2 / currentGamma) * Math.log(1 + currentGamma / this.k);
-      // 스프레드 상한: 현재가의 2% (HTS 시장 통상 수준)
-      const maxSpread = s * 0.02;
+      const maxSpread = s * 0.02; // 최대 2%
       const spread = Math.min(rawSpread, maxSpread);
       
       const delta = spread / 2;
       const tickSize = this.getTickSize(s);
 
-      // 매수/매도 호가 결정
-      const bidPrice = Math.floor((r - delta) / tickSize) * tickSize;
+      // 2. Orderbook Imbalance (OFI / Fade Filter)
+      // 매도 잔량이 매수 잔량보다 월등히 많아 폭락 위험(Imbalance < -0.5) 시 매수 호가를 뒤로 뺌 (Fade)
+      const stockBook = orderBook?.[stock.id] || stock.orderBook || { bids: [], asks: [] };
+      const totalBids = (stockBook.bids || []).reduce((acc: number, b: any) => acc + (b.size || 0), 0);
+      const totalAsks = (stockBook.asks || []).reduce((acc: number, a: any) => acc + (a.size || 0), 0);
+      const totalVol = totalBids + totalAsks;
+      const imbalance = totalVol > 0 ? (totalBids - totalAsks) / totalVol : 0;
+
+      let fadeOffset = 0;
+      let bidSizeMultiplier = 1.0;
+      if (imbalance < -0.5) {
+        // 매도 압력 극심 -> 칼날 잡기 방지: 매수 호가 2틱 아래로 후퇴 (Fade)
+        fadeOffset = tickSize * 2;
+        bidSizeMultiplier = 0.5; // 매수 수량 50% 축소
+      }
+
+      // 매수/매도 기준 가격 산출
+      const bidPrice = Math.floor((r - delta - fadeOffset) / tickSize) * tickSize;
       const askPrice = Math.ceil((r + delta) / tickSize) * tickSize;
 
-      // 틱 사이즈 보정
       const baseBid = Math.min(bidPrice, s - tickSize);
       const baseAsk = Math.max(askPrice, s + tickSize);
       const maxQty = Math.floor(1000000 / s) || 10;
 
-      // 5~10호가 촘촘한 LP 레이어 생성
+      // 3. Multi-Band Exponential Quote Layering (5단계 기하급수적 호가 배치)
       for (let level = 0; level < 5; level++) {
         const pBid = Math.max(tickSize, baseBid - level * tickSize);
         const pAsk = baseAsk + level * tickSize;
-        const qty = Math.max(1, Math.floor(maxQty * (1 + level * 0.5)));
+        
+        // 지수적 물량 배치: Exp(0.25 * level) -> 1.0x, 1.28x, 1.64x, 2.11x, 2.71x
+        const expMultiplier = Math.exp(0.25 * level);
+        const buyQty = Math.max(1, Math.floor(maxQty * expMultiplier * bidSizeMultiplier));
+        const sellQty = Math.max(1, Math.floor(maxQty * expMultiplier));
 
-        orders.push({
+        orders.push(this.applyInstitutionalRiskControls({
           stock_id: stock.id,
           user_id: null,
           side: 'buy',
           price: pBid,
-          size: qty,
+          size: buyQty,
           status: 'open',
           is_lp: true,
           _botId: this.botId
-        });
+        }, stock.current_price));
 
-        orders.push({
+        orders.push(this.applyInstitutionalRiskControls({
           stock_id: stock.id,
           user_id: null,
           side: 'sell',
           price: pAsk,
-          size: qty,
+          size: sellQty,
           status: 'open',
           is_lp: true,
           _botId: this.botId
-        });
+        }, stock.current_price));
       }
     }
 

@@ -6,15 +6,20 @@ export class BaseAgent {
   public agentConfig: AgentConfig;
   public currentPortfolio: AgentPortfolio;
 
-  constructor(configOrId: any, initialCapital: number) {
+  constructor(configOrId: any, initialCapital?: number) {
     if (typeof configOrId === 'string') {
       this.botId = configOrId;
       this.agentConfig = {} as AgentConfig;
     } else {
-      this.botId = configOrId.id;
-      this.agentConfig = configOrId;
+      this.botId = configOrId?.id || 'unknown_bot';
+      this.agentConfig = configOrId || {};
     }
-    this.capital = initialCapital;
+    
+    const cap = (typeof initialCapital === 'number' && !isNaN(initialCapital))
+      ? initialCapital
+      : (typeof configOrId === 'object' && typeof configOrId?.capital === 'number' ? configOrId.capital : 10000000000);
+      
+    this.capital = cap;
     
     const weights = { ...((this.agentConfig as any).targetAllocation || this.agentConfig.baseWeights || { stock: 0, bond: 0, commodity: 0, cash: 1, kr_equity: 0, us_equity: 0, eu_equity: 0, derivatives: 0 }) };
     
@@ -22,14 +27,14 @@ export class BaseAgent {
 
     // 포트폴리오 초기화 (초기 자본금은 전부 현금, 또는 기본 비중대로 배분)
     this.currentPortfolio = {
-      cash: initialCapital * (weights.cash !== undefined ? weights.cash : 1.0 - totalEquities - (weights.bond || 0) - (weights.commodity || 0) - (weights.derivatives || 0)),
-      stock: initialCapital * totalEquities,
-      kr_equity: initialCapital * (weights.kr_equity || 0.0),
-      us_equity: initialCapital * (weights.us_equity || 0.0),
-      eu_equity: initialCapital * (weights.eu_equity || 0.0),
-      bond: initialCapital * (weights.bond || 0.0),
-      commodity: initialCapital * (weights.commodity || 0.0),
-      derivatives: initialCapital * (weights.derivatives || 0.0)
+      cash: cap * (weights.cash !== undefined ? weights.cash : Math.max(0, 1.0 - totalEquities - (weights.bond || 0) - (weights.commodity || 0) - (weights.derivatives || 0))),
+      stock: cap * totalEquities,
+      kr_equity: cap * (weights.kr_equity || 0.0),
+      us_equity: cap * (weights.us_equity || 0.0),
+      eu_equity: cap * (weights.eu_equity || 0.0),
+      bond: cap * (weights.bond || 0.0),
+      commodity: cap * (weights.commodity || 0.0),
+      derivatives: cap * (weights.derivatives || 0.0)
     };
   }
 
@@ -115,6 +120,11 @@ export class BaseAgent {
     // 1. 현재 자산 가치 평가 (Mark-to-Market)
     const currentTotalValue = this.currentPortfolio.cash + this.currentPortfolio.stock + this.currentPortfolio.bond + this.currentPortfolio.commodity;
     
+    // ⚠️ 마진콜 / 파산(Bankrupt) 보호: 총 자산 가치가 NaN 또는 0 이하이면 매매 중단
+    if (isNaN(currentTotalValue) || currentTotalValue <= 0) {
+      return orders;
+    }
+
     // 2. 목표 비중 산출
     const targetWeights = this.calculateTargetWeights(marketState.sentiment, marketState.activeEvents);
     
@@ -202,16 +212,47 @@ export class BaseAgent {
     return 1000;
   }
 
+  public alignToTickSize(price: number): number {
+    if (price <= 0) return 1;
+    const tick = this.getTickSize(price);
+    return Math.round(price / tick) * tick;
+  }
+
   /**
-   * 상황(맥락)에 기반하여 자연스럽게 가장 합리적인 매매 기법을 선택하여 주문 배열을 반환합니다.
-   * 
-   * @param stock 대상 주식 객체
-   * @param side 'buy' or 'sell'
-   * @param targetPrice 내가 원하는 체결 목표가 (스푸핑의 기준이 됨)
-   * @param targetQty 내가 사고/팔고자 하는 총 목표 수량 (빙산 주문의 기준이 됨)
-   * @param urgency 긴급성 (0~1). 1에 가까울수록 손해를 보더라도 즉시 체결(스윕)을 원함
-   * @param activeEvents 현재 발동 중인 뉴스 이벤트 배열
+   * 기관급 트레이딩 안전장치 (Institutional Risk Controls)
+   * 1. Hard Limit: 1회 주문 최대 금액 5,000,000 KRW, 수량 5,000주 제한
+   * 2. 호가창 깊이(LOB Depth) 대비 최대 10% 비율 제한
+   * 3. 틱 단위 가격 정렬 (KRX Tick Alignment)
    */
+  public applyInstitutionalRiskControls(order: any, currentPrice: number, lobDepth: number = 50000): any {
+    const MAX_NOTIONAL_PER_ORDER = 5000000; // 1회 최대 500만 원
+    const MAX_QTY_PER_ORDER = 5000;         // 1회 최대 5,000주
+    const DEPTH_RATIO_CAP = 0.10;           // 호가창 깊이의 최대 10%
+
+    let safeQty = Math.abs(order.size || 1);
+
+    if (currentPrice > 0) {
+      const notionalCapQty = Math.floor(MAX_NOTIONAL_PER_ORDER / currentPrice);
+      safeQty = Math.min(safeQty, Math.max(1, notionalCapQty));
+    }
+
+    safeQty = Math.min(safeQty, MAX_QTY_PER_ORDER);
+
+    if (lobDepth > 0) {
+      const depthCapQty = Math.floor(lobDepth * DEPTH_RATIO_CAP);
+      safeQty = Math.min(safeQty, Math.max(1, depthCapQty));
+    }
+
+    const rawPrice = order.price || currentPrice;
+    const alignedPrice = this.alignToTickSize(rawPrice);
+
+    return {
+      ...order,
+      price: alignedPrice,
+      size: Math.max(1, Math.floor(safeQty))
+    };
+  }
+
   protected executeSmartOrder(
     stock: any, 
     side: 'buy' | 'sell', 
@@ -223,18 +264,16 @@ export class BaseAgent {
     let urgency = baseUrgency;
     let finalTargetQty = targetQty;
 
-    // 뉴스 이벤트(Gemini 발작 로직) 반영
+    // 뉴스 이벤트 반영
     for (const event of activeEvents) {
       if (event.targetSector === 'ALL' || event.targetSector === stock.sector) {
-        // 호재인데 매수하려거나 악재인데 매도하려는 경우 긴급성 대폭 증폭
         if ((event.impact === 'POSITIVE' || event.impact === 'STRONG_POSITIVE') && side === 'buy') {
           urgency = Math.min(1.0, urgency * event.urgencyMultiplier);
-          finalTargetQty = Math.floor(finalTargetQty * event.urgencyMultiplier); // 물량도 증폭
+          finalTargetQty = Math.floor(finalTargetQty * event.urgencyMultiplier);
         } else if ((event.impact === 'NEGATIVE' || event.impact === 'STRONG_NEGATIVE') && side === 'sell') {
           urgency = Math.min(1.0, urgency * event.urgencyMultiplier);
           finalTargetQty = Math.floor(finalTargetQty * event.urgencyMultiplier);
         } else {
-          // 뉴스 방향과 반대 행동 중일 때는 긴급성을 대폭 낮춤 (예: 호재인데 팔려던 물량은 천천히 팜)
           urgency = urgency / event.urgencyMultiplier;
         }
       }
@@ -244,7 +283,7 @@ export class BaseAgent {
     const tickSize = this.getTickSize(stock.current_price);
     const priceDiffRatio = Math.abs(stock.current_price - targetPrice) / stock.current_price;
 
-    // 1. 긴급성(Urgency) 최우선 판단 -> Sweep-to-fill
+    // 1. 긴급성 최우선 판단 -> Sweep-to-fill
     if (urgency > 0.7) {
       const sweepTicks = urgency > 0.9 ? 4 : 2; 
       for (let i = 0; i < sweepTicks; i++) {
@@ -252,7 +291,7 @@ export class BaseAgent {
           ? stock.current_price + (tickSize * i)
           : stock.current_price - (tickSize * i);
         
-        orders.push({
+        const rawOrder = {
           stock_id: stock.id,
           user_id: null,
           side: side,
@@ -261,24 +300,23 @@ export class BaseAgent {
           status: 'open',
           is_lp: true,
           _botId: this.botId
-        });
+        };
+        orders.push(this.applyInstitutionalRiskControls(rawOrder, stock.current_price));
       }
       return orders;
     }
 
     // 2. 가격 차이 판단 -> Spoofing (허수 주문)
-    // 당장 급하지 않은데(urgency 낮음), 현재가와 내 목표가가 차이가 좀 난다(예: 더 싸게 사고 싶음)
-    // 그리고 내 목표 물량이 크다면, 허수 벽을 세워서 개미를 위협하는 것이 합리적임
     if (urgency < 0.3 && priceDiffRatio > 0.01 && finalTargetQty > 1000) {
-      // 내가 싸게 사고 싶다(Buy) -> 개미들이 팔게 만들어야 함 -> 위에다 가짜 거대 매도벽을 세움
       const spoofSide = side === 'buy' ? 'sell' : 'buy';
+      const tickOffset = 3 + (Math.abs(Math.floor(finalTargetQty)) % 3);
       const spoofPrice = side === 'buy'
-        ? stock.current_price + (tickSize * (Math.floor(Math.random() * 3) + 3)) // 3~5틱 위 가짜 매도벽
-        : stock.current_price - (tickSize * (Math.floor(Math.random() * 3) + 3)); // 3~5틱 아래 가짜 매수벽
+        ? stock.current_price + (tickSize * tickOffset)
+        : stock.current_price - (tickSize * tickOffset);
       
-      const spoofQty = finalTargetQty * 5; // 내 진짜 목표 물량보다 훨씬 거대하게 위협용으로 설정
+      const spoofQty = Math.min(5000, finalTargetQty * 2);
 
-      orders.push({
+      orders.push(this.applyInstitutionalRiskControls({
         stock_id: stock.id,
         user_id: null,
         side: spoofSide,
@@ -287,10 +325,9 @@ export class BaseAgent {
         status: 'open',
         is_lp: true,
         _botId: this.botId
-      });
+      }, stock.current_price));
 
-      // 허수 주문을 깔아두고, 진짜 내 목표가에는 빙산주문처럼 작게 리필 대기
-      orders.push({
+      orders.push(this.applyInstitutionalRiskControls({
         stock_id: stock.id,
         user_id: null,
         side: side,
@@ -299,15 +336,14 @@ export class BaseAgent {
         status: 'open',
         is_lp: true,
         _botId: this.botId
-      });
+      }, stock.current_price));
       return orders;
     }
 
     // 3. 수량 부담 판단 -> Iceberg (빙산 주문)
-    // 급하진 않고 현재가 근처에서 사고 싶은데 수량이 너무 많다 -> 빙산 주문
     if (finalTargetQty > 500) {
-      const icebergDisplayQty = Math.max(10, Math.floor(finalTargetQty * 0.02)); // 전체 물량의 2%만 노출
-      orders.push({
+      const icebergDisplayQty = Math.max(10, Math.floor(finalTargetQty * 0.02));
+      orders.push(this.applyInstitutionalRiskControls({
         stock_id: stock.id,
         user_id: null,
         side: side,
@@ -316,13 +352,12 @@ export class BaseAgent {
         status: 'open',
         is_lp: true,
         _botId: this.botId
-      });
+      }, stock.current_price));
       return orders;
     }
 
     // 4. 일반적인 시장가/지정가 주문
-    // 특이 사항 없는 작은 주문은 그냥 현재가에 던짐
-    orders.push({
+    orders.push(this.applyInstitutionalRiskControls({
       stock_id: stock.id,
       user_id: null,
       side: side,
@@ -331,7 +366,7 @@ export class BaseAgent {
       status: 'open',
       is_lp: true,
       _botId: this.botId
-    });
+    }, stock.current_price));
     
     return orders;
   }

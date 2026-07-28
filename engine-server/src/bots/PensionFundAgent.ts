@@ -68,38 +68,42 @@ export class PensionFundAgent extends BaseAgent {
       const tolerance = 0.005; // 0.5% 오차
       const tickSize = this.getTickSize(stock.current_price);
 
-      // 내생적 트리거 1: 목표 비중 초과 시 기계적 익절/리밸런싱 매도
+      // 내생적 트리거 1: 목표 비중 초과 시 기계적 익절/리밸런싱 매도 (TWAP Sliced)
       if (currentWeight > targetWeightPerStock + tolerance && holdingsQty > 10) {
         const excessVal = (currentWeight - targetWeightPerStock) * this.config.capital;
-        const sellQty = Math.min(holdingsQty, Math.floor(excessVal / stock.current_price));
-        if (sellQty > 0) {
-          orders.push({
+        const totalSellQty = Math.min(holdingsQty, Math.floor(excessVal / stock.current_price));
+        const sellQtySlice = Math.max(1, Math.floor(totalSellQty * 0.01)); // 틱당 최대 1% 분할 매도
+        if (sellQtySlice > 0) {
+          const rawOrder = {
             stock_id: stock.id,
             user_id: null,
             side: 'sell',
-            price: stock.current_price + tickSize, // 1틱 위 지정가 매도
-            size: sellQty,
+            price: stock.current_price + tickSize,
+            size: sellQtySlice,
             status: 'open',
             is_lp: true,
             _botId: this.botId
-          });
+          };
+          orders.push(this.applyInstitutionalRiskControls(rawOrder, stock.current_price));
         }
       }
-      // 내생적 트리거 2: 목표 비중 미달 시 지정가 받침 매수 (물타기/리밸런싱)
+      // 내생적 트리거 2: 목표 비중 미달 시 지정가 받침 매수 (TWAP Sliced)
       else if (currentWeight < targetWeightPerStock - tolerance) {
         const deficitVal = (targetWeightPerStock - currentWeight) * this.config.capital;
-        const buyQty = Math.floor(deficitVal / stock.current_price);
-        if (buyQty > 0) {
-          orders.push({
+        const totalBuyQty = Math.floor(deficitVal / stock.current_price);
+        const buyQtySlice = Math.max(1, Math.floor(totalBuyQty * 0.01)); // 틱당 최대 1% 분할 매수
+        if (buyQtySlice > 0) {
+          const rawOrder = {
             stock_id: stock.id,
             user_id: null,
             side: 'buy',
-            price: stock.current_price - tickSize, // 1틱 아래 받침 매수
-            size: buyQty,
+            price: stock.current_price - tickSize,
+            size: buyQtySlice,
             status: 'open',
             is_lp: true,
             _botId: this.botId
-          });
+          };
+          orders.push(this.applyInstitutionalRiskControls(rawOrder, stock.current_price));
         }
       }
     }

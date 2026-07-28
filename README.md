@@ -1539,6 +1539,131 @@ PRIVATE SOURCE같은 같은 등급이면 똑같은 가격을 받도록해
 - 전체 작업 사항(`engine-server` 봇 로직 보완, Supabase RLS 마이그레이션 SQL, `useOrderbookData` 훅 및 호가창/체결 UI 개선) 깃 스테이징 및 커밋 완료
 - `git push origin main` 실행으로 원격 저장소(`origin/main`)에 반영 완료
 
+---
+## 2026-07-28 01:52
 
+**요청 요약:** `Object is disposed` 캔버스 렌더링 런타임 에러 수정
+**수행 결과:**
+- **원인 분석:** `lightweight-charts`(`TickChart.tsx`)에서 컴포넌트 언마운트/탭 이동 후 비동기 데이터 쿼리 콜백(`supabase.from('trades')`), 실시간 구독(`postgres_changes`), 또는 `ResizeObserver` 실행 시 파기(disposed)된 차트 캔버스를 참조하여 런타임 에러가 발생한 현상 확인
+- `app/components/TickChart.tsx`:
+  - `isDisposedRef` 라이프사이클 관리 플래그 도입
+  - 컴포넌트 언마운트 시 `isDisposedRef.current = true`, `chartRef.current = null`, `seriesRef.current = null` 처리 및 안전한 try-catch 에러 캡처 적용
+  - 비동기 데이터 로딩 및 실시간 이벤트 콜백 시작부에서 파기 여부를 검증하여 `Object is disposed` 런타임 에러 방지 완료
 
+---
+## 2026-07-28 01:54
 
+**요청 요약:** `TickChart.tsx` 빌드 파싱 에러(Expression expected) 수정
+**수행 결과:**
+- `app/components/TickChart.tsx`: 누락된 `useEffect` 선언 구문을 복구하여 빌드 및 구문 분석(Parsing) 에러 수정 완료
+
+---
+## 2026-07-28 02:02
+
+**요청 요약:** 호가창 UI 개선 — 현재가 행에 매수/매도 잔량 벽(게이지 바) 시각화 및 총 매도/매수 잔량을 맨 아래 푸터로 이동
+**수행 결과:**
+- `app/components/Orderbook.tsx`:
+  - 현재가 앵커 행(`displayPrice`) 좌우 영역에 최우선 매도/매수 호가의 잔량 수치와 잔량 게이지 바(매수/매도벽) 시각화 반영
+  - 기존 현재가 행에 있던 총 매도 잔량과 총 매수 잔량을 **호가창 맨 아래(Bottom Summary Footer)** 로 이동하고, **매도 vs 매수 비율 프로그레스 바** 디자인 반영
+
+---
+## 2026-07-28 02:04
+
+**요청 요약:** 호가창 하단 비율 퍼센트바 제거
+**수행 결과:**
+- `app/components/Orderbook.tsx`: 호가창 하단 푸터의 비율 퍼센트 바 및 퍼센트 수치 텍스트를 제거하고, 깔끔한 잔량 합계 구조로 변경 완료
+
+---
+## 2026-07-28 02:05
+
+**요청 요약:** 현재가 행 매도/매수 잔량 동시 출현 문제 수정 및 SIM 모드 튕김 원인(싱글톤 클라이언트 미적용) 수정
+**수행 결과:**
+- `app/components/Orderbook.tsx`:
+  - 현재가(`displayPrice`) 행에서 동일 가격에 매도벽과 매수벽이 동시에 중복 렌더링되지 않도록 체결 매칭 기준(`isAskSide`) 엄격 분리 적용
+- `lib/hooks/useOrderbookData.ts`:
+  - Supabase `createBrowserClient` 매 800ms 반복 생성 방식에서 싱글톤 `createClient` 사용으로 전환하여 클라이언트 세션 연결을 안정화하고 `LIVE (DB)` 모드 유지
+
+---
+## 2026-07-28 02:07
+
+**요청 요약:** 표준 증권사 HTS/MTS 정답지 호가창 레이아웃으로 전면 리팩토링
+**수행 결과:**
+- **영상 자료 분석:** 영상 레퍼런스(`Screen_Recording_20260701_154051.mp4`) 정밀 트레이싱
+- `app/components/Orderbook.tsx`:
+  - 인위적인 중간 "현재가" 앵커 행 삭제
+  - 상단 10단계 매도호가(`[매도잔량|매도호가|빈공간]`) + 하단 10단계 매수호가(`[빈공간|매수호가|매수잔량]`)의 연속된 표준 20레벨 호가창 구조 적용
+  - 현재 체결가(`displayPrice`)에 해당하는 호가는 중앙 호가 셀에 하이라이트 포커스 박스 적용
+  - 호가창 최하단 푸터 규격을 `[총매도 수치 | 총잔량 수치 | 총매수 수치]` 표준 구조로 최종 완성
+
+---
+## 2026-07-28 02:08
+
+**요청 요약:** `AskRow` 중복 선언 빌드 에러 수정
+**수행 결과:**
+- `app/components/Orderbook.tsx`: 파일 상단에 남아있던 이전 구버전 `AskRow` 및 `BidRow` 중복 정의를 구문을 완전히 제거하여 빌드 오류 수정 완료
+
+---
+## 2026-07-28 02:10
+
+**요청 요약:** `LIVE` 모드 미전환 및 `SIM` 지속 현상에 대한 원인 분석 보고 (수정 진행 제외)
+**수행 결과:**
+- 전체 코드와 백엔드 엔진(`engine-server`) 로그, DB 상태 점검 결과 분석 보고서(`analysis_results.md`) 작성 완료
+- **핵심 원인 파악:** `MarketEngine.ts`에서 매 1초마다 2,640개의 전 종목 LP 주문을 DB `orders` 테이블에 `INSERT`만 하고, 이전 틱의 잔여 호가를 `DELETE`로 청산하지 않아 DB 레코드가 수십~수백만 개 누적되면서 Supabase 타임아웃 오류(`code: '57014'`) 발생. 이로 인해 호가 조회가 실패하여 강제 `SIM` 모드로 가동됨을 확인
+- **추가 결함 발견:** `exchange_rates` 테이블 부재(`PGRST205` 에러) 및 기관 봇 연쇄 청산 마진콜(Bankrupt) 로직 파악 완료
+
+---
+## 2026-07-28 16:13
+
+**요청 요약:** 빌드/타입 오류 문제 해결 요청
+**수행 결과:**
+- [lib/hooks/useOrderbookData.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/lib/hooks/useOrderbookData.ts): `getTickSize` 누락으로 인한 TypeScript 모듈 참조 오류(TS2304) 수정 (`useStockBotSimulation`에서 `getTickSize` import 추가)
+- `npx tsc --noEmit` 및 `npm run build` 검증을 완료하여 빌드가 정상 동작함을 확인
+
+---
+## 2026-07-28 16:21
+
+**요청 요약:** LIVE 모드 미전환, LP 주문 DB 타임아웃, exchange_rates 부재, 기관 봇 마진콜 문제 해결
+**수행 결과:**
+- [MarketEngine.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/MarketEngine.ts): 전 종목 `is_lp: true` 주문 일괄 DELETE 시 발생하는 Supabase 타임아웃 오류(57014)를 해결하기 위해 `safeDeleteLpOrders()` 청크 분할 삭제 및 배치 INSERT 적용. `updateExchangeRates()` 비동기 upsert 예외 처리 적용.
+- [BaseAgent.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/bots/BaseAgent.ts): 자산 평가 가치 0 이하(파산/마진콜) 시 새로운 주문 생성을 중단하는 안심 로직 추가.
+- [20260728_fix_orderbook_indexes.sql](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/supabase/migrations/20260728_fix_orderbook_indexes.sql): `orders` 테이블 호가 조회/삭제 속도 향상 인덱스 및 `exchange_rates` 테이블/RLS 마이그레이션 SQL 생성.
+- `npx tsc --noEmit` 및 `npm run build` 검증 완료.
+
+---
+## 2026-07-28 16:30
+
+**요청 요약:** 호가창 및 시뮬레이션의 Math.random 임의 난수 제거 및 결정론적 수학 모델 적용
+**수행 결과:**
+- [lib/hooks/useOrderbookData.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/lib/hooks/useOrderbookData.ts): 0.8초 폴링 시 DB 호가 부족을 보충하던 `Math.random()` 보정 구문을 완전히 제거하고, 가격 차이에 따른 결정론적 지수 감쇄 모델($V_0 \cdot e^{-0.30 \cdot i}$)을 적용하여 호가창 요동 제거.
+- [lib/hooks/useStockBotSimulation.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/lib/hooks/useStockBotSimulation.ts): 시뮬레이터 내 무작위 `Math.random()` 노이즈를 의사 난수 생성기(`deterministicPRNG`) 및 삼각함수 파동 모델로 대체.
+- [engine-server/src/bots/BaseAgent.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/bots/BaseAgent.ts): 스푸핑 주문 수량 및 오프셋 산출 시 `Math.random()`을 제거하고 목표 물량에 비동기 연동되는 수식으로 변경.
+- `npx tsc --noEmit` 및 `npm run build` 빌드 검증 완료.
+
+---
+## 2026-07-28 16:41
+
+**요청 요약:** 기관급 위험 관리 (Hard Limit, TWAP Order Slicing, 글로벌 캡) 적용을 통한 1억 주 매수벽 폭주 현상 해결
+**수행 결과:**
+- [BaseAgent.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/bots/BaseAgent.ts): `applyInstitutionalRiskControls` 메서드를 구현하여 1회 주문 최대 금액(500만 원), 최대 수량(5,000주), 호가창 깊이 대비 캡(10%) 하드 리밋 적용.
+- [PensionFundAgent.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/bots/PensionFundAgent.ts) & [HedgeFundAgent.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/bots/HedgeFundAgent.ts): 일시불 대량 매수/매도 대신 틱당 최대 1% 분할 매수(TWAP Slicing)를 적용하여 시장 충격 방지.
+- [MarketEngine.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/MarketEngine.ts): 전 봇 주문을 DB에 배치 commit하기 직전 글로벌 위기관리 리스크 게이트를 거쳐 캡이 강제 적용되도록 안전장치 이중 배치. DB 내 최대 주문 수량이 5주~5,000주로 안전하게 제한됨을 실시간 검증 완료.
+- `npx tsc --noEmit` 및 `npm run build` 검증 완료.
+
+---
+## 2026-07-28 16:45
+
+**요청 요약:** 마켓 메이킹 알고리즘 고도화 (Avellaneda-Stoikov Price Skewing, Exponential Quote Layering, OFI Fade Filter)
+**수행 결과:**
+- [ASMarketMakerAgent.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/bots/ASMarketMakerAgent.ts): 재고 부족 시 수량을 늘리는 하급 로직 대신 유보 가격($r = s - q \cdot \gamma \cdot \sigma^2$)을 조정하는 **Price Skewing** 구현. 5개 깊이 밴드에 지수적 수량 배분($\text{Exp}(0.25 \cdot level)$)으로 의도를 숨기는 **Quote Layering** 적용. 매도 압력 극심($\text{Imbalance} < -0.5$) 시 매수 호가를 2틱 후퇴(Fade)시켜 칼날 잡기 방지.
+- [PropDeskAgent.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/bots/PropDeskAgent.ts): 마켓 메이킹 루프 내 **OFI Imbalance Fade Filter** 연동.
+- `npx tsc --noEmit` 및 `npm run build` 검증 완료.
+
+---
+## 2026-07-28 16:57
+
+**요청 요약:** 한산생명 등 주식 가격의 틱 사이즈 위반(1의 자리가 7인 비표준 가격) 원인 분석 및 전체 DB/엔진 틱 정렬 수정
+**수행 결과:**
+- **원인 파악**: 초기 데이터 리베이스 스크립트(`scratch_rebase_prices.js`)에서 비율 곱셈(`fairTarget * 1.0031`) 후 틱 단위 반올림 없이 `.toFixed(0)`만 처리하여 `18,557`원 등 틱 단위(10원/50원/100원 등)를 위반하는 가격이 생성되었고, 체결 시 마켓 엔진이 해당 가격을 DB `stocks.current_price`에 그대로 누적 저장하던 현상 확인.
+- [BaseAgent.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/bots/BaseAgent.ts) & [MarketEngine.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/MarketEngine.ts): `alignToTickSize(price)` 틱 단위 정렬 헬퍼를 추가하여 모든 봇 주문 제출 시 가격 및 체결 가격이 거래소 틱 기준(2천~5천원: 5원, 5천~2만원: 10원, 2만~5만원: 50원, 5만~20만원: 100원 등)으로 엄격하게 단위 절상/절사되도록 수정.
+- [scratch_rebase_prices.js](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/scratch_rebase_prices.js) & DB 업데이트: `한산생명`(`18,557원` $\rightarrow$ `18,560원`), `미래자동차`(`179,789원` $\rightarrow$ `179,800원`), `포스트화학`(`22,357원` $\rightarrow$ `22,350원`) 등 DB 내 51개 비표준 주가를 100% 정규 틱 가격으로 정정 완료.
+- `npx tsc --noEmit` 및 `npm run build` 검증 완료.

@@ -271,9 +271,9 @@ export class MarketEngine {
         }
       }
 
-      // 틱이 시작될 때마다 기존에 깔아둔 LP 호가(허수주문, 잔여 빙산 등)를 모두 걷어냅니다.
-      // 이렇게 해야 호가창이 실시간으로 새롭게 깜빡이며(Spoofing 등) 업데이트됩니다.
-      await supabase.from('orders').delete().eq('is_lp', true);
+      // 틱이 시작될 때마다 기존에 깔아둔 LP 호가를 걷어냅니다.
+      // 대량 쿼리 타임아웃(57014) 방지를 위해 청크 단위로 삭제
+      await this.safeDeleteLpOrders();
       await this.updateExchangeRates();
 
       const macroData = await this.realWorldFetcher.getMacroData();
@@ -383,6 +383,23 @@ export class MarketEngine {
       }
 
       if (allOrders.length > 0) {
+        const MAX_NOTIONAL = 5000000; // 500만 원 캡
+        const MAX_QTY = 5000;         // 5,000주 캡
+        allOrders = allOrders.map(order => {
+          const p = Number(order.price || 1);
+          const alignedPrice = this.alignToTickSize(p);
+          let safeSize = Math.abs(Number(order.size || 1));
+          if (alignedPrice > 0) {
+            safeSize = Math.min(safeSize, Math.floor(MAX_NOTIONAL / alignedPrice));
+          }
+          safeSize = Math.min(safeSize, MAX_QTY);
+          return {
+            ...order,
+            price: alignedPrice,
+            size: Math.max(1, safeSize)
+          };
+        });
+
         await this.processBatchOrders(allOrders, marketState);
         
         // 자체 여기(Self-excitation) 발생: 주문량에 비례하여 강도 증가
@@ -511,7 +528,7 @@ export class MarketEngine {
         // 조건: 최우선 매수호가가 최우선 매도호가보다 크거나 같으면 체결(Cross)
         if (highestBid.price >= lowestAsk.price) {
           const tradeSize = Math.min(highestBid.size, lowestAsk.size);
-          const tradePrice = lowestAsk.price;
+          const tradePrice = this.alignToTickSize(lowestAsk.price);
           latestTradePrice = tradePrice;
 
           tradesToInsert.push({
@@ -630,41 +647,84 @@ export class MarketEngine {
     // 5. DB 일괄 트랜잭션 반영 (Batch Commit)
     const promises: any[] = [];
 
-    // 5.1 체결 내역 Insert
+    // 5.1 체결 내역 Insert (trades는 영구 보관 — 절대 삭제 안 함)
     if (tradesToInsert.length > 0) {
-      promises.push(supabase.from('trades').insert(tradesToInsert).then(res => res));
+      promises.push(supabase.from('trades').insert(tradesToInsert).then(res => {
+        if (res.error) console.error('[Engine] Failed to insert trades:', res.error);
+        return res;
+      }));
     }
 
-    // 5.2 LP 잔여 주문 Insert (주식 FK 제약 조건 방어를 위해 valid stock_id만 필터링)
+    // 5.2 LP 호가 슬라이딩 윈도우 (Sliding Window)
+    //   이전 틱 LP 주문 DELETE → 새 LP 주문 INSERT
+    //   종목당 최대 5 bid + 5 ask = 10개로 엄격 제한 (DB 과부하 방지)
     if (lpOrdersToInsert.length > 0) {
       const validStockIds = new Set(marketState.stocks.map((s: any) => s.id));
-      const safeLpOrders = lpOrdersToInsert
-        .filter(o => validStockIds.has(o.stock_id))
-        .map(o => ({
-          stock_id: o.stock_id,
-          user_id: null,
-          side: o.side,
-          price: o.price,
-          size: Math.round(o.size),
-          status: 'open',
-          is_lp: true
-        }));
+
+      // 종목별로 그룹화 후 bid 5 + ask 5만 추출
+      const byStock: Record<string, { bids: any[], asks: any[] }> = {};
+      for (const o of lpOrdersToInsert) {
+        if (!validStockIds.has(o.stock_id)) continue;
+        if (!byStock[o.stock_id]) byStock[o.stock_id] = { bids: [], asks: [] };
+        const entry = byStock[o.stock_id]!;
+        if (o.side === 'buy') entry.bids.push(o);
+        else entry.asks.push(o);
+      }
+
+      const safeLpOrders: any[] = [];
+      const MAX_NOTIONAL = 5000000; // 500만 원 캡
+      const MAX_QTY = 5000;         // 5,000주 캡
+
+      for (const [stockId, { bids, asks }] of Object.entries(byStock)) {
+        // 매수는 가격 내림차순 상위 5개, 매도는 오름차순 상위 5개
+        const topBids = bids.sort((a, b) => b.price - a.price).slice(0, 5);
+        const topAsks = asks.sort((a, b) => a.price - b.price).slice(0, 5);
+        for (const o of [...topBids, ...topAsks]) {
+          let safeSize = Math.round(o.size || 1);
+          if (o.price > 0) {
+            safeSize = Math.min(safeSize, Math.floor(MAX_NOTIONAL / o.price));
+          }
+          safeSize = Math.min(safeSize, MAX_QTY);
+
+          safeLpOrders.push({
+            stock_id: o.stock_id,
+            user_id: null,
+            side: o.side,
+            price: o.price,
+            size: Math.max(1, safeSize),
+            status: 'open',
+            is_lp: true
+          });
+        }
+      }
 
       if (safeLpOrders.length > 0) {
-        promises.push(supabase.from('orders').insert(safeLpOrders).then(res => {
-          if (res.error) console.error("[Engine] Failed to insert LP orders:", res.error);
-          return res;
-        }));
+        const affectedStockIds = [...new Set(safeLpOrders.map(o => o.stock_id))];
+
+        // DELETE 먼저 (청크 단위 안전 삭제) → 그 다음 500개씩 청크 INSERT
+        await this.safeDeleteLpOrders(affectedStockIds);
+
+        for (let i = 0; i < safeLpOrders.length; i += 500) {
+          const chunk = safeLpOrders.slice(i, i + 500);
+          promises.push(
+            supabase.from('orders').insert(chunk).then(res => {
+              if (res.error) console.error('[Engine] Failed to insert LP orders chunk:', res.error);
+              return res;
+            })
+          );
+        }
       }
     }
+
 
     // 5.3 유저 주문 잔량 Update
     for (const uOrder of userOrdersToUpdate) {
       promises.push(supabase.from('orders').update({ size: uOrder.size, status: uOrder.status }).eq('id', uOrder.id).then(res => res));
     }
 
-    // 5.4 현재가 Update (자산별 테이블 구분)
-    for (const [sId, newPrice] of Object.entries(updatedStocks)) {
+    // 5.4 현재가 Update (자산별 테이블 구분 + KRX 틱 정렬)
+    for (const [sId, rawPrice] of Object.entries(updatedStocks)) {
+      const newPrice = this.alignToTickSize(rawPrice);
       if (marketState.stocks.some((s: any) => s.id === sId)) {
         promises.push(supabase.from('stocks').update({ current_price: newPrice }).eq('id', sId).then(res => res));
       } else if (marketState.bonds.some((b: any) => b.id === sId)) {
@@ -731,11 +791,47 @@ export class MarketEngine {
     }
   }
 
+  /**
+   * 대용량 LP 주문 삭제 시 타임아웃(57014) 방지를 위한 안전 삭제 헬퍼
+   */
+  private async safeDeleteLpOrders(stockIds?: string[]) {
+    try {
+      if (stockIds && stockIds.length > 0) {
+        const chunkSize = 40;
+        for (let i = 0; i < stockIds.length; i += chunkSize) {
+          const chunk = stockIds.slice(i, i + chunkSize);
+          const { error } = await supabase
+            .from('orders')
+            .delete()
+            .eq('is_lp', true)
+            .in('stock_id', chunk);
+          if (error) {
+            console.warn('[Engine] Chunk delete warning:', error.message);
+          }
+        }
+      } else {
+        // 전 종목 LP 주문 청소: 배치로 삭제
+        const { data: lpOrders } = await supabase
+          .from('orders')
+          .select('id')
+          .eq('is_lp', true)
+          .limit(1000);
+
+        if (lpOrders && lpOrders.length > 0) {
+          const ids = lpOrders.map(o => o.id);
+          await supabase.from('orders').delete().in('id', ids);
+        }
+      }
+    } catch (err) {
+      console.warn('[Engine] safeDeleteLpOrders error:', err);
+    }
+  }
+
   private async updateExchangeRates() {
     try {
       const { data: rates, error } = await supabase.from('exchange_rates').select('*');
-      if (error || !rates) {
-        console.error('[Engine] Failed to fetch exchange rates:', error);
+      if (error || !rates || rates.length === 0) {
+        // 테이블이 존재하지 않거나 데이터가 없을 때 안전하게 반환 (에러 미노출)
         return;
       }
 
@@ -747,25 +843,26 @@ export class MarketEngine {
         GBP: { min: 1500, max: 2000 },
       };
 
-      for (const rate of rates) {
-        if (rate.currency_code === 'KRW') continue;
-        
-        const limits = currencyLimits[rate.currency_code] || { min: 1, max: 10000 };
-        
-        // 무작위 보행 (Random Walk): -0.1% ~ +0.1% 변동
-        const changePct = 1 + (Math.random() - 0.5) * 0.002;
-        let newRate = Number(rate.rate_to_krw) * changePct;
-        
-        // 실제 환율 범위를 벗어나지 않도록 클램프
-        newRate = Math.max(limits.min, Math.min(limits.max, newRate));
-        
-        await supabase
-          .from('exchange_rates')
-          .update({ rate_to_krw: parseFloat(newRate.toFixed(4)), updated_at: new Date().toISOString() })
-          .eq('currency_code', rate.currency_code);
+      const updates = rates
+        .filter(rate => rate.currency_code !== 'KRW')
+        .map(rate => {
+          const limits = currencyLimits[rate.currency_code] || { min: 1, max: 10000 };
+          const changePct = 1 + (Math.random() - 0.5) * 0.002;
+          let newRate = Number(rate.rate_to_krw) * changePct;
+          newRate = Math.max(limits.min, Math.min(limits.max, newRate));
+          return {
+            currency_code: rate.currency_code,
+            currency_name: rate.currency_name,
+            rate_to_krw: parseFloat(newRate.toFixed(4)),
+            updated_at: new Date().toISOString()
+          };
+        });
+
+      if (updates.length > 0) {
+        await supabase.from('exchange_rates').upsert(updates);
       }
     } catch (err) {
-      console.error('[Engine] Error updating exchange rates:', err);
+      console.warn('[Engine] exchange_rates table not ready yet or update error skipped');
     }
   }
 
@@ -799,5 +896,19 @@ export class MarketEngine {
     if (this.wallBreakerAgent && this.wallBreakerAgent.botId === botId) return this.wallBreakerAgent;
     
     return undefined;
+  }
+
+  private alignToTickSize(price: number): number {
+    if (price <= 0) return 1;
+    let tick = 1;
+    if (price < 2000) tick = 1;
+    else if (price < 5000) tick = 5;
+    else if (price < 20000) tick = 10;
+    else if (price < 50000) tick = 50;
+    else if (price < 200000) tick = 100;
+    else if (price < 500000) tick = 500;
+    else tick = 1000;
+
+    return Math.round(price / tick) * tick;
   }
 }

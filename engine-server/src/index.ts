@@ -4,6 +4,7 @@ import { EventDirector } from './EventDirector';
 import * as dotenv from 'dotenv';
 import * as http from 'http';
 
+dotenv.config({ path: '.env.local' });
 dotenv.config();
 
 function checkEnv() {

@@ -1685,3 +1685,12 @@ PRIVATE SOURCE같은 같은 등급이면 똑같은 가격을 받도록해
 - [ASMarketMakerAgent.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/bots/ASMarketMakerAgent.ts): AS 유보 가격($r$)을 현재가의 $\pm 10\%$ 범위 이내로 안전 클램핑(`Math.max(s * 0.9, Math.min(s * 1.1, rawR))`)하여 음수 유보 가격 발생 원천 차단.
 - [MarketEngine.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/MarketEngine.ts): `safeLpOrders` DB 커밋 루프 내에서 호가가 반드시 양수(`Math.max(1, alignedPrice)`) 및 최대 수량 5,000주(500만 원) 이하로 엄격 제한되도록 2중 안전 장치 적용.
 - GitHub `main` 브랜치에 수정 사항 푸시 완료 (`c929bd4`).
+
+---
+## 2026-07-29 14:57
+
+**요청 요약:** 불필요한 코드 및 낭비성 구버전 임포트/인스턴스 완전 제거 (경량화 리팩토링)
+**수행 결과:**
+- [index.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/index.ts): 비활성화된 `NewsFetcher` 구버전 임포트 및 초기화 구문을 완전 삭제하고 마켓 엔진 및 이벤트 디렉터 중심의 단일화된 경량 실행 구조로 정리.
+- `npx tsc --noEmit` 및 `npm run build` 검증 완료.
+- GitHub `main` 브랜치에 수정 사항 푸시 완료 (`66ad44f`).

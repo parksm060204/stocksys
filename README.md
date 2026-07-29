@@ -1751,3 +1751,19 @@ PRIVATE SOURCE같은 같은 등급이면 똑같은 가격을 받도록해
 - [scratch_repair_all_stocks.js](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/scratch_repair_all_stocks.js) 실행: DB 내 오염되거나 한계 범위를 벗어난 **145개 전체 주식/원자재/채권 시세 및 불량 오픈 주문 100% 정상화 복구 완료**.
 - `npx tsc --noEmit` 및 `npm run build` 검증 완료.
 - GitHub `main` 푸시(`243d2ef`) 및 VPS 자동 SSH 배포(`pm2 restart market-engine`) 완료.
+
+---
+## 2026-07-29 16:08
+
+**요청 요약:** 기관 봇 포트폴리오 캐시 100% 현상 원인 규명, 실시간 동적 포트폴리오 차감 연동 및 50개 기관 뷰 100% 정상화
+**수행 결과:**
+- **근본 원인 분석**:
+  1. `MarketEngine.ts` 체결 루프에서 `this.findAgentById()` 헬퍼 누락으로 인해 체결 완료 후 `bot.confirmExecution()`이 전혀 호출되지 않아 봇의 `cash`와 `stock` 포트폴리오가 매매 시점에 동적으로 차감/증가하지 못하던 결함 발견.
+  2. `BaseAgent.ts` 생성자에서 DB `bots_config` 트레이트(`targetAllocation`)가 `kr_equity`, `us_equity`, `eu_equity`로 분할 지정되었을 때 `stock` 총합 계산이 누락되어 초기 포트폴리오 자본이 100% 현금(`cash`)으로 기본 설정되는 오류 확인.
+  3. `app/institutions/page.tsx` 터미널 UI에서 `target_weights.stock`만 단일 조회하여 `kr_equity`, `us_equity` 비중이 무시되고 `TARGET WGT`가 0.0%로 잘못 표시되던 문제 발견.
+- [BaseAgent.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/bots/BaseAgent.ts): `kr_equity`, `us_equity`, `eu_equity`를 집계하여 initialHoldings 및 targetAllocation 비율대로 초기 자산(주식, 채권, 원자재, 현금)을 균형 있게 분배하도록 수정.
+- [MarketEngine.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/MarketEngine.ts#L873): `findAgentById()` 인스턴스 검색 메서드를 구현하고, LP 주문 생성 시 `_botId` 식별자를 유실 없이 보존하여 체결 발생 시 `bot.confirmExecution()`이 정확히 작동하도록 보완.
+- [app/institutions/page.tsx](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/app/institutions/page.tsx): 터미널 UI에서 `kr_equity`, `us_equity`, `eu_equity`를 통합하여 주식(EQUITY) 타겟 비중 및 델타 수치를 정밀 표출하도록 보완.
+- [scratch_reseed_portfolios.js](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/scratch_reseed_portfolios.js) 실행: DB 내 50개 기관 봇의 자산 비중(`institutional_portfolios`)을 멀티 자산 클래스 보유 포트폴리오로 재설계 및 100% 동기화 동결 완수.
+- `npx tsc --noEmit` 및 `npm run build` 검증 완료.
+- GitHub `main` 푸시(`472f97b`) 및 VPS 자동 SSH 배포(`pm2 restart market-engine`) 완료.

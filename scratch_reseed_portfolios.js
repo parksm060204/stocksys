@@ -17,8 +17,8 @@ try {
 
 const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
-async function reseedInstitutionalPortfolios() {
-  console.log("🛠️ Reseeding institutional portfolios in DB based on active bot configs...");
+async function reseedInstitutionalPortfoliosWithRealNames() {
+  console.log("🛠️ Reseeding institutional portfolios with real institutional names from DB...");
 
   const { data: bots, error } = await supabase.from('bots_config').select('*');
   if (error || !bots) {
@@ -49,9 +49,12 @@ async function reseedInstitutionalPortfolios() {
     const usVal = cap * (usW > 0 ? usW / totalW : (stockW * 0.5) / totalW);
     const euVal = cap * (euW > 0 ? euW / totalW : 0);
 
+    // Use human readable bot.name from bots_config!
+    const realName = bot.name && bot.name !== bot.id ? bot.name : `기관 봇 (${bot.bot_type || bot.id.slice(0, 8)})`;
+
     upserts.push({
       bot_id: bot.id,
-      name: bot.name || bot.id,
+      name: realName,
       total_capital: cap,
       current_cash: cap * (cashW / totalW),
       current_stock: stockVal,
@@ -78,8 +81,8 @@ async function reseedInstitutionalPortfolios() {
   if (upsertErr) {
     console.error("❌ Failed to upsert portfolios:", upsertErr);
   } else {
-    console.log(`🎉 Successfully reseeded ${upserts.length} institutional portfolios!`);
+    console.log(`🎉 Successfully reseeded ${upserts.length} institutional portfolios with exact real names!`);
   }
 }
 
-reseedInstitutionalPortfolios();
+reseedInstitutionalPortfoliosWithRealNames();

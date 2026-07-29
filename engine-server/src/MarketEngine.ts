@@ -680,9 +680,10 @@ export class MarketEngine {
         const topBids = bids.sort((a, b) => b.price - a.price).slice(0, 5);
         const topAsks = asks.sort((a, b) => a.price - b.price).slice(0, 5);
         for (const o of [...topBids, ...topAsks]) {
-          let safeSize = Math.round(o.size || 1);
-          if (o.price > 0) {
-            safeSize = Math.min(safeSize, Math.floor(MAX_NOTIONAL / o.price));
+          const p = Math.max(1, this.alignToTickSize(o.price || 1));
+          let safeSize = Math.abs(Math.round(o.size || 1));
+          if (p > 0) {
+            safeSize = Math.min(safeSize, Math.floor(MAX_NOTIONAL / p));
           }
           safeSize = Math.min(safeSize, MAX_QTY);
 
@@ -690,7 +691,7 @@ export class MarketEngine {
             stock_id: o.stock_id,
             user_id: null,
             side: o.side,
-            price: o.price,
+            price: p,
             size: Math.max(1, safeSize),
             status: 'open',
             is_lp: true

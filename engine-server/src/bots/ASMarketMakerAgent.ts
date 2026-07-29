@@ -32,10 +32,9 @@ export class ASMarketMakerAgent extends BaseAgent {
         currentGamma = 0.9; // Extreme Risk Aversion
       }
 
-      // 1. Avellaneda-Stoikov Price Skewing
-      // r = s - q * gamma * sigma^2
-      // 재고(q)가 부족하면(q < 0), r > s가 되어 매수 호가가 시장가에 가깝게 당겨지고 매도 호가는 뒤로 물러남
-      const r = s - (q * currentGamma * dynamicSigma2);
+      // 1. Avellaneda-Stoikov Reservation Price (r) & Spread (s)
+      const rawR = s - (q * currentGamma * dynamicSigma2);
+      const r = Math.max(s * 0.9, Math.min(s * 1.1, rawR)); // 주가의 ±10% 이내로 Reservation Price 안전 유도
 
       // AS 모델 최적 스프레드
       const rawSpread = (currentGamma * dynamicSigma2) + (2 / currentGamma) * Math.log(1 + currentGamma / this.k);

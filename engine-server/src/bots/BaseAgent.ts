@@ -1,10 +1,12 @@
 import type { AgentConfig, AgentPortfolio, AgentWeights, MarketSentiment, MarketEvent } from '../types';
+import { EventBus } from '../EventBus';
 
 export class BaseAgent {
   public botId: string;
   public capital: number;
   public agentConfig: AgentConfig;
   public currentPortfolio: AgentPortfolio;
+  public pendingNewsOrders: any[] = [];
 
   constructor(configOrId: any, initialCapital?: number) {
     if (typeof configOrId === 'string') {
@@ -36,6 +38,76 @@ export class BaseAgent {
       commodity: cap * (weights.commodity || 0.0),
       derivatives: cap * (weights.derivatives || 0.0)
     };
+
+    // EventBus 구독: endogenous AI 뉴스 수신 시 즉각 반응
+    EventBus.subscribe('news_published', (news: any) => this.handleNewsPublished(news));
+  }
+
+  /**
+   * Gemini AI 뉴스 발령 시 기관 봇 즉각 리액션 주문 매칭
+   */
+  protected handleNewsPublished(news: any) {
+    if (!news || !news.impact_score) return;
+
+    const riskTol = this.agentConfig.riskTolerance || 1.0;
+    const impact = Number(news.impact_score);
+    const effectiveImpact = impact * riskTol;
+
+    // 미세 반응 기준값 (|effectiveImpact| >= 2.0)
+    if (Math.abs(effectiveImpact) < 2.0) return;
+
+    const side = effectiveImpact > 0 ? 'buy' : 'sell';
+
+    this.pendingNewsOrders.push({
+      newsId: news.id,
+      targetTicker: news.target_ticker,
+      targetSector: news.target_sector,
+      side,
+      impact: effectiveImpact,
+      timestamp: Date.now()
+    });
+  }
+
+  public getPendingNewsOrders(marketState: any): any[] {
+    if (this.pendingNewsOrders.length === 0) return [];
+    
+    const queued = [...this.pendingNewsOrders];
+    this.pendingNewsOrders = [];
+    const orders: any[] = [];
+
+    for (const q of queued) {
+      const allInstruments = [
+        ...(marketState.stocks || []),
+        ...(marketState.bonds || []),
+        ...(marketState.commodities || [])
+      ];
+
+      const targets = allInstruments.filter(inst => {
+        if (q.targetTicker && (inst.ticker === q.targetTicker || inst.id === q.targetTicker)) return true;
+        if (q.targetSector && (inst.sector === q.targetSector || q.targetSector === 'ALL')) return true;
+        return false;
+      });
+
+      for (const inst of targets.slice(0, 3)) {
+        const price = inst.current_price || inst.currentPrice || 10000;
+        const qty = Math.min(2000, Math.max(10, Math.floor((this.capital * 0.001 * Math.abs(q.impact)) / price)));
+
+        if (qty > 0) {
+          orders.push({
+            stock_id: inst.id,
+            user_id: null,
+            side: q.side,
+            price: q.side === 'buy' ? price * 1.01 : price * 0.99,
+            size: qty,
+            status: 'open',
+            is_lp: true,
+            _botId: this.botId
+          });
+        }
+      }
+    }
+
+    return orders;
   }
 
   /**

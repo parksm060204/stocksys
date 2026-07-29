@@ -357,6 +357,24 @@ export class MarketEngine {
       // 4. 고도화된 마켓메이커 및 적대적 봇
       allOrders.push(...this.asMarketMakerAgent.executeMarketMaking(marketState));
       
+      // Collect endogenous news reaction orders from all agents
+      const allAgents = [
+        ...this.institutionalBots,
+        ...this.pensionFundAgents,
+        ...this.hedgeFundAgents,
+        ...this.statArbAgents,
+        ...this.commercialBankAgents,
+        ...this.propDeskAgents,
+        ...this.quantAgents,
+        ...this.commercialHedgerAgents,
+        ...this.retailSwarmAgents
+      ];
+      for (const bot of allAgents) {
+        if (typeof (bot as any).getPendingNewsOrders === 'function') {
+          allOrders.push(...(bot as any).getPendingNewsOrders(marketState));
+        }
+      }
+      
       // 적대적 에이전트(작전 세력) 개입
       allOrders.push(...this.adversarialAgent.executeManipulation(marketState));
 

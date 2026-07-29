@@ -1667,3 +1667,11 @@ PRIVATE SOURCE같은 같은 등급이면 똑같은 가격을 받도록해
 - [BaseAgent.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/bots/BaseAgent.ts) & [MarketEngine.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/MarketEngine.ts): `alignToTickSize(price)` 틱 단위 정렬 헬퍼를 추가하여 모든 봇 주문 제출 시 가격 및 체결 가격이 거래소 틱 기준(2천~5천원: 5원, 5천~2만원: 10원, 2만~5만원: 50원, 5만~20만원: 100원 등)으로 엄격하게 단위 절상/절사되도록 수정.
 - [scratch_rebase_prices.js](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/scratch_rebase_prices.js) & DB 업데이트: `한산생명`(`18,557원` $\rightarrow$ `18,560원`), `미래자동차`(`179,789원` $\rightarrow$ `179,800원`), `포스트화학`(`22,357원` $\rightarrow$ `22,350원`) 등 DB 내 51개 비표준 주가를 100% 정규 틱 가격으로 정정 완료.
 - `npx tsc --noEmit` 및 `npm run build` 검증 완료.
+
+---
+## 2026-07-29 14:38
+
+**요청 요약:** 야후 파이낸스 뉴스 크롤링 기능(NewsFetcher) 완전 비활성화
+**수행 결과:**
+- [newsFetcher.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/newsFetcher.ts): 외부 야후 파이낸스 RSS 피드 파싱 및 DB `real_news` 테이블 적재 호출을 비활성화(no-op) 처리하여 불필요한 네트워크 호출 및 에러 로그 원천 제거.
+- GitHub `main` 브랜치에 수정 내용 커밋 및 푸시 완료 (`fd46b93`).

@@ -1694,3 +1694,19 @@ PRIVATE SOURCE같은 같은 등급이면 똑같은 가격을 받도록해
 - [index.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/index.ts): 비활성화된 `NewsFetcher` 구버전 임포트 및 초기화 구문을 완전 삭제하고 마켓 엔진 및 이벤트 디렉터 중심의 단일화된 경량 실행 구조로 정리.
 - `npx tsc --noEmit` 및 `npm run build` 검증 완료.
 - GitHub `main` 브랜치에 수정 사항 푸시 완료 (`66ad44f`).
+
+---
+## 2026-07-29 15:18
+
+**요청 요약:** 주요국 채권 화면 데이터 오류(현재가 1.00 추락, 등락률 -99%, 거래량 undefined) 원인 분석 및 완전 수정
+**수행 결과:**
+- **원인 파악**:
+  1. `CommercialBankAgent.ts`에서 채권 공정가 계산 시 10,000원 면면가 기준 할인식만 사용하고 매 틱당 `currentPrice - 10` (주식 단위)으로 지정가 주문을 발행하여, 100.00원 액면으로 입력된 채권 시세를 틱당 10%씩 무차별 폭락시키던 결함 발굴.
+  2. `MarketEngine.ts`에서 채권 가격(< 2000)을 주식 틱 단위(1원)로 정수 반올림하여 소수점 호가(`99.85`)가 유실되던 문제 확인.
+  3. `app/markets/[market]/page.tsx` select 쿼리에서 `volume` 필드가 누락되어 UI `s.volume`이 `undefined`로 표시되던 현상 확인.
+- [CommercialBankAgent.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/bots/CommercialBankAgent.ts): 채권 시세 기준(100.00원 액면) YTM 가격 수식 수정 및 0.01 틱 단위 미세 차익 주문 구조로 교체.
+- [MarketEngine.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/MarketEngine.ts): `alignToTickSize(price, 'bonds')` 자산 구분 인자를 추가하여 채권 가격은 80.00원~120.00원 범위 및 0.01 틱 단위로 소수점 보존 처리.
+- [lib/format.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/lib/format.ts) & [app/markets/[market]/page.tsx](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/app/markets/[market]/page.tsx): `fmtVolume` 내 `undefined` 널체크 보완 및 `volume` DB 쿼리 파이프라인 복구.
+- [scratch_repair_bonds.js](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/scratch_repair_bonds.js) 작성 및 실행: Supabase `stocks` 및 `bonds` 테이블 내 15개 전체 채권 종목 시세를 정규 액면가(100.00원) 및 거래량(100,000+)으로 100% 정상화 복구 완료.
+- `npx tsc --noEmit` 및 `npm run build` 검증 완료.
+- GitHub `main` 브랜치에 수정 사항 푸시 완료 (`ecadc93`).

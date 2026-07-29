@@ -1735,3 +1735,19 @@ PRIVATE SOURCE같은 같은 등급이면 똑같은 가격을 받도록해
 - [app/exchange/page.tsx](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/app/exchange/page.tsx): 둔탁한 테두리를 없애고 둥근 차콜 박스(`bg-[#1C1C1E] rounded-xl border-none`) 및 포커스 링(`focus:ring-1 focus:ring-[#3182F6]`) 핀테크 폼 디자인 적용.
 - `npx tsc --noEmit` 및 `npm run build` 검증 완료.
 - GitHub `main` 푸시(`bf0bf47`) 및 VPS 자동 SSH 배포(`pm2 restart market-engine`) 완료.
+
+---
+## 2026-07-29 15:50
+
+**요청 요약:** 한국 주식 상·하한가(±30%) 제약 적용, 미국/해외 주식 음수/폭락(-1200%) 방지 및 전체 시세 100% 정상화
+**수행 결과:**
+- **근본 원인 분석**:
+  1. `MarketEngine.ts` 체결 가격 업데이트 루프에서 KRX 국내 주식(`domestic`)에 대한 **전일 종가 기준 ±30% 상/하한가 서킷 브레이커 캡 제한이 누락**되어 있던 문제 발굴.
+  2. 달러/유로 단위 해외 주식(`overseas`) 호가 제출 시 통화 스케일 미차감 또는 오프셋 처리 오류로 주가가 $1~$10(또는 음수)로 폭락하면서 `-99.8% ~ -1200%`라는 비정상 등락률이 계산되던 문제 확인.
+- [MarketEngine.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/MarketEngine.ts#L744):
+  - **한국 주식 (`market === 'domestic'`)**: 전일 종가(`previous_close`) 기준 **상한가(+30%) 및 하한가(-30%) 하드 캡**을 틱 단위로 엄격 강제 클램핑.
+  - **해외 주식 (`market === 'overseas' | 'europe'`)**: 일간 변동 범위를 **[최소 $0.01 및 prevClose * 0.50, 최대 prevClose * 2.00]** 범위로 안전 클램핑하여 주가 붕괴 및 음수 생성 원천 차단.
+- [lib/format.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/lib/format.ts#L3): `change(current, prev)` 수식에 `prev <= 0` 널가드 및 `-99.99% ~ +999.99%` 이내 안전 수치 캡 보완.
+- [scratch_repair_all_stocks.js](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/scratch_repair_all_stocks.js) 실행: DB 내 오염되거나 한계 범위를 벗어난 **145개 전체 주식/원자재/채권 시세 및 불량 오픈 주문 100% 정상화 복구 완료**.
+- `npx tsc --noEmit` 및 `npm run build` 검증 완료.
+- GitHub `main` 푸시(`243d2ef`) 및 VPS 자동 SSH 배포(`pm2 restart market-engine`) 완료.

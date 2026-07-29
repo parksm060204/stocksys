@@ -1710,3 +1710,16 @@ PRIVATE SOURCE같은 같은 등급이면 똑같은 가격을 받도록해
 - [scratch_repair_bonds.js](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/scratch_repair_bonds.js) 작성 및 실행: Supabase `stocks` 및 `bonds` 테이블 내 15개 전체 채권 종목 시세를 정규 액면가(100.00원) 및 거래량(100,000+)으로 100% 정상화 복구 완료.
 - `npx tsc --noEmit` 및 `npm run build` 검증 완료.
 - GitHub `main` 브랜치에 수정 사항 푸시 완료 (`ecadc93`).
+
+---
+## 2026-07-29 15:32
+
+**요청 요약:** Google Gemini API 기반 내생적 스토리텔링 뉴스/찌라시 생성기 구축 및 기관 봇 연동
+**수행 결과:**
+- [20260729_market_news.sql](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/supabase/migrations/20260729_market_news.sql): `market_news` 테이블 스키마, 인덱스, RLS 정책 및 명시적 `GRANT` 구문 작성.
+- [NewsGenerator.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/services/NewsGenerator.ts): `@google/generative-ai` SDK (`gemini-1.5-pro`) 기반 뉴스 생성기 클래스 작성. 거시경제/기업뉴스/찌라시(RUMOR) 파싱 및 거짓 찌라시 발생 시 DART 정정공시(`generateCorrection`) 예약 수식 구현.
+- [EventDirector.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/EventDirector.ts): `NewsGenerator` 연동, Supabase `market_news` 커밋, `EventBus`의 `news_published` 이벤트 발행 및 호가창 임팩트 주입 기능 통합.
+- [BaseAgent.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/bots/BaseAgent.ts) & [MarketEngine.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/MarketEngine.ts): 기관 봇들이 `EventBus`의 `news_published` 이벤트를 실시간 리스닝하여 `impact_score`와 `riskTolerance` 기반으로 즉각 매수/매도 리액션 주문을 발생시키도록 구현.
+- [app/news/page.tsx](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/app/news/page.tsx): 무광 블랙 핀테크 스타일의 실시간 뉴스 라이브 스트리밍 UI 연동 및 미디어 구독 여부에 따른 본문 블러링 처리 적용.
+- `npx tsc --noEmit` 및 `npm run build` 검증 완료.
+- GitHub `main` 푸시(`37b3400`) 및 VPS 자동 SSH 배포(`pm2 restart market-engine`) 완료.

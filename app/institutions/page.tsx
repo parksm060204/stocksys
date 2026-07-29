@@ -93,6 +93,12 @@ export default function InstitutionsDashboard() {
             const bondRatio = p.current_bond / total || 0;
             const commodityRatio = p.current_commodity / total || 0;
 
+            const tw = (p.target_weights || {}) as any;
+            const targetStock = Number(tw.stock || 0) + Number(tw.kr_equity || 0) + Number(tw.us_equity || 0) + Number(tw.eu_equity || 0);
+            const targetBond = Number(tw.bond || 0);
+            const targetCommodity = Number(tw.commodity || 0);
+            const targetCash = tw.cash !== undefined ? Number(tw.cash) : Math.max(0, 1.0 - targetStock - targetBond - targetCommodity);
+
             return (
               <StrictWidget key={p.bot_id} title={`[${p.bot_id}] ${p.name.toUpperCase()}`}>
                 <div className="text-[10px] sm:text-xs">
@@ -109,9 +115,9 @@ export default function InstitutionsDashboard() {
                     <div className="text-[#a1a1aa]">CASH</div>
                     <div className="text-right">{formatNumber(p.current_cash)}</div>
                     <div className="text-right">{formatPercent(cashRatio)}</div>
-                    <div className="text-right">{formatPercent(p.target_weights.cash)}</div>
-                    <div className={`text-right ${cashRatio - p.target_weights.cash > 0.001 ? "text-red-400" : cashRatio - p.target_weights.cash < -0.001 ? "text-green-400" : ""}`}>
-                      {formatPercent(cashRatio - p.target_weights.cash)}
+                    <div className="text-right">{formatPercent(targetCash)}</div>
+                    <div className={`text-right ${cashRatio - targetCash > 0.001 ? "text-red-400" : cashRatio - targetCash < -0.001 ? "text-green-400" : ""}`}>
+                      {formatPercent(cashRatio - targetCash)}
                     </div>
                   </div>
 
@@ -120,9 +126,9 @@ export default function InstitutionsDashboard() {
                     <div className="text-[#60a5fa]">EQUITY</div>
                     <div className="text-right">{formatNumber(p.current_stock)}</div>
                     <div className="text-right">{formatPercent(stockRatio)}</div>
-                    <div className="text-right">{formatPercent(p.target_weights.stock)}</div>
-                    <div className={`text-right ${stockRatio - p.target_weights.stock > 0.001 ? "text-red-400" : stockRatio - p.target_weights.stock < -0.001 ? "text-green-400" : ""}`}>
-                      {formatPercent(stockRatio - p.target_weights.stock)}
+                    <div className="text-right">{formatPercent(targetStock)}</div>
+                    <div className={`text-right ${stockRatio - targetStock > 0.001 ? "text-red-400" : stockRatio - targetStock < -0.001 ? "text-green-400" : ""}`}>
+                      {formatPercent(stockRatio - targetStock)}
                     </div>
                   </div>
 
@@ -131,9 +137,9 @@ export default function InstitutionsDashboard() {
                     <div className="text-[#34d399]">FIXED INCOME</div>
                     <div className="text-right">{formatNumber(p.current_bond)}</div>
                     <div className="text-right">{formatPercent(bondRatio)}</div>
-                    <div className="text-right">{formatPercent(p.target_weights.bond)}</div>
-                    <div className={`text-right ${bondRatio - p.target_weights.bond > 0.001 ? "text-red-400" : bondRatio - p.target_weights.bond < -0.001 ? "text-green-400" : ""}`}>
-                      {formatPercent(bondRatio - p.target_weights.bond)}
+                    <div className="text-right">{formatPercent(targetBond)}</div>
+                    <div className={`text-right ${bondRatio - targetBond > 0.001 ? "text-red-400" : bondRatio - targetBond < -0.001 ? "text-green-400" : ""}`}>
+                      {formatPercent(bondRatio - targetBond)}
                     </div>
                   </div>
 
@@ -142,9 +148,9 @@ export default function InstitutionsDashboard() {
                     <div className="text-[#fbbf24]">COMMODITY</div>
                     <div className="text-right">{formatNumber(p.current_commodity)}</div>
                     <div className="text-right">{formatPercent(commodityRatio)}</div>
-                    <div className="text-right">{formatPercent(p.target_weights.commodity)}</div>
-                    <div className={`text-right ${commodityRatio - p.target_weights.commodity > 0.001 ? "text-red-400" : commodityRatio - p.target_weights.commodity < -0.001 ? "text-green-400" : ""}`}>
-                      {formatPercent(commodityRatio - p.target_weights.commodity)}
+                    <div className="text-right">{formatPercent(targetCommodity)}</div>
+                    <div className={`text-right ${commodityRatio - targetCommodity > 0.001 ? "text-red-400" : commodityRatio - targetCommodity < -0.001 ? "text-green-400" : ""}`}>
+                      {formatPercent(commodityRatio - targetCommodity)}
                     </div>
                   </div>
 

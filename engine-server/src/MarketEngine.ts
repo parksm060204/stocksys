@@ -712,7 +712,8 @@ export class MarketEngine {
             price: p,
             size: Math.max(1, safeSize),
             status: 'open',
-            is_lp: true
+            is_lp: true,
+            _botId: o._botId
           });
         }
       }
@@ -869,6 +870,25 @@ export class MarketEngine {
     } catch (err) {
       console.warn('[Engine] safeDeleteLpOrders error:', err);
     }
+  }
+
+  /**
+   * 봇 ID 기반 개별 에이전트 인스턴스 검색 헬퍼
+   */
+  private findAgentById(botId: string): any {
+    const allAgents = [
+      ...this.institutionalBots,
+      ...this.pensionFundAgents,
+      ...this.hedgeFundAgents,
+      ...this.statArbAgents,
+      ...this.commercialBankAgents,
+      ...this.propDeskAgents,
+      ...this.quantAgents,
+      ...this.commercialHedgerAgents,
+      ...this.optionsMMBots,
+      ...this.ctaBots
+    ];
+    return allAgents.find(a => a.botId === botId || (a.agentConfig && a.agentConfig.id === botId));
   }
 
   private async updateExchangeRates() {

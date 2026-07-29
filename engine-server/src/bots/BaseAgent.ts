@@ -23,20 +23,28 @@ export class BaseAgent {
       
     this.capital = cap;
     
-    const weights = { ...((this.agentConfig as any).targetAllocation || this.agentConfig.baseWeights || { stock: 0, bond: 0, commodity: 0, cash: 1, kr_equity: 0, us_equity: 0, eu_equity: 0, derivatives: 0 }) };
-    
-    const totalEquities = (weights.stock || 0) + (weights.kr_equity || 0) + (weights.us_equity || 0) + (weights.eu_equity || 0);
+    const rawWeights = { ...((this.agentConfig as any).targetAllocation || (this.agentConfig as any).baseWeights || {}) };
+    const krW = Number(rawWeights.kr_equity || 0);
+    const usW = Number(rawWeights.us_equity || 0);
+    const euW = Number(rawWeights.eu_equity || 0);
+    const stockW = Number(rawWeights.stock || (krW + usW + euW));
+    const bondW = Number(rawWeights.bond || 0);
+    const commW = Number(rawWeights.commodity || 0);
+    const derivW = Number(rawWeights.derivatives || 0);
+    const cashW = rawWeights.cash !== undefined ? Number(rawWeights.cash) : Math.max(0.05, 1.0 - stockW - bondW - commW - derivW);
 
-    // 포트폴리오 초기화 (초기 자본금은 전부 현금, 또는 기본 비중대로 배분)
+    const totalW = stockW + bondW + commW + derivW + cashW || 1.0;
+
+    // 포트폴리오 초기화 (초기 자본금은 타겟 비중대로 적절히 배분)
     this.currentPortfolio = {
-      cash: cap * (weights.cash !== undefined ? weights.cash : Math.max(0, 1.0 - totalEquities - (weights.bond || 0) - (weights.commodity || 0) - (weights.derivatives || 0))),
-      stock: cap * totalEquities,
-      kr_equity: cap * (weights.kr_equity || 0.0),
-      us_equity: cap * (weights.us_equity || 0.0),
-      eu_equity: cap * (weights.eu_equity || 0.0),
-      bond: cap * (weights.bond || 0.0),
-      commodity: cap * (weights.commodity || 0.0),
-      derivatives: cap * (weights.derivatives || 0.0)
+      cash: cap * (cashW / totalW),
+      stock: cap * (stockW / totalW),
+      kr_equity: cap * (krW > 0 ? krW / totalW : (stockW * 0.5) / totalW),
+      us_equity: cap * (usW > 0 ? usW / totalW : (stockW * 0.5) / totalW),
+      eu_equity: cap * (euW > 0 ? euW / totalW : 0),
+      bond: cap * (bondW / totalW),
+      commodity: cap * (commW / totalW),
+      derivatives: cap * (derivW / totalW)
     };
 
     // EventBus 구독: endogenous AI 뉴스 수신 시 즉각 반응

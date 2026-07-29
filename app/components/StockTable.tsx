@@ -26,53 +26,79 @@ export default function StockTable({ stocks }: { stocks: Stock[] }) {
   }, [stocks]);
 
   return (
-    <div className="overflow-x-auto rounded-xl border border-[#222736] bg-[#151821]">
-      <table className="w-full text-left text-[13px]">
-        <thead className="border-b border-[#222736] bg-[#12151e] text-[11px] font-semibold text-[#9ca3af]">
+    <div className="overflow-x-auto rounded-2xl bg-[#151821] border border-white/5 shadow-sm">
+      <table className="w-full text-left text-[13px] border-collapse">
+        <thead className="border-b border-white/5 bg-[#0C0E12]/60 text-[11px] font-semibold text-[#9CA3AF] tracking-wider uppercase">
           <tr>
-            <th className="px-4 py-3">종목명</th>
-            <th className="px-4 py-3">섹터</th>
-            <th className="px-4 py-3 text-right">현재가</th>
-            <th className="px-4 py-3 text-right">등락률</th>
-            <th className="px-4 py-3 text-right">거래량</th>
-            <th className="px-4 py-3 text-right">시가총액</th>
-            <th className="px-4 py-3 text-center">태그</th>
+            <th className="px-5 py-3.5 border-none">종목명</th>
+            <th className="px-5 py-3.5 border-none">섹터</th>
+            <th className="px-5 py-3.5 border-none text-right">현재가</th>
+            <th className="px-5 py-3.5 border-none text-right">등락률</th>
+            <th className="px-5 py-3.5 border-none text-right">거래량</th>
+            <th className="px-5 py-3.5 border-none text-right">시가총액</th>
+            <th className="px-5 py-3.5 border-none text-center">태그</th>
           </tr>
         </thead>
-        <tbody className="divide-y divide-[#222736]">
+        <tbody className="divide-y divide-white/5">
           {stocks.map((s) => {
             const currentPrice = livePrices[s.id] ?? s.currentPrice;
             const { percent, dir } = change(currentPrice, s.previousClose);
-            const pColor = dir === "up" ? "text-up" : dir === "down" ? "text-down" : "text-muted";
+            const pColor = dir === "up" ? "text-[#F04452]" : dir === "down" ? "text-[#3182F6]" : "text-[#9CA3AF]";
+            
             return (
               <tr
                 key={s.id}
-                className="transition-colors hover:bg-[#1a1e29]"
+                className="transition-colors hover:bg-white/5 border-b border-white/5 last:border-none"
               >
-                <td className="px-4 py-3">
+                {/* 종목명 (세로선 제거) */}
+                <td className="px-5 py-4 border-none">
                   <Link href={`/stocks/${s.id}`} className="group flex flex-col">
-                    <span className="font-semibold text-tx group-hover:text-[#3182F6] transition-colors">{s.name}</span>
-                    <span className="font-mono text-[11px] text-dim">{s.ticker}</span>
+                    <span className="font-bold text-white group-hover:text-[#3182F6] transition-colors text-[14px]">
+                      {s.name}
+                    </span>
+                    <span className="font-mono text-[11px] text-[#6B7280]">{s.ticker}</span>
                   </Link>
                 </td>
-                <td className="px-4 py-3">
-                  <span className="rounded bg-[#1c202c] border border-[#262b3a] px-2 py-0.5 text-[11px] text-[#9ca3af] font-medium">{s.sector}</span>
+
+                {/* 섹터 */}
+                <td className="px-5 py-4 border-none">
+                  <span className="rounded-md bg-[#1C1C1E] border border-white/5 px-2.5 py-1 text-[11px] text-[#9CA3AF] font-medium">
+                    {s.sector}
+                  </span>
                 </td>
-                <td className="px-4 py-3 text-right">
-                  <span className={`font-mono font-bold tabular-nums ${pColor}`}>
+
+                {/* 현재가 */}
+                <td className="px-5 py-4 border-none text-right">
+                  <span className={`font-mono font-bold text-[14px] tabular-nums ${pColor}`}>
                     {fmtPrice(currentPrice, s.market)}
                   </span>
                 </td>
-                <td className="px-4 py-3 text-right">
-                  <span className={`font-mono font-semibold tabular-nums ${pColor}`}>{fmtSigned(percent)}%</span>
+
+                {/* 등락률 */}
+                <td className="px-5 py-4 border-none text-right">
+                  <span className={`font-mono font-bold text-[13px] tabular-nums ${pColor}`}>
+                    {fmtSigned(percent)}%
+                  </span>
                 </td>
-                <td className="px-4 py-3 text-right font-mono tabular-nums text-muted">{fmtVolume(s.volume)}</td>
-                <td className="px-4 py-3 text-right font-mono tabular-nums text-muted">{fmtCap(s.marketCap)}</td>
-                <td className="px-4 py-3 text-center">
+
+                {/* 거래량 */}
+                <td className="px-5 py-4 border-none text-right font-mono tabular-nums text-[#9CA3AF]">
+                  {fmtVolume(s.volume)}
+                </td>
+
+                {/* 시가총액 */}
+                <td className="px-5 py-4 border-none text-right font-mono tabular-nums text-[#9CA3AF]">
+                  {fmtCap(s.marketCap)}
+                </td>
+
+                {/* 태그 */}
+                <td className="px-5 py-4 border-none text-center">
                   {s.isCore ? (
-                    <span className="rounded bg-[#f59e0b]/15 px-1.5 py-0.5 text-[10px] font-bold text-[#f59e0b]">CORE</span>
+                    <span className="rounded bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 text-[10px] font-bold text-amber-400">
+                      CORE
+                    </span>
                   ) : (
-                    <span className="text-dim">·</span>
+                    <span className="text-[#6B7280]">·</span>
                   )}
                 </td>
               </tr>

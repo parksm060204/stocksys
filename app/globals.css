@@ -2,21 +2,20 @@
 @import url("https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,100..900;1,100..900&display=swap");
 @import "tailwindcss";
 
-
 :root {
-  --bg-base: #090a0f;
-  --bg-panel: #141721;
-  --bg-panel-2: #1c202c;
-  --bg-hover: rgba(255, 255, 255, 0.04);
+  --bg-base: #0C0E12;
+  --bg-panel: #151821;
+  --bg-panel-2: #1C1C1E;
+  --bg-hover: rgba(255, 255, 255, 0.05);
   --border: #222736;
-  --border-soft: #1c202c;
-  --text: #f3f4f6;
-  --text-muted: #9ca3af;
-  --text-dim: #6b7280;
-  --up: #FF453A;
-  --down: #0A84FF;
-  --accent: #0A84FF;
-  --warn: #f59e0b;
+  --border-soft: rgba(255, 255, 255, 0.08);
+  --text: #F3F4F6;
+  --text-muted: #9CA3AF;
+  --text-dim: #6B7280;
+  --up: #F04452; /* Toss Red */
+  --down: #3182F6; /* Toss Blue */
+  --accent: #3182F6;
+  --warn: #F59E0B;
 }
 
 @theme inline {
@@ -31,57 +30,60 @@
   --color-down: var(--down);
   --color-accent: var(--accent);
   --color-warn: var(--warn);
+  --color-toss-red: #F04452;
+  --color-toss-blue: #3182F6;
   --font-sans: "Pretendard", "Montserrat", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", "Consolas", monospace;
 }
 
 html,
 body {
   background: var(--bg-base);
   color: var(--text);
-}
-
-body {
   font-family: "Pretendard", "Montserrat", system-ui, -apple-system, sans-serif;
-  position: relative;
   -webkit-font-smoothing: antialiased;
 }
 
-/* 크리스프 미니멀 패널 스타일 */
+/* Minimal Fintech Card Style */
 .bg-panel {
   background: var(--bg-panel) !important;
-  border: 1px solid var(--border) !important;
+  border: 1px solid var(--border-soft) !important;
   border-radius: 12px;
-  transition: border-color 0.15s ease, background-color 0.15s ease;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
 }
 
 .bg-panel:hover {
-  border-color: #2e3447 !important;
+  background: #181B26 !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
 }
 
-/* 미니멀 핀테크 카드 호버 */
 .fintech-card {
   background: var(--bg-panel);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  transition: border-color 0.15s ease, background-color 0.15s ease;
+  border: 1px solid var(--border-soft);
+  border-radius: 14px;
+  transition: background-color 0.15s ease;
 }
 
 .fintech-card:hover {
-  background: #1a1e29;
-  border-color: #2e3447;
+  background: rgba(255, 255, 255, 0.04);
 }
 
-/* 스크롤바 */
+/* Tabular nums for all dynamic figures */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Custom Scrollbar */
 * {
   scrollbar-width: thin;
-  scrollbar-color: #252b3b transparent;
+  scrollbar-color: #222736 transparent;
 }
 *::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
 *::-webkit-scrollbar-thumb {
-  background: #252b3b;
+  background: #222736;
   border-radius: 6px;
 }
 *::-webkit-scrollbar-track {
@@ -96,32 +98,3 @@ body {
 .no-scrollbar::-webkit-scrollbar {
   display: none;
 }
-
-@keyframes flash-up {
-  0% { background-color: rgba(255, 69, 58, 0.4); }
-  100% { background-color: transparent; }
-}
-@keyframes flash-down {
-  0% { background-color: rgba(10, 132, 255, 0.4); }
-  100% { background-color: transparent; }
-}
-.flash-up { animation: flash-up 0.15s ease-out; }
-.flash-down { animation: flash-down 0.15s ease-out; }
-
-/* Quick scalping button neon glow */
-.btn-glow-red {
-  transition: all 0.15s ease;
-}
-.btn-glow-red:hover {
-  border-color: #FF453A !important;
-  box-shadow: 0 0 12px rgba(255, 69, 58, 0.45);
-}
-
-.btn-glow-blue {
-  transition: all 0.15s ease;
-}
-.btn-glow-blue:hover {
-  border-color: #0A84FF !important;
-  box-shadow: 0 0 12px rgba(10, 132, 255, 0.45);
-}
-

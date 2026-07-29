@@ -1,9 +1,13 @@
 import type { MarketId } from "./types";
 
 export function change(current: number, prev: number) {
+  if (!prev || prev <= 0 || isNaN(prev) || isNaN(current)) {
+    return { amount: 0, percent: 0, dir: "flat" as const };
+  }
   const amount = current - prev;
-  const percent = prev !== 0 ? (amount / prev) * 100 : 0;
-  const dir = amount > 0 ? "up" : amount < 0 ? "down" : "flat";
+  const rawPercent = (amount / prev) * 100;
+  const percent = Math.max(-99.99, Math.min(999.99, rawPercent));
+  const dir = amount > 0 ? ("up" as const) : amount < 0 ? ("down" as const) : ("flat" as const);
   return { amount, percent, dir };
 }
 

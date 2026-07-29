@@ -741,17 +741,40 @@ export class MarketEngine {
       promises.push(supabase.from('orders').update({ size: uOrder.size, status: uOrder.status }).eq('id', uOrder.id).then(res => res));
     }
 
-    // 5.4 현재가 Update (자산별 테이블 구분 + KRX 틱 정렬)
+    // 5.4 현재가 Update (자산별 테이블 구분 + KRX 틱/상하한가 정렬)
     for (const [sId, rawPrice] of Object.entries(updatedStocks)) {
-      const isBond = marketState.bonds.some((b: any) => b.id === sId) ||
-                     marketState.stocks.some((s: any) => s.id === sId && s.market === 'bonds');
-      const newPrice = this.alignToTickSize(rawPrice, isBond ? 'bonds' : 'stocks');
-      if (marketState.stocks.some((s: any) => s.id === sId)) {
-        promises.push(supabase.from('stocks').update({ current_price: newPrice }).eq('id', sId).then(res => res));
-      } else if (marketState.bonds.some((b: any) => b.id === sId)) {
-        promises.push(supabase.from('bonds').update({ current_price: newPrice }).eq('id', sId).then(res => res));
-      } else if (marketState.commodities.some((c: any) => c.id === sId)) {
-        promises.push(supabase.from('commodities').update({ current_price: newPrice }).eq('id', sId).then(res => res));
+      const stockItem = marketState.stocks.find((s: any) => s.id === sId);
+      const bondItem = marketState.bonds.find((b: any) => b.id === sId);
+      const commodityItem = marketState.commodities.find((c: any) => c.id === sId);
+
+      if (stockItem) {
+        const prevClose = Number(stockItem.previous_close || stockItem.previousClose || stockItem.current_price || 1000);
+        let finalPrice = rawPrice;
+
+        if (stockItem.market === 'domestic') {
+          // KRX 상/하한가 (±30% 캡)
+          const upper = this.alignToTickSize(prevClose * 1.30, 'stocks');
+          const lower = this.alignToTickSize(prevClose * 0.70, 'stocks');
+          finalPrice = Math.max(lower, Math.min(upper, this.alignToTickSize(rawPrice, 'stocks')));
+        } else if (stockItem.market === 'overseas' || stockItem.market === 'europe') {
+          // 해외 주식: 일간 변동 폭 안전 캡 (prevClose의 50% ~ 200%)
+          const lower = Math.max(0.01, prevClose * 0.50);
+          const upper = prevClose * 2.00;
+          finalPrice = Math.max(lower, Math.min(upper, rawPrice));
+        } else if (stockItem.market === 'bonds') {
+          finalPrice = Math.max(80.00, Math.min(120.00, this.alignToTickSize(rawPrice, 'bonds')));
+        } else {
+          finalPrice = Math.max(1, this.alignToTickSize(rawPrice, 'stocks'));
+        }
+
+        promises.push(supabase.from('stocks').update({ current_price: finalPrice }).eq('id', sId).then(res => res));
+      } else if (bondItem) {
+        const finalPrice = Math.max(80.00, Math.min(120.00, this.alignToTickSize(rawPrice, 'bonds')));
+        promises.push(supabase.from('bonds').update({ current_price: finalPrice }).eq('id', sId).then(res => res));
+      } else if (commodityItem) {
+        const prevClose = Number(commodityItem.previous_close || commodityItem.current_price || 100);
+        const finalPrice = Math.max(prevClose * 0.50, Math.min(prevClose * 2.00, rawPrice));
+        promises.push(supabase.from('commodities').update({ current_price: finalPrice }).eq('id', sId).then(res => res));
       }
     }
 

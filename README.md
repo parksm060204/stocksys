@@ -1675,3 +1675,13 @@ PRIVATE SOURCE같은 같은 등급이면 똑같은 가격을 받도록해
 **수행 결과:**
 - [newsFetcher.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/newsFetcher.ts): 외부 야후 파이낸스 RSS 피드 파싱 및 DB `real_news` 테이블 적재 호출을 비활성화(no-op) 처리하여 불필요한 네트워크 호출 및 에러 로그 원천 제거.
 - GitHub `main` 브랜치에 수정 내용 커밋 및 푸시 완료 (`fd46b93`).
+
+---
+## 2026-07-29 14:50
+
+**요청 요약:** 전체 마켓 엔진 점검 및 초저가 자산(원자재/옵션) 호가창 폭주 방지 캡 적용
+**수행 결과:**
+- **원인 점검**: 주가가 4원~10원인 초저가 종목(예: 은, PopCo Drinks 등)에서 AS 모델의 유보 가격($r = s - q \cdot \gamma \cdot \sigma^2$) 계산 시 음수 가격(`-3원`)이 생성되어 `price > 0` 검사를 우회하고 대규모 수량이 삽입되던 현상 발굴.
+- [ASMarketMakerAgent.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/bots/ASMarketMakerAgent.ts): AS 유보 가격($r$)을 현재가의 $\pm 10\%$ 범위 이내로 안전 클램핑(`Math.max(s * 0.9, Math.min(s * 1.1, rawR))`)하여 음수 유보 가격 발생 원천 차단.
+- [MarketEngine.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/MarketEngine.ts): `safeLpOrders` DB 커밋 루프 내에서 호가가 반드시 양수(`Math.max(1, alignedPrice)`) 및 최대 수량 5,000주(500만 원) 이하로 엄격 제한되도록 2중 안전 장치 적용.
+- GitHub `main` 브랜치에 수정 사항 푸시 완료 (`c929bd4`).

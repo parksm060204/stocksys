@@ -7,6 +7,7 @@ import OrderEntry from "@/app/components/OrderEntry";
 import StockChartV2 from "@/app/components/v2/StockChartV2";
 import OrderbookV2 from "@/app/components/v2/OrderbookV2";
 import TradeFeedV2 from "@/app/components/v2/TradeFeedV2";
+import PriceHeroV2 from "@/app/components/v2/PriceHeroV2";
 import RealtimePriceHeader from "@/app/components/RealtimePriceHeader";
 
 /* ─────────────────────────────────────────────────────────
@@ -81,8 +82,11 @@ function DefaultLayout({
 }) {
   return (
     <div className="flex flex-col gap-4 w-full">
-      {/* 가격 요약 바 */}
-      <div className="grid grid-cols-4 gap-px bg-[#1C1C1E] rounded-xl overflow-hidden">
+      {/* ── Hero 가격 타이포그래피 ── text-7xl, tabular-nums, Toss 컬러 */}
+      <PriceHeroV2 stock={stock} />
+
+      {/* OHLCV 요약 바 — tabular-nums font-mono 강화 */}
+      <div className="grid grid-cols-4 gap-px bg-[#111316] rounded-xl overflow-hidden">
         <MetaCell label="시가" value={fmtPrice(stock.openPrice, stock.market)} />
         <MetaCell label="고가" value={fmtPrice(stock.high, stock.market)} tone="up" />
         <MetaCell label="저가" value={fmtPrice(stock.low, stock.market)} tone="down" />
@@ -92,7 +96,7 @@ function DefaultLayout({
       {/* 메인 차트 — 풀 와이드 (Default 선 차트) */}
       <div
         className="w-full rounded-2xl overflow-hidden bg-[#0D0F14]"
-        style={{ height: "clamp(320px, 42vh, 520px)" }}
+        style={{ height: "clamp(280px, 36vh, 460px)" }}
       >
         <StockChartV2
           ticker={stock.ticker}
@@ -105,7 +109,7 @@ function DefaultLayout({
       <BigTradeButtons stock={stock} />
 
       {/* 하단 2단 — 주문창 + 뉴스 */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4" id="v2-order-entry">
         <div className="rounded-2xl bg-[#111316] overflow-hidden">
           <SectionHeader title="주문" />
           <div className="p-4">
@@ -336,18 +340,23 @@ function MetaCell({
   value: string;
   tone?: "up" | "down";
 }) {
+  /* ── Toss 색상 강제 ── */
   const color =
     tone === "up"
-      ? "text-[#F04452]"
+      ? "#F04452" // Toss Red
       : tone === "down"
-      ? "text-[#3182F6]"
-      : "text-white";
+      ? "#3182F6" // Toss Blue
+      : "#FFFFFF";
   return (
-    <div className="px-4 py-3">
-      <div className="text-[10px] text-[#6B7280] uppercase tracking-widest mb-1">
+    <div className="px-4 py-3 bg-[#111316]">
+      <div className="text-[9px] text-[#6B7280] uppercase tracking-widest mb-1.5 font-semibold">
         {label}
       </div>
-      <div className={`font-mono text-[13px] tabular-nums font-bold ${color}`}>
+      {/* tabular-nums: 숫자 바뀔 때 레이아웃 흔들림 0 */}
+      <div
+        className="font-mono text-[13px] tabular-nums font-bold leading-none"
+        style={{ color }}
+      >
         {value}
       </div>
     </div>

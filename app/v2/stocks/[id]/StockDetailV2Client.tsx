@@ -3,11 +3,10 @@
 import { useState } from "react";
 import type { Stock, ChatMessage } from "@/lib/types";
 import { fmtPrice, fmtVolume, fmtCap } from "@/lib/format";
-import Orderbook from "@/app/components/Orderbook";
-import TradeFeed from "@/app/components/TradeFeed";
-import ChatPanel from "@/app/components/ChatPanel";
 import OrderEntry from "@/app/components/OrderEntry";
 import StockChartV2 from "@/app/components/v2/StockChartV2";
+import OrderbookV2 from "@/app/components/v2/OrderbookV2";
+import TradeFeedV2 from "@/app/components/v2/TradeFeedV2";
 import RealtimePriceHeader from "@/app/components/RealtimePriceHeader";
 
 /* ─────────────────────────────────────────────────────────
@@ -102,6 +101,9 @@ function DefaultLayout({
         />
       </div>
 
+      {/* 빅 매수/매도 버튼 — Default 모드 핵심 CTA */}
+      <BigTradeButtons stock={stock} />
+
       {/* 하단 2단 — 주문창 + 뉴스 */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="rounded-2xl bg-[#111316] overflow-hidden">
@@ -167,19 +169,16 @@ function ProLayout({
         </div>
       </div>
 
-      {/* ③ 호가창 — 우측 상단 */}
+      {/* ③ 호가창 V2 — 우측 상단 (Robinhood 스타일, 세로 border 없음) */}
       <div
-        className="rounded-xl bg-[#111316] overflow-hidden flex flex-col"
-        style={{ gridColumn: "2", gridRow: "1 / 3" }}
+        className="rounded-xl overflow-hidden flex flex-col"
+        style={{ gridColumn: "2", gridRow: "1 / 3", background: "#0D0F14" }}
       >
-        <SectionHeader title="호가" badge="매도/매수" />
-        <div className="flex-1 overflow-hidden">
-          <Orderbook
-            ticker={stock.ticker}
-            currentPrice={stock.currentPrice}
-            stockId={stock.id}
-          />
-        </div>
+        <OrderbookV2
+          ticker={stock.ticker}
+          currentPrice={stock.currentPrice}
+          stockId={stock.id}
+        />
       </div>
 
       {/* ④ 주문 패널 — 우측 하단 */}
@@ -193,15 +192,12 @@ function ProLayout({
         </div>
       </div>
 
-      {/* ⑤ 체결 피드 — 맨 우측 상단 */}
+      {/* ⑤ 체결 피드 V2 — 맨 우측 상단 (Robinhood 스타일, 세로 border 없음) */}
       <div
-        className="rounded-xl bg-[#111316] overflow-hidden flex flex-col"
-        style={{ gridColumn: "3", gridRow: "1 / 3" }}
+        className="rounded-xl overflow-hidden flex flex-col"
+        style={{ gridColumn: "3", gridRow: "1 / 3", background: "#0D0F14" }}
       >
-        <SectionHeader title="실시간 체결" badge="FEED" />
-        <div className="flex-1 overflow-hidden">
-          <TradeFeed stock={stock} />
-        </div>
+        <TradeFeedV2 stock={stock} />
       </div>
 
       {/* ⑥ 뉴스 — 맨 우측 하단 */}
@@ -410,6 +406,81 @@ function NewsList({
           )}
         </div>
       ))}
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────
+   BigTradeButtons — Default 모드 핵심 CTA
+   화면을 꽉 채우는 거대한 매수/매도 버튼 2개
+   실제 주문 실행은 OrderEntry 컴포넌트에 위임하지 않고
+   시각적 진입점으로서만 동작 (클릭 시 주문창으로 포커스)
+───────────────────────────────────────────────────────── */
+function BigTradeButtons({ stock }: { stock: Stock }) {
+  const isUSD =
+    stock.market === "overseas" ||
+    stock.market === "europe" ||
+    stock.market === "commodities";
+  const currency = isUSD ? "$" : "₩";
+  const priceStr = isUSD
+    ? stock.currentPrice.toFixed(2)
+    : Math.round(stock.currentPrice).toLocaleString();
+
+  const scrollToOrder = () => {
+    const el = document.getElementById("v2-order-entry");
+    el?.scrollIntoView({ behavior: "smooth", block: "center" });
+  };
+
+  return (
+    <div className="w-full grid grid-cols-2 gap-3">
+      {/* ── 매수 버튼 ── */}
+      <button
+        onClick={scrollToOrder}
+        id="v2-buy-btn"
+        className="group relative flex flex-col items-center justify-center rounded-2xl py-8 px-6 overflow-hidden cursor-pointer transition-all duration-200 active:scale-[0.98]"
+        style={{ background: "rgba(240,68,82,0.08)", border: "1px solid rgba(240,68,82,0.15)" }}
+        aria-label="매수"
+      >
+        {/* 호버 배경 */}
+        <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-200"
+          style={{ background: "rgba(240,68,82,0.12)" }} />
+        {/* 레이블 */}
+        <span className="relative z-10 text-[11px] font-semibold tracking-widest uppercase text-[#F04452]/60 mb-2">
+          매수 Buy
+        </span>
+        {/* 가격 */}
+        <span className="relative z-10 font-mono text-[28px] font-black tabular-nums text-[#F04452] leading-none">
+          {currency}{priceStr}
+        </span>
+        {/* 종목명 */}
+        <span className="relative z-10 text-[12px] text-[#F04452]/50 mt-2 font-medium">
+          {stock.name} · {stock.ticker}
+        </span>
+        {/* 하단 화살표 아이콘 */}
+        <span className="relative z-10 mt-4 text-[20px] opacity-60">↑</span>
+      </button>
+
+      {/* ── 매도 버튼 ── */}
+      <button
+        onClick={scrollToOrder}
+        id="v2-sell-btn"
+        className="group relative flex flex-col items-center justify-center rounded-2xl py-8 px-6 overflow-hidden cursor-pointer transition-all duration-200 active:scale-[0.98]"
+        style={{ background: "rgba(49,130,246,0.08)", border: "1px solid rgba(49,130,246,0.15)" }}
+        aria-label="매도"
+      >
+        <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-200"
+          style={{ background: "rgba(49,130,246,0.12)" }} />
+        <span className="relative z-10 text-[11px] font-semibold tracking-widest uppercase text-[#3182F6]/60 mb-2">
+          매도 Sell
+        </span>
+        <span className="relative z-10 font-mono text-[28px] font-black tabular-nums text-[#3182F6] leading-none">
+          {currency}{priceStr}
+        </span>
+        <span className="relative z-10 text-[12px] text-[#3182F6]/50 mt-2 font-medium">
+          {stock.name} · {stock.ticker}
+        </span>
+        <span className="relative z-10 mt-4 text-[20px] opacity-60">↓</span>
+      </button>
     </div>
   );
 }

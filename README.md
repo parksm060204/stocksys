@@ -1767,3 +1767,15 @@ PRIVATE SOURCE같은 같은 등급이면 똑같은 가격을 받도록해
 - [scratch_reseed_portfolios.js](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/scratch_reseed_portfolios.js) 실행: DB 내 50개 기관 봇의 자산 비중(`institutional_portfolios`)을 멀티 자산 클래스 보유 포트폴리오로 재설계 및 100% 동기화 동결 완수.
 - `npx tsc --noEmit` 및 `npm run build` 검증 완료.
 - GitHub `main` 푸시(`472f97b`) 및 VPS 자동 SSH 배포(`pm2 restart market-engine`) 완료.
+
+---
+## 2026-07-29 16:15
+
+**요청 요약:** 기관 포트폴리오 터미널의 UUID 표시를 명확한 정규 기관명(한국어/영어)으로 전환하고 전체 UI 한국어 패치
+**수행 결과:**
+- [app/institutions/page.tsx](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/app/institutions/page.tsx):
+  - `bots_config` 테이블과 클라이언트 사이드 맵을 연동하여 UUID(예: `2da9b04c-...`) 대신 **`Bank of America (BofA)`**, **`NPS (한국 국민연금)`**, **`Morgan Stanley (모건스탠리)`** 등 실제 정규 기관명을 완전 명시하도록 구현.
+  - 헤더, 자산군 항목(`현금 자산`, `주식 자산`, `채권 자산`, `원자재 자산`, `총 운용 자산`), 컬럼 헤더(`자산군`, `평가 금액`, `현재 비중`, `목표 비중`, `괴리율`)를 **100% 한글화(한국어 표현) 전면 적용**.
+- [scratch_reseed_portfolios.js](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/scratch_reseed_portfolios.js) 재실행: Supabase `institutional_portfolios` DB 레코드의 `name` 칼럼을 50개 전체 정규 기관 네임으로 업서트 정정 완료.
+- `npx tsc --noEmit` 및 `npm run build` 검증 완료.
+- GitHub `main` 푸시(`0b84943`) 및 VPS 자동 SSH 배포(`pm2 restart market-engine`) 완료.

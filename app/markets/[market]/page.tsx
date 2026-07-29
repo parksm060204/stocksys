@@ -30,7 +30,7 @@ export default async function MarketPage({
   const supabase = await createClient();
   const { data: stocksData } = await supabase
     .from('stocks')
-    .select('id, name, ticker, market, sector, current_price, previous_close')
+    .select('id, name, ticker, market, sector, current_price, previous_close, volume, market_cap')
     .eq('market', id);
 
   const stocks: Stock[] = (stocksData || []).map(row => ({
@@ -41,7 +41,8 @@ export default async function MarketPage({
     sector: row.sector,
     currentPrice: row.current_price,
     previousClose: row.previous_close,
-    marketCap: row.current_price * 1000000,
+    volume: row.volume || 100000,
+    marketCap: row.market_cap || (row.current_price * 1000000),
   } as Stock));
 
   const up = stocks.filter((s) => s.currentPrice > s.previousClose).length;

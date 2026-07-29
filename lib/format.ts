@@ -20,7 +20,8 @@ export function fmtPrice(price: number, market: MarketId): string {
   return `₩${Math.round(price).toLocaleString("ko-KR")}`;
 }
 
-export function fmtVolume(v: number): string {
+export function fmtVolume(v?: number): string {
+  if (v === undefined || v === null || isNaN(v)) return "0";
   if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
   if (v >= 1_000) return `${(v / 1_000).toFixed(1)}K`;
   return String(v);

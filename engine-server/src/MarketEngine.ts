@@ -725,7 +725,9 @@ export class MarketEngine {
 
     // 5.4 현재가 Update (자산별 테이블 구분 + KRX 틱 정렬)
     for (const [sId, rawPrice] of Object.entries(updatedStocks)) {
-      const newPrice = this.alignToTickSize(rawPrice);
+      const isBond = marketState.bonds.some((b: any) => b.id === sId) ||
+                     marketState.stocks.some((s: any) => s.id === sId && s.market === 'bonds');
+      const newPrice = this.alignToTickSize(rawPrice, isBond ? 'bonds' : 'stocks');
       if (marketState.stocks.some((s: any) => s.id === sId)) {
         promises.push(supabase.from('stocks').update({ current_price: newPrice }).eq('id', sId).then(res => res));
       } else if (marketState.bonds.some((b: any) => b.id === sId)) {
@@ -899,8 +901,12 @@ export class MarketEngine {
     return undefined;
   }
 
-  private alignToTickSize(price: number): number {
-    if (price <= 0) return 1;
+  private alignToTickSize(price: number, market?: string): number {
+    if (price <= 0 || isNaN(price)) return 1;
+    if (market === 'bonds' || (price >= 50 && price <= 150 && !Number.isInteger(price))) {
+      const bPrice = Math.max(80.00, Math.min(120.00, Math.round(price * 100) / 100));
+      return Number(bPrice.toFixed(2));
+    }
     let tick = 1;
     if (price < 2000) tick = 1;
     else if (price < 5000) tick = 5;

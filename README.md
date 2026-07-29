@@ -1723,3 +1723,15 @@ PRIVATE SOURCE같은 같은 등급이면 똑같은 가격을 받도록해
 - [app/news/page.tsx](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/app/news/page.tsx): 무광 블랙 핀테크 스타일의 실시간 뉴스 라이브 스트리밍 UI 연동 및 미디어 구독 여부에 따른 본문 블러링 처리 적용.
 - `npx tsc --noEmit` 및 `npm run build` 검증 완료.
 - GitHub `main` 푸시(`37b3400`) 및 VPS 자동 SSH 배포(`pm2 restart market-engine`) 완료.
+
+---
+## 2026-07-29 15:43
+
+**요청 요약:** 토스(Toss) 및 로빈후드(Robinhood) 스타일 미니멀 다크 모드 UI/UX 전면 리팩토링
+**수행 결과:**
+- [app/globals.css](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/app/globals.css): 무광 블랙(`#0C0E12`) 및 패널 차콜(`#151821`, `#1C1C1E`) 뎁스 시스템 구축, 토스 레드(`#F04452`) 및 토스 블루(`#3182F6`) 포인트 컬러 변수 등록.
+- [app/shop/page.tsx](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/app/shop/page.tsx): 기존 RPG 게임 컨셉(네온 테두리, 등급 표시)을 완전 폐기하고 블룸버그/로빈후드 스타일의 미니멀 핀테크 SaaS 요금제 카드 UI로 전면 재설계.
+- [app/components/StockTable.tsx](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/app/components/StockTable.tsx): 표의 세로선(Vertical Border)을 완전 제거하고, 얇은 하단 가로선(`border-b border-white/5`), 행 상하 여백 확대(`py-4`), 부드러운 호버(`hover:bg-white/5`), 동적 수치 `font-mono tabular-nums` 및 토스 포인트 색상 적용.
+- [app/exchange/page.tsx](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/app/exchange/page.tsx): 둔탁한 테두리를 없애고 둥근 차콜 박스(`bg-[#1C1C1E] rounded-xl border-none`) 및 포커스 링(`focus:ring-1 focus:ring-[#3182F6]`) 핀테크 폼 디자인 적용.
+- `npx tsc --noEmit` 및 `npm run build` 검증 완료.
+- GitHub `main` 푸시(`bf0bf47`) 및 VPS 자동 SSH 배포(`pm2 restart market-engine`) 완료.

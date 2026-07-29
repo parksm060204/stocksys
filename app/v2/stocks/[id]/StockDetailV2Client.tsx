@@ -7,10 +7,7 @@ import Orderbook from "@/app/components/Orderbook";
 import TradeFeed from "@/app/components/TradeFeed";
 import ChatPanel from "@/app/components/ChatPanel";
 import OrderEntry from "@/app/components/OrderEntry";
-import TickChart from "@/app/components/TickChart";
-import FinancialPanel from "@/app/components/FinancialPanel";
-import BondDetailPanel from "@/app/components/BondDetailPanel";
-import OptionsPanel from "@/app/components/OptionsPanel";
+import StockChartV2 from "@/app/components/v2/StockChartV2";
 import RealtimePriceHeader from "@/app/components/RealtimePriceHeader";
 
 /* ─────────────────────────────────────────────────────────
@@ -93,12 +90,16 @@ function DefaultLayout({
         <MetaCell label="거래량" value={fmtVolume(stock.volume)} />
       </div>
 
-      {/* 메인 차트 — 풀 와이드 */}
+      {/* 메인 차트 — 풀 와이드 (Default 선 차트) */}
       <div
-        className="w-full rounded-2xl overflow-hidden bg-[#111316]"
+        className="w-full rounded-2xl overflow-hidden bg-[#0D0F14]"
         style={{ height: "clamp(320px, 42vh, 520px)" }}
       >
-        <TickChart ticker={stock.ticker} currentPrice={stock.currentPrice} />
+        <StockChartV2
+          ticker={stock.ticker}
+          currentPrice={stock.currentPrice}
+          isProMode={false}
+        />
       </div>
 
       {/* 하단 2단 — 주문창 + 뉴스 */}
@@ -141,15 +142,16 @@ function ProLayout({
         gridTemplateRows: "auto 1fr 1fr",
       }}
     >
-      {/* ① 차트 — 중앙 상단 tall */}
+      {/* ① 차트 — 중앙 상단 tall (Pro 봉 차트 + BB + RSI) */}
       <div
-        className="rounded-xl bg-[#111316] overflow-hidden"
+        className="rounded-xl overflow-hidden bg-[#0D0F14]"
         style={{ gridColumn: "1", gridRow: "1 / 3" }}
       >
-        <SectionHeader title="틱 차트" badge="LIVE" />
-        <div style={{ height: "calc(100% - 36px)" }}>
-          <TickChart ticker={stock.ticker} currentPrice={stock.currentPrice} />
-        </div>
+        <StockChartV2
+          ticker={stock.ticker}
+          currentPrice={stock.currentPrice}
+          isProMode={true}
+        />
       </div>
 
       {/* ② 가격 요약 바 — 차트 하단 */}

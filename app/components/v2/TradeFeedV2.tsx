@@ -15,6 +15,7 @@ import { useOrderbookData } from "@/lib/hooks/useOrderbookData";
 import type { TradeRecord } from "@/lib/hooks/useOrderbookData";
 import type { SimTrade } from "@/lib/hooks/useStockBotSimulation";
 import type { Stock } from "@/lib/types";
+import { fmtKSTTime } from "@/lib/format";
 
 interface TradeFeedV2Props {
   stock?: Stock;
@@ -120,11 +121,7 @@ export default function TradeFeedV2({ stock, trades: externalTrades }: TradeFeed
               >
                 {/* 시간 */}
                 <span className="text-[10px] text-[#4B5563] tabular-nums">
-                  {new Date(t.timestamp).toLocaleTimeString("ko-KR", {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                    second: "2-digit",
-                  })}
+                  {fmtKSTTime(t.timestamp)}
                 </span>
                 {/* 체결가 */}
                 <span

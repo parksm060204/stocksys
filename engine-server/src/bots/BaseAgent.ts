@@ -271,7 +271,7 @@ export class BaseAgent {
    * @param filledQty 실제 체결된 수량
    * @param filledPrice 실제 체결 단가
    */
-  public confirmExecution(assetClass: 'stock' | 'bond' | 'commodity', side: 'buy' | 'sell', filledQty: number, filledPrice: number, stockId?: string) {
+  public confirmExecution(assetClass: 'stock' | 'bond' | 'commodity', side: 'buy' | 'sell', filledQty: number, filledPrice: number, _stockId?: string) {
     const notional = filledQty * filledPrice;
     if (side === 'buy') {
       this.currentPortfolio.cash = Math.max(0, this.currentPortfolio.cash - notional);

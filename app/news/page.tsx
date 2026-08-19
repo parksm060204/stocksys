@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import Link from "next/link";
 
+import { useAuth } from "@/lib/auth/useAuth";
+
 export type CombinedNews = {
   id: string;
   created_at: string;
@@ -20,159 +22,148 @@ export type CombinedNews = {
 
 export default function NewsPage() {
   const [newsList, setNewsList] = useState<CombinedNews[]>([]);
-  const [subs, setSubs] = useState<Record<string, string>>({});
-  const [userId, setUserId] = useState<string | null>(null);
   const [isAdmin, setIsAdmin] = useState<boolean>(false);
 
   const supabase = createClient();
+  const { userId, isLoggedIn } = useAuth();
 
   useEffect(() => {
+    let cancelled = false;
+
     const fetchData = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      
-      if (session?.user) {
-        setUserId(session.user.id);
+      if (isLoggedIn && userId) {
         const { data: profile } = await supabase
           .from('profiles')
           .select('is_admin, news_subscriptions')
-          .eq('id', session.user.id)
+          .eq('id', userId)
           .single();
           
-        if (profile) {
+        if (!cancelled && profile) {
           setIsAdmin(profile.is_admin || false);
-          if (profile.news_subscriptions) {
-            setSubs(profile.news_subscriptions as Record<string, string>);
-          }
         }
       }
 
-      // Fetch from market_news (Primary Gemini AI Engine table)
-      const { data: mNews } = await supabase
-        .from('market_news')
-        .select('*')
-        .order('created_at', { ascending: false })
-        .limit(50);
-
-      // Fetch from premium_news (Backwards compatibility)
-      const { data: pNews } = await supabase
-        .from('premium_news')
-        .select('*, media_outlets(*)')
-        .order('created_at', { ascending: false })
-        .limit(50);
+      // Fetch news in parallel via Promise.all
+      const [{ data: mNews }, { data: pNews }] = await Promise.all([
+        supabase.from('market_news').select('*').order('created_at', { ascending: false }).limit(50),
+        supabase.from('premium_news').select('*, media_outlets(*)').order('created_at', { ascending: false }).limit(50),
+      ]);
       
+      if (cancelled) return;
+
       const combined: CombinedNews[] = [];
 
-      if (mNews && mNews.length > 0) {
-        mNews.forEach((mn: any) => {
+      if (mNews) {
+        mNews.forEach((row: any) => {
           combined.push({
-            id: mn.id,
-            created_at: mn.created_at,
-            type: mn.type || 'MACRO',
-            category: mn.category || 'OFFICIAL',
-            publisher: mn.publisher || '블룸버그 터미널',
-            title: mn.title,
-            content: mn.content,
-            target_sector: mn.target_sector,
-            target_ticker: mn.target_ticker,
-            impact_score: Number(mn.impact_score || 0),
-            is_fake: mn.is_fake
+            id: row.id,
+            created_at: row.created_at,
+            type: 'MARKET',
+            category: row.sentiment === 'positive' ? 'OFFICIAL' : row.sentiment === 'negative' ? 'RUMOR' : 'CORRECTION',
+            publisher: row.publisher || 'AI 터미널',
+            title: row.headline,
+            content: row.summary || row.headline,
+            target_sector: row.related_sector,
+            target_ticker: row.related_ticker,
+            impact_score: row.impact_score || 5,
+            is_fake: false,
           });
         });
       }
 
-      if (pNews && pNews.length > 0) {
-        pNews.forEach((pn: any) => {
-          const outlet = pn.media_outlets || {};
+      if (pNews) {
+        pNews.forEach((row: any) => {
           combined.push({
-            id: pn.id,
-            created_at: pn.created_at,
-            type: outlet.type || 'MICRO',
-            category: pn.is_quoted ? 'RUMOR' : 'OFFICIAL',
-            publisher: outlet.name || '스트리트 리포트',
-            title: pn.headline,
-            content: pn.content_summary,
-            impact_score: pn.is_quoted ? 5.0 : 0
+            id: row.id,
+            created_at: row.created_at,
+            type: 'PREMIUM',
+            category: row.category || 'OFFICIAL',
+            publisher: row.media_outlets?.name || '프리미엄 언론',
+            title: row.title,
+            content: row.content,
+            target_sector: row.target_sector,
+            target_ticker: row.target_ticker,
+            impact_score: row.impact_score || 5,
+            is_fake: row.is_fake || false,
           });
         });
       }
 
-      // Sort combined array by created_at DESC
       combined.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-      setNewsList(combined.slice(0, 50));
+      if (!cancelled) {
+        setNewsList(combined.slice(0, 50));
+      }
     };
 
     fetchData();
 
-    // Supabase Realtime Subscription for instant streaming updates
-    const channel = supabase.channel('endogenous_news_feed')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'market_news' }, () => fetchData())
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'premium_news' }, () => fetchData())
-      .subscribe();
+    // 15초 주기 폴링으로 최신 뉴스 갱신
+    const interval = setInterval(fetchData, 15000);
 
     return () => {
-      supabase.removeChannel(channel);
+      cancelled = true;
+      clearInterval(interval);
     };
-  }, [supabase]);
-
-  const getDday = (expiryDate?: string) => {
-    if (!expiryDate) return -1;
-    const diff = new Date(expiryDate).getTime() - new Date().getTime();
-    const days = Math.ceil(diff / (1000 * 60 * 60 * 24));
-    return days >= 0 ? days : -1;
-  };
+  }, [supabase, isLoggedIn, userId]);
 
   return (
-    <div className="mx-auto max-w-5xl px-6 py-6 font-sans">
-      <div className="mb-6 border-b border-border/40 pb-4 flex items-center justify-between">
+    <div className="mx-auto max-w-5xl px-6 py-6 font-sans space-y-6">
+      {/* Header Banner */}
+      <div className="bg-[#0E1117] border border-[#212631] p-6 rounded-3xl flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shadow-2xl">
         <div>
-          <h1 className="text-2xl font-bold text-tx tracking-tight flex items-center gap-2">
-            <span>📰</span>
-            <span>Gemini AI 속보 & 찌라시 라운지</span>
+          <div className="inline-flex items-center gap-2 rounded-full border border-[#F04452]/40 bg-[#F04452]/10 px-3.5 py-1 text-[11px] font-mono font-bold text-[#F04452] mb-2">
+            <span className="inline-block h-2 w-2 rounded-full bg-[#F04452] animate-pulse" />
+            AI NEWS LOUNGE · 글로벌 속보 & 찌라시
+          </div>
+          <h1 className="text-xl md:text-2xl font-black text-white tracking-tight">
+            Gemini AI 속보 & 찌라시 라운지
           </h1>
-          <p className="mt-1 text-[13px] text-muted">
-            실시간 거시경제 지표 발표부터 독립 언론사의 미확인 찌라시 및 정정 공시까지
+          <p className="text-[12.5px] text-[#8E939D] mt-1 font-medium leading-relaxed">
+            실시간 거시경제 지표 발표부터 독립 언론사의 미확인 찌라시 및 정정 공시까지 모니터링합니다.
           </p>
         </div>
-        <div className="flex gap-2">
-          <span className="px-2.5 py-1 bg-[#161b26] border border-[#2a3042] text-[11px] font-mono text-emerald-400 rounded-md">
-            ● LIVE STREAMING
+        <div className="flex items-center gap-2 font-mono shrink-0">
+          <span className="px-3 py-1.5 bg-[#F04452]/10 border border-[#F04452]/30 text-[11px] font-bold text-[#F04452] rounded-full flex items-center gap-2">
+            <span className="h-2 w-2 rounded-full bg-[#F04452] animate-pulse" />
+            LIVE STREAMING
           </span>
         </div>
       </div>
 
-      <div className="space-y-4">
+      {/* News Cards */}
+      <div className="space-y-4 font-mono">
         {newsList.map((n) => {
           const isOfficial = n.category === 'OFFICIAL';
           const isCorrection = n.category === 'CORRECTION';
           const isRumor = n.category === 'RUMOR';
           const isSubscribed = isAdmin || isOfficial || isCorrection;
 
-          const impactColor = (n.impact_score || 0) > 0 ? "text-red-400" : (n.impact_score || 0) < 0 ? "text-blue-400" : "text-muted";
+          const impactColor = (n.impact_score || 0) > 0 ? "text-[#F04452]" : (n.impact_score || 0) < 0 ? "text-[#3182F6]" : "text-[#8E939D]";
 
           return (
             <article
               key={n.id}
-              className={`rounded-xl border p-5 transition-all relative overflow-hidden bg-[#12151e] ${
-                isCorrection ? "border-red-500/40 bg-red-950/10" : isRumor ? "border-amber-500/30" : "border-[#222736]"
+              className={`rounded-2xl border p-5 transition-all relative overflow-hidden bg-[#0E1117] shadow-xl ${
+                isCorrection ? "border-[#F04452]/60 bg-[#F04452]/5" : isRumor ? "border-[#F59E0B]/40" : "border-[#212631]"
               }`}
             >
-              <div className="mb-3 flex items-center justify-between">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
-                  <span className={`rounded px-2.5 py-0.5 text-[10px] font-bold ${
-                    isCorrection ? "bg-red-500/20 text-red-400" : isRumor ? "bg-amber-500/20 text-amber-300" : "bg-emerald-500/20 text-emerald-400"
+                  <span className={`rounded-full px-3 py-0.5 text-[10.5px] font-black border ${
+                    isCorrection ? "bg-[#F04452]/15 text-[#F04452] border-[#F04452]/30" : isRumor ? "bg-[#F59E0B]/15 text-[#F59E0B] border-[#F59E0B]/30" : "bg-[#3182F6]/15 text-[#3182F6] border-[#3182F6]/30"
                   }`}>
                     {n.category}
                   </span>
-                  <span className="rounded bg-[#1c202c] border border-[#262b3a] px-2 py-0.5 text-[11px] text-[#9ca3af] font-medium">
+                  <span className="rounded-full bg-[#161B22] border border-[#212631] px-3 py-0.5 text-[11px] text-[#8E939D] font-bold">
                     {n.publisher}
                   </span>
                   {n.target_ticker && (
-                    <span className="rounded bg-blue-500/10 border border-blue-500/30 px-2 py-0.5 text-[11px] font-mono text-blue-300 font-bold">
+                    <span className="rounded-full bg-[#F04452]/10 border border-[#F04452]/30 px-2.5 py-0.5 text-[11px] text-[#F04452] font-black">
                       ${n.target_ticker}
                     </span>
                   )}
                   {n.target_sector && (
-                    <span className="rounded bg-purple-500/10 border border-purple-500/30 px-2 py-0.5 text-[11px] font-mono text-purple-300">
+                    <span className="rounded-full bg-[#3182F6]/10 border border-[#3182F6]/30 px-2.5 py-0.5 text-[11px] text-[#3182F6] font-bold">
                       #{n.target_sector}
                     </span>
                   )}
@@ -180,42 +171,42 @@ export default function NewsPage() {
 
                 <div className="flex items-center gap-3">
                   {n.impact_score !== undefined && (
-                    <span className={`font-mono text-[12px] font-bold ${impactColor}`}>
+                    <span className={`font-mono text-[12px] font-black tabular-nums ${impactColor}`}>
                       IMPACT: {n.impact_score > 0 ? `+${n.impact_score.toFixed(1)}` : n.impact_score.toFixed(1)}
                     </span>
                   )}
-                  <span className="text-[11px] font-mono text-dim">
+                  <span className="text-[11px] font-mono text-[#565A63] font-bold">
                     {new Date(n.created_at).toLocaleString("ko-KR", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
                   </span>
                 </div>
               </div>
 
-              <h2 className="text-[16px] font-bold text-tx drop-shadow-sm flex items-center gap-2">
-                {isCorrection && <span className="text-red-400">⚠️</span>}
+              <h2 className="text-[15.5px] font-black text-white flex items-center gap-2 tracking-tight font-sans">
+                {isCorrection && <span className="text-[#F04452]">⚠️</span>}
                 {n.title}
               </h2>
 
               <div className="mt-3 text-[13px] leading-relaxed relative">
                 {isSubscribed ? (
-                  <div className="text-[#9ca3af] whitespace-pre-line border-l-2 border-accent/50 pl-3 py-1 bg-[#171b26]/50 rounded-r-md">
+                  <div className="text-[#8E939D] whitespace-pre-line border-l-2 border-[#F04452] pl-4 py-2 bg-[#05070A] rounded-r-xl font-sans font-medium">
                     {n.content}
                   </div>
                 ) : (
                   <div className="relative">
-                    <p className="text-muted/20 whitespace-pre-line blur-[5px] select-none pointer-events-none">
+                    <p className="text-[#8E939D]/20 whitespace-pre-line blur-[5px] select-none pointer-events-none font-sans">
                       {n.content || "이 찌라시 기사의 세부 내용은 프리미엄 찌라시 구독자에게만 공개됩니다.\n본문 3줄 요약 블러 처리중..."}
                     </p>
-                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#12151e]/80 backdrop-blur-[2px] rounded-lg">
+                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#05070A]/80 backdrop-blur-[2px] rounded-xl">
                       {userId ? (
                         <Link
                           href="/shop"
-                          className="flex items-center gap-2 px-5 py-2 bg-emerald-500 text-black font-bold text-[12px] rounded-md hover:bg-emerald-400 transition shadow-lg"
+                          className="flex items-center gap-2 px-5 py-2.5 bg-[#F04452] text-white font-black text-[12px] rounded-full hover:bg-[#ff5252] transition shadow-lg cursor-pointer"
                         >
                           <span>🔒</span>
                           <span>구독권 구매 후 본문 열람하기</span>
                         </Link>
                       ) : (
-                        <button disabled className="px-4 py-2 bg-[#1c202c] text-dim border border-border rounded-lg font-medium text-[12px]">
+                        <button disabled className="px-4 py-2 bg-[#161B22] text-[#8E939D] border border-[#212631] rounded-full font-bold text-[12px]">
                           로그인 후 구독 가능
                         </button>
                       )}
@@ -228,8 +219,7 @@ export default function NewsPage() {
         })}
 
         {newsList.length === 0 && (
-          <div className="text-center py-12 text-muted border border-dashed border-[#222736] rounded-xl">
-            <span className="text-2xl block mb-2">📡</span>
+          <div className="text-center py-12 text-[#8E939D] border border-dashed border-[#212631] rounded-3xl bg-[#0E1117] font-mono">
             새로운 AI 뉴스를 기다리는 중입니다... (엔진 5분 주기 발행)
           </div>
         )}
@@ -237,3 +227,4 @@ export default function NewsPage() {
     </div>
   );
 }
+

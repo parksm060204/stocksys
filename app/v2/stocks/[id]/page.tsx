@@ -96,14 +96,15 @@ export default async function StockDetailV2Page({
 
   // 관련 뉴스
   const { data: newsData } = await supabase
-    .from("news_v2")
+    .from("market_news")
     .select("*")
     .or(
-      `sector.eq.${stock.sector},headline.ilike.%${stock.name}%,content.ilike.%${stock.name}%`
+      `target_sector.eq.${stock.sector},headline.ilike.%${stock.name}%,summary.ilike.%${stock.name}%`
     )
     .order("created_at", { ascending: false })
     .limit(8);
   const relatedNews = newsData || [];
+
 
   const messages: never[] = [];
 

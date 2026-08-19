@@ -1,3 +1,11 @@
+export interface PriceHistoryPoint {
+  id: string;
+  stock_id: string;
+  price: number;
+  volume: number;
+  created_at: string;
+}
+
 export type MarketId =
   | "domestic"
   | "overseas"

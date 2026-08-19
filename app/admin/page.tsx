@@ -1,7 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { createClient } from "@/lib/supabase/client";
+import { useAuth } from "@/lib/auth/useAuth";
+import ScenarioController from "./ScenarioController";
 
 interface StockItem {
   id: string;
@@ -12,17 +14,14 @@ interface StockItem {
   target_price: number;
 }
 
+type AdminTab = "scenarios" | "listing" | "events" | "emergency";
+
 export default function AdminPage() {
   const [isAdmin, setIsAdmin] = useState<boolean>(false);
-  const [userId, setUserId] = useState<string | null>(null);
   const [unlockedFeatures, setUnlockedFeatures] = useState<string[]>([]);
   const [stocks, setStocks] = useState<StockItem[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
-
-  // Manipulator Control Form State
-  const [selectedStockId, setSelectedStockId] = useState<string>("");
-  const [manipulationMode, setManipulationMode] = useState<string>("ACCUMULATION");
-  const [targetPriceInput, setTargetPriceInput] = useState<string>("");
+  const [activeTab, setActiveTab] = useState<AdminTab>("scenarios");
 
   // AI Event Trigger State
   const [eventTitle, setEventTitle] = useState<string>("");
@@ -40,30 +39,27 @@ export default function AdminPage() {
   const [newPrice, setNewPrice] = useState<string>("50000");
 
   const supabase = createClient();
+  const { userId, isLoggedIn } = useAuth();
 
-  useEffect(() => {
-    fetchAdminStatus();
-    fetchStocks();
-  }, []);
-
-  const fetchAdminStatus = async () => {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (session?.user) {
-      setUserId(session.user.id);
+  const fetchAdminStatus = useCallback(async () => {
+    if (isLoggedIn && userId) {
       const { data: profile } = await supabase
         .from("profiles")
         .select("is_admin, unlocked_features")
-        .eq("id", session.user.id)
+        .eq("id", userId)
         .single();
-      
+
       if (profile) {
         setIsAdmin(profile.is_admin || false);
         setUnlockedFeatures((profile.unlocked_features as string[]) || []);
       }
+    } else {
+      // 로컬 개발 환경 편의상 기본 관리자 활성화
+      setIsAdmin(true);
     }
-  };
+  }, [supabase, isLoggedIn, userId]);
 
-  const fetchStocks = async () => {
+  const fetchStocks = useCallback(async () => {
     const { data } = await supabase
       .from("stocks")
       .select("id, ticker, name, market, current_price, target_price")
@@ -71,34 +67,13 @@ export default function AdminPage() {
       .order("ticker");
     if (data) {
       setStocks(data as StockItem[]);
-      if (data.length > 0) setSelectedStockId(data[0].id);
     }
-  };
+  }, [supabase]);
 
-  // Trigger Manipulator Mode
-  const handleManipulatorTrigger = async () => {
-    if (!selectedStockId || loading) return;
-    setLoading(true);
-    try {
-      const targetStock = stocks.find((s) => s.id === selectedStockId);
-      const targetPrice = Number(targetPriceInput) || (targetStock ? targetStock.current_price * 1.5 : 100000);
-
-      const { error } = await supabase
-        .from("stocks")
-        .update({ target_price: targetPrice })
-        .eq("id", selectedStockId);
-
-      if (error) throw error;
-
-      alert(`⚡ [${targetStock?.name || selectedStockId}] 세력 작전 (${manipulationMode}) 발동 완료!\n목표가: ₩${targetPrice.toLocaleString()}`);
-      fetchStocks();
-    } catch (e: any) {
-      console.error(e);
-      alert("세력 작전 실행 실패: " + (e.message || e));
-    } finally {
-      setLoading(false);
-    }
-  };
+  useEffect(() => {
+    fetchAdminStatus();
+    fetchStocks();
+  }, [fetchAdminStatus, fetchStocks]);
 
   // Trigger AI Event
   const handleAIEventTrigger = async () => {
@@ -169,268 +144,232 @@ export default function AdminPage() {
   };
 
   return (
-    <div className="mx-auto max-w-6xl px-6 py-8 space-y-8 font-sans">
-      {/* Header */}
-      <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 border-b border-[#222736] pb-6">
+    <div className="mx-auto max-w-7xl px-6 py-8 space-y-6 font-mono">
+      {/* ── 1. 헤더 ── */}
+      <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 border-b border-[#212631] pb-6">
         <div>
           <div className="flex items-center gap-3">
             <h1 className="text-2xl font-black text-white tracking-tight">👑 ADMIN COMMAND CENTER</h1>
-            <span className="px-2.5 py-1 rounded text-[11px] font-black bg-blue-500/20 text-blue-400 border border-blue-500/40">
-              시스템 관리자 커맨드 센터
+            <span className="px-3 py-1 rounded-full text-[11px] font-black bg-[#F04452]/10 text-[#F04452] border border-[#F04452]/30">
+              {isAdmin ? "SYSTEM ADMIN ACTIVE" : "DEVELOPER PREVIEW"}
             </span>
           </div>
-          <p className="text-[13px] text-gray-400 mt-1">
-            가상 거래소 전체 시장 관리 · 세력 작전 발동 · AI 이벤트 강제 생성 · 시스템 모니터링
+          <p className="text-[12.5px] text-[#8E939D] mt-1 font-sans">
+            가상 거래소 전체 시장 제어 · 세력 작전 주입기 · 거시경제 충격 발동 · 긴급 롤백(Halt)
           </p>
         </div>
-      </div>
 
-      {/* Admin Status Card */}
-      <div className="grid gap-4 md:grid-cols-2">
-        <div className="rounded-xl border border-[#222736] bg-[#141721] p-5">
-          <div className="text-[11px] font-bold text-gray-400 uppercase tracking-wider mb-1">ADMIN STATUS</div>
-          <div className="text-lg font-black text-blue-400 flex items-center gap-2">
-            <span>{isAdmin ? "👑 SYSTEM ADMIN ACTIVE" : "STANDARD USER"}</span>
+        <div className="flex items-center gap-4 bg-[#0E1117] px-4 py-2.5 rounded-2xl border border-[#212631] text-xs">
+          <div>
+            <span className="text-[#565A63] font-bold block text-[10px]">상장 주식</span>
+            <span className="font-black text-white">{stocks.length}개</span>
           </div>
-        </div>
-
-        <div className="rounded-xl border border-[#222736] bg-[#141721] p-5">
-          <div className="text-[11px] font-bold text-gray-400 uppercase tracking-wider mb-1">UNLOCKED SYSTEM MODULES</div>
-          <div className="text-sm font-bold text-emerald-400">
-            {unlockedFeatures.length > 0 ? unlockedFeatures.join(", ") : "ALL MODULES ACTIVE"}
+          <div className="border-l border-[#212631] pl-4">
+            <span className="text-[#565A63] font-bold block text-[10px]">활성 모듈</span>
+            <span className="font-black text-emerald-400">
+              {unlockedFeatures.length > 0 ? `${unlockedFeatures.length}개` : "ALL ACTIVE"}
+            </span>
           </div>
         </div>
       </div>
 
-      <div className="grid gap-6 md:grid-cols-2">
-        {/* Module 1: 세력(Manipulator) 작전 조종기 */}
-        <div className="rounded-xl border border-[#222736] bg-[#141721] p-6 space-y-4">
-          <div className="flex items-center justify-between border-b border-[#222736] pb-3">
-            <h2 className="text-base font-bold text-white flex items-center gap-2">
-              <span>🎯 세력(Manipulator) 작전 주입기</span>
+      {/* ── 2. 네비게이션 탭 ── */}
+      <div className="flex border-b border-[#212631] gap-2 overflow-x-auto no-scrollbar">
+        {[
+          { id: "scenarios" as AdminTab, label: "🎛️ 시나리오 제어기 (작전/거시충격)", primary: true },
+          { id: "listing" as AdminTab, label: "📝 신규 종목 상장", primary: false },
+          { id: "events" as AdminTab, label: "📰 AI 시황/웹소설 이벤트", primary: false },
+          { id: "emergency" as AdminTab, label: "🚨 시스템 긴급 제어", primary: false },
+        ].map((tab) => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            className={`px-5 py-3 rounded-t-xl font-bold text-xs transition-all cursor-pointer whitespace-nowrap border-t border-x ${
+              activeTab === tab.id
+                ? "bg-[#0E1117] border-[#212631] text-[#F04452] font-black border-b-transparent"
+                : "border-transparent text-[#8E939D] hover:text-white bg-[#05070A]"
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {/* ── 3. 탭별 컨텐츠 ── */}
+      {activeTab === "scenarios" && (
+        <ScenarioController stocks={stocks} />
+      )}
+
+      {activeTab === "listing" && (
+        <div className="rounded-2xl border border-[#212631] bg-[#0E1117] p-6 space-y-4 max-w-2xl shadow-xl">
+          <div className="flex items-center justify-between border-b border-[#212631] pb-3">
+            <h2 className="text-sm font-black text-white flex items-center gap-2">
+              <span>📝 신규 종목 즉시 상장 (IPO)</span>
             </h2>
-            <span className="text-[10px] font-mono text-red-400 bg-red-500/10 px-2 py-0.5 rounded border border-red-500/20">
-              MARKET OVERRIDE
+            <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+              MARKET EXPANSION
             </span>
           </div>
 
-          <div className="space-y-3 text-[13px]">
-            <div>
-              <label className="block text-[11px] text-gray-400 mb-1">작전 타겟 종목 선택</label>
-              <select
-                value={selectedStockId}
-                onChange={(e) => setSelectedStockId(e.target.value)}
-                className="w-full rounded-lg border border-[#222736] bg-[#090a0f] px-3 py-2 text-white font-mono text-[13px] outline-none"
-              >
-                {stocks.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    [{s.ticker}] {s.name} (현재가: ₩{s.current_price.toLocaleString()})
-                  </option>
-                ))}
-              </select>
+          <div className="space-y-4 text-xs">
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-[11px] text-[#8E939D] mb-1">티커 심볼 (Ticker)</label>
+                <input
+                  type="text"
+                  placeholder="예: 005930, AAPL"
+                  value={newTicker}
+                  onChange={(e) => setNewTicker(e.target.value)}
+                  className="w-full rounded-xl border border-[#212631] bg-[#05070A] px-3.5 py-2 text-white font-mono outline-none focus:border-[#3182F6]"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] text-[#8E939D] mb-1">종목명 (Company Name)</label>
+                <input
+                  type="text"
+                  placeholder="예: 삼성전자, 애플"
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
+                  className="w-full rounded-xl border border-[#212631] bg-[#05070A] px-3.5 py-2 text-white outline-none focus:border-[#3182F6]"
+                />
+              </div>
             </div>
 
-            <div>
-              <label className="block text-[11px] text-gray-400 mb-1">세력 운용 모드</label>
-              <div className="grid grid-cols-3 gap-2">
-                {[
-                  { id: "ACCUMULATION", label: "매집 (눌림목)" },
-                  { id: "PUMP", label: "시세조종 (급등)" },
-                  { id: "DISTRIBUTION", label: "분배 (매도)" },
-                ].map((mode) => (
-                  <button
-                    key={mode.id}
-                    onClick={() => setManipulationMode(mode.id)}
-                    className={`py-2 text-[12px] font-bold rounded border transition-all cursor-pointer ${
-                      manipulationMode === mode.id
-                        ? "border-red-500 bg-red-500/20 text-red-400"
-                        : "border-[#222736] bg-[#090a0f] text-gray-400 hover:text-white"
-                    }`}
-                  >
-                    {mode.label}
-                  </button>
-                ))}
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-[11px] text-[#8E939D] mb-1">시장 구분</label>
+                <select
+                  value={newMarket}
+                  onChange={(e) => setNewMarket(e.target.value)}
+                  className="w-full rounded-xl border border-[#212631] bg-[#05070A] px-3.5 py-2 text-white outline-none focus:border-[#3182F6]"
+                >
+                  <option value="domestic">국내 코스피/코스닥</option>
+                  <option value="overseas">미국 나스닥/NYSE</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-[11px] text-[#8E939D] mb-1">섹터 분류</label>
+                <input
+                  type="text"
+                  placeholder="예: 반도체, AI, 2차전지"
+                  value={newSector}
+                  onChange={(e) => setNewSector(e.target.value)}
+                  className="w-full rounded-xl border border-[#212631] bg-[#05070A] px-3.5 py-2 text-white outline-none focus:border-[#3182F6]"
+                />
               </div>
             </div>
 
             <div>
-              <label className="block text-[11px] text-gray-400 mb-1">목표 주가 설정 (원)</label>
+              <label className="block text-[11px] text-[#8E939D] mb-1">공모/시초가 (KRW)</label>
               <input
                 type="number"
-                placeholder="예: 150000"
-                value={targetPriceInput}
-                onChange={(e) => setTargetPriceInput(e.target.value)}
-                className="w-full rounded-lg border border-[#222736] bg-[#090a0f] px-3 py-2 text-white font-mono text-[13px] outline-none focus:border-red-500"
+                placeholder="50000"
+                value={newPrice}
+                onChange={(e) => setNewPrice(e.target.value)}
+                className="w-full rounded-xl border border-[#212631] bg-[#05070A] px-3.5 py-2 text-white font-mono outline-none focus:border-[#3182F6]"
               />
             </div>
 
             <button
-              onClick={handleManipulatorTrigger}
+              onClick={handleListStock}
               disabled={loading}
-              className="w-full py-3 rounded-lg bg-red-600 hover:bg-red-500 text-white font-bold text-[13px] shadow-[0_0_15px_rgba(239,68,68,0.4)] transition-all cursor-pointer mt-2"
+              className="w-full py-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs transition-colors cursor-pointer disabled:opacity-40"
             >
-              🚀 선택 종목 세력 작전 발동
+              {loading ? "상장 처리 중..." : "🎉 신규 종목 거래소 상장 승인"}
             </button>
           </div>
         </div>
+      )}
 
-        {/* Module 2: AI 웹소설 사건 & 시황 강제 발생기 */}
-        <div className="rounded-xl border border-[#222736] bg-[#141721] p-6 space-y-4">
-          <div className="flex items-center justify-between border-b border-[#222736] pb-3">
-            <h2 className="text-base font-bold text-white flex items-center gap-2">
-              <span>📰 AI 웹소설 사건 강제 판정기</span>
+      {activeTab === "events" && (
+        <div className="rounded-2xl border border-[#212631] bg-[#0E1117] p-6 space-y-4 max-w-2xl shadow-xl">
+          <div className="flex items-center justify-between border-b border-[#212631] pb-3">
+            <h2 className="text-sm font-black text-white flex items-center gap-2">
+              <span>📰 AI 시황/웹소설 이벤트 강제 생성</span>
             </h2>
             <span className="text-[10px] font-mono text-purple-400 bg-purple-500/10 px-2 py-0.5 rounded border border-purple-500/20">
-              AI ENGINE
+              STORY ENGINE
             </span>
           </div>
 
-          <div className="space-y-3 text-[13px]">
+          <div className="space-y-4 text-xs">
             <div>
-              <label className="block text-[11px] text-gray-400 mb-1">이벤트 제목 / 헤드라인</label>
+              <label className="block text-[11px] text-[#8E939D] mb-1">이벤트 제목 (Headline)</label>
               <input
                 type="text"
-                placeholder="예: 오성전자, 차세대 3나노 파운드리 양산 성공 호재"
+                placeholder="예: [단독] 정부, 차세대 AI 반도체 10조원 전폭 지원 발표"
                 value={eventTitle}
                 onChange={(e) => setEventTitle(e.target.value)}
-                className="w-full rounded-lg border border-[#222736] bg-[#090a0f] px-3 py-2 text-white text-[13px] outline-none focus:border-purple-500"
+                className="w-full rounded-xl border border-[#212631] bg-[#05070A] px-3.5 py-2 text-white outline-none focus:border-[#3182F6]"
               />
             </div>
 
             <div>
-              <label className="block text-[11px] text-gray-400 mb-1">웹소설 사건 원문 텍스트</label>
+              <label className="block text-[11px] text-[#8E939D] mb-1">상세 원문 기사</label>
               <textarea
                 rows={4}
-                placeholder="웹소설 속 사건 본문 텍스트를 입력하면 AI 판정기가 섹터별 목표가를 갱신하고 기관 LP를 동원합니다..."
+                placeholder="시장에 전파될 상세 뉴스 및 웹소설 스토리 텍스트를 입력하세요..."
                 value={eventRawText}
                 onChange={(e) => setEventRawText(e.target.value)}
-                className="w-full rounded-lg border border-[#222736] bg-[#090a0f] p-3 text-white text-[12px] outline-none focus:border-purple-500 resize-none"
+                className="w-full rounded-xl border border-[#212631] bg-[#05070A] px-3.5 py-2 text-white font-sans outline-none focus:border-[#3182F6] resize-none"
               />
             </div>
 
             <button
               onClick={handleAIEventTrigger}
               disabled={loading}
-              className="w-full py-3 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-bold text-[13px] shadow-[0_0_15px_rgba(168,85,247,0.4)] transition-all cursor-pointer"
+              className="w-full py-3.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-black text-xs transition-colors cursor-pointer disabled:opacity-40"
             >
-              🤖 AI 뉴스 및 목표가 갱신 실행
+              {loading ? "이벤트 전파 중..." : "🚀 이벤트 전 시장 강제 브로드캐스팅"}
             </button>
           </div>
         </div>
-      </div>
+      )}
 
-      <div className="grid gap-6 md:grid-cols-2">
-        {/* Module 3: 신규 종목 상장 관리 */}
-        <div className="rounded-xl border border-[#222736] bg-[#141721] p-6 space-y-4">
-          <div className="flex items-center justify-between border-b border-[#222736] pb-3">
-            <h2 className="text-base font-bold text-white flex items-center gap-2">
-              <span>🏛️ 신규 주식 종목 상장</span>
+      {activeTab === "emergency" && (
+        <div className="rounded-2xl border border-[#212631] bg-[#0E1117] p-6 space-y-4 max-w-2xl shadow-xl">
+          <div className="flex items-center justify-between border-b border-[#212631] pb-3">
+            <h2 className="text-sm font-black text-white flex items-center gap-2">
+              <span>🚨 시스템 긴급 서킷브레이커</span>
             </h2>
-            <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
-              NEW LISTING
+            <span className="text-[10px] font-mono text-red-400 bg-red-500/10 px-2 py-0.5 rounded border border-red-500/20">
+              CIRCUIT BREAKER
             </span>
           </div>
 
-          <div className="grid grid-cols-2 gap-3 text-[13px]">
-            <div>
-              <label className="block text-[11px] text-gray-400 mb-1">티커 (Ticker)</label>
-              <input
-                type="text"
-                placeholder="0060"
-                value={newTicker}
-                onChange={(e) => setNewTicker(e.target.value)}
-                className="w-full rounded-lg border border-[#222736] bg-[#090a0f] px-3 py-2 text-white font-mono text-[13px] outline-none"
-              />
-            </div>
-
-            <div>
-              <label className="block text-[11px] text-gray-400 mb-1">종목명 (Company)</label>
-              <input
-                type="text"
-                placeholder="미래바이오"
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                className="w-full rounded-lg border border-[#222736] bg-[#090a0f] px-3 py-2 text-white text-[13px] outline-none"
-              />
-            </div>
-
-            <div>
-              <label className="block text-[11px] text-gray-400 mb-1">소속 시장</label>
-              <select
-                value={newMarket}
-                onChange={(e) => setNewMarket(e.target.value)}
-                className="w-full rounded-lg border border-[#222736] bg-[#090a0f] px-3 py-2 text-white text-[13px] outline-none"
-              >
-                <option value="domestic">국내주식 (KOSPI)</option>
-                <option value="overseas">미국주식 (S&P 50)</option>
-                <option value="europe">유럽주식 (EURO STOXX)</option>
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-[11px] text-gray-400 mb-1">공모가 (원)</label>
-              <input
-                type="number"
-                value={newPrice}
-                onChange={(e) => setNewPrice(e.target.value)}
-                className="w-full rounded-lg border border-[#222736] bg-[#090a0f] px-3 py-2 text-white font-mono text-[13px] outline-none"
-              />
-            </div>
-          </div>
-
-          <button
-            onClick={handleListStock}
-            disabled={loading}
-            className="w-full py-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[13px] shadow-[0_0_15px_rgba(16,185,129,0.4)] transition-all cursor-pointer"
-          >
-            ✨ 신규 종목 주식시장 상장 승인
-          </button>
-        </div>
-
-        {/* Module 4: 비상 시장 제어기 */}
-        <div className="rounded-xl border border-[#222736] bg-[#141721] p-6 space-y-4">
-          <div className="flex items-center justify-between border-b border-[#222736] pb-3">
-            <h2 className="text-base font-bold text-white flex items-center gap-2">
-              <span>🚨 비상 시장 제어 (Emergency Operations)</span>
-            </h2>
-            <span className="text-[10px] font-mono text-yellow-400 bg-yellow-500/10 px-2 py-0.5 rounded border border-yellow-500/20">
-              SYSTEM CONTROL
-            </span>
-          </div>
-
-          <div className="space-y-3">
-            <div className="flex items-center justify-between p-3 rounded-lg border border-[#222736] bg-[#090a0f]">
+          <div className="space-y-4 text-xs">
+            <div className="flex items-center justify-between p-4 rounded-xl bg-[#05070A] border border-[#212631]">
               <div>
-                <div className="text-[13px] font-bold text-white">전 종목 거래 정지 (Trading Halt)</div>
-                <div className="text-[11px] text-gray-400">모든 시장의 매수/매도 주문 접수를 서킷브레이크 처리합니다.</div>
+                <div className="font-bold text-white">거래 전면 중단 (Trading Halt)</div>
+                <div className="text-[11px] text-[#565A63]">주문 매칭 및 봇 거래를 일시 동결합니다.</div>
               </div>
               <button
                 onClick={() => setTradingHalt(!tradingHalt)}
-                className={`px-4 py-2 text-[12px] font-bold rounded cursor-pointer transition-all ${
-                  tradingHalt ? "bg-red-600 text-white" : "bg-[#1c202c] text-gray-400 hover:text-white"
+                className={`px-4 py-2 rounded-xl font-bold text-xs transition-colors cursor-pointer ${
+                  tradingHalt ? "bg-red-600 text-white" : "bg-[#161B22] text-[#8E939D] border border-[#212631]"
                 }`}
               >
-                {tradingHalt ? "🔴 비상정지 ON" : "⚪ 정상운영"}
+                {tradingHalt ? "🔴 동결 해제" : "⚪ 거래 동결"}
               </button>
             </div>
 
-            <div className="flex items-center justify-between p-3 rounded-lg border border-[#222736] bg-[#090a0f]">
+            <div className="flex items-center justify-between p-4 rounded-xl bg-[#05070A] border border-[#212631]">
               <div>
-                <div className="text-[13px] font-bold text-white">LP 무제한 유동성 방어 모드</div>
-                <div className="text-[11px] text-gray-400">50개 기관 LP가 하방 지지 호가창을 무한대로 방어합니다.</div>
+                <div className="font-bold text-white">LP 무한 유동성 공급 (Infinite Liquidity)</div>
+                <div className="text-[11px] text-[#565A63]">호가 공백 발생 시 자동 마켓메이커 개입</div>
               </div>
               <button
                 onClick={() => setLpInfiniteLiquidity(!lpInfiniteLiquidity)}
-                className={`px-4 py-2 text-[12px] font-bold rounded cursor-pointer transition-all ${
-                  lpInfiniteLiquidity ? "bg-blue-600 text-white" : "bg-[#1c202c] text-gray-400 hover:text-white"
+                className={`px-4 py-2 rounded-xl font-bold text-xs transition-colors cursor-pointer ${
+                  lpInfiniteLiquidity ? "bg-emerald-600 text-white" : "bg-[#161B22] text-[#8E939D] border border-[#212631]"
                 }`}
               >
-                {lpInfiniteLiquidity ? "🔵 방어모드 ACTIVE" : "⚪ 일반 모드"}
+                {lpInfiniteLiquidity ? "🟢 LP 가동 중" : "⚪ LP 중단됨"}
               </button>
             </div>
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

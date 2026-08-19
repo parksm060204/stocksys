@@ -8,6 +8,8 @@ import StrictWidget from './StrictWidget';
 import { runOptionBotTradingEngine, LiquidationEvent, RolloverTrackerState } from "@/lib/engine/optionBotEngine";
 import RolloverTracker from "./RolloverTracker";
 
+import { useAuth } from "@/lib/auth/useAuth";
+
 interface OptionsPanelProps {
   stockId: string;
   ticker?: string;
@@ -15,7 +17,6 @@ interface OptionsPanelProps {
 
 export default function OptionsPanel({ stockId, ticker = "STOCK" }: OptionsPanelProps) {
   const [hasLicense, setHasLicense] = useState(false);
-  const [userId, setUserId] = useState<string | null>(null);
   const [options, setOptions] = useState<any[]>([]);
   const [spotPrice, setSpotPrice] = useState<number>(50000);
   const [filterClass, setFilterClass] = useState<"ALL" | "IDX" | "STK" | "FUT">("ALL");
@@ -28,16 +29,15 @@ export default function OptionsPanel({ stockId, ticker = "STOCK" }: OptionsPanel
   const [countdownStr, setCountdownStr] = useState("01:24:05");
 
   const supabase = createClient();
+  const { userId, isLoggedIn } = useAuth();
 
   useEffect(() => {
     async function fetchData() {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session?.user) {
-        setUserId(session.user.id);
+      if (isLoggedIn && userId) {
         const { data: profile } = await supabase
           .from('profiles')
           .select('is_admin, has_options_license')
-          .eq('id', session.user.id)
+          .eq('id', userId)
           .single();
         if (profile) {
           setHasLicense(profile.is_admin || profile.has_options_license || false);
@@ -90,7 +90,7 @@ export default function OptionsPanel({ stockId, ticker = "STOCK" }: OptionsPanel
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [stockId, ticker, supabase]);
+  }, [stockId, ticker, supabase, isLoggedIn, userId]);
 
   const handleTradeOption = async (option: any) => {
     if (!userId || !hasLicense) {
@@ -107,7 +107,7 @@ export default function OptionsPanel({ stockId, ticker = "STOCK" }: OptionsPanel
     if (!confirm(`[${option.ticker}] ${option.option_type} 옵션 ${qty}계약 매수\n총 결제금액: ₩${totalPrice.toLocaleString()}`)) return;
 
     try {
-      const { data, error } = await supabase.rpc('execute_option_order', {
+      const { error } = await supabase.rpc('execute_option_order', {
         p_user_id: userId,
         p_option_id: option.id,
         p_side: 'BUY',
@@ -166,18 +166,19 @@ export default function OptionsPanel({ stockId, ticker = "STOCK" }: OptionsPanel
   }
 
   return (
-    <StrictWidget title="⚡ Options Market & Gamma Walls (파생상품 시장)">
+    <StrictWidget title="OPTIONS MARKET & GAMMA WALLS (파생상품 시장)">
+
       <div className="p-4 bg-transparent space-y-4 font-sans">
         {!hasLicense ? (
           <div className="text-center py-8">
             <div className="text-3xl mb-3">🔒</div>
-            <h4 className="text-[15px] font-bold text-white mb-2">파생상품 시장 접근 권한 없음</h4>
-            <p className="text-[13px] text-gray-400 mb-4 max-w-sm mx-auto leading-relaxed">
+            <h4 className="text-[15px] font-black text-white mb-2">파생상품 시장 접근 권한 없음</h4>
+            <p className="text-[12.5px] text-[#8E939D] mb-4 max-w-sm mx-auto leading-relaxed">
               기관들의 옵션 헷징 수급, Gamma Wall 및 감마 스퀴즈에 접근하려면 파생상품 옵션 거래 자격증이 필요합니다.
             </p>
             <Link 
               href="/shop" 
-              className="inline-flex items-center justify-center rounded bg-[#3182F6] px-5 py-2.5 text-[13px] font-bold text-white hover:bg-[#2b72d6] transition-colors"
+              className="inline-flex items-center justify-center rounded-full bg-[#F04452] px-6 py-2.5 text-[13px] font-black text-white hover:bg-[#ff5252] transition-colors shadow-lg cursor-pointer"
             >
               상점에서 자격증 해금하기
             </Link>
@@ -185,22 +186,22 @@ export default function OptionsPanel({ stockId, ticker = "STOCK" }: OptionsPanel
         ) : (
           <div>
             {/* 1. HTS D-DAY EXPIRATION COUNTDOWN BANNER */}
-            <div className="mb-4 p-3.5 rounded-lg border-2 border-red-500/80 bg-red-950/40 text-white flex flex-col sm:flex-row items-center justify-between gap-3 shadow-[0_0_20px_rgba(239,68,68,0.3)] animate-pulse">
-              <div className="flex items-center gap-2.5">
-                <span className="text-xl">⚠️</span>
+            <div className="mb-4 p-4 rounded-2xl border border-[#F04452]/50 bg-[#F04452]/10 text-white flex flex-col sm:flex-row items-center justify-between gap-3 shadow-[0_0_20px_rgba(240,68,82,0.25)] animate-pulse">
+              <div className="flex items-center gap-3">
+                <div className="w-2.5 h-2.5 rounded-full bg-[#F04452] animate-ping shrink-0" />
                 <div>
-                  <div className="text-[13px] font-black text-red-400 uppercase tracking-wider">
+                  <div className="text-[13px] font-black text-[#F04452] uppercase tracking-wider font-mono">
                     D-DAY 옵션 만기일 비상 결제령
                   </div>
-                  <div className="text-[11px] text-gray-300">
+                  <div className="text-[11.5px] text-[#8E939D] font-medium">
                     만기 잔여 시간에 따라 Greeks 감마 폭발 및 강제 반대매매(Liquidation)가 일어납니다.
                   </div>
                 </div>
               </div>
 
-              <div className="shrink-0 flex items-center gap-2 bg-black/60 px-3.5 py-1.5 rounded border border-red-500/50 font-mono">
-                <span className="text-[11px] text-red-400 font-bold">만기 마감 남은 시간:</span>
-                <span className="text-lg font-black text-amber-300 tracking-wider tabular-nums">
+              <div className="shrink-0 flex items-center gap-2 bg-[#05070A] px-4 py-2 rounded-xl border border-[#F04452]/40 font-mono">
+                <span className="text-[11px] text-[#F04452] font-extrabold">만기 마감 남은 시간:</span>
+                <span className="text-base font-black text-white tracking-wider tabular-nums">
                   {countdownStr}
                 </span>
               </div>
@@ -216,41 +217,41 @@ export default function OptionsPanel({ stockId, ticker = "STOCK" }: OptionsPanel
 
             {/* 3. GAMMA SQUEEZE ALERT BANNER */}
             {gammaSqueezeNotice && (
-              <div className="mb-4 p-3 rounded-lg border border-[#FF453A]/40 bg-[#FF453A]/10 text-[#FF453A] font-bold text-[12px] flex items-center justify-between">
+              <div className="mb-4 p-3.5 rounded-xl border border-[#F04452]/50 bg-[#F04452]/15 text-[#F04452] font-black text-[12px] flex items-center justify-between font-mono">
                 <div className="flex items-center gap-2">
                   <span>🔥 GAMMA SQUEEZE ALERT:</span>
                   <span>기관 딜러 델타 매수로 인해 현물 주가 폭등 유발 중!</span>
                 </div>
-                <span className="text-[10px] bg-[#FF453A]/20 px-2 py-0.5 rounded font-mono">WAG THE DOG</span>
+                <span className="text-[10px] bg-[#F04452]/30 px-2.5 py-0.5 rounded-full border border-[#F04452]/50">WAG THE DOG</span>
               </div>
             )}
 
             {/* 4. LIQUIDATION TRADE FEED NOTIFICATION */}
             {liquidations.length > 0 && (
-              <div className="mb-4 p-3 rounded-lg border border-purple-500/40 bg-purple-950/30 space-y-1.5">
-                <div className="text-[11px] font-black text-purple-300 flex items-center gap-1.5 uppercase">
-                  <span>🚨</span>
+              <div className="mb-4 p-3.5 rounded-xl border border-[#3182F6]/40 bg-[#3182F6]/10 space-y-2 font-mono">
+                <div className="text-[11px] font-black text-[#3182F6] flex items-center gap-2 uppercase tracking-wide">
+                  <span className="w-2 h-2 rounded-full bg-[#3182F6] animate-pulse" />
                   <span>기관 포지션 반대매매 / 마진콜 체결 리포트</span>
                 </div>
-                <div className="flex flex-wrap gap-2 text-[11px] font-mono">
+                <div className="flex flex-wrap gap-2 text-[11px]">
                   {liquidations.slice(0, 3).map((liq) => (
-                    <div key={liq.id} className="bg-purple-900/50 border border-purple-500/50 px-2.5 py-1 rounded text-purple-200 flex items-center gap-1.5">
-                      <span className="font-bold text-amber-300">[{liq.type}]</span>
+                    <div key={liq.id} className="bg-[#0E1117] border border-[#3182F6]/40 px-3 py-1 rounded-xl text-white flex items-center gap-2">
+                      <span className="font-extrabold text-[#F04452]">[{liq.type}]</span>
                       <span>{liq.ticker}</span>
                       <span className="font-black text-white">{liq.quantity}계약</span>
-                      <span className="text-purple-400">@ ₩{liq.price.toLocaleString()}</span>
+                      <span className="text-[#8E939D]">@ ₩{liq.price.toLocaleString()}</span>
                     </div>
                   ))}
                 </div>
               </div>
             )}
 
-            {/* 5. CATEGORY FILTER BAR */}
-            <div className="flex items-center gap-2 mb-3 pb-2 border-b border-[#222736] text-[11px] font-bold font-mono">
+            {/* 5. CATEGORY FILTER BAR (Robinhood Segmented Pills) */}
+            <div className="flex items-center gap-2 mb-4 pb-3 border-b border-[#212631] text-[12px] font-black font-mono">
               <button
                 onClick={() => setFilterClass("ALL")}
-                className={`px-3 py-1 rounded transition-all cursor-pointer ${
-                  filterClass === "ALL" ? "bg-[#3182F6] text-white" : "bg-[#141721] text-gray-400 hover:text-white"
+                className={`px-3.5 py-1.5 rounded-xl transition-all cursor-pointer ${
+                  filterClass === "ALL" ? "bg-[#F04452] text-white shadow-[0_0_10px_rgba(240,68,82,0.3)]" : "bg-[#161B22] text-[#8E939D] hover:text-white"
                 }`}
               >
                 전체 (ALL)
@@ -258,50 +259,50 @@ export default function OptionsPanel({ stockId, ticker = "STOCK" }: OptionsPanel
 
               <button
                 onClick={() => setFilterClass("IDX")}
-                className={`px-3 py-1 rounded transition-all cursor-pointer ${
-                  filterClass === "IDX" ? "bg-[#3182F6] text-white" : "bg-[#141721] text-gray-400 hover:text-white"
+                className={`px-3.5 py-1.5 rounded-xl transition-all cursor-pointer ${
+                  filterClass === "IDX" ? "bg-[#F04452] text-white shadow-[0_0_10px_rgba(240,68,82,0.3)]" : "bg-[#161B22] text-[#8E939D] hover:text-white"
                 }`}
               >
-                📈 지수 (IDX)
+                지수 (IDX)
               </button>
 
               <button
                 onClick={() => setFilterClass("STK")}
-                className={`px-3 py-1 rounded transition-all cursor-pointer ${
-                  filterClass === "STK" ? "bg-[#3182F6] text-white" : "bg-[#141721] text-gray-400 hover:text-white"
+                className={`px-3.5 py-1.5 rounded-xl transition-all cursor-pointer ${
+                  filterClass === "STK" ? "bg-[#F04452] text-white shadow-[0_0_10px_rgba(240,68,82,0.3)]" : "bg-[#161B22] text-[#8E939D] hover:text-white"
                 }`}
               >
-                🏢 개별주 (STK)
+                개별주 (STK)
               </button>
 
               <button
                 onClick={() => setFilterClass("FUT")}
-                className={`px-3 py-1 rounded transition-all cursor-pointer ${
-                  filterClass === "FUT" ? "bg-[#3182F6] text-white" : "bg-[#141721] text-gray-400 hover:text-white"
+                className={`px-3.5 py-1.5 rounded-xl transition-all cursor-pointer ${
+                  filterClass === "FUT" ? "bg-[#F04452] text-white shadow-[0_0_10px_rgba(240,68,82,0.3)]" : "bg-[#161B22] text-[#8E939D] hover:text-white"
                 }`}
               >
-                🛢️ 선물 (FUT)
+                선물 (FUT)
               </button>
             </div>
             
             {/* 6. OPTIONS CONTRACTS TABLE WITH ITM / OTM VISUAL SHIFT */}
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-[12px]">
+            <div className="overflow-x-auto rounded-2xl border border-[#212631] bg-[#0E1117]">
+              <table className="w-full text-left text-[12.5px] font-mono border-collapse">
                 <thead>
-                  <tr className="border-b border-[#222736] text-gray-500 font-mono text-[11px]">
-                    <th className="py-2.5 font-semibold">표준 티커 (Ticker)</th>
-                    <th className="py-2.5 font-semibold">구분</th>
-                    <th className="py-2.5 font-semibold text-right">행사가 (Strike)</th>
-                    <th className="py-2.5 font-semibold text-right">프리미엄</th>
-                    <th className="py-2.5 font-semibold text-right">미결제약정 (OI)</th>
-                    <th className="py-2.5 font-semibold text-center">행사 상태</th>
-                    <th className="py-2.5 font-semibold text-center">주문</th>
+                  <tr className="border-b border-[#212631] text-[#8E939D] text-[11px] font-extrabold uppercase bg-[#090B0F]">
+                    <th className="py-3 px-4 border-none">표준 티커 (Ticker)</th>
+                    <th className="py-3 px-4 border-none">구분</th>
+                    <th className="py-3 px-4 border-none text-right">행사가 (Strike)</th>
+                    <th className="py-3 px-4 border-none text-right">프리미엄</th>
+                    <th className="py-3 px-4 border-none text-right">미결제약정 (OI)</th>
+                    <th className="py-3 px-4 border-none text-center">행사 상태</th>
+                    <th className="py-3 px-4 border-none text-center">주문</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-[#222736]">
+                <tbody className="divide-y divide-[#212631]">
                   {filteredOptions.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="py-6 text-center text-gray-500 text-[12px]">
+                      <td colSpan={7} className="py-8 text-center text-[#8E939D] text-[12px]">
                         해당 카테고리의 옵션 계약이 없습니다.
                       </td>
                     </tr>
@@ -319,65 +320,65 @@ export default function OptionsPanel({ stockId, ticker = "STOCK" }: OptionsPanel
                       return (
                         <tr 
                           key={opt.id} 
-                          className={`transition-colors ${
+                          className={`transition-colors hover:bg-[#161B22] border-b border-[#212631] last:border-none ${
                             isITM 
-                              ? "bg-emerald-950/20 border-l-2 border-emerald-500" 
+                              ? "bg-[#F04452]/5 border-l-4 border-l-[#F04452]" 
                               : isOTM 
-                              ? "opacity-60 hover:opacity-100" 
-                              : "bg-amber-950/20 border-l-2 border-amber-500"
+                              ? "opacity-70 hover:opacity-100" 
+                              : "bg-[#3182F6]/5 border-l-4 border-l-[#3182F6]"
                           }`}
                         >
-                          <td className="py-2.5 font-mono text-[11px] font-bold text-white">
+                          <td className="py-3 px-4 border-none text-[11.5px] font-extrabold text-white">
                             {opt.ticker || `STK-${ticker}-${opt.option_type[0]}${opt.strike_price}`}
                           </td>
 
-                          <td className="py-2.5">
-                            <span className={`px-1.5 py-0.5 rounded text-[10px] font-black ${
-                              isCall ? 'bg-red-500/20 text-[#FF453A]' : 'bg-blue-500/20 text-[#0A84FF]'
+                          <td className="py-3 px-4 border-none">
+                            <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-black border ${
+                              isCall ? 'bg-[#F04452]/15 text-[#F04452] border-[#F04452]/30' : 'bg-[#3182F6]/15 text-[#3182F6] border-[#3182F6]/30'
                             }`}>
                               {opt.option_type}
                             </span>
                           </td>
 
-                          <td className="py-2.5 font-mono text-right font-medium text-white tabular-nums">
+                          <td className="py-3 px-4 border-none text-right font-black text-white tabular-nums">
                             ₩{strike.toLocaleString()}
                           </td>
 
-                          <td className="py-2.5 font-mono text-right font-bold text-amber-300 tabular-nums">
+                          <td className="py-3 px-4 border-none text-right font-black text-[#F04452] tabular-nums">
                             ₩{Number(opt.current_price || 1000).toLocaleString()}
                           </td>
 
-                          <td className="py-2.5 font-mono text-right text-white tabular-nums">
+                          <td className="py-3 px-4 border-none text-right text-white tabular-nums font-bold">
                             {fmtVolume(opt.open_interest)}
                             {isGammaWall && (
-                              <span className="ml-1.5 px-1 py-0.2 text-[9px] bg-yellow-500/20 text-yellow-400 font-black rounded border border-yellow-500/40">
-                                🔥 WALL
+                              <span className="ml-1.5 px-2 py-0.5 text-[9px] bg-[#F04452]/15 text-[#F04452] font-black rounded-full border border-[#F04452]/40">
+                                WALL
                               </span>
                             )}
                           </td>
 
-                          <td className="py-2.5 text-center font-bold text-[11px]">
+                          <td className="py-3 px-4 border-none text-center font-bold text-[11px]">
                             {isITM && (
-                              <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/40">
-                                🟢 ITM (내가격)
+                              <span className="px-2.5 py-0.5 rounded-full bg-[#F04452]/15 text-[#F04452] border border-[#F04452]/30 font-black">
+                                ITM (내가격)
                               </span>
                             )}
                             {isATM && (
-                              <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 animate-pulse">
-                                🎯 ATM (핀 위치)
+                              <span className="px-2.5 py-0.5 rounded-full bg-white/10 text-white border border-white/30 animate-pulse font-black">
+                                ATM (핀 위치)
                               </span>
                             )}
                             {isOTM && (
-                              <span className="px-2 py-0.5 rounded bg-gray-800/60 text-gray-500 border border-gray-700">
-                                🗑️ OTM (휴지통)
+                              <span className="px-2.5 py-0.5 rounded-full bg-[#161B22] text-[#8E939D] border border-[#212631]">
+                                OTM (외가격)
                               </span>
                             )}
                           </td>
 
-                          <td className="py-2.5 text-center">
+                          <td className="py-3 px-4 border-none text-center">
                             <button
                               onClick={() => handleTradeOption(opt)}
-                              className="px-2.5 py-1 text-[11px] font-bold bg-[#3182F6] hover:bg-[#2b72d6] text-white rounded transition-all cursor-pointer"
+                              className="px-3 py-1 text-[11px] font-black bg-[#F04452] hover:bg-[#ff5252] text-white rounded-full transition-all cursor-pointer shadow-md"
                             >
                               매수
                             </button>
@@ -395,3 +396,4 @@ export default function OptionsPanel({ stockId, ticker = "STOCK" }: OptionsPanel
     </StrictWidget>
   );
 }
+

@@ -1,0 +1,78 @@
+# 무명 거래소 — VM 자체 PostgreSQL + PostgREST 스택
+# Ubuntu 22.04+ / Docker / Docker Compose
+
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: moo_DB
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-moo_app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me_in_prod}
+      POSTGRES_DB: ${POSTGRES_DB:-moo}
+      TZ: Asia/Seoul
+    ports:
+      - "127.0.0.1:5432:5432"   # 로컬 전용. 외부 노출 금지
+    volumes:
+      - ./data:/var/lib/postgresql/data
+      - ./sql/init:/docker-entrypoint-initdb.d:ro
+      - ./sql/runtime:/runtime:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-moo_app} -d ${POSTGRES_DB:-moo}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # PostgREST: Postgres 를 REST API 로 노출 (Supabase SDK 호환)
+  # - anon role 로 동작. RLS 가 그대로 적용됨.
+  # - 엔진/프론트는 NEXT_PUBLIC_SUPABASE_URL=http://VM_IP:3001 로 교체
+  # - SUPABASE_ANON_KEY 는 PostgREST 의 JWT anonymous claim
+  rest:
+    image: postgrest/postgrest:v12.2.0
+    container_name: moo_rest
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    # 포트를 외부에 노출하지 않음 — Nginx 프록시를 통해서만 접근
+    environment:
+      PGRST_DB_URI: postgres://${POSTGRES_USER:-moo_app}:${POSTGRES_PASSWORD:-change_me_in_prod}@db:5432/${POSTGRES_DB:-moo}
+      PGRST_DB_SCHEMA: public
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_JWT_SECRET: ${PGRST_JWT_SECRET:-super_secret_jwt_change_me}
+      PGRST_DB_USE_LEGACY_GUESSES: "false"
+      PGRST_LOG_LEVEL: info
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 3000 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # Nginx 역방향 프록시: Supabase JS SDK 호환 경로 리라이팅
+  # /rest/v1/* → PostgREST 루트로 리라이팅
+  # /auth/v1/* → 더미 응답 (getUser 에러 방지)
+  nginx:
+    image: nginx:alpine
+    container_name: moo_nginx
+    restart: unless-stopped
+    depends_on:
+      - rest
+    ports:
+      - "0.0.0.0:3001:3000"    # 프론트/엔진이 접근할 REST API
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+
+  # (선택) 관리용 Adminer 웹 UI — http://VM_IP:8080
+  # 운영 안정화 후엔 닫는 걸 권장
+  adminer:
+    image: adminer:4-standalone
+    container_name: moo_adminer
+    restart: unless-stopped
+    depends_on:
+      - db
+    ports:
+      - "127.0.0.1:8080:8080"   # SSH 터널로만 접근 권장
+
+  # (선택) egress 절감용 pg_bouncer 등 추가 가능

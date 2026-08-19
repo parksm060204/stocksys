@@ -2,103 +2,106 @@
 
 import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
-import type { User } from "@supabase/supabase-js";
+import { useAuth } from "@/lib/auth/useAuth";
+import { ThemeToggle } from "./ThemeToggle";
 
 export default function TopBar() {
   const [now, setNow] = useState<Date | null>(null);
-  const [user, setUser] = useState<User | null>(null);
   const [cash, setCash] = useState<number | null>(null);
 
   const supabase = createClient();
+  const { user, isLoggedIn, signIn, signOut } = useAuth();
 
   useEffect(() => {
-    const fetchProfile = async (userId: string) => {
-      const { data } = await supabase.from('profiles').select('cash').eq('id', userId).single();
-      if (data) setCash(data.cash);
-    };
+    let cancelled = false;
+    if (isLoggedIn && user?.id) {
+      supabase.from('profiles').select('cash').eq('id', user.id).single().then(({ data }: { data: { cash: number } | null }) => {
+        if (!cancelled && data) setCash(data.cash);
+      });
+    } else {
+      setCash(null);
+    }
+    return () => { cancelled = true; };
+  }, [isLoggedIn, user?.id, supabase]);
 
-    supabase.auth.getSession().then(({ data }: { data: { session: { user: { id: string } } | null } }) => {
-      setUser((data.session?.user ?? null) as User | null);
-      if (data.session?.user) fetchProfile(data.session.user.id);
-    });
-
-    const { data: listener } = supabase.auth.onAuthStateChange((_event: unknown, session: { user: { id: string } } | null) => {
-      setUser((session?.user ?? null) as User | null);
-      if (session?.user) fetchProfile(session.user.id);
-      else setCash(null);
-    });
-
+  useEffect(() => {
     const update = () => setNow(new Date());
     const t = setInterval(update, 1000);
     const id = setTimeout(update, 0);
     return () => {
       clearInterval(t);
       clearTimeout(id);
-      listener?.subscription.unsubscribe();
     };
-  }, [supabase]);
+  }, []);
 
   const timeStr = now
     ? now.toLocaleTimeString("ko-KR", {
+        timeZone: "Asia/Seoul",
         hour: "2-digit",
         minute: "2-digit",
         second: "2-digit",
       })
     : "--:--:--";
 
-  const login = () => {
-    supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: { redirectTo: `${location.origin}/auth/callback` },
-    });
-  };
-
-  const logout = () => {
-    supabase.auth.signOut();
-  };
-
   return (
-    <header className="flex h-14 items-center justify-between border-b border-border bg-panel px-6">
-      <div className="flex items-center gap-4">
-        {/* Market status */}
+    <header className="flex h-14 items-center justify-between border-b border-[#212631] bg-[#090B0F] px-6">
+      {/* Search Input Bar (Robinhood Command Palette Style) */}
+      <div className="flex items-center gap-3">
+        <div className="relative w-64 md:w-80">
+          <svg className="absolute left-3 top-2.5 h-4 w-4 text-[#8E939D]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+          </svg>
+          <input
+            type="text"
+            placeholder="종목명, 티커 검색 (예: AAPL, 삼성전자)"
+            className="w-full rounded-full border border-[#212631] bg-[#161B22] pl-9 pr-4 py-1.5 text-[12px] text-white placeholder:text-[#565A63] outline-none focus:border-[#F04452] focus:ring-1 focus:ring-[#F04452] transition-all"
+          />
+        </div>
+        <div className="hidden lg:flex items-center gap-2 rounded-full border border-[#212631] bg-[#12161F] px-3 py-1 text-[11px] font-mono text-[#8E939D]">
+          <span className="inline-block h-2 w-2 rounded-full bg-[#F04452] animate-pulse" />
+          <span>실시간 봇 시뮬레이션 가동 중</span>
+        </div>
       </div>
 
-      <div className="flex items-center gap-5">
-        <span className="font-mono text-[13px] tabular-nums text-muted">
+      <div className="flex items-center gap-3 md:gap-4">
+        {/* 테마 감지 및 토글 드롭다운 */}
+        <ThemeToggle />
+
+        <span className="font-mono text-[12px] tabular-nums text-[#8E939D] bg-[#161B22] px-2.5 py-1 rounded-md border border-[#212631]">
           {timeStr}
         </span>
 
-        {user ? (
+        {isLoggedIn && user ? (
           <div className="flex items-center gap-3">
-            {user.user_metadata?.avatar_url && (
+            {user.image && (
               /* eslint-disable-next-line @next/next/no-img-element */
               <img
-                src={user.user_metadata.avatar_url}
+                src={user.image}
                 alt=""
-                className="h-7 w-7 rounded-full"
+                className="h-7 w-7 rounded-full border border-[#F04452]/40"
               />
             )}
             <div className="flex flex-col items-end">
-              <span className="text-[13px] font-medium text-tx leading-none">
-                {user.user_metadata?.full_name ?? user.email}
+              <span className="text-[13px] font-bold text-white leading-none">
+                {user.name ?? user.email}
               </span>
               {cash !== null && (
-                <span className="text-[11px] text-up font-mono mt-1">
+                <span className="text-[11px] text-[#F04452] font-mono font-bold mt-1">
                   ₩{cash.toLocaleString()}
                 </span>
               )}
             </div>
             <button
-              onClick={logout}
-              className="rounded-lg border border-border px-3 py-1.5 text-[12px] text-dim transition-colors hover:border-up/40 hover:text-up"
+              onClick={() => signOut()}
+              className="rounded-xl border border-[#212631] bg-[#161B22] px-3 py-1.5 text-[12px] font-medium text-[#8E939D] transition-all hover:border-[#3182F6]/40 hover:text-[#3182F6]"
             >
               로그아웃
             </button>
           </div>
         ) : (
           <button
-            onClick={login}
-            className="rounded-lg border border-border bg-panel2 px-4 py-1.5 text-[13px] font-medium text-tx transition-colors hover:border-accent/50 hover:text-accent"
+            onClick={() => signIn()}
+            className="rounded-xl border border-[#F04452]/40 bg-[#F04452]/10 px-4 py-1.5 text-[13px] font-bold text-[#F04452] transition-all hover:bg-[#F04452] hover:text-white shadow-[0_0_12px_rgba(240,68,82,0.2)]"
           >
             Google 로그인
           </button>
@@ -107,3 +110,5 @@ export default function TopBar() {
     </header>
   );
 }
+
+

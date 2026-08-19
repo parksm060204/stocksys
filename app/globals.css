@@ -1,21 +1,113 @@
-@import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css");
-@import url("https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,100..900;1,100..900&display=swap");
+@import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard-gov.min.css");
 @import "tailwindcss";
 
+/* ==========================================================================
+   Theme Variables (Default: Dark Mode)
+   ========================================================================== */
+
 :root {
-  --bg-base: #0C0E12;
-  --bg-panel: #151821;
-  --bg-panel-2: #1C1C1E;
+  --bg-base: #05070A;
+  --bg-panel: #0E1117;
+  --bg-panel-2: #161B22;
+  --bg-panel-3: #090B0F;
   --bg-hover: rgba(255, 255, 255, 0.05);
-  --border: #222736;
+  --border: #212631;
   --border-soft: rgba(255, 255, 255, 0.08);
-  --text: #F3F4F6;
-  --text-muted: #9CA3AF;
-  --text-dim: #6B7280;
-  --up: #F04452; /* Toss Red */
-  --down: #3182F6; /* Toss Blue */
-  --accent: #3182F6;
+  --text: #F4F5F6;
+  --text-main: #FFFFFF;
+  --text-muted: #8E939D;
+  --text-sub: #C1C7D0;
+  --text-dim: #565A63;
+  --up: #F04452; /* 상승 = 빨강 (한국 표준) */
+  --down: #3182F6; /* 하락 = 파랑 (한국 표준) */
+  --ask: #3182F6; /* 매도호가 = 파랑 */
+  --bid: #F04452; /* 매수호가 = 빨강 */
+  --accent: #F04452;
   --warn: #F59E0B;
+  --scrollbar-thumb: #212631;
+  --input-bg: #161B22;
+  --card-bg-hover: #12161F;
+  color-scheme: dark;
+}
+
+/* System Preference: Light (Active when OS is Light and user hasn't explicitly chosen Dark) */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg-base: #F8FAFC;
+    --bg-panel: #FFFFFF;
+    --bg-panel-2: #F1F5F9;
+    --bg-panel-3: #F8FAFC;
+    --bg-hover: rgba(0, 0, 0, 0.04);
+    --border: #E2E8F0;
+    --border-soft: rgba(0, 0, 0, 0.08);
+    --text: #0F172A;
+    --text-main: #0F172A;
+    --text-muted: #475569;
+    --text-sub: #334155;
+    --text-dim: #94A3B8;
+    --up: #F04452;
+    --down: #3182F6;
+    --ask: #3182F6;
+    --bid: #F04452;
+    --accent: #F04452;
+    --warn: #D97706;
+    --scrollbar-thumb: #CBD5E1;
+    --input-bg: #F1F5F9;
+    --card-bg-hover: #F1F5F9;
+    color-scheme: light;
+  }
+}
+
+/* Explicit Light Mode Override */
+html[data-theme="light"] {
+  --bg-base: #F8FAFC;
+  --bg-panel: #FFFFFF;
+  --bg-panel-2: #F1F5F9;
+  --bg-panel-3: #F8FAFC;
+  --bg-hover: rgba(0, 0, 0, 0.04);
+  --border: #E2E8F0;
+  --border-soft: rgba(0, 0, 0, 0.08);
+  --text: #0F172A;
+  --text-main: #0F172A;
+  --text-muted: #475569;
+  --text-sub: #334155;
+  --text-dim: #94A3B8;
+  --up: #F04452;
+  --down: #3182F6;
+  --ask: #3182F6;
+  --bid: #F04452;
+  --accent: #F04452;
+  --warn: #D97706;
+  --scrollbar-thumb: #CBD5E1;
+  --input-bg: #F1F5F9;
+  --card-bg-hover: #F1F5F9;
+  color-scheme: light;
+}
+
+/* Explicit Dark Mode Override */
+html[data-theme="dark"] {
+  --bg-base: #05070A;
+  --bg-panel: #0E1117;
+  --bg-panel-2: #161B22;
+  --bg-panel-3: #090B0F;
+  --bg-hover: rgba(255, 255, 255, 0.05);
+  --border: #212631;
+  --border-soft: rgba(255, 255, 255, 0.08);
+  --text: #F4F5F6;
+  --text-main: #FFFFFF;
+  --text-muted: #8E939D;
+  --text-sub: #C1C7D0;
+  --text-dim: #565A63;
+  --up: #F04452;
+  --down: #3182F6;
+  --ask: #3182F6;
+  --bid: #F04452;
+  --accent: #F04452;
+  --warn: #F59E0B;
+  --scrollbar-thumb: #212631;
+  --input-bg: #161B22;
+  --card-bg-hover: #12161F;
+  color-scheme: dark;
 }
 
 @theme inline {
@@ -28,47 +120,54 @@
   --color-dim: var(--text-dim);
   --color-up: var(--up);
   --color-down: var(--down);
+  --color-ask: var(--ask);
+  --color-bid: var(--bid);
   --color-accent: var(--accent);
   --color-warn: var(--warn);
-  --color-toss-red: #F04452;
-  --color-toss-blue: #3182F6;
-  --font-sans: "Pretendard", "Montserrat", system-ui, -apple-system, sans-serif;
-  --font-mono: "JetBrains Mono", "SF Mono", "Consolas", monospace;
+  --font-sans: "Pretendard GOV", "Pretendard", var(--font-inter), -apple-system, BlinkMacSystemFont, system-ui, Roboto, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+  --font-mono: var(--font-jetbrains), "JetBrains Mono", "SF Mono", "Fira Code", monospace;
 }
 
 html,
 body {
-  background: var(--bg-base);
+  background-color: var(--bg-base);
   color: var(--text);
-  font-family: "Pretendard", "Montserrat", system-ui, -apple-system, sans-serif;
+  font-family: "Pretendard GOV", "Pretendard", var(--font-inter), -apple-system, BlinkMacSystemFont, system-ui, Roboto, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  transition: background-color 0.2s ease, color 0.2s ease;
 }
 
-/* Minimal Fintech Card Style */
+code, kbd, samp, pre, .font-mono {
+  font-family: var(--font-jetbrains), "JetBrains Mono", "SF Mono", "Fira Code", monospace;
+}
+
+/* Dynamic Robinhood Card Style */
 .bg-panel {
   background: var(--bg-panel) !important;
   border: 1px solid var(--border-soft) !important;
-  border-radius: 12px;
+  border-radius: 14px;
   transition: background-color 0.15s ease, border-color 0.15s ease;
 }
 
 .bg-panel:hover {
-  background: #181B26 !important;
-  border-color: rgba(255, 255, 255, 0.12) !important;
+  background: var(--card-bg-hover) !important;
+  border-color: var(--border) !important;
 }
 
 .fintech-card {
   background: var(--bg-panel);
   border: 1px solid var(--border-soft);
   border-radius: 14px;
-  transition: background-color 0.15s ease;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
 }
 
 .fintech-card:hover {
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--bg-hover);
+  border-color: var(--border);
 }
 
-/* Tabular nums for all dynamic figures */
+/* Tabular nums for clean financial figures */
 .tabular-nums {
   font-variant-numeric: tabular-nums;
 }
@@ -76,15 +175,15 @@ body {
 /* Custom Scrollbar */
 * {
   scrollbar-width: thin;
-  scrollbar-color: #222736 transparent;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
 }
 *::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
 }
 *::-webkit-scrollbar-thumb {
-  background: #222736;
-  border-radius: 6px;
+  background: var(--scrollbar-thumb);
+  border-radius: 4px;
 }
 *::-webkit-scrollbar-track {
   background: transparent;
@@ -97,4 +196,84 @@ body {
 }
 .no-scrollbar::-webkit-scrollbar {
   display: none;
+}
+
+@keyframes slideProgress {
+  0% { transform: translateX(-100%); }
+  50% { transform: translateX(200%); }
+  100% { transform: translateX(-100%); }
+}
+
+/* ==========================================================================
+   Adaptive Classes for Light Mode Transition
+   ========================================================================== */
+
+@media (prefers-color-scheme: light) {
+  html:not([data-theme="dark"]) .bg-\[\#05070A\],
+  html:not([data-theme="dark"]) .bg-\[\#090B0F\] {
+    background-color: var(--bg-base) !important;
+  }
+  html:not([data-theme="dark"]) .bg-\[\#0E1117\] {
+    background-color: var(--bg-panel) !important;
+  }
+  html:not([data-theme="dark"]) .bg-\[\#161B22\] {
+    background-color: var(--bg-panel-2) !important;
+  }
+  html:not([data-theme="dark"]) .bg-\[\#12161F\],
+  html:not([data-theme="dark"]) .bg-\[\#151821\] {
+    background-color: var(--card-bg-hover) !important;
+  }
+  html:not([data-theme="dark"]) .border-\[\#212631\],
+  html:not([data-theme="dark"]) .border-\[\#222736\] {
+    border-color: var(--border) !important;
+  }
+  html:not([data-theme="dark"]) .text-white {
+    color: var(--text-main) !important;
+  }
+  html:not([data-theme="dark"]) .text-\[\#F4F5F6\] {
+    color: var(--text) !important;
+  }
+  html:not([data-theme="dark"]) .text-\[\#8E939D\] {
+    color: var(--text-muted) !important;
+  }
+  html:not([data-theme="dark"]) .text-\[\#C1C7D0\] {
+    color: var(--text-sub) !important;
+  }
+  html:not([data-theme="dark"]) .text-\[\#565A63\] {
+    color: var(--text-dim) !important;
+  }
+}
+
+html[data-theme="light"] .bg-\[\#05070A\],
+html[data-theme="light"] .bg-\[\#090B0F\] {
+  background-color: var(--bg-base) !important;
+}
+html[data-theme="light"] .bg-\[\#0E1117\] {
+  background-color: var(--bg-panel) !important;
+}
+html[data-theme="light"] .bg-\[\#161B22\] {
+  background-color: var(--bg-panel-2) !important;
+}
+html[data-theme="light"] .bg-\[\#12161F\],
+html[data-theme="light"] .bg-\[\#151821\] {
+  background-color: var(--card-bg-hover) !important;
+}
+html[data-theme="light"] .border-\[\#212631\],
+html[data-theme="light"] .border-\[\#222736\] {
+  border-color: var(--border) !important;
+}
+html[data-theme="light"] .text-white {
+  color: var(--text-main) !important;
+}
+html[data-theme="light"] .text-\[\#F4F5F6\] {
+  color: var(--text) !important;
+}
+html[data-theme="light"] .text-\[\#8E939D\] {
+  color: var(--text-muted) !important;
+}
+html[data-theme="light"] .text-\[\#C1C7D0\] {
+  color: var(--text-sub) !important;
+}
+html[data-theme="light"] .text-\[\#565A63\] {
+  color: var(--text-dim) !important;
 }

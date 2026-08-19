@@ -1,37 +1,5 @@
 import { BaseAgent } from "./BaseAgent";
-
-// O(1) 원형 큐(Circular Queue) 구현
-class CircularQueue<T> {
-  private buffer: T[];
-  private head: number = 0;
-  private tail: number = 0;
-  private size: number = 0;
-  private capacity: number;
-
-  constructor(capacity: number) {
-    this.capacity = capacity;
-    this.buffer = new Array<T>(capacity);
-  }
-
-  push(item: T) {
-    this.buffer[this.tail] = item;
-    this.tail = (this.tail + 1) % this.capacity;
-    if (this.size < this.capacity) {
-      this.size++;
-    } else {
-      this.head = (this.head + 1) % this.capacity; // 가장 오래된 아이템 덮어쓰기
-    }
-  }
-
-  get(index: number): T {
-    if (index >= this.size) throw new Error("Index out of bounds");
-    return this.buffer[(this.head + index) % this.capacity] as T;
-  }
-
-  length(): number {
-    return this.size;
-  }
-}
+import { CircularQueue } from "./utils/CircularQueue";
 
 export class AdversarialAgent extends BaseAgent {
   public id = 'PROP_DESK_PREDATOR';
@@ -41,9 +9,7 @@ export class AdversarialAgent extends BaseAgent {
     super({ id: 'PROP_DESK_PREDATOR', baseWeights: { stock: 0.5, bond: 0, commodity: 0, cash: 0.5 } } as any, 50000000000); // 500억
   }
 
-  protected getTickSize(price: number): number {
-    return price >= 500000 ? 1000 : (price >= 100000 ? 500 : 100);
-  }
+
 
   public triggerManipulation(stockId: string, marketCap: number, currentPrice: number) {
     console.log(`[Adversarial] Triggered manipulation for ${stockId} (Cap: ${marketCap}, Price: ${currentPrice})`);

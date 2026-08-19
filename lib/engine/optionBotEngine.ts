@@ -200,25 +200,46 @@ export async function runOptionBotTradingEngine(stockId: string, underlyingSymbo
   const gateway = globalRealtimeGateway;
 
   for (const contract of contracts) {
+    // ─── [1. 현물 시세 연동 블랙-숄즈 가격 산출 (Spot-Driven Pricing)] ───────────
     const isCall = contract.option_type === 'CALL';
     const greeks = calculateGreeksWithExpiry(currentSpotPrice, contract.strike_price, contract.option_type, daysToExpiry);
 
-    let newPrice = contract.current_price;
+    // 현물 가격(S) 변동에 따른 옵션 이론가 및 프리미엄 동적 산출
+    const spotDiff = currentSpotPrice - contract.strike_price;
+    const intrinsicValue = isCall ? Math.max(0, spotDiff) : Math.max(0, -spotDiff);
+    const timeValue = Math.max(10, Math.round(contract.strike_price * greeks.gamma * 0.05));
+    let newPrice = Math.max(10, Math.round(intrinsicValue + timeValue));
+
     if (greeks.isOTM && isDDay) {
-      newPrice = Math.max(50, Math.round(contract.current_price * 0.7));
-    } else if (greeks.isITM) {
-      newPrice = Math.max(500, Math.round(Math.abs(currentSpotPrice - contract.strike_price) + 200));
+      newPrice = Math.max(10, Math.round(newPrice * 0.5));
     }
 
     const randomVol = Math.floor(Math.random() * 400) + 100;
     const newOI = contract.open_interest + randomVol;
-    if (isCall && newOI > 8000 && contract.strike_price >= currentSpotPrice) {
-      gammaSqueezeTriggered = true;
-      targetPriceDelta += currentSpotPrice * 0.04;
+
+    // ─── [2. 현물 연계 델타 헤징 (Spot Delta Hedging) 수량 계산] ──────────
+    const botSide: 'BUY' | 'SELL' = isCall ? 'BUY' : 'SELL';
+    const tradeQty = Math.floor(Math.random() * 200) + 50;
+    
+    // 봇이 옵션 매수/매도 체결 시 발생하는 Net Delta 노출량 계산
+    // Call 매수 = +Delta (현물 매도 헤징), Put 매수 = -Delta (현물 매수 헤징)
+    const netDeltaExposure = isCall
+      ? (botSide === 'BUY' ? tradeQty * greeks.delta : -tradeQty * greeks.delta)
+      : (botSide === 'BUY' ? -tradeQty * (1 - greeks.delta) : tradeQty * (1 - greeks.delta));
+
+    // 옵션 매매로 인한 현물 주식시장 헤징 주문 수량 (Delta Neutralizing)
+    const spotHedgingShares = Math.round(netDeltaExposure * 10);
+    if (spotHedgingShares !== 0) {
+      // 델타 헤징 수량이 양수면 현물 매도 피드백, 음수면 현물 매수 피드백
+      targetPriceDelta += (spotHedgingShares / 1000) * (currentSpotPrice * 0.0005);
     }
 
-    // ─── [FIX] FIFO 매칭엔진에 봇 주문 주입 ───────────────────────────
-    const botSide: 'BUY' | 'SELL' = isCall ? 'BUY' : 'SELL';
+    if (isCall && newOI > 8000 && contract.strike_price >= currentSpotPrice) {
+      gammaSqueezeTriggered = true;
+      targetPriceDelta += currentSpotPrice * 0.03;
+    }
+
+    // ─── [3. FIFO 매칭엔진 및 봇 주문 주입] ───────────────────────────
     const isLiqTrigger = isLiquidationPhase && Math.random() < 0.4;
     const botOrder: Order = {
       id: `BOT-${contract.id}-${Date.now()}`,
@@ -227,7 +248,7 @@ export async function runOptionBotTradingEngine(stockId: string, underlyingSymbo
       side: botSide,
       type: isLiqTrigger ? 'LIQUIDATION' : (Math.random() > 0.3 ? 'LIMIT' : 'MARKET'),
       price: isLiqTrigger ? 0 : newPrice,
-      quantity: Math.floor(Math.random() * 200) + 50,
+      quantity: tradeQty,
       filledQuantity: 0,
       timestamp: Date.now()
     };
@@ -260,7 +281,6 @@ export async function runOptionBotTradingEngine(stockId: string, underlyingSymbo
       ]);
       gateway.updateOrderBookBuffer(contract.ticker, simulatedBids, simulatedAsks);
     }
-    // ──────────────────────────────────────────────────────────────────
 
     if (isPinningPhase && greeks.isATM) {
       pinningStrike = contract.strike_price;
@@ -301,9 +321,22 @@ export async function runOptionBotTradingEngine(stockId: string, underlyingSymbo
       .eq('id', contract.id);
   }
 
+  // ─── [4. 풋-콜 파리티 무위험 차익거래 연계 (Put-Call Parity Arbitrage Linkage)] ─
+  if (contracts.length >= 2) {
+    const callOpt = contracts.find(c => c.option_type === 'CALL');
+    const putOpt = contracts.find(c => c.option_type === 'PUT');
+    if (callOpt && putOpt) {
+      const parityDiscrepancy = (callOpt.current_price - putOpt.current_price) - (currentSpotPrice - callOpt.strike_price);
+      if (Math.abs(parityDiscrepancy) > 50) {
+        // 컨버전 / 리버설 차익거래 피드백
+        targetPriceDelta += Math.sign(parityDiscrepancy) * (currentSpotPrice * 0.002);
+      }
+    }
+  }
+
   // Calculate Rollover Spread & Contango / Backwardation
   const sampleCurrPrice = contracts[0]?.current_price || 3500;
-  const sampleNextPrice = sampleCurrPrice + (Math.random() > 0.4 ? 450 : -350); // Simulated next month price
+  const sampleNextPrice = sampleCurrPrice + (Math.random() > 0.4 ? 450 : -350);
   const rolloverSpread = sampleNextPrice - sampleCurrPrice;
   const spreadState: 'CONTANGO' | 'BACKWARDATION' = rolloverSpread >= 0 ? 'CONTANGO' : 'BACKWARDATION';
 
@@ -349,7 +382,6 @@ export async function runOptionBotTradingEngine(stockId: string, underlyingSymbo
     rolloverFeeds
   };
 
-  // ─── [FIX] 롤오버 피드를 RealtimeGateway로 브로드캐스팅 ────────────
   if (gateway) {
     rolloverFeeds.forEach(feed => {
       gateway.broadcastRollover({
@@ -363,13 +395,13 @@ export async function runOptionBotTradingEngine(stockId: string, underlyingSymbo
       });
     });
   }
-  // ─────────────────────────────────────────────────────────────────
 
   if (pinningStrike !== null && isPinningPhase) {
     const pinDelta = (pinningStrike - currentSpotPrice) * 0.3;
     targetPriceDelta += pinDelta;
   }
 
+  // ─── [5. 현물 가격 피드백 루프 (Spot Price Feedback Loop Update)] ─────────────
   if (targetPriceDelta !== 0) {
     const { data: stock } = await supabase.from('stocks').select('current_price, target_price').eq('id', stockId).single();
     if (stock) {

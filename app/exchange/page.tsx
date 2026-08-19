@@ -2,8 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { createClient } from "@/lib/supabase/client";
-import Link from "next/link";
-import StrictWidget from "@/app/components/StrictWidget";
+import { useAuth } from "@/lib/auth/useAuth";
 
 interface ExchangeRate {
   currency_code: string;
@@ -50,7 +49,7 @@ export default function CurrencyExchangePage() {
     cny_balance: 0,
     gbp_balance: 0,
   });
-  const [userId, setUserId] = useState<string | null>(null);
+  const { userId, isLoggedIn } = useAuth();
 
   // Exchange Form State
   const [fromCur, setFromCur] = useState<string>("KRW");
@@ -61,7 +60,7 @@ export default function CurrencyExchangePage() {
 
   const supabase = createClient();
 
-  const fetchRatesAndBalances = useCallback(async (uid: string) => {
+  const fetchRatesAndBalances = useCallback(async (uid: string | null) => {
     // 1. Fetch rates
     const { data: ratesData } = await supabase.from("exchange_rates").select("*").order("currency_code");
     if (ratesData) {
@@ -74,6 +73,8 @@ export default function CurrencyExchangePage() {
         return ratesData;
       });
     }
+
+    if (!uid) return;
 
     // 2. Fetch user balances
     const { data: profile } = await supabase
@@ -94,34 +95,20 @@ export default function CurrencyExchangePage() {
   }, [supabase]);
 
   useEffect(() => {
-    let uid: string | null = null;
-    supabase.auth.getSession().then(({ data }: { data: { session: { user: { id: string } } | null } }) => {
-      if (data.session?.user) {
-        uid = data.session.user.id;
-        setUserId(uid);
-        fetchRatesAndBalances(uid);
-      }
-    });
-
-    const { data: listener } = supabase.auth.onAuthStateChange((_event: unknown, session: { user: { id: string } } | null) => {
-      if (session?.user) {
-        uid = session.user.id;
-        setUserId(uid);
-        fetchRatesAndBalances(uid);
-      } else {
-        setUserId(null);
-      }
-    });
+    if (isLoggedIn && userId) {
+      fetchRatesAndBalances(userId);
+    } else {
+      fetchRatesAndBalances(null);
+    }
 
     const t = setInterval(() => {
-      if (uid) fetchRatesAndBalances(uid);
+      if (isLoggedIn && userId) fetchRatesAndBalances(userId);
     }, 3000);
 
     return () => {
       clearInterval(t);
-      listener?.subscription.unsubscribe();
     };
-  }, [fetchRatesAndBalances, supabase]);
+  }, [fetchRatesAndBalances, isLoggedIn, userId]);
 
   const getBalance = (currency: string) => {
     switch (currency) {
@@ -199,44 +186,43 @@ export default function CurrencyExchangePage() {
   };
 
   return (
-    <div className="mx-auto max-w-7xl px-6 py-6 font-sans bg-[#0C0E12] min-h-screen text-[#F3F4F6]">
-      {/* Navigation */}
-      <nav className="mb-4 flex items-center gap-2 text-[12px] text-[#6B7280]">
-        <Link href="/" className="hover:text-white transition-colors">메인홈</Link>
-        <span>/</span>
-        <span className="text-[#9CA3AF]">환전소</span>
-      </nav>
-
-      {/* Header */}
-      <div className="mb-6 flex flex-col md:flex-row md:items-end md:justify-between gap-4">
+    <div className="mx-auto max-w-7xl px-6 py-6 font-sans bg-[#05070A] min-h-screen text-[#F4F5F6] space-y-6">
+      {/* Header Banner */}
+      <div className="bg-[#0E1117] border border-[#212631] p-6 rounded-3xl flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shadow-2xl">
         <div>
-          <h1 className="flex items-center gap-2.5 text-2xl font-bold text-white tracking-tight">
-            <span>💱</span>
-            실시간 다국어 환전소
+          <div className="inline-flex items-center gap-2 rounded-full border border-[#F04452]/40 bg-[#F04452]/10 px-3.5 py-1 text-[11px] font-mono font-bold text-[#F04452] mb-2">
+            <span className="inline-block h-2 w-2 rounded-full bg-[#F04452] animate-pulse" />
+            CURRENCY EXCHANGE · 실시간 환전소
+          </div>
+          <h1 className="text-xl md:text-2xl font-black text-white tracking-tight">
+            실시간 다국어 환전 시스템
           </h1>
-          <p className="mt-1 text-[13px] text-[#9CA3AF]">
-            주요 외화(USD, EUR, JPY, CNY, GBP) 및 원화(KRW) 간 실시간 환전 서비스를 제공합니다.
+          <p className="text-[12.5px] text-[#8E939D] mt-1 font-medium leading-relaxed">
+            주요 외화 (USD, EUR, JPY, CNY, GBP) 및 원화 (KRW) 간 실시간 환전 서비스를 제공합니다.
           </p>
         </div>
       </div>
 
-      <div className="grid grid-cols-12 gap-5">
+      <div className="grid grid-cols-12 gap-6">
         {/* Left Column (8): Exchange Rate Board & Wallet Balances */}
-        <div className="col-span-12 lg:col-span-8 flex flex-col gap-5">
+        <div className="col-span-12 lg:col-span-8 flex flex-col gap-6">
           
           {/* Real-time Exchange Rates Board */}
-          <StrictWidget title="📊 실시간 환율 정보 (원화 대비)">
+          <div className="bg-[#0E1117] border border-[#212631] rounded-3xl overflow-hidden shadow-2xl">
+            <div className="border-b border-[#212631] px-6 py-4 bg-[#090B0F]">
+              <h2 className="text-[14px] font-black text-white font-mono">실시간 환율 정보 (원화 대비)</h2>
+            </div>
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-[13px] border-collapse">
+              <table className="w-full text-left text-[13px] border-collapse font-mono">
                 <thead>
-                  <tr className="border-b border-white/5 text-[#9CA3AF] text-[11px] uppercase tracking-wider bg-[#0C0E12]/50">
-                    <th className="px-5 py-3.5 border-none font-semibold">통화</th>
-                    <th className="px-5 py-3.5 border-none font-semibold">통화명</th>
-                    <th className="px-5 py-3.5 border-none text-right font-semibold">환율 (KRW)</th>
-                    <th className="px-5 py-3.5 border-none text-right font-semibold">변동</th>
+                  <tr className="border-b border-[#212631] text-[#8E939D] text-[11px] uppercase tracking-wider bg-[#090B0F]">
+                    <th className="px-6 py-3.5 border-none font-bold">통화</th>
+                    <th className="px-6 py-3.5 border-none font-bold">통화명</th>
+                    <th className="px-6 py-3.5 border-none text-right font-bold">환율 (KRW)</th>
+                    <th className="px-6 py-3.5 border-none text-right font-bold">변동</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-white/5">
+                <tbody className="divide-y divide-[#212631]">
                   {rates.map((rate) => {
                     if (rate.currency_code === "KRW") return null;
 
@@ -247,19 +233,23 @@ export default function CurrencyExchangePage() {
                     const isDown = diff < 0;
 
                     return (
-                      <tr key={rate.currency_code} className="hover:bg-white/5 transition-colors border-b border-white/5">
-                        <td className="px-5 py-4 border-none font-bold text-white flex items-center gap-2.5">
-                          <span className="grid h-7 w-7 place-items-center rounded-lg bg-[#1C1C1E] text-amber-400 font-mono text-[12px] border border-white/5">
+                      <tr key={rate.currency_code} className="hover:bg-[#161B22] transition-colors border-b border-[#212631] last:border-none">
+                        <td className="px-6 py-4 border-none font-extrabold text-white flex items-center gap-3">
+                          <span className="grid h-8 w-8 place-items-center rounded-xl bg-[#161B22] text-[#F04452] font-mono text-[13px] border border-[#212631] font-black">
                             {CURRENCY_ICONS[rate.currency_code]}
                           </span>
                           <span className="text-[14px]">{rate.currency_code}</span>
                         </td>
-                        <td className="px-5 py-4 border-none text-[#9CA3AF] text-[13px]">{rate.currency_name}</td>
-                        <td className="px-5 py-4 border-none text-right font-mono font-bold text-[14px] tabular-nums text-white">
+                        <td className="px-6 py-4 border-none text-[#8E939D] text-[13px] font-sans font-medium">{rate.currency_name}</td>
+                        <td className="px-6 py-4 border-none text-right font-mono font-black text-[14.5px] tabular-nums text-white">
                           {curVal.toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 4 })} 원
                         </td>
-                        <td className={`px-5 py-4 border-none text-right font-mono text-[12px] font-bold tabular-nums ${isUp ? "text-[#F04452]" : isDown ? "text-[#3182F6]" : "text-[#6B7280]"}`}>
-                          {isUp ? `▲ +${diff.toFixed(4)}` : isDown ? `▼ ${diff.toFixed(4)}` : "—"}
+                        <td className="px-6 py-4 border-none text-right font-mono text-[12px] font-black tabular-nums">
+                          <span className={`inline-block px-2.5 py-0.5 rounded-full border ${
+                            isUp ? "bg-[#F04452]/10 border-[#F04452]/30 text-[#F04452]" : isDown ? "bg-[#3182F6]/10 border-[#3182F6]/30 text-[#3182F6]" : "bg-[#161B22] border-[#212631] text-[#8E939D]"
+                          }`}>
+                            {isUp ? `▲ +${diff.toFixed(4)}` : isDown ? `▼ ${diff.toFixed(4)}` : "—"}
+                          </span>
                         </td>
                       </tr>
                     );
@@ -267,40 +257,42 @@ export default function CurrencyExchangePage() {
                 </tbody>
               </table>
             </div>
-          </StrictWidget>
+          </div>
 
           {/* User Multi-Currency Wallet Balances */}
-          <StrictWidget title="👛 보유 통화 지갑">
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 p-4 bg-[#151821]/50 rounded-xl">
+          <div className="bg-[#0E1117] border border-[#212631] p-6 rounded-3xl shadow-2xl space-y-4 font-mono">
+            <h2 className="text-[14px] font-black text-white border-b border-[#212631] pb-3">보유 통화 지갑</h2>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
               {Object.keys(CURRENCY_NAMES).map((cur) => {
                 const bal = getBalance(cur);
                 return (
-                  <div key={cur} className="rounded-xl border border-white/5 bg-[#1C1C1E] p-4 transition-all hover:border-white/10">
+                  <div key={cur} className="rounded-2xl border border-[#212631] bg-[#05070A] p-4 transition-all hover:border-[#F04452]/40">
                     <div className="flex items-center justify-between mb-2">
-                      <span className="text-[11px] font-semibold text-[#9CA3AF] uppercase tracking-wider">{CURRENCY_NAMES[cur]}</span>
-                      <span className="rounded-md bg-[#151821] px-2 py-0.5 font-mono text-[10px] text-[#9CA3AF] font-bold border border-white/5">{cur}</span>
+                      <span className="text-[10.5px] font-bold text-[#8E939D] uppercase tracking-wider">{CURRENCY_NAMES[cur]}</span>
+                      <span className="rounded-full bg-[#161B22] px-2.5 py-0.5 font-mono text-[10px] text-[#F04452] font-black border border-[#212631]">{cur}</span>
                     </div>
-                    <div className="font-mono text-lg font-bold text-white tabular-nums">
+                    <div className="font-mono text-lg font-black text-white tabular-nums">
                       {CURRENCY_ICONS[cur]} {bal.toLocaleString(undefined, { maximumFractionDigits: 4 })}
                     </div>
                   </div>
                 );
               })}
             </div>
-          </StrictWidget>
+          </div>
         </div>
 
         {/* Right Column (4): Exchange Actions Form */}
-        <div className="col-span-12 lg:col-span-4 flex flex-col">
-          <StrictWidget title="💱 통화 간 빠른 환전">
-            <form onSubmit={handleExchange} className="p-5 flex flex-col gap-4">
+        <div className="col-span-12 lg:col-span-4 flex flex-col font-mono">
+          <div className="bg-[#0E1117] border border-[#212631] rounded-3xl p-6 shadow-2xl space-y-4">
+            <h2 className="text-[14px] font-black text-white border-b border-[#212631] pb-3">통화 간 빠른 환전</h2>
+            <form onSubmit={handleExchange} className="flex flex-col gap-4">
               
               {/* Message Banner */}
               {message && (
-                <div className={`rounded-xl p-3.5 text-[12px] font-medium ${
+                <div className={`rounded-2xl p-4 text-[12px] font-bold ${
                   message.type === "success" 
-                    ? "bg-[#F04452]/10 border border-[#F04452]/20 text-[#F04452]" 
-                    : "bg-[#3182F6]/10 border border-[#3182F6]/20 text-[#3182F6]"
+                    ? "bg-[#F04452]/10 border border-[#F04452]/30 text-[#F04452]" 
+                    : "bg-[#3182F6]/10 border border-[#3182F6]/30 text-[#3182F6]"
                 }`}>
                   {message.text}
                 </div>
@@ -308,13 +300,13 @@ export default function CurrencyExchangePage() {
 
               {/* Sell Currency */}
               <div>
-                <label className="block text-[11px] font-bold text-[#6B7280] uppercase tracking-wider mb-1.5">
+                <label className="block text-[11px] font-bold text-[#8E939D] uppercase tracking-wider mb-1.5">
                   판매 통화 (From)
                 </label>
                 <select
                   value={fromCur}
                   onChange={(e) => setFromCur(e.target.value)}
-                  className="w-full rounded-xl bg-[#1C1C1E] border-none px-4 py-3 text-[13.5px] text-white focus:ring-1 focus:ring-[#3182F6] focus:outline-none transition-all"
+                  className="w-full rounded-2xl bg-[#05070A] border border-[#212631] px-4 py-3 text-[13.5px] font-bold text-white focus:ring-1 focus:ring-[#F04452] focus:outline-none transition-all"
                 >
                   {Object.keys(CURRENCY_NAMES).map((cur) => (
                     <option key={cur} value={cur}>{cur} - {CURRENCY_NAMES[cur]}</option>
@@ -325,15 +317,15 @@ export default function CurrencyExchangePage() {
               {/* Amount Input */}
               <div>
                 <div className="flex items-center justify-between mb-1.5">
-                  <label className="block text-[11px] font-bold text-[#6B7280] uppercase tracking-wider">
+                  <label className="block text-[11px] font-bold text-[#8E939D] uppercase tracking-wider">
                     환전 금액
                   </label>
                   <button
                     type="button"
                     onClick={handleMax}
-                    className="text-[11px] text-[#3182F6] font-bold hover:underline"
+                    className="text-[11px] text-[#F04452] font-black hover:underline cursor-pointer"
                   >
-                    최대 입력 (보유: {getBalance(fromCur).toLocaleString()})
+                    최대 (보유: {getBalance(fromCur).toLocaleString()})
                   </button>
                 </div>
                 <div className="relative">
@@ -343,9 +335,9 @@ export default function CurrencyExchangePage() {
                     value={fromAmount}
                     onChange={(e) => setFromAmount(e.target.value)}
                     placeholder="0.00"
-                    className="w-full rounded-xl bg-[#1C1C1E] border-none px-4 py-3 font-mono text-[16px] font-bold text-white placeholder:text-[#6B7280] focus:ring-1 focus:ring-[#3182F6] focus:outline-none tabular-nums"
+                    className="w-full rounded-2xl bg-[#05070A] border border-[#212631] px-4 py-3 font-mono text-[16px] font-black text-white placeholder:text-[#565A63] focus:ring-1 focus:ring-[#F04452] focus:outline-none tabular-nums"
                   />
-                  <span className="absolute right-4 top-3 font-mono text-[13px] font-bold text-[#9CA3AF]">
+                  <span className="absolute right-4 top-3.5 font-mono text-[12px] font-black text-[#F04452]">
                     {fromCur}
                   </span>
                 </div>
@@ -360,7 +352,7 @@ export default function CurrencyExchangePage() {
                     setFromCur(toCur);
                     setToCur(temp);
                   }}
-                  className="rounded-full bg-[#1C1C1E] p-2 hover:bg-[#252830] transition-colors border border-white/5 cursor-pointer text-[12px]"
+                  className="rounded-full bg-[#161B22] p-2.5 hover:bg-[#212631] transition-colors border border-[#212631] cursor-pointer text-[#F04452] font-bold"
                 >
                   ↕️
                 </button>
@@ -368,13 +360,13 @@ export default function CurrencyExchangePage() {
 
               {/* Buy Currency */}
               <div>
-                <label className="block text-[11px] font-bold text-[#6B7280] uppercase tracking-wider mb-1.5">
+                <label className="block text-[11px] font-bold text-[#8E939D] uppercase tracking-wider mb-1.5">
                   구매 통화 (To)
                 </label>
                 <select
                   value={toCur}
                   onChange={(e) => setToCur(e.target.value)}
-                  className="w-full rounded-xl bg-[#1C1C1E] border-none px-4 py-3 text-[13.5px] text-white focus:ring-1 focus:ring-[#3182F6] focus:outline-none transition-all"
+                  className="w-full rounded-2xl bg-[#05070A] border border-[#212631] px-4 py-3 text-[13.5px] font-bold text-white focus:ring-1 focus:ring-[#F04452] focus:outline-none transition-all"
                 >
                   {Object.keys(CURRENCY_NAMES).map((cur) => (
                     <option key={cur} value={cur}>{cur} - {CURRENCY_NAMES[cur]}</option>
@@ -383,17 +375,17 @@ export default function CurrencyExchangePage() {
               </div>
 
               {/* Conversion Preview */}
-              <div className="rounded-xl bg-[#1C1C1E] p-4 flex flex-col gap-2 border border-white/5">
+              <div className="rounded-2xl bg-[#05070A] p-4 flex flex-col gap-2 border border-[#212631]">
                 <div className="flex items-center justify-between text-[12px]">
-                  <span className="text-[#9CA3AF]">적용 환율</span>
-                  <span className="font-mono text-white font-bold">
+                  <span className="text-[#8E939D] font-bold">적용 환율</span>
+                  <span className="font-mono text-white font-black">
                     1 {fromCur} = {conversionRate.toFixed(4)} {toCur}
                   </span>
                 </div>
-                <div className="h-px bg-white/5" />
+                <div className="h-px bg-[#212631]" />
                 <div className="flex items-center justify-between">
-                  <span className="text-[12px] text-[#9CA3AF]">예상 수령 금액</span>
-                  <span className="font-mono text-[17px] font-bold text-[#3182F6] tabular-nums">
+                  <span className="text-[12px] text-[#8E939D] font-bold">예상 수령 금액</span>
+                  <span className="font-mono text-[17px] font-black text-[#F04452] tabular-nums">
                     {CURRENCY_ICONS[toCur]} {toAmountVal.toLocaleString(undefined, { maximumFractionDigits: 4 })}
                   </span>
                 </div>
@@ -403,14 +395,15 @@ export default function CurrencyExchangePage() {
               <button
                 type="submit"
                 disabled={submitting}
-                className="w-full rounded-xl bg-[#3182F6] py-3.5 text-[14px] font-bold text-white hover:bg-[#3182F6]/90 transition-all disabled:opacity-50 cursor-pointer shadow-md"
+                className="w-full rounded-full bg-[#F04452] py-3.5 text-[14px] font-black text-white hover:bg-[#ff5252] transition-all disabled:opacity-50 cursor-pointer shadow-lg active:scale-[0.98]"
               >
                 {submitting ? "환전 진행 중..." : "환전 신청하기"}
               </button>
             </form>
-          </StrictWidget>
+          </div>
         </div>
       </div>
     </div>
   );
 }
+

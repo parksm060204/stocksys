@@ -1,120 +1,80 @@
-import { createClient } from "@/lib/supabase/server";
 import Link from "next/link";
-import { change, fmtSigned, fmtPrice } from "@/lib/format";
-import type { Commodity } from "@/lib/types";
+import { COMMODITY_DEFINITIONS } from "@/lib/commodities/definitions";
+import CommoditiesClientList from "./CommoditiesClientList";
+import { commodityEngineInstance } from "@/app/api/commodities/route";
 
 export const revalidate = 0;
 
 export default async function CommoditiesPage() {
-  const supabase = await createClient();
-  const { data } = await supabase.from('commodities').select('*').order('name');
-  
-  const commodities = (data || []).map(row => ({
-    id: row.id,
-    commodityId: row.commodity_id,
-    name: row.name,
-    ticker: row.ticker,
-    currentPrice: row.current_price,
-    previousPrice: row.previous_price,
-    unit: row.unit,
-    tickSize: row.tick_size,
-    tickValue: row.tick_value,
-    marginRequirement: row.margin_requirement,
-    description: row.description
-  } as Commodity));
+  const commodities = commodityEngineInstance.getAllCommodities().map((c) => ({
+    id: c.id,
+    ticker: c.ticker,
+    name: c.name,
+    nameKo: c.nameKo,
+    category: c.category,
+    unit: c.unit,
+    currentPrice: c.currentPrice,
+    previousPrice: c.previousPrice,
+    openPrice: c.openPrice,
+    high: c.high,
+    low: c.low,
+    volume: c.volume,
+    priceHistory: c.priceHistory,
+    marginRequirement: c.marginRequirement,
+  }));
 
-  const up = commodities.filter((c) => c.currentPrice > c.previousPrice).length;
-  const down = commodities.filter((c) => c.currentPrice < c.previousPrice).length;
-  const avgPct = commodities.length > 0 ?
-    commodities.reduce((a, c) => a + change(c.currentPrice, c.previousPrice).percent, 0) / commodities.length : 0;
+  const activeEvents = commodityEngineInstance.getActiveEvents().map((ev) => ({
+    id: ev.id,
+    title: ev.title,
+    headline: ev.headline,
+    magnitude: ev.magnitude,
+    remainingTicks: ev.remainingTicks,
+    totalTicks: ev.totalTicks,
+  }));
 
   return (
-    <div className="mx-auto max-w-7xl px-6 py-6">
-      <nav className="mb-4 flex items-center gap-2 text-[12px] text-dim">
-        <Link href="/" className="hover:text-tx">
+    <div className="mx-auto max-w-7xl px-6 py-6 space-y-6">
+      {/* ── 브레드크럼 ── */}
+      <nav className="flex items-center gap-2 text-[12px] text-[#8E939D] font-mono">
+        <Link href="/" className="hover:text-white font-medium transition-colors">
           메인홈
         </Link>
         <span>/</span>
-        <span className="text-muted">원자재 선물</span>
+        <span className="text-white font-bold">원자재 선물 (Commodities)</span>
       </nav>
 
-      <div className="mb-5 flex items-end justify-between">
+      {/* ── 헤더 배너 ── */}
+      <div className="bg-[#0E1117] border border-[#212631] p-6 rounded-3xl flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shadow-2xl">
         <div>
-          <h1 className="flex items-center gap-2.5 text-xl font-bold text-tx">
-            <span className="text-2xl">🛢️</span>
-            원자재 선물
+          <div className="inline-flex items-center gap-2 rounded-full border border-[#F04452]/40 bg-[#F04452]/10 px-3.5 py-1 text-[11px] font-bold text-[#F04452] mb-2">
+            <span className="inline-block h-2 w-2 rounded-full bg-[#F04452] animate-pulse" />
+            COMMODITIES DERIVATIVES MARKET · 5대 카테고리 12개 선물 시장
+          </div>
+          <h1 className="text-xl md:text-2xl font-black text-white tracking-tight">
+            원자재 선물 시장 (Commodities Market)
           </h1>
-          <p className="mt-1 text-[13px] text-muted">글로벌 매크로 경제의 기반이 되는 원자재(에너지, 귀금속, 농산물 등) 시장입니다.</p>
+          <p className="text-[12.5px] text-[#8E939D] mt-1 font-medium leading-relaxed">
+            에너지, 귀금속, 산업금속, 농산물(계절성 곡선), 축산물 등 글로벌 거시경제와 수급 압력에 반응하는 실시간 원자재 선물 시장입니다.
+          </p>
         </div>
-        <div className="flex gap-6 text-right">
-          <Stat label="상장 상품 수" value={`${commodities.length}`} />
-          <Stat label="평균 등락" value={`${fmtSigned(avgPct)}%`} tone={avgPct >= 0 ? "up" : "down"} />
-          <Stat label="상승/하락" value={`${up} / ${down}`} />
+
+        <div className="flex gap-6 text-right bg-[#161B22] px-5 py-3 rounded-2xl border border-[#212631] shrink-0 font-mono text-xs">
+          <div>
+            <div className="text-[10.5px] text-[#565A63] font-bold">상장 상품</div>
+            <div className="text-white font-black text-[15px]">{COMMODITY_DEFINITIONS.length} 종목</div>
+          </div>
+          <div className="border-l border-[#212631] pl-6">
+            <div className="text-[10.5px] text-[#565A63] font-bold">거래 메커니즘</div>
+            <div className="text-[#F04452] font-black text-[15px]">5종 기관 봇</div>
+          </div>
         </div>
       </div>
 
-      <div className="border border-bd bg-bg">
-        <table className="w-full text-left text-[13px]">
-          <thead className="border-b border-bd bg-bg-alt text-dim">
-            <tr>
-              <th className="px-4 py-3 font-medium">상품명</th>
-              <th className="px-4 py-3 font-medium text-right">현재가</th>
-              <th className="px-4 py-3 font-medium text-right">등락률</th>
-              <th className="px-4 py-3 font-medium text-right hidden sm:table-cell">계약 단위</th>
-              <th className="px-4 py-3 font-medium text-right hidden lg:table-cell">증거금</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-bd">
-            {commodities.map((cmd) => {
-              const chg = change(cmd.currentPrice, cmd.previousPrice);
-              const isUp = chg.amount > 0;
-              const isDown = chg.amount < 0;
-              return (
-                <tr key={cmd.id} className="hover:bg-bg-alt transition-colors group cursor-pointer">
-                  <td className="px-4 py-3">
-                    <Link href={`/commodities/${cmd.commodityId}`} className="block">
-                      <div className="font-semibold text-tx group-hover:text-hl transition-colors">{cmd.name}</div>
-                      <div className="text-[11px] text-muted font-mono">{cmd.ticker}</div>
-                    </Link>
-                  </td>
-                  <td className="px-4 py-3 text-right">
-                      {fmtPrice(cmd.currentPrice, 'overseas')}
-                  </td>
-                  <td className="px-4 py-3 text-right">
-                    <div className={`font-mono text-[13px] ${isUp ? "text-up" : isDown ? "text-down" : "text-dim"}`}>
-                      {fmtSigned(chg.percent)}%
-                    </div>
-                  </td>
-                  <td className="px-4 py-3 text-right hidden sm:table-cell text-muted">
-                    {cmd.unit}
-                  </td>
-                  <td className="px-4 py-3 text-right hidden lg:table-cell font-mono text-muted">
-                    {fmtPrice(cmd.marginRequirement, 'overseas')}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
-function Stat({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  value: string;
-  tone?: "up" | "down";
-}) {
-  const color = tone === "up" ? "text-up" : tone === "down" ? "text-down" : "text-tx";
-  return (
-    <div>
-      <div className="text-[10px] uppercase tracking-wider text-dim">{label}</div>
-      <div className={`font-mono text-[15px] font-semibold tabular-nums ${color}`}>{value}</div>
+      {/* ── 인터랙티브 목록 클라이언트 컴포넌트 ── */}
+      <CommoditiesClientList
+        initialCommodities={commodities}
+        initialEvents={activeEvents}
+      />
     </div>
   );
 }

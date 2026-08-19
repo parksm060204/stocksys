@@ -13,7 +13,7 @@ export class CommercialHedgerAgent extends BaseAgent {
     this.config = config;
   }
 
-  public executeHedging(commodityPrice: number, commodityId: string, tickSize: number): any[] {
+  public executeHedging(commodityPrice: number, commodityId: string, _tickSize: number): any[] {
     const orders: any[] = [];
     const { supportLevel, resistanceLevel } = this.config;
 

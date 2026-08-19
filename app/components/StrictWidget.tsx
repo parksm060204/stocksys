@@ -12,9 +12,9 @@ export default function StrictWidget({
   overflowClass?: string;
 }) {
   return (
-    <div className={`bg-[#151821] border border-[#222736] rounded-xl flex flex-col overflow-hidden ${className}`}>
+    <div className={`bg-[#0E1117] border border-[#212631] rounded-2xl flex flex-col overflow-hidden shadow-xl ${className}`}>
       {title && (
-        <div className="bg-[#12151e] border-b border-[#222736] px-4 py-2.5 text-[12px] font-semibold text-[#9ca3af] tracking-tight shrink-0 flex items-center justify-between">
+        <div className="bg-[#090B0F] border-b border-[#212631] px-5 py-3 text-[13px] font-mono font-black text-white tracking-tight shrink-0 flex items-center justify-between">
           <span>{title}</span>
         </div>
       )}
@@ -24,3 +24,4 @@ export default function StrictWidget({
     </div>
   );
 }
+

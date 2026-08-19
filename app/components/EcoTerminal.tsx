@@ -23,9 +23,9 @@ export default function EcoTerminal() {
   const [now, setNow] = useState<Date | null>(() => new Date());
 
   useEffect(() => {
-    const interval = setInterval(() => setNow(new Date()), 1000);
+    const clockInterval = setInterval(() => setNow(new Date()), 1000);
 
-    // 1. 초기 데이터 로드
+    // 1. 데이터 로드 및 주기적 폴링
     const fetchEvents = async () => {
       const { data } = await supabase
         .from('macro_calendar')
@@ -35,29 +35,11 @@ export default function EcoTerminal() {
     };
     fetchEvents();
 
-    // 2. 실시간 구독 (발표치가 업데이트되면 번쩍이도록)
-    const channel = supabase.channel('macro_calendar_changes')
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'macro_calendar' }, (payload) => {
-        setEvents((prev) => prev.map(ev => {
-          if (ev.id === payload.new.id) {
-            // 방금 업데이트된 항목에 하이라이트 효과를 주기 위해 상태 추가 가능
-            return { ...ev, ...payload.new, isNew: true } as any;
-          }
-          return ev;
-        }));
-        
-        // 2초 뒤 하이라이트 해제
-        setTimeout(() => {
-          setEvents((prev) => prev.map(ev => 
-            ev.id === payload.new.id ? { ...ev, isNew: false } : ev
-          ));
-        }, 2000);
-      })
-      .subscribe();
+    const fetchInterval = setInterval(fetchEvents, 3000);
 
     return () => {
-      clearInterval(interval);
-      supabase.removeChannel(channel);
+      clearInterval(clockInterval);
+      clearInterval(fetchInterval);
     };
   }, []);
 

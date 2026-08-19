@@ -20,9 +20,49 @@ const TABS: { id: RegionTab; label: string; flag: string; market: MarketId }[] =
 
 export default function StocksPage() {
   return (
-    <Suspense fallback={<div className="mx-auto max-w-7xl px-6 py-6 text-center text-dim text-[13px]">불러오는 중...</div>}>
+    <Suspense fallback={<StocksSkeleton />}>
       <StocksContent />
     </Suspense>
+  );
+}
+
+function StocksSkeleton() {
+  return (
+    <div className="mx-auto max-w-7xl px-6 py-6 space-y-5 animate-pulse">
+      <div className="flex items-center gap-3">
+        <div className="h-4 w-12 rounded bg-[#222736]" />
+        <div className="h-4 w-3 rounded bg-[#1c2030]" />
+        <div className="h-4 w-10 rounded bg-[#222736]" />
+      </div>
+      <div className="h-7 w-28 rounded bg-[#222736]" />
+      {/* Tab skeleton */}
+      <div className="flex gap-1 rounded-lg border border-[#222736] bg-[#151821] p-1">
+        {[1, 2, 3].map((i) => (
+          <div key={i} className="flex-1 h-14 rounded-md bg-[#1c2030]" />
+        ))}
+      </div>
+      {/* Index card skeleton */}
+      <div className="rounded-xl border border-[#222736] bg-[#151821] p-5 space-y-3">
+        <div className="h-6 w-40 rounded bg-[#222736]" />
+        <div className="h-9 w-52 rounded bg-[#222736]" />
+      </div>
+      {/* Table skeleton */}
+      <div className="space-y-2">
+        {Array.from({ length: 8 }).map((_, i) => (
+          <div key={i} className="flex items-center justify-between rounded-lg border border-[#222736]/50 bg-[#151821] px-4 py-3.5">
+            <div className="space-y-1.5">
+              <div className="h-4 w-24 rounded bg-[#222736]" />
+              <div className="h-3 w-16 rounded bg-[#1c2030]" />
+            </div>
+            <div className="h-4 w-20 rounded bg-[#222736]" />
+          </div>
+        ))}
+      </div>
+      <div className="flex items-center justify-center gap-2 pt-2 text-[12px] text-dim">
+        <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-[#3182F6] border-t-transparent" />
+        시장 데이터 불러오는 중...
+      </div>
+    </div>
   );
 }
 
@@ -56,8 +96,8 @@ function StocksContent() {
     }
     fetchStocks();
 
-    // Polling for live prices every 2 seconds
-    const interval = setInterval(fetchStocks, 2000);
+    // Polling for live prices every 5 seconds
+    const interval = setInterval(fetchStocks, 5000);
     return () => clearInterval(interval);
   }, [supabase]);
 
@@ -68,7 +108,7 @@ function StocksContent() {
     }
   }, [searchParams]);
 
-  if (loading) return <div className="mx-auto max-w-7xl px-6 py-6 text-center text-dim text-[13px]">데이터 로딩 중...</div>;
+  if (loading) return <StocksSkeleton />;
 
   const indices: Record<RegionTab, MarketIndex> = {
     kospi: getKOSPIIndex(allStocks),
@@ -98,36 +138,60 @@ function StocksContent() {
         <span className="text-muted">주식</span>
       </nav>
 
-      <div className="mb-5">
-        <h1 className="text-xl font-bold text-tx">주식 시장</h1>
-        <p className="text-[13px] text-muted">KOSPI · S&P 50 · 유로스톡스 50 — 3개 지수 통합 조회</p>
+      {/* Header Banner */}
+      <div className="mb-6 bg-[#0E1117] border border-[#212631] p-6 rounded-3xl flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shadow-2xl">
+        <div>
+          <div className="inline-flex items-center gap-2 rounded-full border border-[#F04452]/40 bg-[#F04452]/10 px-3.5 py-1 text-[11px] font-bold text-[#F04452] mb-2">
+            <span className="inline-block h-2 w-2 rounded-full bg-[#F04452] animate-pulse" />
+            LIVE STOCKS MARKET · 주식 시장
+          </div>
+          <h1 className="text-xl md:text-2xl font-black text-white tracking-tight">
+            주식 시장 통합 터미널
+          </h1>
+          <p className="text-[12.5px] text-[#8E939D] mt-1 font-medium">
+            KOSPI · S&P 50 · 유로스톡스 50 — 3개 주요 시장 지수 및 상장 종목 실시간 시세
+          </p>
+        </div>
+
+        <div className="flex gap-6 text-right bg-[#161B22] px-5 py-3 rounded-2xl border border-[#212631] shrink-0 font-mono">
+          <div>
+            <div className="text-[10px] uppercase font-bold tracking-wider text-[#8E939D]">선택 시장</div>
+            <div className="text-[15px] font-black text-white">{currentTab.label}</div>
+          </div>
+          <div>
+            <div className="text-[10px] uppercase font-bold tracking-wider text-[#8E939D]">상승 / 하락</div>
+            <div className="text-[15px] font-black text-[#F04452] tabular-nums">{up} <span className="text-[#8E939D]">/</span> <span className="text-[#3182F6]">{down}</span></div>
+          </div>
+        </div>
       </div>
 
-      {/* === 3개 지수 탭 === */}
-      <div className="mb-5 flex gap-1 rounded-lg border border-border bg-panel p-1">
+      {/* === 3개 지수 탭 (Robinhood Segmented Pills) === */}
+      <div className="mb-6 flex gap-2 rounded-2xl border border-[#212631] bg-[#0E1117] p-1.5 shadow-lg">
         {TABS.map((t) => {
           const idx = indices[t.id];
           const tDir = idx.changeAmount > 0 ? "up" : idx.changeAmount < 0 ? "down" : "flat";
-          const tColor = tDir === "up" ? "text-up" : tDir === "down" ? "text-down" : "text-muted";
+          const tColor = tDir === "up" ? "text-[#F04452]" : tDir === "down" ? "text-[#3182F6]" : "text-[#8E939D]";
+          const isSelected = tab === t.id;
           return (
             <button
               key={t.id}
               onClick={() => setTab(t.id)}
-              className={`flex-1 rounded-md px-4 py-2.5 transition-colors ${
-                tab === t.id ? "bg-panel2" : "hover:bg-panel2/50"
+              className={`flex-1 rounded-xl px-4 py-3 transition-all cursor-pointer ${
+                isSelected ? "bg-[#161B22] border border-white/10 shadow-md" : "hover:bg-[#12161F]/60"
               }`}
             >
               <div className="flex items-center justify-center gap-2">
                 <span className="text-base">{t.flag}</span>
-                <span className={`text-[13px] font-semibold ${tab === t.id ? "text-tx" : "text-dim"}`}>
+                <span className={`text-[13.5px] font-extrabold ${isSelected ? "text-white" : "text-[#8E939D]"}`}>
                   {t.label}
                 </span>
               </div>
-              <div className={`mt-1 font-mono text-[15px] font-bold tabular-nums ${tColor}`}>
+              <div className={`mt-1 font-mono text-[15px] font-black tabular-nums ${tColor}`}>
                 {Math.round(idx.currentValue).toLocaleString("ko-KR")}
-                <span className="ml-1.5 text-[11px]">
-                  {tDir === "up" ? "▲" : tDir === "down" ? "▼" : "–"} {fmtSigned(idx.changePct)}%
+                <span className="ml-1.5 text-[11px] font-bold">
+                  {fmtSigned(idx.changePct)}%
                 </span>
+
               </div>
             </button>
           );
@@ -135,55 +199,55 @@ function StocksContent() {
       </div>
 
       {/* === 현재 지수 상세 === */}
-      <div className="mb-6 rounded-xl border border-border bg-panel p-5">
+      <div className="mb-6 rounded-2xl border border-[#212631] bg-[#0E1117] p-6 shadow-xl">
         <div className="flex items-start justify-between">
           <div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2.5">
               <span className="text-2xl">{currentTab.flag}</span>
-              <h2 className="text-[18px] font-bold text-tx">{index.nameKo}</h2>
+              <h2 className="text-[20px] font-black text-white">{index.nameKo}</h2>
             </div>
-            <p className="mt-0.5 text-[12px] text-dim">
+            <p className="mt-1 text-[12.5px] text-[#8E939D]">
               {index.constituentCount}개 종목 · 시가총액 가중 지수
             </p>
           </div>
           <div className="text-right">
-            <div className={`font-mono text-[32px] font-bold tabular-nums ${color}`}>
+            <div className={`font-mono text-[34px] font-black tabular-nums ${color}`}>
               {Math.round(index.currentValue).toLocaleString("ko-KR")}
             </div>
-            <div className={`mt-0.5 font-mono text-[15px] tabular-nums ${color}`}>
+            <div className={`mt-0.5 font-mono text-[14.5px] font-bold tabular-nums ${color}`}>
               {arrow} {index.changeAmount >= 0 ? "+" : ""}{Math.round(index.changeAmount).toLocaleString("ko-KR")} ({fmtSigned(index.changePct)}%)
             </div>
           </div>
         </div>
 
         {/* 상승/하락 TOP 5 */}
-        <div className="mt-4 grid grid-cols-2 gap-4">
+        <div className="mt-6 grid grid-cols-2 gap-6 pt-5 border-t border-[#212631]">
           <div>
-            <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-up">
-              상승 TOP 5
+            <div className="mb-2 text-[10.5px] font-mono font-bold uppercase tracking-wider text-[#F04452]">
+              ▲ 실시간 상승 TOP 5
             </div>
-            <div className="space-y-1">
+            <div className="space-y-1.5">
               {index.topGainers.map((g) => (
                 <Link
                   key={g.ticker}
                   href={`/stocks/${g.ticker}`}
-                  className="flex justify-between text-[12px] hover:text-accent"
+                  className="flex justify-between text-[12.5px] hover:text-[#F04452] transition-colors group"
                 >
-                  <span className="text-muted">{g.name}</span>
-                  <span className="font-mono text-up">+{g.changePct.toFixed(2)}%</span>
+                  <span className="text-[#8E939D] group-hover:text-white font-medium">{g.name}</span>
+                  <span className="font-mono font-bold tabular-nums text-[#F04452]">+{g.changePct.toFixed(2)}%</span>
                 </Link>
               ))}
             </div>
           </div>
           <div>
-            <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-down">
-              하락 TOP 5
+            <div className="mb-2 text-[10.5px] font-mono font-bold uppercase tracking-wider text-[#3182F6]">
+              ▼ 실시간 하락 TOP 5
             </div>
-            <div className="space-y-1">
+            <div className="space-y-1.5">
               {index.topLosers.map((l) => (
-                <div key={l.ticker} className="flex justify-between text-[12px]">
-                  <span className="text-muted">{l.name}</span>
-                  <span className="font-mono text-down">{l.changePct.toFixed(2)}%</span>
+                <div key={l.ticker} className="flex justify-between text-[12.5px]">
+                  <span className="text-[#8E939D] font-medium">{l.name}</span>
+                  <span className="font-mono font-bold tabular-nums text-[#3182F6]">{l.changePct.toFixed(2)}%</span>
                 </div>
               ))}
             </div>
@@ -191,13 +255,14 @@ function StocksContent() {
         </div>
       </div>
 
+
       {/* === 종목 통계 === */}
-      <div className="mb-4 flex items-end justify-between">
+      <div className="mb-4 flex items-end justify-between px-1">
         <div>
-          <h3 className="text-[15px] font-semibold text-tx">
+          <h3 className="text-[16px] font-extrabold text-white">
             {currentTab.flag} {currentTab.label} 구성 종목
           </h3>
-          <p className="text-[12px] text-dim">{stocks.length}종목</p>
+          <p className="text-[12px] text-[#8E939D]">{stocks.length}개 종목 상장</p>
         </div>
         <div className="flex gap-6 text-right">
           <Stat label="상승" value={String(up)} tone="up" />
@@ -213,11 +278,12 @@ function StocksContent() {
 }
 
 function Stat({ label, value, tone }: { label: string; value: string; tone?: "up" | "down" }) {
-  const color = tone === "up" ? "text-up" : tone === "down" ? "text-down" : "text-tx";
+  const color = tone === "up" ? "text-[#00C805]" : tone === "down" ? "text-[#FF3B30]" : "text-white";
   return (
     <div>
-      <div className="text-[10px] uppercase tracking-wider text-dim">{label}</div>
-      <div className={`font-mono text-[15px] font-semibold tabular-nums ${color}`}>{value}</div>
+      <div className="text-[10px] uppercase font-bold tracking-wider text-[#8E939D]">{label}</div>
+      <div className={`font-mono text-[16px] font-black tabular-nums ${color}`}>{value}</div>
     </div>
   );
 }
+

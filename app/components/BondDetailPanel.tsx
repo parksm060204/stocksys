@@ -18,23 +18,19 @@ export default function BondDetailPanel({ stock }: { stock: Stock }) {
   
   const supabase = createClient();
 
-  // 실시간 가격 구독 (YTM 동기화)
+  // 주기적 가격 폴링 (YTM 동기화)
   useEffect(() => {
-    const channel = supabase
-      .channel(`realtime_bond_price_${stock.id}`)
-      .on(
-        'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'stocks', filter: `id=eq.${stock.id}` },
-        (payload: { new: Record<string, unknown> }) => {
-          if (payload.new.current_price) {
-            setCurrentPrice(payload.new.current_price as number);
-          }
-        }
-      )
-      .subscribe();
+    const fetchLatestPrice = async () => {
+      const { data } = await supabase.from('stocks').select('current_price').eq('id', stock.id).single();
+      if (data?.current_price) {
+        setCurrentPrice(data.current_price);
+      }
+    };
+
+    const interval = setInterval(fetchLatestPrice, 2000);
 
     return () => {
-      supabase.removeChannel(channel);
+      clearInterval(interval);
     };
   }, [stock.id, supabase]);
 

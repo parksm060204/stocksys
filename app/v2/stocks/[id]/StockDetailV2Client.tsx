@@ -1,14 +1,16 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import type { Stock, ChatMessage } from "@/lib/types";
-import { fmtPrice, fmtVolume, fmtCap } from "@/lib/format";
+import { fmtPrice, fmtVolume } from "@/lib/format";
 import OrderEntry from "@/app/components/OrderEntry";
 import StockChartV2 from "@/app/components/v2/StockChartV2";
 import OrderbookV2 from "@/app/components/v2/OrderbookV2";
 import TradeFeedV2 from "@/app/components/v2/TradeFeedV2";
 import PriceHeroV2 from "@/app/components/v2/PriceHeroV2";
 import RealtimePriceHeader from "@/app/components/RealtimePriceHeader";
+import ActiveOrdersPanel from "@/app/components/ActiveOrdersPanel";
 
 /* ─────────────────────────────────────────────────────────
    Types
@@ -40,16 +42,15 @@ function ProToggle({
       onClick={onToggle}
       className={`group relative flex items-center gap-2 rounded-full px-4 py-1.5 text-[12px] font-bold tracking-wide transition-all duration-300 cursor-pointer select-none ${
         isProMode
-          ? "bg-[#3182F6] text-white shadow-[0_0_16px_rgba(49,130,246,0.45)]"
-          : "bg-[#1C1C1E] text-[#6B7280] hover:bg-[#252525] hover:text-white"
+          ? "bg-accent text-white shadow-[0_0_16px_rgba(49,130,246,0.45)]"
+          : "bg-panel2 text-dim hover:bg-white/10 hover:text-white"
       }`}
       aria-label="Pro 모드 전환"
       id="pro-mode-toggle"
     >
-      {/* 슬라이딩 인디케이터 */}
       <span
         className={`relative inline-flex h-4 w-7 items-center rounded-full transition-all duration-300 ${
-          isProMode ? "bg-white/30" : "bg-[#333]"
+          isProMode ? "bg-white/30" : "bg-dim/30"
         }`}
       >
         <span
@@ -69,24 +70,23 @@ function ProToggle({
 /* ─────────────────────────────────────────────────────────
    Default Mode — 단일 컬럼 (차트 중심)
 ───────────────────────────────────────────────────────── */
-function DefaultLayout({
-  stock,
-  relatedNews,
-  messages,
-  tradingValueStr,
-}: {
-  stock: Stock;
-  relatedNews: NewsItem[];
-  messages: ChatMessage[];
-  tradingValueStr: string;
-}) {
+function DefaultLayout(
+  props: {
+    stock: Stock;
+    relatedNews: NewsItem[];
+    messages: ChatMessage[];
+    tradingValueStr: string;
+  }
+) {
+  const { stock, relatedNews } = props;
+  void props.messages; void props.tradingValueStr;
   return (
     <div className="flex flex-col gap-4 w-full">
       {/* ── Hero 가격 타이포그래피 ── text-7xl, tabular-nums, Toss 컬러 */}
       <PriceHeroV2 stock={stock} />
 
       {/* OHLCV 요약 바 — tabular-nums font-mono 강화 */}
-      <div className="grid grid-cols-4 gap-px bg-[#111316] rounded-xl overflow-hidden">
+      <div className="grid grid-cols-4 gap-px bg-panel rounded-xl overflow-hidden">
         <MetaCell label="시가" value={fmtPrice(stock.openPrice, stock.market)} />
         <MetaCell label="고가" value={fmtPrice(stock.high, stock.market)} tone="up" />
         <MetaCell label="저가" value={fmtPrice(stock.low, stock.market)} tone="down" />
@@ -95,7 +95,7 @@ function DefaultLayout({
 
       {/* 메인 차트 — 풀 와이드 (Default 선 차트) */}
       <div
-        className="w-full rounded-2xl overflow-hidden bg-[#0D0F14]"
+        className="w-full rounded-2xl overflow-hidden bg-bg"
         style={{ height: "clamp(280px, 36vh, 460px)" }}
       >
         <StockChartV2
@@ -108,16 +108,23 @@ function DefaultLayout({
       {/* 빅 매수/매도 버튼 — Default 모드 핵심 CTA */}
       <BigTradeButtons stock={stock} />
 
-      {/* 하단 2단 — 주문창 + 뉴스 */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4" id="v2-order-entry">
-        <div className="rounded-2xl bg-[#111316] overflow-hidden">
+      {/* 하단 그리드 — 주문창 + 미체결 주문 + 관련 뉴스 */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4" id="v2-order-entry">
+        <div className="rounded-2xl bg-panel overflow-hidden">
           <SectionHeader title="주문" />
           <div className="p-4">
             <OrderEntry stock={stock} />
           </div>
         </div>
 
-        <div className="rounded-2xl bg-[#111316] overflow-hidden">
+        <div className="rounded-2xl bg-panel overflow-hidden flex flex-col min-h-[300px]">
+          <SectionHeader title="내 미체결 주문" />
+          <div className="flex-1 overflow-hidden">
+            <ActiveOrdersPanel currentStockId={stock.id} compact />
+          </div>
+        </div>
+
+        <div className="rounded-2xl bg-panel overflow-hidden">
           <SectionHeader title="관련 뉴스" />
           <NewsList news={relatedNews} />
         </div>
@@ -129,17 +136,16 @@ function DefaultLayout({
 /* ─────────────────────────────────────────────────────────
    Pro Mode — 3단 HTS 레이아웃
 ───────────────────────────────────────────────────────── */
-function ProLayout({
-  stock,
-  relatedNews,
-  messages,
-  tradingValueStr,
-}: {
-  stock: Stock;
-  relatedNews: NewsItem[];
-  messages: ChatMessage[];
-  tradingValueStr: string;
-}) {
+function ProLayout(
+  props: {
+    stock: Stock;
+    relatedNews: NewsItem[];
+    messages: ChatMessage[];
+    tradingValueStr: string;
+  }
+) {
+  const { stock, relatedNews, tradingValueStr } = props;
+  void props.messages;
   return (
     <div
       className="grid gap-2 w-full h-full"
@@ -150,7 +156,7 @@ function ProLayout({
     >
       {/* ① 차트 — 중앙 상단 tall (Pro 봉 차트 + BB + RSI) */}
       <div
-        className="rounded-xl overflow-hidden bg-[#0D0F14]"
+        className="rounded-xl overflow-hidden bg-bg"
         style={{ gridColumn: "1", gridRow: "1 / 3" }}
       >
         <StockChartV2
@@ -162,7 +168,7 @@ function ProLayout({
 
       {/* ② 가격 요약 바 — 차트 하단 */}
       <div
-        className="rounded-xl bg-[#111316] overflow-hidden"
+        className="rounded-xl bg-panel overflow-hidden"
         style={{ gridColumn: "1", gridRow: "3" }}
       >
         <div className="grid grid-cols-4 h-full">
@@ -173,10 +179,10 @@ function ProLayout({
         </div>
       </div>
 
-      {/* ③ 호가창 V2 — 우측 상단 (Robinhood 스타일, 세로 border 없음) */}
+      {/* ③ 호가창 V2 */}
       <div
-        className="rounded-xl overflow-hidden flex flex-col"
-        style={{ gridColumn: "2", gridRow: "1 / 3", background: "#0D0F14" }}
+        className="rounded-xl overflow-hidden flex flex-col bg-bg"
+        style={{ gridColumn: "2", gridRow: "1 / 3" }}
       >
         <OrderbookV2
           ticker={stock.ticker}
@@ -185,9 +191,9 @@ function ProLayout({
         />
       </div>
 
-      {/* ④ 주문 패널 — 우측 하단 */}
+      {/* ④ 주문 패널 */}
       <div
-        className="rounded-xl bg-[#111316] overflow-hidden flex flex-col"
+        className="rounded-xl bg-panel overflow-hidden flex flex-col"
         style={{ gridColumn: "2", gridRow: "3" }}
       >
         <SectionHeader title="주문" />
@@ -196,23 +202,56 @@ function ProLayout({
         </div>
       </div>
 
-      {/* ⑤ 체결 피드 V2 — 맨 우측 상단 (Robinhood 스타일, 세로 border 없음) */}
+      {/* ⑤ 체결 피드 V2 */}
       <div
-        className="rounded-xl overflow-hidden flex flex-col"
-        style={{ gridColumn: "3", gridRow: "1 / 3", background: "#0D0F14" }}
+        className="rounded-xl overflow-hidden flex flex-col bg-bg"
+        style={{ gridColumn: "3", gridRow: "1 / 3" }}
       >
         <TradeFeedV2 stock={stock} />
       </div>
 
-      {/* ⑥ 뉴스 — 맨 우측 하단 */}
+      {/* ⑥ 뉴스 / 내 미체결 탭 패널 */}
       <div
-        className="rounded-xl bg-[#111316] overflow-hidden flex flex-col"
+        className="rounded-xl bg-panel overflow-hidden flex flex-col"
         style={{ gridColumn: "3", gridRow: "3" }}
       >
-        <SectionHeader title="뉴스" />
-        <div className="flex-1 overflow-y-auto">
-          <NewsList news={relatedNews} compact />
+        <ProSideTabSection relatedNews={relatedNews} stockId={stock.id} />
+      </div>
+    </div>
+  );
+}
+
+function ProSideTabSection({ relatedNews, stockId }: { relatedNews: NewsItem[]; stockId: string }) {
+  const [tab, setTab] = useState<'news' | 'orders'>('orders');
+
+  return (
+    <div className="flex flex-col h-full overflow-hidden">
+      <div className="flex items-center justify-between border-b border-border bg-panel2 px-3 py-1.5 shrink-0">
+        <div className="flex gap-1">
+          <button
+            onClick={() => setTab('orders')}
+            className={`px-2.5 py-0.5 rounded text-[11px] font-bold transition-colors cursor-pointer ${
+              tab === 'orders' ? 'bg-accent/20 text-accent border border-accent/40' : 'text-dim hover:text-white'
+            }`}
+          >
+            내 미체결
+          </button>
+          <button
+            onClick={() => setTab('news')}
+            className={`px-2.5 py-0.5 rounded text-[11px] font-bold transition-colors cursor-pointer ${
+              tab === 'news' ? 'bg-accent/20 text-accent border border-accent/40' : 'text-dim hover:text-white'
+            }`}
+          >
+            뉴스
+          </button>
         </div>
+      </div>
+      <div className="flex-1 overflow-y-auto">
+        {tab === 'orders' ? (
+          <ActiveOrdersPanel currentStockId={stockId} compact />
+        ) : (
+          <NewsList news={relatedNews} compact />
+        )}
       </div>
     </div>
   );
@@ -236,7 +275,7 @@ export default function StockDetailV2Client({
 
   return (
     <div
-      className={`flex flex-col bg-black text-[#E6EDF6] font-sans transition-all duration-300 ${
+      className={`flex flex-col bg-black text-tx font-sans transition-all duration-300 ${
         isProMode ? "h-screen overflow-hidden" : "min-h-screen"
       }`}
     >
@@ -244,12 +283,12 @@ export default function StockDetailV2Client({
       <header className="shrink-0 px-4 pt-3 pb-2 flex flex-wrap items-end justify-between gap-3">
         <div className="flex flex-col gap-1">
           {/* 브레드크럼 */}
-          <nav className="flex items-center gap-1.5 text-[11px] text-[#6B7280]">
-            <a href="/v2" className="hover:text-white transition-colors">홈</a>
+          <nav className="flex items-center gap-1.5 text-[11px] text-dim">
+            <Link href="/v2" className="hover:text-white transition-colors">홈</Link>
             <span>/</span>
-            <a href="/v2/stocks" className="hover:text-white transition-colors">주식</a>
+            <Link href="/v2/stocks" className="hover:text-white transition-colors">주식</Link>
             <span>/</span>
-            <span className="text-[#9CA3AF]">{stock.name}</span>
+            <span className="text-muted">{stock.name}</span>
           </nav>
 
           {/* 종목명 + 배지 */}
@@ -257,7 +296,7 @@ export default function StockDetailV2Client({
             <h1 className="text-[22px] font-bold text-white tracking-tight leading-none">
               {stock.name}
             </h1>
-            <span className="rounded-md bg-[#1C1C1E] px-2 py-0.5 font-mono text-[11px] text-[#9CA3AF]">
+            <span className="rounded-md bg-panel2 px-2 py-0.5 font-mono text-[11px] text-muted">
               {stock.ticker}
             </span>
             {stock.isCore && (
@@ -276,7 +315,7 @@ export default function StockDetailV2Client({
       </header>
 
       {/* ── 구분선 ── */}
-      <div className="h-px bg-[#1C1C1E] mx-4 mb-3 shrink-0" />
+      <div className="h-px bg-panel2 mx-4 mb-3 shrink-0" />
 
       {/* ── 레이아웃 전환 ── */}
       <main
@@ -304,8 +343,8 @@ export default function StockDetailV2Client({
 
       {/* ── 모드 전환 애니메이션 오버레이 힌트 ── */}
       {isProMode && (
-        <div className="shrink-0 px-4 pb-2 flex items-center gap-2 text-[10px] text-[#374151]">
-          <span className="w-1.5 h-1.5 rounded-full bg-[#3182F6] animate-pulse" />
+        <div className="shrink-0 px-4 pb-2 flex items-center gap-2 text-[10px] text-dim">
+          <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
           HTS Pro 모드 — 3단 레이아웃 활성화됨
         </div>
       )}
@@ -318,12 +357,12 @@ export default function StockDetailV2Client({
 ───────────────────────────────────────────────────────── */
 function SectionHeader({ title, badge }: { title: string; badge?: string }) {
   return (
-    <div className="flex items-center justify-between px-3 py-2 border-b border-[#1C1C1E] shrink-0">
-      <span className="text-[11px] font-bold text-[#9CA3AF] uppercase tracking-widest">
+    <div className="flex items-center justify-between px-3 py-2 border-b border-panel2 shrink-0">
+      <span className="text-[11px] font-bold text-muted uppercase tracking-widest">
         {title}
       </span>
       {badge && (
-        <span className="text-[9px] font-bold text-[#3182F6] bg-[#3182F6]/10 px-1.5 py-px rounded tracking-widest">
+        <span className="text-[9px] font-bold text-accent bg-accent/10 px-1.5 py-px rounded tracking-widest">
           {badge}
         </span>
       )}
@@ -340,23 +379,14 @@ function MetaCell({
   value: string;
   tone?: "up" | "down";
 }) {
-  /* ── Toss 색상 강제 ── */
-  const color =
-    tone === "up"
-      ? "#F04452" // Toss Red
-      : tone === "down"
-      ? "#3182F6" // Toss Blue
-      : "#FFFFFF";
+  const colorClass =
+    tone === "up" ? "text-bid" : tone === "down" ? "text-ask" : "text-tx";
   return (
-    <div className="px-4 py-3 bg-[#111316]">
-      <div className="text-[9px] text-[#6B7280] uppercase tracking-widest mb-1.5 font-semibold">
+    <div className="px-4 py-3 bg-panel">
+      <div className="text-[9px] text-dim uppercase tracking-widest mb-1.5 font-semibold">
         {label}
       </div>
-      {/* tabular-nums: 숫자 바뀔 때 레이아웃 흔들림 0 */}
-      <div
-        className="font-mono text-[13px] tabular-nums font-bold leading-none"
-        style={{ color }}
-      >
+      <div className={`font-mono text-[13px] tabular-nums font-bold leading-none ${colorClass}`}>
         {value}
       </div>
     </div>
@@ -372,23 +402,23 @@ function NewsList({
 }) {
   if (news.length === 0) {
     return (
-      <p className="px-4 py-6 text-center text-[11px] text-[#6B7280]">
+      <p className="px-4 py-6 text-center text-[11px] text-dim">
         관련 뉴스 없음
       </p>
     );
   }
   return (
-    <div className="divide-y divide-[#1C1C1E]">
+    <div className="divide-y divide-panel2">
       {news.map((n) => (
         <div key={n.id} className={`px-4 ${compact ? "py-2" : "py-3"}`}>
           <div className="flex items-center gap-1.5 mb-1">
             <span
               className={`rounded px-1.5 py-px text-[9px] font-bold ${
                 n.sentiment === "positive"
-                  ? "bg-[#F04452]/15 text-[#F04452]"
+                  ? "bg-bid/15 text-bid"
                   : n.sentiment === "negative"
-                  ? "bg-[#3182F6]/15 text-[#3182F6]"
-                  : "bg-[#1C1C1E] text-[#6B7280]"
+                  ? "bg-ask/15 text-ask"
+                  : "bg-panel2 text-dim"
               }`}
             >
               {n.sentiment === "positive"
@@ -397,7 +427,7 @@ function NewsList({
                 ? "악재"
                 : "중립"}
             </span>
-            <span className="text-[9px] text-[#4B5563]">
+            <span className="text-[9px] text-dim">
               {n.publisher || "언론사"}
             </span>
           </div>
@@ -409,7 +439,7 @@ function NewsList({
             {n.headline}
           </p>
           {!compact && (
-            <p className="mt-0.5 text-[11px] text-[#6B7280] line-clamp-1">
+            <p className="mt-0.5 text-[11px] text-dim line-clamp-1">
               {n.content}
             </p>
           )}
@@ -421,9 +451,7 @@ function NewsList({
 
 /* ─────────────────────────────────────────────────────────
    BigTradeButtons — Default 모드 핵심 CTA
-   화면을 꽉 채우는 거대한 매수/매도 버튼 2개
-   실제 주문 실행은 OrderEntry 컴포넌트에 위임하지 않고
-   시각적 진입점으로서만 동작 (클릭 시 주문창으로 포커스)
+   클릭 시 주문창으로 스크롤
 ───────────────────────────────────────────────────────── */
 function BigTradeButtons({ stock }: { stock: Stock }) {
   const isUSD =
@@ -446,26 +474,18 @@ function BigTradeButtons({ stock }: { stock: Stock }) {
       <button
         onClick={scrollToOrder}
         id="v2-buy-btn"
-        className="group relative flex flex-col items-center justify-center rounded-2xl py-8 px-6 overflow-hidden cursor-pointer transition-all duration-200 active:scale-[0.98]"
-        style={{ background: "rgba(240,68,82,0.08)", border: "1px solid rgba(240,68,82,0.15)" }}
+        className="group relative flex flex-col items-center justify-center rounded-2xl py-8 px-6 overflow-hidden cursor-pointer transition-all duration-200 active:scale-[0.98] bg-bid/8 border border-bid/15 hover:bg-bid/12"
         aria-label="매수"
       >
-        {/* 호버 배경 */}
-        <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-200"
-          style={{ background: "rgba(240,68,82,0.12)" }} />
-        {/* 레이블 */}
-        <span className="relative z-10 text-[11px] font-semibold tracking-widest uppercase text-[#F04452]/60 mb-2">
+        <span className="relative z-10 text-[11px] font-semibold tracking-widest uppercase text-bid/60 mb-2">
           매수 Buy
         </span>
-        {/* 가격 */}
-        <span className="relative z-10 font-mono text-[28px] font-black tabular-nums text-[#F04452] leading-none">
+        <span className="relative z-10 font-mono text-[28px] font-black tabular-nums text-bid leading-none">
           {currency}{priceStr}
         </span>
-        {/* 종목명 */}
-        <span className="relative z-10 text-[12px] text-[#F04452]/50 mt-2 font-medium">
+        <span className="relative z-10 text-[12px] text-bid/50 mt-2 font-medium">
           {stock.name} · {stock.ticker}
         </span>
-        {/* 하단 화살표 아이콘 */}
         <span className="relative z-10 mt-4 text-[20px] opacity-60">↑</span>
       </button>
 
@@ -473,19 +493,16 @@ function BigTradeButtons({ stock }: { stock: Stock }) {
       <button
         onClick={scrollToOrder}
         id="v2-sell-btn"
-        className="group relative flex flex-col items-center justify-center rounded-2xl py-8 px-6 overflow-hidden cursor-pointer transition-all duration-200 active:scale-[0.98]"
-        style={{ background: "rgba(49,130,246,0.08)", border: "1px solid rgba(49,130,246,0.15)" }}
+        className="group relative flex flex-col items-center justify-center rounded-2xl py-8 px-6 overflow-hidden cursor-pointer transition-all duration-200 active:scale-[0.98] bg-ask/8 border border-ask/15 hover:bg-ask/12"
         aria-label="매도"
       >
-        <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-200"
-          style={{ background: "rgba(49,130,246,0.12)" }} />
-        <span className="relative z-10 text-[11px] font-semibold tracking-widest uppercase text-[#3182F6]/60 mb-2">
+        <span className="relative z-10 text-[11px] font-semibold tracking-widest uppercase text-ask/60 mb-2">
           매도 Sell
         </span>
-        <span className="relative z-10 font-mono text-[28px] font-black tabular-nums text-[#3182F6] leading-none">
+        <span className="relative z-10 font-mono text-[28px] font-black tabular-nums text-ask leading-none">
           {currency}{priceStr}
         </span>
-        <span className="relative z-10 text-[12px] text-[#3182F6]/50 mt-2 font-medium">
+        <span className="relative z-10 text-[12px] text-ask/50 mt-2 font-medium">
           {stock.name} · {stock.ticker}
         </span>
         <span className="relative z-10 mt-4 text-[20px] opacity-60">↓</span>

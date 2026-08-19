@@ -162,6 +162,6 @@ export class NewsGenerator {
     ];
 
     const randomIndex = Math.floor(Math.random() * templates.length);
-    return templates[randomIndex];
+    return templates[randomIndex] as NewsItem;
   }
 }

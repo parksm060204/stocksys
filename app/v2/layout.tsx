@@ -9,7 +9,7 @@ export const metadata = {
 
 export default function V2Layout({ children }: { children: React.ReactNode }) {
   return (
-    <div className="min-h-screen bg-[#0C0E12] text-[#F3F4F6] font-sans antialiased selection:bg-[#3182F6]/30 selection:text-white">
+    <div className="min-h-screen bg-[#05070A] text-[#F4F5F6] font-sans antialiased selection:bg-[#F04452]/30 selection:text-white">
       {/* V2 Header Navbar */}
       <V2Navbar />
 
@@ -21,3 +21,4 @@ export default function V2Layout({ children }: { children: React.ReactNode }) {
     </div>
   );
 }
+

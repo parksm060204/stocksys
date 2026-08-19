@@ -27,7 +27,7 @@ export default function ParticipantFlowWidget({ stockId }: { stockId: string }) 
       if (data && isMounted) {
         let instNet = 0;
         let retailNet = 0;
-        let foreignNet = 0; // 외국계는 데모용으로 0으로 두거나 랜덤 변동
+        const foreignNet = 0; // 외국계는 데모용으로 0으로 두거나 랜덤 변동
 
         for (const t of data) {
           const volInEok = (t.price * t.size) / 100000000;

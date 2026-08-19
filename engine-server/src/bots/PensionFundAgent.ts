@@ -158,7 +158,7 @@ export class PensionFundAgent extends BaseAgent {
             const sinh_kT = Math.sinh(k * T);
             const cosh_kt = Math.cosh(k * timeRemaining);
             
-            let optimal_v_t = (X * k * cosh_kt) / sinh_kT;
+            const optimal_v_t = (X * k * cosh_kt) / sinh_kT;
             
             // 너무 크거나 작을 경우 보정
             let executionQty = Math.ceil(optimal_v_t);

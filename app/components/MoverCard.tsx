@@ -25,33 +25,36 @@ export default function MoverCard({ title, stocks }: { title: string; stocks: St
   }, [stocks]);
 
   return (
-    <div className="rounded-xl border border-[#222736] bg-[#151821] flex flex-col h-full overflow-hidden">
-      <div className="border-b border-[#222736] px-4 py-3 bg-[#12151e]">
-        <h3 className="text-[13px] font-semibold text-tx">{title}</h3>
+    <div className="rounded-2xl border border-[#212631] bg-[#0E1117] flex flex-col h-full overflow-hidden">
+      <div className="border-b border-[#212631] px-5 py-3.5 bg-[#090B0F]">
+        <h3 className="text-[13.5px] font-extrabold text-white">{title}</h3>
       </div>
-      <div className="divide-y divide-[#222736] flex-1">
+      <div className="divide-y divide-[#212631] flex-1">
         {stocks.map((s) => {
           const currentPrice = livePrices[s.id] ?? s.currentPrice;
           const { percent, dir } = change(currentPrice, s.previousClose);
-          const color = dir === "up" ? "text-up" : dir === "down" ? "text-down" : "text-muted";
+          const color = dir === "up" ? "text-[#F04452]" : dir === "down" ? "text-[#3182F6]" : "text-[#8E939D]";
+          const badgeBg = dir === "up" ? "bg-[#F04452]/10 border-[#F04452]/30 text-[#F04452]" : dir === "down" ? "bg-[#3182F6]/10 border-[#3182F6]/30 text-[#3182F6]" : "bg-[#161B22] border-[#212631] text-[#8E939D]";
           
           return (
             <Link
               key={s.id}
               href={`/stocks/${s.id}`}
-              className="flex items-center justify-between px-4 py-3 transition-colors hover:bg-[#1a1e29] group"
+              className="flex items-center justify-between px-5 py-3.5 transition-colors hover:bg-[#161B22] group"
             >
               <div className="flex flex-col">
-                <span className="font-semibold text-[13px] text-tx group-hover:text-[#3182F6] transition-colors">{s.name}</span>
-                <span className="font-mono text-[11px] text-dim">{s.ticker}</span>
+                <span className="font-extrabold text-[13.5px] text-white group-hover:text-[#F04452] transition-colors">{s.name}</span>
+                <span className="font-mono text-[11px] font-bold text-[#565A63]">{s.ticker}</span>
               </div>
-              <div className="flex flex-col items-end">
-                <span className={`font-mono text-[13px] font-bold tabular-nums ${color}`}>
+
+              <div className="flex flex-col items-end gap-0.5">
+                <span className={`font-mono text-[13.5px] font-black tabular-nums ${color}`}>
                   {fmtPrice(currentPrice, s.market)}
                 </span>
-                <span className={`font-mono text-[11px] font-medium tabular-nums ${color}`}>
-                  {dir === "up" ? "▲" : dir === "down" ? "▼" : "–"} {fmtSigned(percent)}%
+                <span className={`inline-block font-mono text-[10.5px] font-bold tabular-nums px-2 py-0.5 rounded-full border ${badgeBg}`}>
+                  {fmtSigned(percent)}%
                 </span>
+
               </div>
             </Link>
           );
@@ -60,3 +63,4 @@ export default function MoverCard({ title, stocks }: { title: string; stocks: St
     </div>
   );
 }
+

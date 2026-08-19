@@ -5,13 +5,22 @@ import { EventBus } from './EventBus';
 import { NewsGenerator, NewsItem } from './services/NewsGenerator';
 import { v4 as uuidv4 } from 'uuid';
 import * as dotenv from 'dotenv';
+import * as path from 'path';
 
-dotenv.config();
+dotenv.config({ path: path.resolve(__dirname, '../.env') });
+dotenv.config({ path: path.resolve(__dirname, '../../.env.local') });
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL || '',
-  process.env.SUPABASE_SERVICE_ROLE_KEY || ''
-);
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+if (!supabaseUrl || !supabaseKey) {
+  console.error("❌ [EventDirector] Critical Error: Missing Supabase credentials in environment variables.");
+  throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
+}
+
+
+const supabase = createClient(supabaseUrl, supabaseKey);
+
 
 export class EventDirector {
   private engine: MarketEngine;

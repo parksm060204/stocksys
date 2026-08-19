@@ -1,29 +1,17 @@
 import type { RetailSwarmBot } from "../types";
+import { BaseAgent } from "./BaseAgent";
 
-export class RetailSwarmAgent {
+export class RetailSwarmAgent extends BaseAgent {
   private bot: RetailSwarmBot;
 
   private holdings: Record<string, number> = {};
 
   constructor(bot: RetailSwarmBot) {
+    super(bot.id, bot.capital);
     this.bot = bot;
     if ((bot as any).initialHoldings) {
       this.holdings = { ...(bot as any).initialHoldings };
     }
-  }
-
-  public get botId(): string {
-    return this.bot.id;
-  }
-
-  private getTickSize(price: number): number {
-    if (price < 2000) return 1;
-    if (price < 5000) return 5;
-    if (price < 20000) return 10;
-    if (price < 50000) return 50;
-    if (price < 200000) return 100;
-    if (price < 500000) return 500;
-    return 1000;
   }
 
   // 3-State Kirman Model: Fundamentalists, Chartists, Noise Traders
@@ -34,13 +22,15 @@ export class RetailSwarmAgent {
     total: number
   }> = {};
 
-  public executeSwarmBehavior(currentMarket: any, myHoldings: any) {
+  public executeSwarmBehavior(currentMarket: any, _myHoldings: any) {
     const orders: any[] = [];
     const availableStocks = currentMarket.stocks || [];
     const activeEvents = currentMarket.activeEvents || [];
 
     for (const stock of availableStocks) {
-      if (!stock.previous_close || stock.previous_close === 0) continue;
+      const curPrice = stock.current_price || stock.currentPrice;
+      if (!curPrice || curPrice <= 0) continue;
+      const prevClose = stock.previous_close || stock.previousClose || curPrice;
       
       let fomoOverride = false;
       let panicOverride = false;
@@ -56,8 +46,8 @@ export class RetailSwarmAgent {
         }
       }
       
-      const dayReturn = (stock.current_price - stock.previous_close) / stock.previous_close;
-      const tickSize = this.getTickSize(stock.current_price);
+      const dayReturn = (curPrice - prevClose) / prevClose;
+      const tickSize = this.getTickSize(curPrice);
 
       // Kirman's 3-State Ant Model Initialization
       if (!this.swarmState[stock.id]) {
@@ -156,22 +146,31 @@ export class RetailSwarmAgent {
           tinyQty = Math.floor(Math.random() * 50) + 10; // 매수 규모 10배 폭발
           executionPrice = stock.current_price + tickSize * Math.floor(Math.random() * 10); // 저 멀리 위까지 싹쓸이
         } else if (antType === 'FUNDAMENTALIST') {
-          // 가치 투자자: 본질 가치보다 싸면 사고, 비싸면 판다.
+          // 가치 투자자: 본질 가치보다 싸면 매수 테이킹, 비싸면 매도 테이킹
           side = stock.current_price < fundamentalValue ? 'buy' : 'sell';
-          executionPrice = side === 'buy' ? stock.current_price - tickSize : stock.current_price + tickSize;
+          executionPrice = side === 'buy' ? stock.current_price + tickSize : Math.max(tickSize, stock.current_price - tickSize);
         } else if (antType === 'CHARTIST') {
           // 추세 추종자: 오르면 더 사고, 내리면 패닉 셀
           if (coreTrend > 0 || fomoOverride) {
             side = 'buy';
-            executionPrice = stock.current_price + tickSize * Math.floor(Math.random() * 3);
+            executionPrice = stock.current_price + tickSize * Math.max(1, Math.floor(Math.random() * 3));
           } else if (coreTrend < 0 || panicOverride) {
             side = 'sell';
-            executionPrice = stock.current_price - tickSize * Math.floor(Math.random() * 3);
+            executionPrice = Math.max(tickSize, stock.current_price - tickSize * Math.max(1, Math.floor(Math.random() * 3)));
+          } else {
+            // 박스권 체결 유도
+            side = Math.random() < 0.5 ? 'buy' : 'sell';
+            executionPrice = side === 'buy' ? stock.current_price + tickSize : Math.max(tickSize, stock.current_price - tickSize);
           }
         } else {
-          // 노이즈 트레이더: 무작위 방향, 스프레드 무작위
-          executionPrice = stock.current_price + (side === 'buy' ? -tickSize : tickSize) * Math.floor(Math.random() * 5);
+          // 노이즈 트레이더: 40% 확률로 시장가/테이커 체결, 60% 확률로 지정가 배치
+          if (Math.random() < 0.40) {
+            executionPrice = side === 'buy' ? stock.current_price + tickSize : Math.max(tickSize, stock.current_price - tickSize);
+          } else {
+            executionPrice = stock.current_price + (side === 'buy' ? -tickSize : tickSize) * Math.floor(Math.random() * 3);
+          }
         }
+
 
         orders.push({
           stock_id: stock.id,

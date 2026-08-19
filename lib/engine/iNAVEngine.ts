@@ -1,4 +1,5 @@
 import { ETFDefinition, iNAVData } from './etfTypes';
+import { roundToETFTick } from './etfDefinitions';
 
 export class iNAVEngine {
   private etf: ETFDefinition;
@@ -22,22 +23,34 @@ export class iNAVEngine {
       totalBasketValue += price * item.sharesPerCU;
     }
 
-    // 2. 레버리지/인버스 배율 적용
     totalBasketValue += this.etf.cashComponent;
     
     // 1주당 iNAV
-    const rawNAV = totalBasketValue / this.etf.cuSize;
+    let rawNAV = totalBasketValue / this.etf.cuSize;
+
+    // 스케일 정규화 (PDF 샘플 단주 규격과 ETF 시장가 비율 맞춤)
+    if (rawNAV > 0 && currentMarketPrice > 0) {
+      const ratio = currentMarketPrice / rawNAV;
+      if (ratio > 5 || ratio < 0.2) {
+        const scaleFactor = Math.pow(10, Math.round(Math.log10(ratio)));
+        rawNAV = rawNAV * scaleFactor;
+      }
+    }
+
+    // 2. KRX ETF 호가단위(Tick Size 5원/10원) 반올림 적용
+    const isUsOrGlobal = (this.etf as any).category === 'US' || (this.etf as any).category === 'GLOBAL';
+    const finalNAV = roundToETFTick(rawNAV, isUsOrGlobal);
     
     // 3. 괴리율(Discrepancy Rate) 계산
-    const discrepancyRate = rawNAV > 0 
-      ? ((currentMarketPrice - rawNAV) / rawNAV) * 100 
+    const discrepancyRate = finalNAV > 0 
+      ? ((currentMarketPrice - finalNAV) / finalNAV) * 100 
       : 0;
 
     return {
       etfTicker: this.etf.etfTicker,
-      iNAV: Number(rawNAV.toFixed(2)),
+      iNAV: finalNAV,
       marketPrice: currentMarketPrice,
-      discrepancyRate: Number(discrepancyRate.toFixed(3)),
+      discrepancyRate: Number(discrepancyRate.toFixed(2)),
       timestamp: Date.now()
     };
   }

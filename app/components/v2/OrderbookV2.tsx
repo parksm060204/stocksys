@@ -55,7 +55,6 @@ export default function OrderbookV2({
   );
   const totalAskSize = asks.reduce((a, c) => a + c.totalSize, 0);
   const totalBidSize = bids.reduce((a, c) => a + c.totalSize, 0);
-  const totalSum = totalAskSize + totalBidSize;
   const displayPrice = livePrice || currentPrice;
 
   /* ── 매도 행 (파랑) ── */

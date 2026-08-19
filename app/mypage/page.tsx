@@ -1,12 +1,13 @@
 import Link from "next/link";
 import { fmtPrice } from "@/lib/format";
 import { createClient } from "@/lib/supabase/server";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 
 export const revalidate = 0; // Disable static caching to fetch live user data
 
 export default async function MyPage() {
-  const supabase = await createClient();
-  const { data: { session } } = await supabase.auth.getSession();
+  const session = await getServerSession(authOptions);
 
   // 1. 비로그인 상태일 경우: 마이페이지 데이터 렌더링을 완전 차단하고 로그인 안내 표시
   if (!session?.user) {
@@ -33,6 +34,7 @@ export default async function MyPage() {
 
   // 2. 로그인된 상태: 해당 사용자의 실제 DB 프로필 및 보유 자산 조회
   const userId = session.user.id;
+  const supabase = await createClient();
 
   const [{ data: profile }, { data: holdingsData }, { data: ratesData }] = await Promise.all([
     supabase
@@ -82,34 +84,42 @@ export default async function MyPage() {
     };
   });
 
-  const totalValue = rows.reduce((a, r) => a + r.value, 0);
-  const totalCost = rows.reduce((a, r) => a + r.cost, 0);
+  const totalValue = rows.reduce((a: number, r: any) => a + Number(r.value || 0), 0);
+  const totalCost = rows.reduce((a: number, r: any) => a + Number(r.cost || 0), 0);
   const totalPnl = totalValue - totalCost;
   const totalPnlPct = totalCost !== 0 ? (totalPnl / totalCost) * 100 : 0;
 
   // 환율 적용 총 자산 계산
-  const ratesMap = new Map((ratesData || []).map((r) => [r.currency_code, Number(r.rate_to_krw)]));
-  const getRate = (code: string) => ratesMap.get(code) || 1;
+  const ratesMap = new Map((ratesData || []).map((r: any) => [r.currency_code, Number(r.rate_to_krw || 1)]));
+  const getRate = (code: string): number => Number(ratesMap.get(code) || 1);
 
-  const usdInKrw = usd * getRate("USD");
-  const eurInKrw = eur * getRate("EUR");
-  const jpyInKrw = jpy * getRate("JPY");
-  const cnyInKrw = cny * getRate("CNY");
-  const gbpInKrw = gbp * getRate("GBP");
-  const totalCurrenciesInKrw = cash + usdInKrw + eurInKrw + jpyInKrw + cnyInKrw + gbpInKrw;
+  const usdInKrw = Number(usd || 0) * getRate("USD");
+  const eurInKrw = Number(eur || 0) * getRate("EUR");
+  const jpyInKrw = Number(jpy || 0) * getRate("JPY");
+  const cnyInKrw = Number(cny || 0) * getRate("CNY");
+  const gbpInKrw = Number(gbp || 0) * getRate("GBP");
+  const totalCurrenciesInKrw = Number(cash || 0) + usdInKrw + eurInKrw + jpyInKrw + cnyInKrw + gbpInKrw;
 
   return (
-    <div className="mx-auto max-w-6xl px-6 py-6 font-sans">
-      <div className="mb-6 flex items-center justify-between">
+    <div className="mx-auto max-w-6xl px-6 py-6 font-sans space-y-6">
+      {/* Header Banner */}
+      <div className="bg-[#0E1117] border border-[#212631] p-6 rounded-3xl flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shadow-2xl">
         <div>
-          <h1 className="text-xl font-bold text-white">마이페이지</h1>
-          <p className="text-[13px] text-gray-400">
-            {session.user.user_metadata?.full_name || session.user.email} 님의 가상 자산 포트폴리오
+          <div className="inline-flex items-center gap-2 rounded-full border border-[#F04452]/40 bg-[#F04452]/10 px-3.5 py-1 text-[11px] font-mono font-bold text-[#F04452] mb-2">
+            <span className="inline-block h-2 w-2 rounded-full bg-[#F04452] animate-pulse" />
+            MY PORTFOLIO · 가상 계좌 마이페이지
+          </div>
+          <h1 className="text-xl md:text-2xl font-black text-white tracking-tight">
+            마이페이지 & 포트폴리오
+          </h1>
+          <p className="text-[12.5px] text-[#8E939D] mt-1 font-medium">
+            {session.user.name || session.user.email} 님의 실시간 자산 및 보유 외화 지갑 현황입니다.
           </p>
         </div>
       </div>
 
-      <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-4">
+      {/* Summary Cards */}
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-4 font-mono">
         <Summary label="총 자산 (원화 환산)" value={fmtPrice(totalValue + totalCurrenciesInKrw, "domestic")} />
         <Summary label="주식 평가금액" value={fmtPrice(totalValue, "domestic")} />
         <Summary label="원화 예수금" value={fmtPrice(cash, "domestic")} />
@@ -120,47 +130,51 @@ export default async function MyPage() {
         />
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* 보유 종목 테이블 */}
-        <div className="lg:col-span-2 rounded-xl border border-[#222736] bg-[#141721]">
-          <div className="border-b border-[#222736] px-4 py-3 flex items-center justify-between">
-            <h2 className="text-[14px] font-semibold text-white">보유 종목</h2>
-            <span className="text-[11px] text-gray-500 font-mono">{rows.length}개 종목</span>
+        <div className="lg:col-span-2 rounded-3xl border border-[#212631] bg-[#0E1117] overflow-hidden shadow-2xl">
+          <div className="border-b border-[#212631] px-5 py-4 flex items-center justify-between bg-[#090B0F]">
+            <h2 className="text-[14px] font-black text-white">보유 종목 리스트</h2>
+            <span className="text-[11px] text-[#8E939D] font-mono font-bold">{rows.length}개 종목</span>
           </div>
           <div className="overflow-x-auto">
             {rows.length === 0 ? (
-              <div className="p-8 text-center text-[13px] text-gray-500">현재 보유 중인 종목이 없습니다.</div>
+              <div className="p-12 text-center text-[13px] text-[#8E939D] font-mono">현재 보유 중인 종목이 없습니다.</div>
             ) : (
-              <table className="w-full text-left text-[13px]">
-                <thead className="border-b border-[#222736] text-[11px] uppercase tracking-wider text-gray-500 bg-[#090a0f]">
+              <table className="w-full text-left text-[13px] border-collapse font-mono">
+                <thead className="border-b border-[#212631] text-[11px] font-extrabold uppercase tracking-wider text-[#8E939D] bg-[#090B0F]">
                   <tr>
-                    <th className="px-4 py-2.5 font-semibold">종목</th>
-                    <th className="px-4 py-2.5 text-right font-semibold">보유 수량</th>
-                    <th className="px-4 py-2.5 text-right font-semibold">평단가</th>
-                    <th className="px-4 py-2.5 text-right font-semibold">현재가</th>
-                    <th className="px-4 py-2.5 text-right font-semibold">평가금액</th>
-                    <th className="px-4 py-2.5 text-right font-semibold">손익</th>
-                    <th className="px-4 py-2.5 text-right font-semibold">수익률</th>
+                    <th className="px-5 py-3 font-bold border-none">종목</th>
+                    <th className="px-5 py-3 text-right font-bold border-none">보유 수량</th>
+                    <th className="px-5 py-3 text-right font-bold border-none">평단가</th>
+                    <th className="px-5 py-3 text-right font-bold border-none">현재가</th>
+                    <th className="px-5 py-3 text-right font-bold border-none">평가금액</th>
+                    <th className="px-5 py-3 text-right font-bold border-none">손익</th>
+                    <th className="px-5 py-3 text-right font-bold border-none">수익률</th>
                   </tr>
                 </thead>
-                <tbody>
-                  {rows.map((r) => (
-                    <tr key={r.stockId} className="border-b border-[#222736]/60 last:border-0 hover:bg-[#1c202c]">
-                      <td className="px-4 py-3">
-                        <Link href={`/stocks/${r.stockId}`} className="font-medium text-white hover:text-[#0A84FF]">
+                <tbody className="divide-y divide-[#212631]">
+                  {rows.map((r: any) => (
+                    <tr key={r.stockId} className="transition-colors hover:bg-[#161B22] border-b border-[#212631] last:border-none">
+                      <td className="px-5 py-4 border-none">
+                        <Link href={`/stocks/${r.stockId}`} className="font-extrabold text-white hover:text-[#F04452] transition-colors">
                           {r.name}
                         </Link>
-                        <div className="font-mono text-[11px] text-gray-500">{r.ticker}</div>
+                        <div className="font-mono text-[11px] text-[#565A63] font-bold">{r.ticker}</div>
                       </td>
-                      <td className="px-4 py-3 text-right font-mono tabular-nums text-gray-300">{r.quantity.toLocaleString()}</td>
-                      <td className="px-4 py-3 text-right font-mono tabular-nums text-gray-400">{fmtPrice(r.avgPrice, r.market as any)}</td>
-                      <td className="px-4 py-3 text-right font-mono tabular-nums text-white">{fmtPrice(r.currentPrice, r.market as any)}</td>
-                      <td className="px-4 py-3 text-right font-mono tabular-nums text-white">{fmtPrice(r.value, r.market as any)}</td>
-                      <td className={`px-4 py-3 text-right font-mono tabular-nums ${r.pnl >= 0 ? "text-[#FF453A]" : "text-[#0A84FF]"}`}>
+                      <td className="px-5 py-4 text-right font-mono tabular-nums text-[#8E939D] font-medium">{r.quantity.toLocaleString()}</td>
+                      <td className="px-5 py-4 text-right font-mono tabular-nums text-[#8E939D] font-medium">{fmtPrice(r.avgPrice, r.market as any)}</td>
+                      <td className="px-5 py-4 text-right font-mono tabular-nums text-white font-bold">{fmtPrice(r.currentPrice, r.market as any)}</td>
+                      <td className="px-5 py-4 text-right font-mono tabular-nums text-white font-black">{fmtPrice(r.value, r.market as any)}</td>
+                      <td className={`px-5 py-4 text-right font-mono tabular-nums font-black ${r.pnl >= 0 ? "text-[#F04452]" : "text-[#3182F6]"}`}>
                         {r.pnl >= 0 ? "+" : ""}{fmtPrice(r.pnl, r.market as any)}
                       </td>
-                      <td className={`px-4 py-3 text-right font-mono font-semibold tabular-nums ${r.pnlPct >= 0 ? "text-[#FF453A]" : "text-[#0A84FF]"}`}>
-                        {r.pnlPct >= 0 ? "+" : ""}{r.pnlPct.toFixed(2)}%
+                      <td className={`px-5 py-4 text-right font-mono font-black tabular-nums ${r.pnlPct >= 0 ? "text-[#F04452]" : "text-[#3182F6]"}`}>
+                        <span className={`inline-block px-2 py-0.5 rounded-full border text-[11.5px] ${
+                          r.pnlPct >= 0 ? "bg-[#F04452]/10 border-[#F04452]/30 text-[#F04452]" : "bg-[#3182F6]/10 border-[#3182F6]/30 text-[#3182F6]"
+                        }`}>
+                          {r.pnlPct >= 0 ? "+" : ""}{r.pnlPct.toFixed(2)}%
+                        </span>
                       </td>
                     </tr>
                   ))}
@@ -171,11 +185,11 @@ export default async function MyPage() {
         </div>
 
         {/* 보유 외화 지갑 카드 */}
-        <div className="rounded-xl border border-[#222736] bg-[#141721] p-4 flex flex-col">
-          <div className="border-b border-[#222736] pb-3 mb-3">
-            <h2 className="text-[14px] font-semibold text-white">보유 외화 지갑</h2>
+        <div className="rounded-3xl border border-[#212631] bg-[#0E1117] p-5 flex flex-col shadow-2xl space-y-4">
+          <div className="border-b border-[#212631] pb-3">
+            <h2 className="text-[14px] font-black text-white">보유 외화 지갑</h2>
           </div>
-          <div className="grid grid-cols-2 gap-2 flex-1">
+          <div className="grid grid-cols-2 gap-3 flex-1">
             <CurrencyItem code="KRW" name="원화" amount={cash} icon="₩" />
             <CurrencyItem code="USD" name="달러" amount={usd} icon="$" />
             <CurrencyItem code="EUR" name="유로" amount={eur} icon="€" />
@@ -190,22 +204,23 @@ export default async function MyPage() {
 }
 
 function Summary({ label, value, tone }: { label: string; value: string; tone?: "up" | "down" }) {
-  const color = tone === "up" ? "text-[#FF453A]" : tone === "down" ? "text-[#0A84FF]" : "text-white";
+  const color = tone === "up" ? "text-[#F04452]" : tone === "down" ? "text-[#3182F6]" : "text-white";
   return (
-    <div className="rounded-xl border border-[#222736] bg-[#141721] p-4">
-      <div className="text-[11px] uppercase tracking-wider text-gray-500 font-medium">{label}</div>
-      <div className={`mt-1 font-mono text-[16px] font-bold tabular-nums ${color}`}>{value}</div>
+    <div className="rounded-2xl border border-[#212631] bg-[#0E1117] p-4 shadow-xl">
+      <div className="text-[10.5px] uppercase tracking-wider text-[#8E939D] font-bold">{label}</div>
+      <div className={`mt-1 font-mono text-[16px] font-black tabular-nums ${color}`}>{value}</div>
     </div>
   );
 }
 
 function CurrencyItem({ code, name, amount, icon }: { code: string; name: string; amount: number; icon: string }) {
   return (
-    <div className="rounded-lg border border-[#222736]/80 bg-[#090a0f] p-3 hover:border-gray-600 transition-all">
-      <div className="text-[10px] text-gray-500 uppercase font-semibold">{name} ({code})</div>
-      <div className="mt-1 font-mono text-[14px] font-bold text-white tabular-nums">
+    <div className="rounded-2xl border border-[#212631] bg-[#05070A] p-3.5 hover:border-[#F04452]/40 transition-all font-mono">
+      <div className="text-[10.5px] text-[#8E939D] uppercase font-bold">{name} ({code})</div>
+      <div className="mt-1 font-mono text-[14px] font-black text-white tabular-nums">
         {icon} {amount.toLocaleString(undefined, { maximumFractionDigits: 4 })}
       </div>
     </div>
   );
 }
+

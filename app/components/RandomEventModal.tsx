@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { createClient } from "@/lib/supabase/client";
+import { useAuth } from "@/lib/auth/useAuth";
 
 interface PlayerEvent {
   id: string;
@@ -23,15 +24,17 @@ interface ActiveEvent {
   status: string;
 }
 
+const supabase = createClient();
+
 export default function RandomEventModal() {
   const [activeEvent, setActiveEvent] = useState<ActiveEvent | null>(null);
   const [eventData, setEventData] = useState<PlayerEvent | null>(null);
   const [loading, setLoading] = useState(false);
-
-  const supabase = createClient();
+  const { userId, isLoggedIn } = useAuth();
 
   useEffect(() => {
-    let userId: string | null = null;
+    let mounted = true;
+    const currentUserId: string | null = userId;
 
     const checkPendingEvents = async (uid: string) => {
       const { data } = await supabase
@@ -42,33 +45,33 @@ export default function RandomEventModal() {
         .order('created_at', { ascending: true })
         .limit(1);
 
+      if (!mounted) return;
       if (data && data.length > 0) {
         const active = data[0];
         setActiveEvent(active);
         const { data: edata } = await supabase.from('player_events').select('*').eq('id', active.event_id).single();
-        if (edata) setEventData(edata);
+        if (mounted && edata) setEventData(edata);
       }
     };
 
-    supabase.auth.getSession().then(({ data }: { data: { session: { user: { id: string } } | null } }) => {
-      userId = data.session?.user?.id ?? null;
-      if (userId) checkPendingEvents(userId);
-    });
+    // 주기적 이벤트 체크 폴링 (매 30초)
+    const pollInterval = setInterval(() => {
+      if (currentUserId && mounted && !activeEvent) {
+        checkPendingEvents(currentUserId);
+      }
+    }, 30000);
 
-    const channel = supabase.channel('active_events_changes')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'active_player_events' }, (payload: { new: Record<string, unknown> }) => {
-        if (payload.new.user_id === userId && payload.new.status === 'pending') {
-          if (!activeEvent) {
-            checkPendingEvents(userId!);
-          }
-        }
-      })
-      .subscribe();
+    // Initial delay check
+    const delayTimer = setTimeout(() => {
+      if (currentUserId && mounted) checkPendingEvents(currentUserId);
+    }, 2000);
 
     return () => {
-      supabase.removeChannel(channel);
+      mounted = false;
+      clearTimeout(delayTimer);
+      clearInterval(pollInterval);
     };
-  }, [activeEvent, supabase]);
+  }, [activeEvent, userId]);
 
   if (!activeEvent || !eventData) return null;
 
@@ -76,9 +79,8 @@ export default function RandomEventModal() {
     if (loading) return;
     setLoading(true);
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const uid = session?.user?.id;
-      if (!uid) return;
+      if (!isLoggedIn || !userId) return;
+      const uid = userId;
 
       const cost = choice === 'A' ? eventData.choice_a_cost : eventData.choice_b_cost;
       const passive = choice === 'A' ? eventData.choice_a_passive : eventData.choice_b_passive;

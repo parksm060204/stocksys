@@ -98,24 +98,25 @@ function groupToCandles(
     .sort((a, b) => a.time - b.time);
 }
 
-/* ── 시드 기반 Fallback 캔들 ── */
+/* ── 시드 기반 Fallback 캔들 (역순 매칭으로 수직 낙하 착시 완벽 방지) ── */
 function makeFallbackCandles(stockId: string, currentPrice: number): Candle[] {
   const rng = seededRng(hashStr(stockId));
   const now = Date.now();
   const count = 60;
-  const candles: Candle[] = [];
-  let price = currentPrice * (0.93 + rng() * 0.14);
+  const history: Candle[] = [];
+  let price = currentPrice;
 
-  for (let i = count; i >= 1; i--) {
+  for (let i = 0; i <= count; i++) {
     const ts = Math.floor(floorToInterval(now - i * INTERVAL_MS) / 1000);
-    const chg = (rng() - 0.492) * 0.022;
-    const open = price;
-    const close = open * (1 + chg);
-    const wk = rng() * 0.007;
+    const chg = (rng() - 0.492) * 0.018;
+    const close = price;
+    const open = close / (1 + chg);
+    const wk = rng() * 0.006;
     const high = Math.max(open, close) * (1 + wk);
     const low = Math.min(open, close) * (1 - wk);
     const volume = Math.floor(rng() * 80000 + 5000);
-    candles.push({
+
+    history.push({
       time: ts,
       open: +open.toFixed(2),
       high: +high.toFixed(2),
@@ -123,30 +124,11 @@ function makeFallbackCandles(stockId: string, currentPrice: number): Candle[] {
       close: +close.toFixed(2),
       volume,
     });
-    price = close;
-  }
-  // 마지막 봉 → 현재가 고정
-  const lastTs = Math.floor(floorToInterval(now) / 1000);
-  const lastOpen = price;
-  candles.push({
-    time: lastTs,
-    open: +lastOpen.toFixed(2),
-    high: +Math.max(lastOpen, currentPrice).toFixed(2),
-    low: +Math.min(lastOpen, currentPrice).toFixed(2),
-    close: +currentPrice.toFixed(2),
-    volume: Math.floor(rng() * 30000 + 2000),
-  });
-  return candles;
-}
 
-/* ── SMA 계산 ── */
-function calcSMA(data: Candle[], period: number): { time: number; value: number }[] {
-  const result: { time: number; value: number }[] = [];
-  for (let i = period - 1; i < data.length; i++) {
-    const sum = data.slice(i - period + 1, i + 1).reduce((a, c) => a + c.close, 0);
-    result.push({ time: data[i].time, value: +(sum / period).toFixed(2) });
+    price = open;
   }
-  return result;
+
+  return history.reverse();
 }
 
 /* ── Bollinger Bands ── */
@@ -233,7 +215,7 @@ export default function StockChartV2({ ticker, currentPrice, isProMode }: Props)
 
   const [stockId, setStockId] = useState<string | null>(null);
   const [isFallback, setIsFallback] = useState(false);
-  const [activeMode, setActiveMode] = useState<"default" | "pro">(
+  const [, setActiveMode] = useState<"default" | "pro">(
     isProMode ? "pro" : "default"
   );
 
@@ -594,19 +576,24 @@ export default function StockChartV2({ ticker, currentPrice, isProMode }: Props)
               }
               chartRef.current?.timeScale().scrollToRealTime();
             } else {
-              /* Fallback (선 차트) */
+              /* DB 체결 데이터가 아직 없는 경우 현재가 기준 실시간 베이스 캔들 설정 */
+              const nowTs = Math.floor(floorToInterval(Date.now()) / 1000);
+              const baseCandle = {
+                time: nowTs as unknown as import("lightweight-charts").Time,
+                open: currentPrice,
+                high: currentPrice,
+                low: currentPrice,
+                close: currentPrice,
+              };
               if (!isProMode && mainSeriesRef.current) {
-                const fallback = makeFallbackCandles(stockId, currentPrice);
                 const lineSer = mainSeriesRef.current as ISeriesApi<"Line">;
-                lineSer.setData(
-                  fallback.map((c) => ({
-                    time: c.time as unknown as import("lightweight-charts").Time,
-                    value: c.close,
-                  }))
-                );
-                chartRef.current?.timeScale().scrollToRealTime();
+                lineSer.setData([{ time: baseCandle.time, value: currentPrice }]);
+              } else if (isProMode && mainSeriesRef.current) {
+                const candleSer = mainSeriesRef.current as ISeriesApi<"Candlestick">;
+                candleSer.setData([baseCandle]);
               }
-              setIsFallback(true);
+              chartRef.current?.timeScale().scrollToRealTime();
+              setIsFallback(false);
             }
           } catch { /* disposed */ }
         }

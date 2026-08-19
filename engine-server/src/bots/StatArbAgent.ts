@@ -1,38 +1,5 @@
 import { BaseAgent } from "./BaseAgent";
-
-// O(1) 원형 큐(Circular Queue)
-class CircularQueue<T> {
-  private buffer: T[];
-  private head: number = 0;
-  private tail: number = 0;
-  private size: number = 0;
-  private capacity: number;
-
-  constructor(capacity: number) {
-    this.capacity = capacity;
-    this.buffer = new Array<T>(capacity);
-  }
-
-  push(item: T) {
-    this.buffer[this.tail] = item;
-    this.tail = (this.tail + 1) % this.capacity;
-    if (this.size < this.capacity) {
-      this.size++;
-    } else {
-      this.head = (this.head + 1) % this.capacity; 
-    }
-  }
-
-  toArray(): T[] {
-    const result: T[] = [];
-    for (let i = 0; i < this.size; i++) {
-      result.push(this.buffer[(this.head + i) % this.capacity] as T);
-    }
-    return result;
-  }
-
-  length(): number { return this.size; }
-}
+import { CircularQueue } from "./utils/CircularQueue";
 
 export class StatArbAgent extends BaseAgent {
   // 페어 트레이딩 목록 (종목 티커)

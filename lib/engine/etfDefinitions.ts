@@ -6,6 +6,26 @@ export interface ExtendedETFDefinition extends ETFDefinition {
   basePrice: number;
 }
 
+/**
+ * KRX 한국거래소 표준 ETF 호가단위 (Tick Size)
+ * - 2,000원 미만: 1원 단위
+ * - 2,000원 이상 ~ 50,000원 미만: 5원 단위
+ * - 50,000원 이상: 10원 단위
+ * (미국/글로벌 ETF인 경우 $0.01 센트 단위)
+ */
+export function getETFTickSize(price: number, isUsOrGlobal = false): number {
+  if (isUsOrGlobal) return 0.01;
+  if (price < 2000) return 1;
+  if (price < 50000) return 5; // 2,000원 이상 ~ 50,000원 미만 5원 단위
+  return 10; // 50,000원 이상 10원 단위
+}
+
+export function roundToETFTick(price: number, isUsOrGlobal = false): number {
+  if (isUsOrGlobal) return Number(price.toFixed(2));
+  const tick = getETFTickSize(price, isUsOrGlobal);
+  return Math.round(price / tick) * tick;
+}
+
 export const ETF_CATALOG: ExtendedETFDefinition[] = [
   // 1) 한국 대표 ETF
   {
@@ -194,7 +214,7 @@ export const ETF_CATALOG: ExtendedETFDefinition[] = [
 ];
 
 /**
- * Seed ETF stocks directly into Supabase `stocks` DB table (market = 'etf')
+ * Seed ETF stocks directly into DB `stocks` table (market = 'etf')
  */
 export async function seedETFStocksToDatabase() {
   try {

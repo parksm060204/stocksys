@@ -90,12 +90,22 @@ export default async function StockDetail({
   
   // Fetch news related to this stock or its sector
   const { data: newsData } = await supabase
-    .from('news_v2')
+    .from('market_news')
     .select('*')
-    .or(`sector.eq.${stock.sector},headline.ilike.%${stock.name}%,content.ilike.%${stock.name}%`)
+    .or(`target_sector.eq.${stock.sector},headline.ilike.%${stock.name}%,summary.ilike.%${stock.name}%`)
     .order('created_at', { ascending: false })
     .limit(5);
   const relatedNews = newsData || [];
+
+  // Fetch price history records
+  const { data: priceHistoryData } = await supabase
+    .from('stock_price_history')
+    .select('*')
+    .eq('stock_id', id)
+    .order('created_at', { ascending: false })
+    .limit(50);
+  const priceHistory = priceHistoryData || [];
+
 
   // For now, chat messages are empty or we can fetch them if there's a chat table
   const messages: any[] = [];
@@ -140,6 +150,7 @@ export default async function StockDetail({
         relatedNews={relatedNews}
         messages={messages}
         tradingValueStr={tradingValueStr}
+        priceHistory={priceHistory}
       />
     </div>
   );

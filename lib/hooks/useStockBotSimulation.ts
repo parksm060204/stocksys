@@ -124,10 +124,8 @@ export function useStockBotSimulation(
     const newTrades: SimTrade[] = [];
     eng.tickCount++;
 
-    const prng1 = deterministicPRNG(eng.tickCount * 1.1 + eng.midPrice);
-    const prng2 = deterministicPRNG(eng.tickCount * 2.3 + eng.midPrice);
-
     // ── 1. 삼각함도 파동 결정론적 모멘텀 ──
+    void deterministicPRNG;  // PRNG helpers (side-effect-free deterministic shift if needed externally)
     const wave = Math.sin(eng.tickCount * 0.1) * 0.5 + Math.cos(eng.tickCount * 0.05) * 0.3;
     eng.momentum = eng.momentum * 0.85 + wave * 0.15;
 

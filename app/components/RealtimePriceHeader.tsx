@@ -1,36 +1,16 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { change, fmtPrice, fmtSigned } from "@/lib/format";
 import type { Stock } from "@/lib/types";
 import { PriceTag } from "@/app/components/PriceTag";
-import { createClient } from "@/lib/supabase/client";
 
 export default function RealtimePriceHeader({ stock }: { stock: Stock }) {
   const [currentPrice, setCurrentPrice] = useState(stock.currentPrice);
-  const lastDisplayedPrice = useRef(stock.currentPrice);
-  const supabase = createClient();
 
   useEffect(() => {
-    const channel = supabase
-      .channel(`realtime_price_${stock.id}`)
-      .on(
-        'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'stocks', filter: `id=eq.${stock.id}` },
-        (payload: { new: Record<string, unknown> }) => {
-          const newPrice = payload.new.current_price as number;
-          if (newPrice !== lastDisplayedPrice.current) {
-            setCurrentPrice(newPrice);
-            lastDisplayedPrice.current = newPrice;
-          }
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [stock.id, supabase]);
+    setCurrentPrice(stock.currentPrice);
+  }, [stock.currentPrice]);
 
   const { percent, amount, dir } = change(currentPrice, stock.previousClose);
   const color = dir === "up" ? "text-up" : dir === "down" ? "text-down" : "text-muted";

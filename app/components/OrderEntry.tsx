@@ -1,9 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import type { Stock } from "@/lib/types";
 import { fmtPrice } from "@/lib/format";
 import { createClient } from "@/lib/supabase/client";
+import { useAuth } from "@/lib/auth/useAuth";
+import { submitAndMatchOrder } from "@/lib/engine/dbMatching";
+import { useToast } from "@/app/components/ToastProvider";
 
 export default function OrderEntry({ stock }: { stock: Stock }) {
   const [side, setSide] = useState<"buy" | "sell">("buy");
@@ -15,25 +18,30 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
   const [userHoldingQty, setUserHoldingQty] = useState<number | null>(null);
 
   const supabase = createClient();
+  const { userId, isLoggedIn } = useAuth();
+  const { showToast } = useToast();
+
+  const refreshUserBalances = useCallback(async (sId: string) => {
+    if (!isLoggedIn || !userId) return;
+    const { data: profile } = await supabase.from('profiles').select('cash').eq('id', userId).single();
+    if (profile) setUserCash(Number(profile.cash || 0));
+
+    const { data: holding } = await supabase.from('holdings').select('quantity').eq('user_id', userId).eq('stock_id', sId).single();
+    setUserHoldingQty(holding ? Number(holding.quantity || 0) : 0);
+  }, [isLoggedIn, userId, supabase]);
 
   useEffect(() => {
     const initData = async () => {
       const { data: stockData } = await supabase.from('stocks').select('id').eq('ticker', stock.ticker).single();
-      if (stockData) setStockId(stockData.id);
-
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session?.user) {
-        const { data: profile } = await supabase.from('profiles').select('cash').eq('id', session.user.id).single();
-        if (profile) setUserCash(profile.cash);
-
-        if (stockData) {
-          const { data: holding } = await supabase.from('holdings').select('quantity').eq('user_id', session.user.id).eq('stock_id', stockData.id).single();
-          if (holding) setUserHoldingQty(holding.quantity);
+      if (stockData) {
+        setStockId(stockData.id);
+        if (isLoggedIn && userId) {
+          refreshUserBalances(stockData.id);
         }
       }
     };
     initData();
-  }, [stock.ticker, supabase]);
+  }, [stock.ticker, supabase, isLoggedIn, userId, refreshUserBalances]);
 
   const total = (Number(price) || 0) * (Number(qty) || 0);
 
@@ -62,85 +70,105 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
     if (!stockId || loading) return;
     setLoading(true);
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session?.user) {
-        alert("로그인 후 이용 가능합니다.");
+      if (!isLoggedIn || !userId) {
+        showToast({
+          type: 'warn',
+          title: '로그인 필요',
+          description: '가상 주식 거래는 로그인 후 이용 가능합니다.',
+        });
         return;
       }
 
       if (side === 'buy') {
-        const { data: profile } = await supabase.from('profiles').select('cash').eq('id', session.user.id).single();
-        if (!profile || profile.cash < total) {
-          alert("예수금이 부족합니다.");
+        const { data: profile } = await supabase.from('profiles').select('cash').eq('id', userId).single();
+        if (!profile || Number(profile.cash || 0) < total) {
+          showToast({
+            type: 'error',
+            title: '예수금 부족',
+            description: `주문 금액(₩${total.toLocaleString()})이 현재 예수금보다 큽니다.`,
+          });
           return;
         }
       } else {
-        const { data: holding } = await supabase.from('holdings').select('quantity').eq('user_id', session.user.id).eq('stock_id', stockId).single();
-        if (!holding || holding.quantity < Number(qty)) {
-          alert("보유 수량이 부족합니다.");
+        const { data: holding } = await supabase.from('holdings').select('quantity').eq('user_id', userId).eq('stock_id', stockId).single();
+        if (!holding || Number(holding.quantity || 0) < Number(qty)) {
+          showToast({
+            type: 'error',
+            title: '보유 수량 부족',
+            description: `매도 주문 수량(${Number(qty).toLocaleString()}주)이 보유 주식보다 많습니다.`,
+          });
           return;
         }
       }
 
-      const { error } = await supabase.from('orders').insert({
+      const res = await submitAndMatchOrder(supabase, {
         stock_id: stockId,
-        user_id: session.user.id,
+        user_id: userId,
         side,
         price: Number(price),
-        size: Number(qty),
-        is_lp: false,
-        status: 'open'
+        size: Number(qty)
       });
 
-      if (error) {
-        console.error(error);
-        alert("주문 접수 실패");
+      if (res.success) {
+        showToast({
+          type: res.filledQty > 0 ? (side === 'buy' ? 'buy' : 'sell') : 'info',
+          title: res.filledQty > 0 ? `${stock.name} 주문 체결 완료` : `${stock.name} 주문 접수 완료`,
+          description: res.message,
+        });
+        refreshUserBalances(stockId);
       } else {
-        alert("주문이 성공적으로 접수되었습니다!");
+        showToast({
+          type: 'error',
+          title: '주문 실패',
+          description: res.message,
+        });
       }
     } finally {
       setLoading(false);
     }
   };
 
+
   return (
-    <div className="w-full flex flex-col h-full bg-[#090a0f] border border-[#222736] rounded-md overflow-hidden">
+    <div className="w-full flex flex-col h-full bg-[#0E1117] border border-[#212631] rounded-2xl overflow-hidden shadow-2xl">
       {/* Tab Switcher */}
-      <div className="grid grid-cols-2 border-b border-[#222736]">
+      <div className="grid grid-cols-2 border-b border-[#212631] bg-[#090B0F]">
         <button
           onClick={() => setSide("buy")}
-          className={`py-2.5 text-[13px] font-bold transition-all cursor-pointer ${
+          className={`py-3 text-[13.5px] font-black transition-all cursor-pointer ${
             side === "buy" 
-              ? "bg-[#FF453A]/15 text-[#FF453A] border-b-2 border-[#FF453A]" 
-              : "bg-[#141721] text-gray-400 hover:text-white"
+              ? "bg-[#F04452]/15 text-[#F04452] border-b-2 border-[#F04452]" 
+              : "text-[#8E939D] hover:text-white"
           }`}
         >
-          🔴 매수
+          매수 (BUY)
         </button>
         <button
           onClick={() => setSide("sell")}
-          className={`py-2.5 text-[13px] font-bold transition-all border-l border-[#222736] cursor-pointer ${
+          className={`py-3 text-[13.5px] font-black transition-all border-l border-[#212631] cursor-pointer ${
             side === "sell" 
-              ? "bg-[#0A84FF]/15 text-[#0A84FF] border-b-2 border-[#0A84FF]" 
-              : "bg-[#141721] text-gray-400 hover:text-white"
+              ? "bg-[#3182F6]/15 text-[#3182F6] border-b-2 border-[#3182F6]" 
+              : "text-[#8E939D] hover:text-white"
           }`}
         >
-          🔵 매도
+          매도 (SELL)
         </button>
       </div>
 
-      <div className="space-y-4 p-3.5 flex-1 flex flex-col justify-between">
-        <div className="space-y-3">
-          <Field label="주문 가격 (원)">
+      <div className="space-y-4 p-4 flex-1 flex flex-col justify-between">
+        <div className="space-y-3.5">
+          <Field label="주문 가격">
             <div className="relative">
               <input
                 value={price}
                 onChange={(e) => setPrice(e.target.value)}
-                className="w-full border border-[#222736] bg-[#090a0f] px-3 py-2 text-right font-mono text-[13px] text-[#f3f4f6] font-bold outline-none focus:border-[#FF453A]"
+                className={`w-full rounded-xl border border-[#212631] bg-[#05070A] px-3.5 py-2.5 text-right font-mono text-[13.5px] text-white font-black outline-none ${
+                  side === "buy" ? "focus:border-[#F04452]" : "focus:border-[#3182F6]"
+                }`}
               />
               <button 
                 onClick={() => setPrice(String(stock.currentPrice))}
-                className="absolute left-2 top-2 text-[10px] text-gray-500 hover:text-white bg-[#1c202c] px-1.5 py-0.5 rounded"
+                className="absolute left-2.5 top-2 text-[10.5px] text-[#8E939D] hover:text-white bg-[#161B22] border border-[#212631] px-2 py-0.5 rounded-md font-bold"
               >
                 현재가
               </button>
@@ -151,7 +179,9 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
             <input
               value={qty}
               onChange={(e) => setQty(e.target.value)}
-              className="w-full border border-[#222736] bg-[#090a0f] px-3 py-2 text-right font-mono text-[13px] text-[#f3f4f6] font-bold outline-none focus:border-[#0A84FF]"
+              className={`w-full rounded-xl border border-[#212631] bg-[#05070A] px-3.5 py-2.5 text-right font-mono text-[13.5px] text-white font-black outline-none ${
+                side === "buy" ? "focus:border-[#F04452]" : "focus:border-[#3182F6]"
+              }`}
             />
           </Field>
 
@@ -161,42 +191,42 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
               <button
                 key={q}
                 onClick={() => setQty(q)}
-                className="flex-1 border border-[#222736] bg-[#141721] py-1 text-[11px] font-mono text-gray-300 hover:bg-[#1c202c] hover:text-white transition-all cursor-pointer"
+                className="flex-1 rounded-lg border border-[#212631] bg-[#161B22] py-1 text-[11px] font-mono font-bold text-[#8E939D] hover:bg-white/10 hover:text-white transition-all cursor-pointer"
               >
                 {q}주
               </button>
             ))}
           </div>
 
-          {/* ⚡ 초고속 매매 패널 (Quick Scalping Panel) */}
-          <div className="pt-2 border-t border-[#222736]/60">
-            <span className="text-[10px] uppercase font-bold tracking-wider text-gray-400 block mb-2">
-              ⚡ 초고속 시장가 스캘핑
+          {/* 초고속 매매 패널 */}
+          <div className="pt-3 border-t border-[#212631]">
+            <span className="text-[10px] uppercase font-bold tracking-wider text-[#8E939D] block mb-2 font-mono">
+              QUICK ORDER SCALPING
             </span>
-            <div className="grid grid-cols-2 gap-1.5">
+            <div className="grid grid-cols-2 gap-2">
               <button
                 onClick={() => handleQuickBuy(10)}
-                className="btn-glow-red border border-[#FF453A]/40 bg-[#FF453A]/10 text-[#FF453A] py-1.5 text-[11px] font-bold rounded cursor-pointer"
+                className="border border-[#F04452]/40 bg-[#F04452]/10 text-[#F04452] hover:bg-[#F04452]/20 py-2 text-[11px] font-extrabold rounded-xl transition-all cursor-pointer"
               >
-                🔴 10% 시장가 매수
+                10% 시장가 매수
               </button>
               <button
                 onClick={() => handleQuickBuy(50)}
-                className="btn-glow-red border border-[#FF453A]/40 bg-[#FF453A]/10 text-[#FF453A] py-1.5 text-[11px] font-bold rounded cursor-pointer"
+                className="border border-[#F04452]/40 bg-[#F04452]/10 text-[#F04452] hover:bg-[#F04452]/20 py-2 text-[11px] font-extrabold rounded-xl transition-all cursor-pointer"
               >
-                🔴 50% 시장가 매수
+                50% 시장가 매수
               </button>
               <button
                 onClick={() => handleQuickSell(10)}
-                className="btn-glow-blue border border-[#0A84FF]/40 bg-[#0A84FF]/10 text-[#0A84FF] py-1.5 text-[11px] font-bold rounded cursor-pointer"
+                className="border border-[#3182F6]/40 bg-[#3182F6]/10 text-[#3182F6] hover:bg-[#3182F6]/20 py-2 text-[11px] font-extrabold rounded-xl transition-all cursor-pointer"
               >
-                🔵 10% 시장가 매도
+                10% 시장가 매도
               </button>
               <button
                 onClick={() => handleQuickSell(100)}
-                className="btn-glow-blue border border-[#0A84FF]/40 bg-[#0A84FF]/10 text-[#0A84FF] py-1.5 text-[11px] font-bold rounded cursor-pointer"
+                className="border border-[#3182F6]/40 bg-[#3182F6]/10 text-[#3182F6] hover:bg-[#3182F6]/20 py-2 text-[11px] font-extrabold rounded-xl transition-all cursor-pointer"
               >
-                🔵 전량(100%) 매도
+                전량(100%) 매도
               </button>
             </div>
           </div>
@@ -204,9 +234,9 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
 
         <div>
           {/* 예상 금액 요약 */}
-          <div className="flex items-center justify-between bg-[#141721] px-3 py-2.5 mb-3 border border-[#222736] rounded">
-            <span className="text-[11px] text-gray-400 font-medium">총 주문 예상금액</span>
-            <span className="font-mono text-[14px] font-extrabold tabular-nums text-[#f3f4f6]">
+          <div className="flex items-center justify-between bg-[#161B22] px-3.5 py-2.5 mb-3 border border-[#212631] rounded-xl">
+            <span className="text-[11.5px] text-[#8E939D] font-medium">총 주문 예상금액</span>
+            <span className="font-mono text-[14.5px] font-black tabular-nums text-white">
               {fmtPrice(total, stock.market)}
             </span>
           </div>
@@ -214,13 +244,13 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
           <button
             onClick={handleOrder}
             disabled={loading}
-            className={`w-full py-3 text-[14px] font-black transition-all rounded cursor-pointer ${
+            className={`w-full py-3.5 text-[14px] font-black transition-all rounded-full cursor-pointer shadow-lg active:scale-[0.98] ${
               side === "buy" 
-                ? "bg-[#FF453A] text-white hover:bg-[#e0382e] shadow-[0_0_15px_rgba(255,69,58,0.35)]" 
-                : "bg-[#0A84FF] text-white hover:bg-[#0071e3] shadow-[0_0_15px_rgba(10,132,255,0.35)]"
+                ? "bg-[#F04452] text-white hover:bg-[#ff5252] shadow-[0_0_20px_rgba(240,68,82,0.35)]" 
+                : "bg-[#3182F6] text-white hover:bg-[#4092ff] shadow-[0_0_20px_rgba(49,130,246,0.35)]"
             }`}
           >
-            {loading ? "주문 처리 중..." : side === "buy" ? "🔴 매수 주문 실행" : "🔵 매도 주문 실행"}
+            {loading ? "주문 처리 중..." : side === "buy" ? "매수 주문 제출 (BUY)" : "매도 주문 제출 (SELL)"}
           </button>
         </div>
       </div>
@@ -228,11 +258,13 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
   );
 }
 
+
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label className="block">
-      <span className="mb-1 block text-[11px] text-[#9ca3af] font-medium">{label}</span>
+      <span className="mb-1 block text-[11px] text-[#8E939D] font-bold">{label}</span>
       {children}
     </label>
   );
 }
+

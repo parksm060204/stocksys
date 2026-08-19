@@ -21,7 +21,7 @@ export class PropDeskAgent extends BaseAgent {
     }
   }
 
-  public executeMarketMaking(currentMarket: any, orderBook: any, myHoldings: any) {
+  public executeMarketMaking(currentMarket: any, orderBook: any, _myHoldings: any) {
     const orders: any[] = [];
     const availableStocks = currentMarket.stocks || [];
     const currentTime = Date.now();

@@ -3471,3 +3471,11 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 - `scripts/test-order-security-and-atomic.ts`: TEST 11 (RPC 경로 뮤텍스 직렬화 및 동시성 보호), TEST 12 (정산 후 강제 예외 주입 시 완벽한 원자적 롤백 검증), TEST 13 (`orderId` 반환 및 memoryDb 일치 검증), TEST 14 (`open`, `partial`, `filled` 모든 주문 상태별 유효 `orderId` 반환 검증) 추가 — TEST 1~14 전체 14개 테스트 100% 통과.
 - `npx tsc --noEmit` 전체 타입 검사 통과 (오류 0건).
 - `npm run build` Turbopack 23개 라우트 빌드 통과.
+---
+## 2026-09-14 03:08
+
+**요청 요약:** 동시 교차 종목 주문의 트랜잭션 격리와 동일 사용자 초과지출 방지 강화
+**수행 결과:**
+- `memoryTransaction.ts`의 전역 거래 배열 스냅샷/되감기를 제거하고 트랜잭션 소유 `createdTradeIds` 기반으로 `trades`와 `tradeStockIndex`만 선택 롤백하도록 변경.
+- 정렬된 사용자 계정 락과 원자적 로컬 정산 준비/커밋을 추가해 동일 계정의 교차 종목 현금 경쟁 및 부분 정산 orphan을 방지.
+- 교차 종목 롤백 생존성과 동일 사용자 양 종목 매수 초과지출 회귀 테스트를 추가하고 기존 테스트, TypeScript 검사, Next.js 빌드를 통과.

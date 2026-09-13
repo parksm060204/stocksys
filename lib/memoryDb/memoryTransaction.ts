@@ -1,217 +1,158 @@
 /**
- * STOCKSYS Local Transaction — Lightweight Snapshot / Rollback
+ * Local trading transaction snapshot / rollback.
  *
- * Covers only the 6 trading-relevant state collections and their 4 associated indexes.
- * Intentionally excludes non-trading tables (stockPriceHistory, marketNews, commodities, etc.)
- * to keep the snapshot small and fast.
- *
- * Usage:
- *   const snap = snapshotTradingState(stockId);
- *   try {
- *     // ... all mutations ...
- *     // commit: do nothing — live state is already the new state
- *   } catch (err) {
- *     rollbackTradingState(snap);
- *     throw err;
- *   }
- *
- * Covered state:
- *   - profiles (Map entries for affected users)
- *   - holdings (Map entries for affected holdings)
- *   - orders   (Map entries for affected orders)
- *   - trades   (array length + all entries added since snapshot)
- *   - stocks   (single stock record by stockId)
- *
- * Covered indexes:
- *   - holdingUserIndex  (Set<string> per userId)
- *   - orderStockIndex   (Set<string> for stockId)
- *   - orderUserIndex    (Set<string> per userId)
- *   - tradeStockIndex   (TradeRecord[] for stockId)
+ * Stock and user state is snapshotted only for the accounts and stock held by
+ * the transaction. Trades are intentionally different: the global trade log
+ * is shared by all stocks, so rollback tracks and removes exact trade IDs
+ * instead of rewinding the array or restoring a global copy.
  */
-
 import {
   memoryDb,
   ProfileRecord,
   HoldingRecord,
   OrderRecord,
-  TradeRecord,
   StockRecord,
 } from './memoryStore';
 
 export interface TradingSnapshot {
-  /** stockId this snapshot covers */
   stockId: string;
-  /** Involved user IDs (buyer, seller, incoming user) */
   userIds: string[];
 
-  // ── Primary state snapshots ──
   profiles: Map<string, ProfileRecord>;
-  /** holdingId → HoldingRecord */
   holdings: Map<string, HoldingRecord>;
-  /** orderId → OrderRecord (only orders that existed before this tx) */
   orders: Map<string, OrderRecord>;
-  /** trade array length before tx — used to trim new trades on rollback */
-  tradeCountBefore: number;
-  /** trade array contents before tx (deep copy for correctness) */
-  tradesBefore: TradeRecord[];
-  /** stock record before tx */
+  createdTradeIds: Set<string>;
   stockBefore: StockRecord | undefined;
 
-  // ── Index snapshots ──
-  /** userId → copy of Set<holdingId> */
   holdingUserIndexBefore: Map<string, Set<string>>;
-  /** stockId → copy of Set<orderId> */
   orderStockIndexBefore: Set<string>;
-  /** userId → copy of Set<orderId> */
   orderUserIndexBefore: Map<string, Set<string>>;
-  /** stock_id → TradeRecord[] (copy) */
-  tradeStockIndexBefore: TradeRecord[];
 
-  /** orderId of any new incoming order inserted during this tx — tracked for rollback */
+  /** Order ID of the incoming order inserted by this transaction. */
   insertedOrderId: string | null;
 }
 
 /**
- * Take a snapshot of all trading-relevant state for the given stock and user IDs.
- * Must be called BEFORE any state mutation in the matching/settlement pipeline.
+ * Take a snapshot before mutation. The caller holds the stock lock and all
+ * involved account locks, so stock/user-scoped restoration cannot overwrite a
+ * concurrent mutation for the same resource.
+ *
+ * Profile creation is outside the supported trading transaction: settlement
+ * validates that every non-bot participant already has a profile.
  */
 export function snapshotTradingState(stockId: string, userIds: string[]): TradingSnapshot {
   const db = memoryDb;
 
-  // Snapshot profiles for all potentially affected users
-  const profilesSnap = new Map<string, ProfileRecord>();
+  const profiles = new Map<string, ProfileRecord>();
   for (const uid of userIds) {
-    const p = db.profiles.get(uid);
-    if (p) profilesSnap.set(uid, { ...p });
+    const profile = db.profiles.get(uid);
+    if (profile) profiles.set(uid, { ...profile });
   }
 
-  // Snapshot all holdings for affected users (scan by user index)
-  const holdingsSnap = new Map<string, HoldingRecord>();
-  const holdingIndexSnap = new Map<string, Set<string>>();
+  const holdings = new Map<string, HoldingRecord>();
+  const holdingUserIndexBefore = new Map<string, Set<string>>();
   for (const uid of userIds) {
     const ids = db.holdingUserIndex.get(uid);
-    holdingIndexSnap.set(uid, ids ? new Set(ids) : new Set());
+    holdingUserIndexBefore.set(uid, ids ? new Set(ids) : new Set());
     if (ids) {
-      for (const hId of ids) {
-        const h = db.holdings.get(hId);
-        if (h) holdingsSnap.set(hId, { ...h });
+      for (const holdingId of ids) {
+        const holding = db.holdings.get(holdingId);
+        if (holding) holdings.set(holdingId, { ...holding });
       }
     }
   }
 
-  // Snapshot orders for this stock (from stock index)
-  const ordersSnap = new Map<string, OrderRecord>();
-  const stockOrderSet = db.orderStockIndex.get(stockId);
-  const orderStockSnap = stockOrderSet ? new Set(stockOrderSet) : new Set<string>();
-  if (stockOrderSet) {
-    for (const oId of stockOrderSet) {
-      const o = db.orders.get(oId);
-      if (o) ordersSnap.set(oId, { ...o });
+  const orders = new Map<string, OrderRecord>();
+  const stockOrderIds = db.orderStockIndex.get(stockId);
+  const orderStockIndexBefore = stockOrderIds ? new Set(stockOrderIds) : new Set<string>();
+  if (stockOrderIds) {
+    for (const orderId of stockOrderIds) {
+      const order = db.orders.get(orderId);
+      if (order) orders.set(orderId, { ...order });
     }
   }
 
-  // Snapshot order user index for affected users
-  const orderUserSnap = new Map<string, Set<string>>();
+  const orderUserIndexBefore = new Map<string, Set<string>>();
   for (const uid of userIds) {
     const ids = db.orderUserIndex.get(uid);
-    orderUserSnap.set(uid, ids ? new Set(ids) : new Set());
+    orderUserIndexBefore.set(uid, ids ? new Set(ids) : new Set());
   }
 
-  // Snapshot trades
-  const tradeCountBefore = db.trades.length;
-  const tradesBefore = db.trades.map((t) => ({ ...t }));
-
-  // Snapshot trade stock index for this stock
-  const tradeStockArr = db.tradeStockIndex.get(stockId);
-  const tradeStockSnap = tradeStockArr ? tradeStockArr.map((t) => ({ ...t })) : [];
-
-  // Snapshot stock record
   const stock = db.stocks.get(stockId);
-  const stockBefore = stock ? { ...stock } : undefined;
 
   return {
     stockId,
     userIds: [...userIds],
-    profiles: profilesSnap,
-    holdings: holdingsSnap,
-    orders: ordersSnap,
-    tradeCountBefore,
-    tradesBefore,
-    stockBefore,
-    holdingUserIndexBefore: holdingIndexSnap,
-    orderStockIndexBefore: orderStockSnap,
-    orderUserIndexBefore: orderUserSnap,
-    tradeStockIndexBefore: tradeStockSnap,
+    profiles,
+    holdings,
+    orders,
+    createdTradeIds: new Set<string>(),
+    stockBefore: stock ? { ...stock } : undefined,
+    holdingUserIndexBefore,
+    orderStockIndexBefore,
+    orderUserIndexBefore,
     insertedOrderId: null,
   };
 }
 
-/**
- * Roll back all trading-relevant state to the pre-transaction snapshot.
- * Synchronous — must be called in a catch block.
- */
-export function rollbackTradingState(snap: TradingSnapshot): void {
+/** Remove only this transaction's trade records from both trade collections. */
+function removeOwnedTrades(createdTradeIds: Set<string>): void {
+  if (createdTradeIds.size === 0) return;
+
+  for (let i = memoryDb.trades.length - 1; i >= 0; i -= 1) {
+    if (createdTradeIds.has(memoryDb.trades[i].id)) {
+      memoryDb.trades.splice(i, 1);
+    }
+  }
+
+  for (const [stockId, trades] of memoryDb.tradeStockIndex.entries()) {
+    for (let i = trades.length - 1; i >= 0; i -= 1) {
+      if (createdTradeIds.has(trades[i].id)) trades.splice(i, 1);
+    }
+    if (trades.length === 0) memoryDb.tradeStockIndex.delete(stockId);
+  }
+}
+
+/** Restore all stock/user-scoped state and this transaction's owned trades. */
+export function rollbackTradingState(snapshot: TradingSnapshot): void {
   const db = memoryDb;
 
-  // ── Restore profiles ──
-  for (const [uid, record] of snap.profiles.entries()) {
+  for (const [uid, record] of snapshot.profiles.entries()) {
     db.profiles.set(uid, record);
   }
 
-  // ── Restore holdings ──
-  // 1. Remove any newly inserted holdings that weren't in the snapshot
-  for (const uid of snap.userIds) {
+  for (const uid of snapshot.userIds) {
     const currentIds = db.holdingUserIndex.get(uid);
     if (currentIds) {
-      for (const hId of currentIds) {
-        if (!snap.holdings.has(hId)) {
-          db.holdings.delete(hId);
-        }
+      for (const holdingId of currentIds) {
+        if (!snapshot.holdings.has(holdingId)) db.holdings.delete(holdingId);
       }
     }
   }
-  // 2. Restore original holding values (including those that were decremented to 0 and deleted)
-  for (const [hId, record] of snap.holdings.entries()) {
-    db.holdings.set(hId, record);
+  for (const [holdingId, record] of snapshot.holdings.entries()) {
+    db.holdings.set(holdingId, record);
   }
 
-  // ── Restore orders ──
-  // 1. Remove any newly inserted order (incoming order inserted during this tx)
-  if (snap.insertedOrderId && !snap.orders.has(snap.insertedOrderId)) {
-    db.orders.delete(snap.insertedOrderId);
+  if (snapshot.insertedOrderId && !snapshot.orders.has(snapshot.insertedOrderId)) {
+    const inserted = db.orders.get(snapshot.insertedOrderId);
+    if (inserted) db.removeOrderFromIndex(inserted);
+    db.orders.delete(snapshot.insertedOrderId);
   }
-  // 2. Restore maker order states to pre-tx values
-  for (const [oId, record] of snap.orders.entries()) {
-    db.orders.set(oId, record);
-  }
-
-  // ── Restore trades array ──
-  // Trim any trades appended after snapshot
-  db.trades.splice(snap.tradeCountBefore);
-  // Restore original values (for any that were mutated in-place — defensive)
-  for (let i = 0; i < snap.tradesBefore.length; i++) {
-    db.trades[i] = snap.tradesBefore[i];
+  for (const [orderId, record] of snapshot.orders.entries()) {
+    db.orders.set(orderId, record);
   }
 
-  // ── Restore stock record ──
-  if (snap.stockBefore !== undefined) {
-    db.stocks.set(snap.stockId, snap.stockBefore);
+  removeOwnedTrades(snapshot.createdTradeIds);
+
+  if (snapshot.stockBefore !== undefined) {
+    db.stocks.set(snapshot.stockId, snapshot.stockBefore);
   }
 
-  // ── Restore indexes ──
-  // holdingUserIndex
-  for (const [uid, idSet] of snap.holdingUserIndexBefore.entries()) {
-    db.holdingUserIndex.set(uid, new Set(idSet));
+  for (const [uid, ids] of snapshot.holdingUserIndexBefore.entries()) {
+    db.holdingUserIndex.set(uid, new Set(ids));
   }
-
-  // orderStockIndex
-  db.orderStockIndex.set(snap.stockId, new Set(snap.orderStockIndexBefore));
-
-  // orderUserIndex
-  for (const [uid, idSet] of snap.orderUserIndexBefore.entries()) {
-    db.orderUserIndex.set(uid, new Set(idSet));
+  db.orderStockIndex.set(snapshot.stockId, new Set(snapshot.orderStockIndexBefore));
+  for (const [uid, ids] of snapshot.orderUserIndexBefore.entries()) {
+    db.orderUserIndex.set(uid, new Set(ids));
   }
-
-  // tradeStockIndex
-  db.tradeStockIndex.set(snap.stockId, snap.tradeStockIndexBefore.map((t) => ({ ...t })));
 }

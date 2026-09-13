@@ -533,7 +533,28 @@ export class MemoryDbClient {
       }
 
       // ── Step 3: 실행 단계 (누적 검증 통과 후에만 상태 갱신) ──
-      let settledCount = 0;
+      // Prepare all mutations against clones first. No live collection is
+      // touched until every trade and resulting balance/holding is known.
+      const profileUpdates = new Map<string, ProfileRecord>();
+      const holdingUpdates = new Map<string, HoldingRecord | null>();
+      const tradeRecords: TradeRecord[] = [];
+
+      const getProfile = (userId: string): ProfileRecord | undefined => {
+        if (!profileUpdates.has(userId)) {
+          const profile = db.profiles.get(userId);
+          if (profile) profileUpdates.set(userId, { ...profile });
+        }
+        return profileUpdates.get(userId);
+      };
+
+      const getHolding = (holdingId: string): HoldingRecord | null => {
+        if (!holdingUpdates.has(holdingId)) {
+          const holding = db.holdings.get(holdingId);
+          holdingUpdates.set(holdingId, holding ? { ...holding } : null);
+        }
+        return holdingUpdates.get(holdingId) ?? null;
+      };
+
       for (const t of trades) {
         const buyerId = t.buyer_id;
         const sellerId = t.seller_id;
@@ -542,44 +563,47 @@ export class MemoryDbClient {
         const sellerFee = Number(t.seller_fee ?? 0);
 
         if (!t.buyer_is_bot && buyerId) {
-          const buyer = db.profiles.get(buyerId);
+          const buyer = getProfile(buyerId);
           if (buyer) {
             buyer.cash -= tradeAmount * (1 + buyerFee);
             buyer.net_worth -= tradeAmount * buyerFee;
           }
+
           const holdingId = `${buyerId}_${t.stock_id}`;
-          let h = db.holdings.get(holdingId);
-          if (h) {
-            h.quantity += Number(t.size);
-            h.avg_price = ((h.quantity - Number(t.size)) * h.avg_price + tradeAmount) / h.quantity;
+          const holding = getHolding(holdingId);
+          if (holding) {
+            const previousQuantity = holding.quantity;
+            holding.quantity += Number(t.size);
+            holding.avg_price = (previousQuantity * holding.avg_price + tradeAmount) / holding.quantity;
           } else {
-            db.holdings.set(holdingId, { id: holdingId, user_id: buyerId, stock_id: t.stock_id, quantity: Number(t.size), avg_price: Number(t.price), created_at: new Date().toISOString() });
-            let userSet = db.holdingUserIndex.get(buyerId);
-            if (!userSet) { userSet = new Set(); db.holdingUserIndex.set(buyerId, userSet); }
-            userSet.add(holdingId);
+            holdingUpdates.set(holdingId, {
+              id: holdingId,
+              user_id: buyerId,
+              stock_id: t.stock_id,
+              quantity: Number(t.size),
+              avg_price: Number(t.price),
+              created_at: new Date().toISOString(),
+            });
           }
         }
 
         if (!t.seller_is_bot && sellerId) {
-          const seller = db.profiles.get(sellerId);
+          const seller = getProfile(sellerId);
           if (seller) {
             seller.cash += tradeAmount * (1 - sellerFee);
             seller.net_worth -= tradeAmount * sellerFee;
           }
+
           const holdingId = `${sellerId}_${t.stock_id}`;
-          let h = db.holdings.get(holdingId);
-          if (h) {
-            h.quantity -= Number(t.size);
-            if (h.quantity <= 0) {
-              db.holdings.delete(holdingId);
-              const userSet = db.holdingUserIndex.get(sellerId);
-              if (userSet) userSet.delete(holdingId);
-            }
+          const holding = getHolding(holdingId);
+          if (holding) {
+            holding.quantity -= Number(t.size);
+            if (holding.quantity <= 0) holdingUpdates.set(holdingId, null);
           }
         }
 
         const tradeId = t.id || `trade_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-        const tradeRecord = {
+        tradeRecords.push({
           id: tradeId,
           stock_id: t.stock_id,
           buyer_id: buyerId,
@@ -591,14 +615,80 @@ export class MemoryDbClient {
           buyer_fee: buyerFee,
           seller_fee: sellerFee,
           created_at: t.created_at || new Date().toISOString(),
-        };
-
-        db.trades.push(tradeRecord);
-        db.addTradeToIndex(tradeRecord);
-        settledCount++;
+        });
       }
 
-      return { data: { success: true, settled_count: settledCount }, error: null };
+      const originalProfiles = new Map<string, ProfileRecord | undefined>();
+      for (const userId of profileUpdates.keys()) {
+        const profile = db.profiles.get(userId);
+        originalProfiles.set(userId, profile ? { ...profile } : undefined);
+      }
+      const originalHoldings = new Map<string, HoldingRecord | undefined>();
+      const holdingUsers = new Set<string>();
+      for (const [holdingId, updated] of holdingUpdates.entries()) {
+        const original = db.holdings.get(holdingId);
+        originalHoldings.set(holdingId, original ? { ...original } : undefined);
+        if (original) holdingUsers.add(original.user_id);
+        if (updated) holdingUsers.add(updated.user_id);
+      }
+      const originalHoldingIndexes = new Map<string, Set<string> | undefined>();
+      for (const userId of holdingUsers) {
+        const ids = db.holdingUserIndex.get(userId);
+        originalHoldingIndexes.set(userId, ids ? new Set(ids) : undefined);
+      }
+
+      try {
+        for (const [userId, profile] of profileUpdates.entries()) {
+          db.profiles.set(userId, profile);
+        }
+        for (const [holdingId, holding] of holdingUpdates.entries()) {
+          const original = db.holdings.get(holdingId);
+          if (holding) {
+            db.holdings.set(holdingId, holding);
+            db.addHoldingToIndex(holding);
+          } else {
+            if (original) db.removeHoldingFromIndex(original);
+            db.holdings.delete(holdingId);
+          }
+        }
+        for (const tradeRecord of tradeRecords) {
+          db.trades.push(tradeRecord);
+          db.addTradeToIndex(tradeRecord);
+        }
+      } catch (commitError) {
+        for (const [userId, original] of originalProfiles.entries()) {
+          if (original) db.profiles.set(userId, original);
+          else db.profiles.delete(userId);
+        }
+        for (const [holdingId, original] of originalHoldings.entries()) {
+          if (original) db.holdings.set(holdingId, original);
+          else db.holdings.delete(holdingId);
+        }
+        for (const [userId, original] of originalHoldingIndexes.entries()) {
+          if (original) db.holdingUserIndex.set(userId, new Set(original));
+          else db.holdingUserIndex.delete(userId);
+        }
+        const tradeIds = new Set(tradeRecords.map((trade) => trade.id));
+        for (let i = db.trades.length - 1; i >= 0; i -= 1) {
+          if (tradeIds.has(db.trades[i].id)) db.trades.splice(i, 1);
+        }
+        for (const [stockId, stockTrades] of db.tradeStockIndex.entries()) {
+          for (let i = stockTrades.length - 1; i >= 0; i -= 1) {
+            if (tradeIds.has(stockTrades[i].id)) stockTrades.splice(i, 1);
+          }
+          if (stockTrades.length === 0) db.tradeStockIndex.delete(stockId);
+        }
+        throw commitError;
+      }
+
+      return {
+        data: {
+          success: true,
+          settled_count: tradeRecords.length,
+          trade_ids: tradeRecords.map((trade) => trade.id),
+        },
+        error: null,
+      };
     }
 
     if (fnName === 'trim_old_market_data') {

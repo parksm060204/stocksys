@@ -1,8 +1,10 @@
 export type DbClient = any;
+import { randomUUID } from 'node:crypto';
 import { validateOrderCapacity, OpenOrderForRisk } from '@/lib/engine/orderRisk';
 import { SettlementTrade, calculateTradeFees, executeSettlement } from '@/lib/engine/settlement';
 import { memoryDb, OrderRecord } from '@/lib/memoryDb/memoryStore';
 import { snapshotTradingState, rollbackTradingState, TradingSnapshot } from '@/lib/memoryDb/memoryTransaction';
+import { withAccountLocks } from '@/lib/memoryDb/accountLocks';
 
 export interface OrderInput {
   stock_id: string;
@@ -24,7 +26,7 @@ export interface MatchOrderResult {
 // ── Test-only failure hook ──
 // Set to a non-null function to force a failure at a specific internal step.
 // MUST NOT be set in production code paths. Tests reset it after use.
-type FailureHook = () => void;
+type FailureHook = (context: { stockId: string }) => void | boolean | Promise<void | boolean>;
 let _testFailureHook: FailureHook | null = null;
 
 /** @internal Test-only: inject a failure that fires after settlement, before final order insert. */
@@ -70,6 +72,9 @@ export async function submitAndMatchOrder(
   }
 
   try {
+    let accountIds = [user_id];
+    for (;;) {
+      const outcome = await withAccountLocks(accountIds, async () => {
     // ── 0. Order Capacity Pre-Validation ──
     // Reads open/partial orders, current cash, current holding — pure reads, no mutation.
     {
@@ -211,15 +216,29 @@ export async function submitAndMatchOrder(
 
     // ── 2. Generate orderId before any mutation ──
     const orderId = `ord_${user_id.slice(0, 8)}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const tradeIds = tradesToSettle.map(() => `trade_${randomUUID()}`);
+    tradesToSettle.forEach((trade, index) => {
+      trade.id = tradeIds[index];
+    });
 
     // ── 3. Take snapshot of all trading-relevant state ──
-    const snap: TradingSnapshot = snapshotTradingState(stock_id, Array.from(involvedUserIds));
-    snap.insertedOrderId = orderId; // track the incoming order so rollback can remove it
+    const involvedAccountIds = Array.from(involvedUserIds);
+    if (involvedAccountIds.some((id) => !accountIds.includes(id))) {
+      // The first read only needs the incoming user's lock. If matching found
+      // other accounts, reacquire every account in sorted order so capacity
+      // validation is protected by the complete lock set.
+      return { retryAccountIds: involvedAccountIds };
+    }
 
-    try {
+      const snap: TradingSnapshot = snapshotTradingState(stock_id, accountIds);
+      snap.insertedOrderId = orderId;
+      for (const tradeId of tradeIds) snap.createdTradeIds.add(tradeId);
+
+      try {
       // ── 4. Settlement (cumulative validation + asset mutation) ──
       if (tradesToSettle.length > 0) {
         const settleResult = await executeSettlement(supabase, tradesToSettle);
+        for (const tradeId of settleResult.trade_ids) snap.createdTradeIds.add(tradeId);
         if (!settleResult.success) {
           throw new Error(settleResult.error?.message || '체결 정산 트랜잭션 실패');
         }
@@ -229,9 +248,14 @@ export async function submitAndMatchOrder(
       // Fires AFTER settlement assets are mutated, BEFORE subsequent writes.
       // Allows tests to verify full rollback of settlement mutations.
       if (_testFailureHook) {
-        _testFailureHook();
+        const hookResult = await _testFailureHook({ stockId: stock_id });
+        if (hookResult === false) {
+          // A test may use a single hook while allowing other concurrent
+          // transactions to proceed normally.
+        } else {
         // If hook doesn't throw, throw ourselves so rollback is triggered
         throw new Error('[TEST] Injected failure after settlement');
+        }
       }
 
       // ── 5. Maker order status updates (direct memoryDb write) ──
@@ -302,7 +326,14 @@ export async function submitAndMatchOrder(
       rollbackTradingState(snap);
       throw txErr; // re-throw so outer catch returns failure
     }
-  } catch (err: any) {
+      });
+      if ('retryAccountIds' in outcome && outcome.retryAccountIds) {
+        accountIds = outcome.retryAccountIds;
+        continue;
+      }
+      return outcome;
+    }
+    } catch (err: any) {
     console.error('[dbMatching Error]', err);
     return { success: false, filledQty: 0, message: err.message || '주문 처리 중 오류 발생' };
   }

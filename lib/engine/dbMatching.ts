@@ -16,6 +16,7 @@ export interface MatchOrderResult {
   message: string;
   orderId?: string;
   execPrice?: number;
+  status?: string;
 }
 
 /**
@@ -29,15 +30,19 @@ export async function submitAndMatchOrder(
   supabase: SupabaseClient,
   input: OrderInput
 ): Promise<MatchOrderResult> {
-  const { stock_id, user_id, side, price: incomingPrice, size: incomingSize } = input;
+  const { stock_id, user_id, side, price: incomingPrice, size: incomingSize } = input || {};
+
+  if (!user_id || typeof user_id !== 'string' || user_id.trim() === '') {
+    return { success: false, filledQty: 0, message: '인증된 사용자 정보가 필요합니다.' };
+  }
 
   if (incomingSize <= 0 || incomingPrice <= 0) {
     return { success: false, filledQty: 0, message: '올바르지 않은 주문 가격 또는 수량입니다.' };
   }
 
   try {
-    // 0. 초기 잔고 / 보유 수량 및 미체결 주문 예약금 엄격 사전 검증
-    if (user_id) {
+    // 0. 초기 잔고 / 보유 수량 및 미체결 주문 예약금 엄격 사전 검증 (user_id 필수)
+    {
       // 유저의 모든 open/partial 주문 조회 (동적 예약금/예약수량 계산용)
       const { data: userOpenOrders, error: ordersErr } = await supabase
         .from('orders')
@@ -242,12 +247,14 @@ export async function submitAndMatchOrder(
         success: true,
         filledQty: totalFilledQty,
         execPrice: lastExecPrice,
+        status: initialStatus,
         message: `🎉 ${totalFilledQty.toLocaleString()}주가 체결되었습니다! (체결가: ₩${lastExecPrice.toLocaleString()})`,
       };
     } else {
       return {
         success: true,
         filledQty: 0,
+        status: initialStatus,
         message: `주문이 호가창에 정상 접수되었습니다! (${incomingPrice.toLocaleString()}원 ${incomingSize}주)`,
       };
     }

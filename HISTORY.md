@@ -3372,10 +3372,36 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 - `lib/engine/dbMatching.ts`: 주문 검증 시 `orderRisk` 모듈을 연동하여 가용 예수금/가용 주식 엄격 검증, resting maker 가격 기반 체결가 산정, 직접 테이블 write를 제거하고 `executeSettlement`(`bulk_settle_trades`)로 일괄 원자적 정산 위임.
 - `app/api/orders/route.ts`: 브라우저 클라이언트가 service_role 키를 노출하거나 직접 RPC를 부르지 않도록 서버 사이드 주문 처리 API 구축 (로컬 모드 시 `memoryDb`, 프로덕션 시 `service_role` 클라이언트 사용).
 - `app/components/OrderEntry.tsx`: 브라우저에서 직접 `submitAndMatchOrder`를 호출하던 코드를 `POST /api/orders` 연동으로 전환.
-- `lib/memoryDb/memoryStore.ts` & `lib/engine/localStandaloneServer.ts`: 로컬 메모리 DB의 `StockRecord`와 seed 데이터, 체결 갱신부를 canonical 스키마인 `high`, `low`로 통일 (하위 호환용 `high_price`, `low_price` alias 지원).
-- `scripts/test-order-risk-and-settlement.ts`: TEST A (Cash Reservation), TEST B (Holdings Reservation), TEST C (Partial Fill Reservation), TEST D (Cancel Release), TEST E (Settlement Accuracy & Fees), TEST F (DB Invariant & Rollback), TEST G (High/Low Schema), TEST H (20 Concurrent Race Condition) 8개 종합 자동화 테스트 작성 및 100% 통과.
-- `npx tsc --noEmit` 타입 검사 무결점 통과 및 `npm run build` Next.js 프로덕션 빌드 성공.
-- 브라우저 서브에이전트를 통한 실제 주문 -> 체결 -> 마이페이지 포트폴리오(예수금 ₩99,280,720, 보유 110주) E2E 검증 완료.
+
+---
+## 2026-09-13 23:40
+
+**요청 요약:** 프로덕션 주문 경로의 보안 및 트랜잭션 원자성 강화 (Spoofing 방지, Service Role 일원화, 단일 트랜잭션 RPC 신설)
+
+**수행 결과:**
+- `supabase/migrations/submit_and_match_order.sql`: 주문 검증, 자산 락(`FOR UPDATE`), 오더북 매칭, 체결/수수료 정산, 주문 상태 갱신, 종목 시세/통계 갱신 전체를 단일 PostgreSQL DB 트랜잭션으로 원자 처리하는 `submit_and_match_order` RPC 작성. SECURITY DEFINER 선언 및 `anon`, `authenticated`, `PUBLIC`의 실행 권한을 전면 박탈(`REVOKE`)하고 오직 `service_role`만 실행할 수 있도록 접근 통제 잠금.
+- `vm-db/sql/init/01_schema.sql` & `vm-db/sql/runtime/fix_rls_security_lockdown.sql`: 신규 `submit_and_match_order` RPC 스키마 및 권한 설정을 Docker/VM-DB 초기화 및 런타임 스크립트에 동기화.
+- `app/api/orders/route.ts`:
+  - 클라이언트 body의 `user_id`를 완전히 무시하고 NextAuth 서버 세션(`session.user.id`)만을 사용자로 인정하여 ID Spoofing 원천 차단 (로컬 스탠드얼론 모드에서는 `GUEST_USER_ID` 유지, 프로덕션 미인증 시 401 Unauthorized 즉시 반환).
+  - DB 클라이언트 초기화 시 Anon key fallback을 영구 제거하고 `ENGINE_DB_SERVICE_ROLE_KEY` / `SUPABASE_SERVICE_ROLE_KEY`만 사용하도록 강제.
+  - 주문 가격/수량 양수 유효성 검증 및 유저당 1초 최대 15회 인메모리 슬라이딩 윈도우 Rate Limiter 적용.
+  - 프로덕션 주문 접수 시 `client.rpc('submit_and_match_order', ...)`를 호출하여 DB 내부 단일 트랜잭션으로 매칭 및 정산 위임.
+- `lib/engine/dbMatching.ts`: `input.user_id` 누락 및 빈 문자열을 엄격 검증하여 비인가 매칭 우회를 차단하고, 반환 타입에 `status`(`filled` | `partial` | `open`) 명시.
+- `lib/memoryDb/mockSupabaseClient.ts`: 로컬 스탠드얼론 모드용 `submit_and_match_order` RPC 핸들러 구현 및 holdings 조회 시 인덱스 누락 대비 안전한 전체 스캔 fallback 보강.
+- `README.md`: Security Model 및 Production Transaction Safety 원칙(브라우저 service-role 키 미사용, 서버 세션 결정, 단일 트랜잭션 보장 등) 전면 업데이트.
+- `scripts/test-order-security-and-atomic.ts`:
+  - TEST 1 (Auth Spoofing Prevention)
+  - TEST 2 (Empty user_id Rejection)
+  - TEST 3 (Service Role Key Fallback Prevention)
+  - TEST 4 (Transaction Rollback on Insufficient Asset)
+  - TEST 5 (Concurrent BUY Double-Spend Prevention)
+  - TEST 6 (Concurrent SELL Overselling Prevention)
+  - TEST 7 (Order Status Consistency)
+  - TEST 8 (Stock Stats Update Consistency)
+  8개 항목에 대한 종합 테스트 작성 및 100% 통과.
+- `npx tsx scripts/test-order-risk-and-settlement.ts` 기존 8개 테스트 회귀 검증 100% 통과.
+- `npx tsc --noEmit` 전체 타입 검사 통과 및 `npm run build` Next.js 프로덕션 빌드 성공.
+
 
 
 

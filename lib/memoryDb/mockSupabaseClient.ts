@@ -9,6 +9,7 @@ import {
   StockPriceHistoryRecord,
   GUEST_USER_ID,
 } from './memoryStore';
+import { submitAndMatchOrder } from '../engine/dbMatching';
 
 type FilterOp = {
   col: string;
@@ -144,7 +145,11 @@ export class MemoryQueryBuilder {
         targetList = comm ? [comm] : [];
       } else if (this.tableName === 'holdings' && eqUserId) {
         const holdingIds = db.holdingUserIndex.get(String(eqUserId));
-        targetList = holdingIds ? Array.from(holdingIds).map((id) => db.holdings.get(id)).filter(Boolean) : [];
+        if (holdingIds && holdingIds.size > 0) {
+          targetList = Array.from(holdingIds).map((id) => db.holdings.get(id)).filter(Boolean);
+        } else {
+          targetList = Array.from(db.holdings.values()).filter((h) => h.user_id === String(eqUserId));
+        }
       } else if (this.tableName === 'orders' && eqStockId) {
         const orderIds = db.orderStockIndex.get(String(eqStockId));
         targetList = orderIds ? Array.from(orderIds).map((id) => db.orders.get(id)).filter(Boolean) : [];
@@ -567,6 +572,32 @@ export class MockSupabaseClient {
       }
 
       return { data: { deleted_trades: deletedTrades, deleted_history: deletedHistory }, error: null };
+    }
+
+    if (fnName === 'submit_and_match_order') {
+      const res = await submitAndMatchOrder(this as any, {
+        user_id: params?.p_user_id,
+        stock_id: params?.p_stock_id,
+        side: params?.p_side,
+        price: Number(params?.p_price),
+        size: Number(params?.p_size),
+      });
+
+      if (!res.success) {
+        return { data: null, error: { message: res.message } };
+      }
+
+      return {
+        data: {
+          success: true,
+          order_id: res.orderId,
+          filled_qty: res.filledQty,
+          exec_price: res.execPrice,
+          status: res.status,
+          message: res.message,
+        },
+        error: null,
+      };
     }
 
     return { data: null, error: null };

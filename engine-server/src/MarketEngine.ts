@@ -760,13 +760,15 @@ export class MarketEngine {
         // 조건: 최우선 매수호가가 최우선 매도호가보다 크거나 같으면 체결(Cross)
         if (highestBid.price >= lowestAsk.price) {
           const tradeSize = Math.min(highestBid.size, lowestAsk.size);
-          const tradePrice = this.alignToTickSize(lowestAsk.price);
-          latestTradePrice = tradePrice;
 
-          // Maker-Taker 판별 (더 일찍 생성된 주문이 Maker)
+          // Maker-Taker 판별 (더 일찍 생성되어 호가창에 머물던 주문이 Maker)
           const bidTime = new Date(highestBid.created_at || 0).getTime();
           const askTime = new Date(lowestAsk.created_at || 0).getTime();
           const isBidMaker = bidTime <= askTime;
+
+          // 체결 가격은 Price-Time Priority에 따라 먼저 대기 중이던 Maker(Resting Order)의 지정가 우선
+          const tradePrice = this.alignToTickSize(isBidMaker ? highestBid.price : lowestAsk.price);
+          latestTradePrice = tradePrice;
           
           // Maker Rebate (-0.1%), Taker Fee (+0.25%)
           const makerRebateRate = -0.001; 

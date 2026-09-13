@@ -10,15 +10,15 @@
 let hasPrintedBanner = false;
 
 export function isLocalStandaloneMode(): boolean {
-  // 명시적 환경변수 플래그가 있는 경우
+  // 1. Production 환경에서는 어떤 플래그가 설정되어도 절대로 로컬 메모리 모드 진입 금지! (절대 보안 원칙)
+  if (process.env.NODE_ENV === 'production') {
+    return false;
+  }
+
+  // 2. 명시적 환경변수 플래그가 있는 경우 (로컬 개발 전용)
   if (process.env.NEXT_PUBLIC_USE_IN_MEMORY === 'true' || process.env.LOCAL_MEMORY_MODE === 'true') {
     printLocalBannerOnce();
     return true;
-  }
-
-  // Production 환경에서는 절대 자동 fallback 금지!
-  if (process.env.NODE_ENV === 'production') {
-    return false;
   }
 
   // Development 환경: 외부 DB URL 및 KEY 존재 여부 확인

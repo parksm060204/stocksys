@@ -2,8 +2,14 @@ import { NextResponse } from 'next/server';
 import { memoryDb } from '@/lib/memoryDb/memoryStore';
 import { createMockSupabaseClient } from '@/lib/memoryDb/mockSupabaseClient';
 import { ensureLocalStandaloneEngine } from '@/lib/engine/localStandaloneServer';
+import { isLocalStandaloneMode } from '@/lib/engine/localDevMode';
 
 export async function POST(request: Request) {
+  // Production 또는 외부 DB 환경에서는 로컬 개발 API 접근을 원천 차단 (404 Not Found)
+  if (!isLocalStandaloneMode()) {
+    return new NextResponse(null, { status: 404 });
+  }
+
   try {
     // Next.js dev process 내부 단일 MarketEngine 가동 보장
     ensureLocalStandaloneEngine();

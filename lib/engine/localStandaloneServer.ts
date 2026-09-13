@@ -117,8 +117,24 @@ class LocalMarketEngineInstance {
     // ── 4. 통합 매칭 엔진 실행 (LP + User Orders + Bot Orders) ──
     await this.processMatching(botOrders);
 
-    // ── 5. 슬라이딩 윈도우 트리밍 (매 20틱마다) ──
+    // ── 5. 오래된 봇 주문 및 체결/취소 완료 주문 메모리 정리 (Memory Leak 방지) ──
     if (this.tickCount % 20 === 0) {
+      const nowMs = Date.now();
+      for (const [id, order] of Array.from(memoryDb.orders.entries())) {
+        // 유저 주문(user_id 존재)은 유지, LP 주문은 refreshLpOrders에서 별도 관리
+        // 봇 주문(!order.user_id && !order.is_lp) 중 체결 완료, 취소, 또는 60초 초과 미체결 주문 삭제
+        if (
+          !order.user_id &&
+          !order.is_lp &&
+          (order.status === 'filled' ||
+           order.status === 'cancelled' ||
+           nowMs - new Date(order.created_at).getTime() > 60_000)
+        ) {
+          memoryDb.orders.delete(id);
+          memoryDb.removeOrderFromIndex(order);
+        }
+      }
+
       await this.client.rpc('trim_old_market_data', { p_max_trades: 5000, p_max_history: 3000 });
     }
   }
@@ -231,7 +247,10 @@ class LocalMarketEngineInstance {
 
         if (matchQty <= 0) break;
 
-        const execPrice = topAsk.price; // 먼저 호가창에 진입한 매도자 가격 우선
+        // Maker-Taker 판별 (더 일찍 생성되어 호가창에 resting 중이던 주문이 Maker)
+        const isBidMaker = topBid.created_at <= topAsk.created_at;
+        // 체결가는 Price-Time Priority에 따라 먼저 대기 중이던 Maker의 호가로 체결
+        const execPrice = isBidMaker ? topBid.price : topAsk.price;
         lastExecPrice = execPrice;
         matchedVol += matchQty;
 
@@ -252,8 +271,6 @@ class LocalMarketEngineInstance {
           topAsk.status = 'partial';
         }
 
-        // Maker-Taker 판별
-        const isBidMaker = topBid.created_at <= topAsk.created_at;
         const bidFee = isBidMaker ? -0.001 : 0.0025;
         const askFee = isBidMaker ? 0.0025 : -0.001;
 

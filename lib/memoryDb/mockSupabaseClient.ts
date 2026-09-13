@@ -459,8 +459,10 @@ export class MockSupabaseClient {
         if (!t.buyer_is_bot && buyerId) {
           const buyer = db.profiles.get(buyerId);
           if (buyer) {
+            // 현금: 매수 대금 + 매수 수수료 차감
             buyer.cash -= tradeAmount * (1 + buyerFee);
-            buyer.net_worth -= tradeAmount * (1 + buyerFee);
+            // 순자산: 현금이 주식 자산으로 전환되었으므로, 거래로 인한 순자산 변동은 오직 수수료(손실/리베이트)뿐
+            buyer.net_worth -= tradeAmount * buyerFee;
           }
           const holdingId = `${buyerId}_${t.stock_id}`;
           let h = db.holdings.get(holdingId);
@@ -478,8 +480,10 @@ export class MockSupabaseClient {
         if (!t.seller_is_bot && sellerId) {
           const seller = db.profiles.get(sellerId);
           if (seller) {
+            // 현금: 매도 대금 - 매도 수수료 입금
             seller.cash += tradeAmount * (1 - sellerFee);
-            seller.net_worth += tradeAmount * (1 - sellerFee);
+            // 순자산: 주식이 현금 자산으로 전환되었으므로, 거래로 인한 순자산 변동은 오직 수수료(손실/리베이트)뿐
+            seller.net_worth -= tradeAmount * sellerFee;
           }
           const holdingId = `${sellerId}_${t.stock_id}`;
           let h = db.holdings.get(holdingId);
@@ -494,7 +498,7 @@ export class MockSupabaseClient {
         }
 
         const tradeId = t.id || `trade_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-        db.trades.push({
+        const tradeRecord: TradeRecord = {
           id: tradeId,
           stock_id: t.stock_id,
           buyer_id: buyerId,
@@ -506,7 +510,12 @@ export class MockSupabaseClient {
           buyer_fee: buyerFee,
           seller_fee: sellerFee,
           created_at: t.created_at || new Date().toISOString(),
-        });
+        };
+
+        db.trades.push(tradeRecord);
+        // 종목별 체결 인덱스(tradeStockIndex)에 즉시 추가하여 호가창/체결피드에서 실시간 조회 가능하도록 보장
+        db.addTradeToIndex(tradeRecord);
+
         settledCount++;
       }
 
@@ -526,6 +535,11 @@ export class MockSupabaseClient {
       if (db.stockPriceHistory.length > maxHistory) {
         deletedHistory = db.stockPriceHistory.length - maxHistory;
         db.stockPriceHistory = db.stockPriceHistory.slice(-maxHistory);
+      }
+
+      // 슬라이딩 윈도우 트리밍 후 tradeStockIndex 등 보조 인덱스 재구축으로 인덱스-스토어 정합성 동기화
+      if (deletedTrades > 0 || deletedHistory > 0) {
+        db.rebuildIndexes();
       }
 
       return { data: { deleted_trades: deletedTrades, deleted_history: deletedHistory }, error: null };

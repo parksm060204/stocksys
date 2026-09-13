@@ -3343,4 +3343,20 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 - `app/components/Orderbook.tsx`, `TradeFeed.tsx`, `OrderEntry.tsx`, `PriceTag.tsx`: 빈칸 배경, 헤더, 테이블 행 호버, 보합가 텍스트(`text-tx`) 등 잔존 다크 스타일을 시맨틱 클래스로 정리.
 - 브라우저 서브에이전트를 통한 실제 라이트 모드/다크 모드 E2E 시각적 검증 완료.
 
+---
+## 2026-09-13 22:45
+
+**요청 요약:** 독립형 로컬 모드 & 엔진 7대 프로덕션 안전/회계/정합성 결함 긴급 수정
+
+**수행 결과:**
+- `lib/engine/localDevMode.ts`: `isLocalStandaloneMode()`에서 `process.env.NODE_ENV === 'production'` 검사를 함수 최상단에 배치하여, 프로덕션 환경에서는 메모리 플래그가 존재하더라도 절대로 로컬 메모리 모드로 진입하지 못하도록 100% 차단.
+- `app/api/local-db/route.ts`: 라우트 핸들러 최상단에 `if (!isLocalStandaloneMode()) return new NextResponse(null, { status: 404 });` 가드를 적용하여 프로덕션 배포 시 개발용 API 노출을 404로 원천 차단.
+- `lib/memoryDb/mockSupabaseClient.ts`: `bulk_settle_trades`에서 체결 레코드 생성 시 `db.addTradeToIndex(tradeRecord)`를 즉시 호출하여 `tradeStockIndex`에 동기화. 종목별 체결내역 누락 버그 해결.
+- `lib/memoryDb/mockSupabaseClient.ts`: 매수/매도 시 순자산(`net_worth`)에서 원금 전체가 차감/가산되어 순자산이 왜곡되던 회계 오류 수정 (자산 교환 성격에 맞추어 발생 수수료 손실분만 순자산에서 차감).
+- `lib/engine/localStandaloneServer.ts`: 매 20틱 주기마다 체결 완료, 취소, 또는 60초 초과 미체결된 오래된 봇 주문을 `memoryDb.orders` 및 보조 인덱스에서 자동 제거하는 메모리 누수 방지 cleanup 구현.
+- `lib/engine/localStandaloneServer.ts` & `engine-server/src/MarketEngine.ts`: 매칭 시 체결 가격을 항상 매도호가로 결정하던 문제를 Price-Time Priority에 맞추어 먼저 호가창에 resting 중이던 Maker 주문의 지정가로 결정하도록 양쪽 엔진 공통 정정.
+- `lib/memoryDb/mockSupabaseClient.ts`: `trim_old_market_data` 슬라이딩 윈도우 트리밍 후 `db.rebuildIndexes()`를 호출하여 `tradeStockIndex`와 잘려진 실제 `trades` 배열의 정합성 100% 동기화.
+- scratch 자동화 단위 테스트 및 `tsc --noEmit` 전체 검증 통과.
+
+
 

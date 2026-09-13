@@ -3442,3 +3442,17 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 - `npm run build` Next.js Turbopack 23개 라우트 빌드 100% 통과.
 - `npm run dev` 구동 상태에서 `POST /api/orders` 주문 접수 정상 동작 확인.
 
+
+---
+## 2026-09-14 02:02
+
+**요청 요약:** 매칭 엔진 무결성 강화 4개 항목 수정 (자기 매매 차단, 누적 배치 검증, 멀티 체결 OHLC, 종목별 뮤텍스)
+
+**수행 결과:**
+- `lib/engine/dbMatching.ts`: 자기 매매 차단(Self-Trade Prevention) 적용 — 반대 방향 주문 조회 시 `.neq('user_id', user_id)`로 DB 단계 배제 + 루프 내 방어 guard 이중 적용.
+- `lib/engine/dbMatching.ts`: 멀티 체결 OHLC 정확성 수정 — executionHigh/executionLow로 모든 체결 가격 추적, 주식 high/low 업데이트에 반영.
+- `lib/memoryDb/memoryDbClient.ts`: bulk_settle_trades RPC 누적 사전 검증 추가 — Map 누적 합산 후 일괄 검증, 부족 시 전체 배치 거절.
+- `lib/engine/marketService.ts`: 종목별 비동기 뮤텍스 추가 — Map<stockId, Promise> 체이닝으로 동일 종목 동시 요청 직렬화.
+- `scripts/test-order-security-and-atomic.ts`: TEST 9(자기 매매), TEST 10(동시 double-consume) 추가 — 10개 통과.
+- `scripts/test-order-risk-and-settlement.ts`: TEST I~M 추가(누적 검증, OHLC) — 13개 통과.
+- npx tsc --noEmit 오류 0건. npm run build 23개 라우트 정상 빌드.

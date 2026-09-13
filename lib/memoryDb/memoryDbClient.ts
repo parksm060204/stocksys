@@ -452,38 +452,78 @@ export class MemoryDbClient {
 
     if (fnName === 'bulk_settle_trades') {
       const trades = Array.isArray(params?.p_trades) ? params.p_trades : [];
-      
-      // 1. 사전 검증 단계 (트랜잭션 원자성 보장: 하나라도 잔고/주식 부족 시 전체 롤백)
-      for (const t of trades) {
-        const tradeAmount = Number(t.price) * Number(t.size);
-        const buyerFee = Number(t.buyer_fee ?? 0);
 
+      // ── Step 1: 기본 유효성 검증 ──
+      for (const t of trades) {
         if (Number(t.price) <= 0 || Number(t.size) <= 0) {
           return { data: null, error: { message: `Invalid trade price or size: price=${t.price}, size=${t.size}` } };
         }
-
         if (!t.buyer_is_bot && t.buyer_id) {
           const buyer = db.profiles.get(t.buyer_id);
           if (!buyer) {
             return { data: null, error: { message: `Buyer profile not found for user ${t.buyer_id}` } };
           }
-          const requiredCash = tradeAmount * (1 + buyerFee);
-          if (buyer.cash < requiredCash) {
-            return { data: null, error: { message: `Insufficient cash for buyer ${t.buyer_id}: required=${requiredCash}, available=${buyer.cash}` } };
-          }
-        }
-
-        if (!t.seller_is_bot && t.seller_id) {
-          const holdingId = `${t.seller_id}_${t.stock_id}`;
-          const h = db.holdings.get(holdingId);
-          const availableQty = h?.quantity ?? 0;
-          if (availableQty < Number(t.size)) {
-            return { data: null, error: { message: `Insufficient holdings for seller ${t.seller_id}: required=${t.size}, available=${availableQty}` } };
-          }
         }
       }
 
-      // 2. 실행 단계 (사전 검증 통과 후 상태 갱신)
+      // ── Step 2: 누적 사전 검증 (Cumulative Pre-Validation) ──
+      // 각 거래를 개별적으로 검증하면 동일 buyer/seller의 여러 거래가 각각 같은 시작 잔고를 보므로
+      // 중복 통과가 가능하다. 배치 전체를 합산하여 한 번에 검증해야 원자성이 보장된다.
+      //
+      //   예시: cash=1,000,000 / trade1 required=700,000 / trade2 required=700,000
+      //   개별 검증: 둘 다 통과 → 최종 잔고 -400,000 (부정합)
+      //   누적 검증: total=1,400,000 > 1,000,000 → 전체 배치 거절 (정합)
+
+      // Map<buyerId, 누적 필요 현금 (수수료 포함)>
+      const buyerRequiredCash = new Map();
+      // Map<sellerId_stockId, 누적 필요 보유 수량>
+      const sellerRequiredQty = new Map();
+
+      for (const t of trades) {
+        const tradeAmount = Number(t.price) * Number(t.size);
+        const buyerFee = Number(t.buyer_fee ?? 0);
+
+        if (!t.buyer_is_bot && t.buyer_id) {
+          const prev = buyerRequiredCash.get(t.buyer_id) ?? 0;
+          buyerRequiredCash.set(t.buyer_id, prev + tradeAmount * (1 + buyerFee));
+        }
+        if (!t.seller_is_bot && t.seller_id) {
+          const key = `${t.seller_id}_${t.stock_id}`;
+          const prev = sellerRequiredQty.get(key) ?? 0;
+          sellerRequiredQty.set(key, prev + Number(t.size));
+        }
+      }
+
+      // 매수자 누적 현금 검증 — 부족 시 전체 배치 거절, 상태 변경 없음
+      for (const [buyerId, required] of buyerRequiredCash.entries()) {
+        const buyer = db.profiles.get(buyerId);
+        const available = buyer?.cash ?? 0;
+        if (available < required) {
+          return {
+            data: null,
+            error: {
+              message: `Insufficient cumulative cash for buyer ${buyerId}: required=${required}, available=${available}`,
+            },
+          };
+        }
+      }
+
+      // 매도자 누적 보유 수량 검증 — 부족 시 전체 배치 거절, 상태 변경 없음
+      for (const [key, required] of sellerRequiredQty.entries()) {
+        const h = db.holdings.get(key);
+        const available = h?.quantity ?? 0;
+        if (available < required) {
+          const sellerId = key.split('_')[0];
+          return {
+            data: null,
+            error: {
+              message: `Insufficient cumulative holdings for seller ${sellerId} (key=${key}): required=${required}, available=${available}`,
+            },
+          };
+        }
+      }
+
+      // ── Step 3: 실행 단계 (누적 검증 통과 후에만 상태 갱신) ──
       let settledCount = 0;
       for (const t of trades) {
         const buyerId = t.buyer_id;
@@ -530,7 +570,7 @@ export class MemoryDbClient {
         }
 
         const tradeId = t.id || `trade_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-        const tradeRecord: TradeRecord = {
+        const tradeRecord = {
           id: tradeId,
           stock_id: t.stock_id,
           buyer_id: buyerId,

@@ -342,8 +342,144 @@ async function runAllTests() {
     `Remaining 10 orders must be rejected (actual: ${rejectedCount})`
   );
 
+  // ----------------------------------------------------
+  // TEST I: Cumulative Buyer Cash Validation
+  // 두 거래가 개별적으로는 통과하지만 합산 시 잔고 초과 → 전체 배치 거절
+  // ----------------------------------------------------
+  console.log('\n[TEST I] Cumulative Buyer Cash Validation');
+  const cumulBuyer = 'cumul_buyer_test';
+  const cumulStockId = '00000000-0000-4000-8000-000000000501';
+  memoryDb.profiles.set(cumulBuyer, {
+    id: cumulBuyer, user_id: cumulBuyer, username: 'cumulb', nickname: 'CumulBuyer',
+    cash: 1_000_000, net_worth: 1_000_000, rank_tier: 'Silver', created_at: new Date().toISOString(),
+  });
+  const botSeller = 'bot_seller_for_cumul'; // bot: skip holding check
+
+  // 700,000원 거래 2개 → 합산 1,400,000원 > 잔고 1,000,000원
+  const cumulBatch: SettlementTrade[] = [
+    { stock_id: cumulStockId, buyer_id: cumulBuyer, seller_id: botSeller, buyer_is_bot: false, seller_is_bot: true, price: 7_000, size: 100, buyer_fee: 0.0025, seller_fee: 0.0025 },
+    { stock_id: cumulStockId, buyer_id: cumulBuyer, seller_id: botSeller, buyer_is_bot: false, seller_is_bot: true, price: 7_000, size: 100, buyer_fee: 0.0025, seller_fee: 0.0025 },
+  ];
+  const cumulBuyResult = await executeSettlement(client, cumulBatch);
+  assert(cumulBuyResult.success === false, 'Cumulative buyer cash batch must be rejected');
+  assert(memoryDb.profiles.get(cumulBuyer)!.cash === 1_000_000, 'Buyer cash must remain exactly 1,000,000 after rejection');
+
+  // ----------------------------------------------------
+  // TEST J: Cumulative Seller Holdings Validation
+  // 두 매도 거래가 합산 시 보유 수량 초과 → 전체 배치 거절
+  // ----------------------------------------------------
+  console.log('\n[TEST J] Cumulative Seller Holdings Validation');
+  const cumulSeller = 'cumul_seller_test';
+  memoryDb.profiles.set(cumulSeller, { id: cumulSeller, user_id: cumulSeller, username: 'cumuls', nickname: 'CumulSeller', cash: 0, net_worth: 500_000, rank_tier: 'Bronze', created_at: new Date().toISOString() });
+  memoryDb.holdings.set(`${cumulSeller}_${cumulStockId}`, {
+    id: `${cumulSeller}_${cumulStockId}`, user_id: cumulSeller, stock_id: cumulStockId,
+    quantity: 100, avg_price: 5_000, created_at: new Date().toISOString(),
+  });
+  const botBuyer = 'bot_buyer_for_cumul';
+
+  // 80주 매도 2개 → 합산 160주 > 보유 100주
+  const cumulSellBatch: SettlementTrade[] = [
+    { stock_id: cumulStockId, buyer_id: botBuyer, seller_id: cumulSeller, buyer_is_bot: true, seller_is_bot: false, price: 5_000, size: 80, buyer_fee: 0.0025, seller_fee: 0.0025 },
+    { stock_id: cumulStockId, buyer_id: botBuyer, seller_id: cumulSeller, buyer_is_bot: true, seller_is_bot: false, price: 5_000, size: 80, buyer_fee: 0.0025, seller_fee: 0.0025 },
+  ];
+  const cumulSellResult = await executeSettlement(client, cumulSellBatch);
+  assert(cumulSellResult.success === false, 'Cumulative seller holdings batch must be rejected');
+  assert(memoryDb.holdings.get(`${cumulSeller}_${cumulStockId}`)!.quantity === 100, 'Seller holdings must remain exactly 100 after rejection');
+
+  // ----------------------------------------------------
+  // TEST K: Valid Multi-Trade Batch Succeeds
+  // 누적 체크를 통과하는 유효 배치는 성공해야 함
+  // ----------------------------------------------------
+  console.log('\n[TEST K] Valid Multi-Trade Batch Succeeds');
+  const validBuyer = 'valid_buyer_multi';
+  const validSeller = 'valid_seller_multi';
+  const validStockId = '00000000-0000-4000-8000-000000000502';
+  memoryDb.profiles.set(validBuyer, { id: validBuyer, user_id: validBuyer, username: 'vb', nickname: 'VB', cash: 2_000_000, net_worth: 2_000_000, rank_tier: 'Gold', created_at: new Date().toISOString() });
+  memoryDb.profiles.set(validSeller, { id: validSeller, user_id: validSeller, username: 'vs', nickname: 'VS', cash: 0, net_worth: 1_000_000, rank_tier: 'Gold', created_at: new Date().toISOString() });
+  memoryDb.holdings.set(`${validSeller}_${validStockId}`, {
+    id: `${validSeller}_${validStockId}`, user_id: validSeller, stock_id: validStockId,
+    quantity: 200, avg_price: 5_000, created_at: new Date().toISOString(),
+  });
+
+  // 500,000원 x 2 = 1,000,000원 < 잔고 2,000,000원
+  const validBatch: SettlementTrade[] = [
+    { stock_id: validStockId, buyer_id: validBuyer, seller_id: validSeller, buyer_is_bot: false, seller_is_bot: false, price: 5_000, size: 100, buyer_fee: 0.0025, seller_fee: 0.0025 },
+    { stock_id: validStockId, buyer_id: validBuyer, seller_id: validSeller, buyer_is_bot: false, seller_is_bot: false, price: 5_000, size: 100, buyer_fee: 0.0025, seller_fee: 0.0025 },
+  ];
+  const validBatchResult = await executeSettlement(client, validBatch);
+  assert(validBatchResult.success === true, 'Valid 2-trade batch must succeed');
+  assert(validBatchResult.settled_count === 2, `Settled count must be 2 (actual: ${validBatchResult.settled_count})`);
+  const vbAfter = memoryDb.profiles.get(validBuyer)!;
+  const vsHolding = memoryDb.holdings.get(`${validSeller}_${validStockId}`);
+  assert(vbAfter.cash < 2_000_000, 'Buyer cash must have decreased');
+  assert(vsHolding === undefined || vsHolding.quantity === 0, 'Seller should have 0 holding after selling all 200');
+
+  // ----------------------------------------------------
+  // TEST L: Failed Batch Leaves State Unchanged
+  // 단일 거래라도 실패 시 시작 상태와 완전히 동일
+  // ----------------------------------------------------
+  console.log('\n[TEST L] Failed Batch — State Must Be Exactly Unchanged');
+  const failBuyer = 'fail_buyer_state';
+  memoryDb.profiles.set(failBuyer, { id: failBuyer, user_id: failBuyer, username: 'fb', nickname: 'FB', cash: 100_000, net_worth: 100_000, rank_tier: 'Bronze', created_at: new Date().toISOString() });
+  const cashBefore = memoryDb.profiles.get(failBuyer)!.cash;
+  const tradesBefore = memoryDb.trades.length;
+
+  const failBatch: SettlementTrade[] = [
+    { stock_id: validStockId, buyer_id: failBuyer, seller_id: 'bot', buyer_is_bot: false, seller_is_bot: true, price: 10_000, size: 50, buyer_fee: 0.0025, seller_fee: 0.0025 }, // 500,000 > 100,000
+  ];
+  const failBatchResult = await executeSettlement(client, failBatch);
+  assert(failBatchResult.success === false, 'Insufficient-cash batch must fail');
+  assert(memoryDb.profiles.get(failBuyer)!.cash === cashBefore, `Cash must be exactly ${cashBefore} (unchanged)`);
+  assert(memoryDb.trades.length === tradesBefore, `Trade log must be exactly ${tradesBefore} (no trades appended)`);
+
+  // ----------------------------------------------------
+  // TEST M: Multi-Fill OHLC Correctness
+  // 다수 체결가에 걷친 주문 → executionHigh/Low이 모든 체결가를 반영해야 함
+  // ----------------------------------------------------
+  console.log('\n[TEST M] Multi-Fill OHLC Correctness');
+  const ohlcStockId = '00000000-0000-4000-8000-000000000555';
+  memoryDb.stocks.set(ohlcStockId, {
+    id: ohlcStockId, ticker: 'OHLC55', name: 'OHLC Test', market: 'KRX',
+    current_price: 10_000, previous_close: 10_000, open_price: 10_000,
+    high: 10_000, low: 0, volume: 0, change_rate: 0, market_cap: 1_000_000_000, pe_ratio: 10, dividend_yield: 0, sector: 'IT',
+  });
+
+  const ohlcBuyer = 'ohlc_buyer_test';
+  const ohlcSeller1 = 'ohlc_seller_1'; // SELL 5 @ 9,800
+  const ohlcSeller2 = 'ohlc_seller_2'; // SELL 5 @ 10,100
+  const ohlcSeller3 = 'ohlc_seller_3'; // SELL 5 @ 10_500
+
+  memoryDb.profiles.set(ohlcBuyer, { id: ohlcBuyer, user_id: ohlcBuyer, username: 'ob', nickname: 'OB', cash: 5_000_000, net_worth: 5_000_000, rank_tier: 'Gold', created_at: new Date().toISOString() });
+  for (const [uid, qty, price] of [[ohlcSeller1, 5, 9_800], [ohlcSeller2, 5, 10_100], [ohlcSeller3, 5, 10_500]] as [string, number, number][]) {
+    memoryDb.profiles.set(uid, { id: uid, user_id: uid, username: uid, nickname: uid, cash: 0, net_worth: 500_000, rank_tier: 'Bronze', created_at: new Date().toISOString() });
+    memoryDb.holdings.set(`${uid}_${ohlcStockId}`, { id: `${uid}_${ohlcStockId}`, user_id: uid, stock_id: ohlcStockId, quantity: qty, avg_price: price, created_at: new Date().toISOString() });
+    memoryDb.addHoldingToIndex({ id: `${uid}_${ohlcStockId}`, user_id: uid, stock_id: ohlcStockId, quantity: qty, avg_price: price, created_at: new Date().toISOString() });
+    // Place resting SELL orders
+    await submitAndMatchOrder(client as any, { stock_id: ohlcStockId, user_id: uid, side: 'sell', price, size: qty });
+  }
+
+  // Incoming BUY sweeps across 3 price levels: 9,800 / 10,100 / 10,500
+  const ohlcBuyRes = await submitAndMatchOrder(client as any, {
+    stock_id: ohlcStockId,
+    user_id: ohlcBuyer,
+    side: 'buy',
+    price: 11_000, // crosses all three
+    size: 15,      // fills all 15
+  });
+
+  assert(ohlcBuyRes.success === true, 'Multi-fill BUY must succeed');
+  assert(ohlcBuyRes.filledQty === 15, `Must fill all 15 shares (actual: ${ohlcBuyRes.filledQty})`);
+  assert(ohlcBuyRes.execPrice === 10_500, `Last exec price must be 10,500 (actual: ${ohlcBuyRes.execPrice})`);
+
+  const ohlcStock = memoryDb.stocks.get(ohlcStockId)!;
+  console.log(`  -> current_price=${ohlcStock.current_price}, high=${ohlcStock.high}, low=${ohlcStock.low}, volume=${ohlcStock.volume}`);
+  assert(ohlcStock.current_price === 10_500, `current_price must be last exec 10,500 (actual: ${ohlcStock.current_price})`);
+  assert(ohlcStock.high >= 10_500, `high must be >= 10,500 (actual: ${ohlcStock.high})`);
+  assert(ohlcStock.low > 0 && ohlcStock.low <= 9_800, `low must be <= 9,800 (actual: ${ohlcStock.low})`);
+  assert(ohlcStock.volume >= 15, `volume must be >= 15 (actual: ${ohlcStock.volume})`);
+
   console.log('\n==================================================');
-  console.log('🎉 ALL TESTS PASSED SUCCESSFULLY! (TEST A ~ TEST H)');
+  console.log('🎉 ALL TESTS PASSED SUCCESSFULLY! (TEST A ~ TEST M)');
   console.log('==================================================\n');
 }
 

@@ -25,6 +25,10 @@ export interface MatchOrderResult {
  * 2. resting maker price 기반 Price-Time Priority 매칭
  * 3. Maker Rebate / Taker Fee 일원화 적용
  * 4. Shared Settlement Layer(bulk_settle_trades RPC)로 원자적 자산 정산 위임
+ *
+ * [Self-Trade Prevention]
+ * 동일 user_id의 resting 주문을 DB 쿼리 레벨(.neq)과 루프 내부 guard 이중으로 배제한다.
+ * 자신의 resting 주문은 체결되지 않으며 호가창에 그대로 유지된다.
  */
 export async function submitAndMatchOrder(
   supabase: DbClient,
@@ -94,14 +98,20 @@ export async function submitAndMatchOrder(
     let totalFilledQty = 0;
     let lastExecPrice = incomingPrice;
 
+    // [Multi-Fill OHLC] 이번 주문에서 발생한 모든 체결의 고가/저가를 추적
+    let executionHigh = -Infinity;
+    let executionLow = Infinity;
+
     // 1. 반대 방향 미체결 주문 검색
+    // [Self-Trade Prevention] .neq('user_id', user_id)로 자신의 주문을 DB 조회 단계에서 배제
     const oppSide = side === 'buy' ? 'sell' : 'buy';
     let query = supabase
       .from('orders')
       .select('*')
       .eq('stock_id', stock_id)
       .eq('side', oppSide)
-      .in('status', ['open', 'partial']);
+      .in('status', ['open', 'partial'])
+      .neq('user_id', user_id); // Self-trade prevention: 자신의 resting 주문 제외
 
     if (side === 'buy') {
       // 매수 주문: 같거나 저렴한 매도호가 체결 (가격 오름차순, 접수시각 오름차순)
@@ -127,6 +137,9 @@ export async function submitAndMatchOrder(
       for (const opp of oppOrders) {
         if (remainingQty <= 0) break;
 
+        // [Self-Trade Prevention] defensive loop guard (belt-and-suspenders)
+        if (opp.user_id === user_id) continue;
+
         const oppRemaining = Math.max(0, Number(opp.size) - Number(opp.filled || 0));
         if (oppRemaining <= 0) continue;
 
@@ -136,6 +149,10 @@ export async function submitAndMatchOrder(
         if (matchQty <= 0) continue;
 
         lastExecPrice = execPrice;
+
+        // [Multi-Fill OHLC] 개별 체결 가격으로 고가/저가 추적
+        executionHigh = Math.max(executionHigh, execPrice);
+        executionLow = Math.min(executionLow, execPrice);
 
         const buyerId = side === 'buy' ? user_id : opp.user_id;
         const sellerId = side === 'sell' ? user_id : opp.user_id;
@@ -191,6 +208,7 @@ export async function submitAndMatchOrder(
     }
 
     // 4. 주식 통계(현재가, high, low, volume) 업데이트 (Canonical 스키마: high, low)
+    // [Multi-Fill OHLC] executionHigh/executionLow를 사용하여 모든 체결 가격을 반영
     if (totalFilledQty > 0) {
       const { data: stockData } = await supabase
         .from('stocks')
@@ -201,8 +219,9 @@ export async function submitAndMatchOrder(
       if (stockData) {
         const curHigh = Number(stockData.high || 0);
         const curLow = Number(stockData.low || 0);
-        const newHigh = Math.max(curHigh, lastExecPrice);
-        const newLow = curLow === 0 ? lastExecPrice : Math.min(curLow, lastExecPrice);
+        // executionHigh/Low: 이번 주문의 전체 체결 범위
+        const newHigh = Math.max(curHigh, executionHigh);
+        const newLow = curLow === 0 ? executionLow : Math.min(curLow, executionLow);
         const newVol = Number(stockData.volume || 0) + totalFilledQty;
 
         writePromises.push(

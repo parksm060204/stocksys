@@ -352,8 +352,149 @@ async function runSecurityAndSafetyTests() {
   assert(stockAfter.low <= 75_000, 'Stock low must be <= 75,000');
   assert(stockAfter.volume > 0, 'Stock volume must be > 0');
 
+  // ----------------------------------------------------
+  // TEST 9: Self-Trade Prevention
+  // 동일 유저가 SELL 주문을 resting에 두고 BUY 주문을 넣어도 자기 주문에 체결되면 안 됨
+  // ----------------------------------------------------
+  console.log('\n[TEST 9] Self-Trade Prevention Test');
+  const selfTradeStockId = '00000000-0000-4000-8000-000000000777';
+  memoryDb.stocks.set(selfTradeStockId, {
+    id: selfTradeStockId,
+    ticker: 'SELF77',
+    name: 'Self Trade Test Stock',
+    market: 'KRX',
+    current_price: 10_000,
+    previous_close: 10_000,
+    open_price: 10_000,
+    high: 10_000,
+    low: 10_000,
+    volume: 0,
+    change_rate: 0,
+    market_cap: 1_000_000_000,
+    pe_ratio: 10,
+    dividend_yield: 0,
+    sector: 'IT',
+  });
+
+  const selfUser = 'self_trade_user_abc';
+  memoryDb.profiles.set(selfUser, {
+    id: selfUser,
+    user_id: selfUser,
+    username: 'selftrade',
+    nickname: 'SelfTrade',
+    cash: 5_000_000,
+    net_worth: 5_000_000,
+    rank_tier: 'Silver',
+    created_at: new Date().toISOString(),
+  });
+  memoryDb.holdings.set(`${selfUser}_${selfTradeStockId}`, {
+    id: `${selfUser}_${selfTradeStockId}`,
+    user_id: selfUser,
+    stock_id: selfTradeStockId,
+    quantity: 50,
+    avg_price: 10_000,
+    created_at: new Date().toISOString(),
+  });
+  memoryDb.addHoldingToIndex({ id: `${selfUser}_${selfTradeStockId}`, user_id: selfUser, stock_id: selfTradeStockId, quantity: 50, avg_price: 10_000, created_at: new Date().toISOString() });
+
+  // 자기 SELL 주문 resting 등록
+  const selfSellRes = await submitAndMatchOrder(client as any, {
+    stock_id: selfTradeStockId,
+    user_id: selfUser,
+    side: 'sell',
+    price: 10_000,
+    size: 20,
+  });
+  assert(selfSellRes.success === true, 'Initial SELL resting must be accepted');
+  assert(selfSellRes.filledQty === 0, 'Initial SELL must not fill (no opposite side)');
+
+  const initialCash = memoryDb.profiles.get(selfUser)!.cash;
+  const initialHolding = memoryDb.holdings.get(`${selfUser}_${selfTradeStockId}`)?.quantity ?? 0;
+
+  // 동일 유저가 BUY 주문 → 자기 resting SELL에 체결되면 안 됨
+  const selfBuyRes = await submitAndMatchOrder(client as any, {
+    stock_id: selfTradeStockId,
+    user_id: selfUser,
+    side: 'buy',
+    price: 10_000, // crossing price
+    size: 10,
+  });
+
+  assert(selfBuyRes.success === true, 'BUY order must succeed (goes to book, not self-matched)');
+  assert(selfBuyRes.filledQty === 0, `Self-trade must not execute: filledQty must be 0 (actual: ${selfBuyRes.filledQty})`);
+  const afterCash = memoryDb.profiles.get(selfUser)!.cash;
+  const afterHolding = memoryDb.holdings.get(`${selfUser}_${selfTradeStockId}`)?.quantity ?? 0;
+  assert(afterHolding === initialHolding, `Holdings must not change from self-trade (before: ${initialHolding}, after: ${afterHolding})`);
+  assert(afterCash === initialCash, `Cash must not change from self-trade settlement (before: ${initialCash}, after: ${afterCash})`);
+
+  // ----------------------------------------------------
+  // TEST 10: Concurrent Matching Double-Consume Prevention
+  // 한 maker의 10주 주문에 두 taker가 동시에 요청 → 총 체결 수량이 10주를 초과하면 안 됨
+  // ----------------------------------------------------
+  console.log('\n[TEST 10] Concurrent Matching — No Double-Consume of Maker');
+  const concStockId = '00000000-0000-4000-8000-000000000888';
+  memoryDb.stocks.set(concStockId, {
+    id: concStockId,
+    ticker: 'CONC88',
+    name: 'Concurrency Test Stock',
+    market: 'KRX',
+    current_price: 50_000,
+    previous_close: 50_000,
+    open_price: 50_000,
+    high: 50_000,
+    low: 50_000,
+    volume: 0,
+    change_rate: 0,
+    market_cap: 1_000_000_000,
+    pe_ratio: 10,
+    dividend_yield: 0,
+    sector: 'FIN',
+  });
+
+  const concMaker = 'conc_maker_user';
+  const concTaker1 = 'conc_taker_user_1';
+  const concTaker2 = 'conc_taker_user_2';
+
+  memoryDb.profiles.set(concMaker, { id: concMaker, user_id: concMaker, username: 'maker', nickname: 'Maker', cash: 0, net_worth: 1_000_000, rank_tier: 'Gold', created_at: new Date().toISOString() });
+  memoryDb.profiles.set(concTaker1, { id: concTaker1, user_id: concTaker1, username: 'taker1', nickname: 'Taker1', cash: 3_000_000, net_worth: 3_000_000, rank_tier: 'Silver', created_at: new Date().toISOString() });
+  memoryDb.profiles.set(concTaker2, { id: concTaker2, user_id: concTaker2, username: 'taker2', nickname: 'Taker2', cash: 3_000_000, net_worth: 3_000_000, rank_tier: 'Silver', created_at: new Date().toISOString() });
+
+  // Maker: 10주 SELL @ 50,000
+  memoryDb.holdings.set(`${concMaker}_${concStockId}`, { id: `${concMaker}_${concStockId}`, user_id: concMaker, stock_id: concStockId, quantity: 10, avg_price: 40_000, created_at: new Date().toISOString() });
+  memoryDb.addHoldingToIndex({ id: `${concMaker}_${concStockId}`, user_id: concMaker, stock_id: concStockId, quantity: 10, avg_price: 40_000, created_at: new Date().toISOString() });
+
+  const makerRes = await submitAndMatchOrder(client as any, {
+    stock_id: concStockId,
+    user_id: concMaker,
+    side: 'sell',
+    price: 50_000,
+    size: 10,
+  });
+  assert(makerRes.success === true, 'Maker SELL order must be placed');
+  assert(makerRes.filledQty === 0, 'Maker must not fill immediately');
+
+  // 두 taker가 동시에 BUY 주문 (각 10주씩 → 총 20주 시도)
+  const { LocalMarketService } = await import('../lib/engine/marketService');
+  const [t1Result, t2Result] = await Promise.all([
+    LocalMarketService.submitOrder({ userId: concTaker1, stockId: concStockId, side: 'buy', price: 50_000, size: 10 }),
+    LocalMarketService.submitOrder({ userId: concTaker2, stockId: concStockId, side: 'buy', price: 50_000, size: 10 }),
+  ]);
+
+  const totalFilled = t1Result.filledQty + t2Result.filledQty;
+  console.log(`  -> Taker1 filled: ${t1Result.filledQty}, Taker2 filled: ${t2Result.filledQty}, Total: ${totalFilled}`);
+
+  assert(totalFilled <= 10, `Total filled must not exceed maker's 10 shares (actual: ${totalFilled})`);
+
+  // maker's resting order filled count must not exceed size
+  const makerOrders = Array.from(memoryDb.orders.values()).filter(
+    (o) => o.user_id === concMaker && o.stock_id === concStockId && o.side === 'sell'
+  );
+  const makerFilled = makerOrders.reduce((sum, o) => sum + Number(o.filled || 0), 0);
+  const makerSize = makerOrders.reduce((sum, o) => sum + Number(o.size || 0), 0);
+  assert(makerFilled <= makerSize, `Maker filled (${makerFilled}) must not exceed size (${makerSize})`);
+
   console.log('\n==================================================');
-  console.log('🎉 ALL SECURITY & ATOMIC TX TESTS PASSED! (TEST 1 ~ TEST 8)');
+  console.log('🎉 ALL SECURITY & ATOMIC TX TESTS PASSED! (TEST 1 ~ TEST 10)');
   console.log('==================================================\n');
 }
 

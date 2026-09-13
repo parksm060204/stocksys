@@ -258,21 +258,21 @@ export default function ScenarioController({
   return (
     <div className="space-y-6 font-mono text-xs select-none">
       {/* ── 1. 탑 컨트롤 바: 긴급 전체 정지 버튼 & 상태 요약 ── */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 rounded-2xl bg-[#0E1117] border border-[#212631] shadow-xl">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 rounded-2xl bg-[#0E1117] border border-border shadow-xl">
         <div className="flex items-center gap-3">
           <span className="text-xl">🎛️</span>
           <div>
             <h2 className="text-sm font-black text-white">시나리오 제어기 (Scenario Controller)</h2>
-            <p className="text-[11px] text-[#8E939D]">
+            <p className="text-xs text-[#8E939D]">
               작전 세력(매집·펌핑·덤핑) 실시간 주입 및 거시경제 원클릭 충격 발동
             </p>
           </div>
         </div>
 
         <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2 bg-[#161B22] px-3.5 py-1.5 rounded-xl border border-[#212631]">
+          <div className="flex items-center gap-2 bg-[#161B22] px-3.5 py-1.5 rounded-xl border border-border">
             <span className="text-[10px] text-[#565A63] font-bold">활성 작전:</span>
-            <span className="font-black text-[#F04452] tabular-nums">{activeScenarios.length}건</span>
+            <span className="font-black text-up tabular-nums">{activeScenarios.length}건</span>
             <span className="text-[#565A63]">|</span>
             <span className="text-[10px] text-[#565A63] font-bold">거시 충격:</span>
             <span className="font-black text-amber-400 tabular-nums">{activeShocks.length}건</span>
@@ -281,7 +281,7 @@ export default function ScenarioController({
           <button
             onClick={handleEmergencyHaltAll}
             disabled={activeScenarios.length === 0 && activeShocks.length === 0}
-            className="px-4 py-2 rounded-xl bg-red-600/20 hover:bg-red-600/40 text-red-400 border border-red-500/40 font-black text-[11px] transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shadow-lg active:scale-95"
+            className="px-4 py-2 rounded-xl bg-red-600/20 hover:bg-red-600/40 text-up border border-red-500/40 font-black text-xs transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shadow-lg active:scale-95"
           >
             🚨 전체 긴급 롤백 (EMERGENCY HALT)
           </button>
@@ -291,19 +291,19 @@ export default function ScenarioController({
       <div className="grid grid-cols-12 gap-6">
         {/* ── 2. 좌측 (7): 작전 세력 주입 제어 패널 ── */}
         <div className="col-span-12 lg:col-span-7 space-y-6">
-          <div className="bg-[#0E1117] border border-[#212631] rounded-2xl p-5 shadow-xl space-y-4">
-            <div className="border-b border-[#212631] pb-3 flex items-center justify-between">
+          <div className="bg-[#0E1117] border border-border rounded-2xl p-5 shadow-xl space-y-4">
+            <div className="border-b border-border pb-3 flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <span className="text-base">🎯</span>
                 <h3 className="font-extrabold text-white text-[13.5px]">작전 세력(Manipulator) 주입기</h3>
               </div>
-              <span className="text-[10px] font-bold text-[#F04452] bg-[#F04452]/10 px-2 py-0.5 rounded border border-[#F04452]/30">
+              <span className="text-[10px] font-bold text-up bg-up/10 px-2 py-0.5 rounded border border-[#F04452]/30">
                 MARKET OVERRIDE
               </span>
             </div>
 
             {/* 자산 분류 선택 탭 (주식 vs 원자재) */}
-            <div className="grid grid-cols-2 gap-2 bg-[#05070A] p-1 rounded-xl border border-[#212631]">
+            <div className="grid grid-cols-2 gap-2 bg-[#05070A] p-1 rounded-xl border border-border">
               <button
                 onClick={() => {
                   setAssetType('stock');
@@ -332,21 +332,21 @@ export default function ScenarioController({
 
             {/* 타겟 종목 검색 & 셀렉트 */}
             <div className="space-y-2">
-              <div className="flex items-center justify-between text-[11px] text-[#8E939D]">
+              <div className="flex items-center justify-between text-xs text-[#8E939D]">
                 <span>타겟 종목 선택</span>
                 <input
                   type="text"
                   placeholder="티커 / 종목명 검색..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="bg-[#05070A] border border-[#212631] rounded-lg px-2.5 py-1 text-white text-[11px] outline-none focus:border-[#3182F6] w-44"
+                  className="bg-[#05070A] border border-border rounded-lg px-2.5 py-1 text-white text-xs outline-none focus:border-[#3182F6] w-44"
                 />
               </div>
 
               <select
                 value={selectedAssetId}
                 onChange={(e) => setSelectedAssetId(e.target.value)}
-                className="w-full bg-[#05070A] border border-[#212631] rounded-xl px-3.5 py-2.5 text-white font-mono text-xs outline-none focus:border-[#3182F6]"
+                className="w-full bg-[#05070A] border border-border rounded-xl px-3.5 py-2.5 text-white font-mono text-xs outline-none focus:border-[#3182F6]"
               >
                 {assetType === 'stock'
                   ? filteredStocks.map((s) => (
@@ -364,12 +364,12 @@ export default function ScenarioController({
 
             {/* 세력 작전 모드 4가지 */}
             <div className="space-y-2">
-              <label className="text-[11px] text-[#8E939D] font-bold">작전 세력 운용 모드</label>
+              <label className="text-xs text-[#8E939D] font-bold">작전 세력 운용 모드</label>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                 {[
                   { id: 'accumulation', label: '매집 (Accumulation)', icon: '📦', color: 'text-emerald-400' },
-                  { id: 'pump', label: '펌핑 (Pump)', icon: '🚀', color: 'text-[#F04452]' },
-                  { id: 'dump', label: '덤핑 (Dump)', icon: '💥', color: 'text-[#3182F6]' },
+                  { id: 'pump', label: '펌핑 (Pump)', icon: '🚀', color: 'text-up' },
+                  { id: 'dump', label: '덤핑 (Dump)', icon: '💥', color: 'text-down' },
                   { id: 'full_cycle', label: '풀사이클 (Combo)', icon: '🔄', color: 'text-amber-400' },
                 ].map((m) => (
                   <button
@@ -384,7 +384,7 @@ export default function ScenarioController({
                     className={`p-2.5 rounded-xl border flex flex-col items-center justify-center gap-1 transition-all cursor-pointer ${
                       scenarioMode === m.id
                         ? 'bg-[#161B22] border-[#F04452] shadow-[0_0_12px_rgba(240,68,82,0.3)] font-black text-white'
-                        : 'bg-[#05070A] border-[#212631] text-[#8E939D] hover:text-white'
+                        : 'bg-[#05070A] border-border text-[#8E939D] hover:text-white'
                     }`}
                   >
                     <span className="text-base">{m.icon}</span>
@@ -396,7 +396,7 @@ export default function ScenarioController({
 
             {/* 슬라이더 제어 파라미터 (지속 틱, 목표 변동률, 거래량 배수) */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2">
-              <div className="p-3 bg-[#05070A] rounded-xl border border-[#212631] space-y-1.5">
+              <div className="p-3 bg-[#05070A] rounded-xl border border-border space-y-1.5">
                 <div className="flex justify-between text-[10.5px] text-[#8E939D]">
                   <span>단계별 지속 틱</span>
                   <span className="font-black text-white">{durationTicks} 틱</span>
@@ -412,12 +412,12 @@ export default function ScenarioController({
                 />
               </div>
 
-              <div className="p-3 bg-[#05070A] rounded-xl border border-[#212631] space-y-1.5">
+              <div className="p-3 bg-[#05070A] rounded-xl border border-border space-y-1.5">
                 <div className="flex justify-between text-[10.5px] text-[#8E939D]">
                   <span>목표 변동률</span>
                   <span
                     className={`font-black ${
-                      targetChangePct >= 0 ? 'text-[#F04452]' : 'text-[#3182F6]'
+                      targetChangePct >= 0 ? 'text-up' : 'text-down'
                     }`}
                   >
                     {fmtSigned(targetChangePct)}%
@@ -434,7 +434,7 @@ export default function ScenarioController({
                 />
               </div>
 
-              <div className="p-3 bg-[#05070A] rounded-xl border border-[#212631] space-y-1.5">
+              <div className="p-3 bg-[#05070A] rounded-xl border border-border space-y-1.5">
                 <div className="flex justify-between text-[10.5px] text-[#8E939D]">
                   <span>거래량 증폭 배수</span>
                   <span className="font-black text-amber-400">{volumeMultiplier}x</span>
@@ -464,8 +464,8 @@ export default function ScenarioController({
           </div>
 
           {/* ── 거시경제 원클릭 충격 발동 패널 ── */}
-          <div className="bg-[#0E1117] border border-[#212631] rounded-2xl p-5 shadow-xl space-y-4">
-            <div className="border-b border-[#212631] pb-3 flex items-center justify-between">
+          <div className="bg-[#0E1117] border border-border rounded-2xl p-5 shadow-xl space-y-4">
+            <div className="border-b border-border pb-3 flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <span className="text-base">🌍</span>
                 <h3 className="font-extrabold text-white text-[13.5px]">거시경제 충격 원클릭 발동</h3>
@@ -481,13 +481,13 @@ export default function ScenarioController({
                   type: 'GEOPOLITICAL_CRISIS' as MacroShockType,
                   title: '💥 지정학적 전쟁 위기',
                   sub: '원유·금·가스 폭등 / 증시 급락',
-                  color: 'border-red-500/40 bg-red-500/10 text-red-400',
+                  color: 'border-red-500/40 bg-up/10 text-up',
                 },
                 {
                   type: 'RATE_HIKE_SHOCK' as MacroShockType,
                   title: '⚡ 기준금리 +100bp 인상',
                   sub: '성장주 폭락 / 채권 금리 폭등',
-                  color: 'border-blue-500/40 bg-blue-500/10 text-blue-400',
+                  color: 'border-blue-500/40 bg-down/10 text-down',
                 },
                 {
                   type: 'LIQUIDITY_BOOM' as MacroShockType,
@@ -519,19 +519,19 @@ export default function ScenarioController({
         {/* ── 3. 우측 (5): 실시간 활성 시나리오 모니터 & 롤백 & 감사 로그 ── */}
         <div className="col-span-12 lg:col-span-5 space-y-6">
           {/* 활성 시나리오 모니터링 */}
-          <div className="bg-[#0E1117] border border-[#212631] rounded-2xl p-5 shadow-xl space-y-4">
-            <div className="border-b border-[#212631] pb-2.5 flex items-center justify-between">
+          <div className="bg-[#0E1117] border border-border rounded-2xl p-5 shadow-xl space-y-4">
+            <div className="border-b border-border pb-2.5 flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <span className="text-base animate-pulse">📡</span>
                 <h3 className="font-extrabold text-white text-[13px]">진행 중인 작전 시나리오</h3>
               </div>
-              <span className="text-[10.5px] font-bold text-[#F04452] tabular-nums">
+              <span className="text-[10.5px] font-bold text-up tabular-nums">
                 {activeScenarios.length}개 활성
               </span>
             </div>
 
             {activeScenarios.length === 0 ? (
-              <div className="p-6 bg-[#05070A] rounded-xl border border-[#212631]/60 text-center text-[#565A63] text-[11px] space-y-1">
+              <div className="p-6 bg-[#05070A] rounded-xl border border-border/60 text-center text-[#565A63] text-xs space-y-1">
                 <div>현재 시장에 주입된 작전 세력이 없습니다.</div>
                 <div className="text-[10px]">시장 자율 균형 및 봇 생태계 정상 가동 중</div>
               </div>
@@ -543,12 +543,12 @@ export default function ScenarioController({
                   return (
                     <div
                       key={scen.id}
-                      className="p-3.5 rounded-xl bg-[#05070A] border border-[#212631] space-y-2.5"
+                      className="p-3.5 rounded-xl bg-[#05070A] border border-border space-y-2.5"
                     >
                       <div className="flex items-start justify-between gap-2">
                         <div>
                           <div className="flex items-center gap-1.5">
-                            <span className="text-[11px] font-black text-[#F04452] font-mono">{scen.ticker}</span>
+                            <span className="text-xs font-black text-up font-mono">{scen.ticker}</span>
                             <span className="font-extrabold text-white text-xs">{scen.name}</span>
                           </div>
                           <div className="text-[10px] text-[#8E939D] mt-0.5">
@@ -560,7 +560,7 @@ export default function ScenarioController({
                         {/* 개별 롤백 버튼 */}
                         <button
                           onClick={() => handleRollbackScenario(scen.id, scen.ticker)}
-                          className="px-2.5 py-1 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/30 text-[10px] font-bold transition-colors cursor-pointer shrink-0"
+                          className="px-2.5 py-1 rounded-lg bg-up/10 hover:bg-up/20 text-up border border-up/30 text-[10px] font-bold transition-colors cursor-pointer shrink-0"
                         >
                           롤백 (Stop)
                         </button>
@@ -587,8 +587,8 @@ export default function ScenarioController({
           </div>
 
           {/* 감사 로그 (Audit Trail) */}
-          <div className="bg-[#0E1117] border border-[#212631] rounded-2xl p-5 shadow-xl space-y-3">
-            <div className="border-b border-[#212631] pb-2 flex items-center justify-between">
+          <div className="bg-[#0E1117] border border-border rounded-2xl p-5 shadow-xl space-y-3">
+            <div className="border-b border-border pb-2 flex items-center justify-between">
               <div className="flex items-center gap-1.5">
                 <span className="text-sm">📜</span>
                 <h4 className="font-extrabold text-white text-[12.5px]">관리자 시나리오 실행 감사 로그</h4>
@@ -598,12 +598,12 @@ export default function ScenarioController({
 
             <div className="space-y-2 max-h-56 overflow-y-auto no-scrollbar pr-1">
               {actionLogs.length === 0 ? (
-                <div className="p-4 text-center text-[#565A63] text-[11px]">기록된 관리자 작업 이력이 없습니다.</div>
+                <div className="p-4 text-center text-[#565A63] text-xs">기록된 관리자 작업 이력이 없습니다.</div>
               ) : (
                 actionLogs.map((log) => (
                   <div
                     key={log.id}
-                    className="p-2.5 rounded-xl bg-[#05070A] border border-[#212631]/60 text-[10.5px] space-y-1"
+                    className="p-2.5 rounded-xl bg-[#05070A] border border-border/60 text-[10.5px] space-y-1"
                   >
                     <div className="flex items-center justify-between text-[#565A63]">
                       <span>{fmtKSTTime(new Date(log.timestamp).toISOString())}</span>

@@ -15,7 +15,7 @@ export default function V2Card({ title, subtitle, action, children, className = 
         <div className="mb-4 flex items-center justify-between gap-2 border-b border-white/5 pb-3">
           <div>
             {title && <h3 className="font-bold text-white text-[15px] tracking-tight">{title}</h3>}
-            {subtitle && <p className="text-[12px] text-[#9CA3AF] mt-0.5">{subtitle}</p>}
+            {subtitle && <p className="text-[12px] text-muted mt-0.5">{subtitle}</p>}
           </div>
           {action && <div>{action}</div>}
         </div>

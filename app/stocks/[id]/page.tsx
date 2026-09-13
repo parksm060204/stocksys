@@ -59,7 +59,11 @@ export default async function StockDetail({
   const { id } = await params;
   const supabase = await createClient();
 
-  const { data: row } = await supabase.from('stocks').select('*').eq('id', id).single();
+  let { data: row } = await supabase.from('stocks').select('*').eq('id', id).maybeSingle();
+  if (!row) {
+    const { data: rowByTicker } = await supabase.from('stocks').select('*').eq('ticker', id).maybeSingle();
+    row = rowByTicker;
+  }
   if (!row) notFound();
 
   const stock: Stock = {
@@ -89,23 +93,32 @@ export default async function StockDetail({
 
   
   // Fetch news related to this stock or its sector
-  const { data: newsData } = await supabase
-    .from('market_news')
-    .select('*')
-    .or(`target_sector.eq.${stock.sector},headline.ilike.%${stock.name}%,summary.ilike.%${stock.name}%`)
-    .order('created_at', { ascending: false })
-    .limit(5);
-  const relatedNews = newsData || [];
+  let relatedNews: any[] = [];
+  try {
+    const { data: newsData } = await supabase
+      .from('market_news')
+      .select('*')
+      .or(`target_sector.eq.${stock.sector},headline.ilike.%${stock.name}%,summary.ilike.%${stock.name}%`)
+      .order('created_at', { ascending: false })
+      .limit(5);
+    relatedNews = newsData || [];
+  } catch (e) {
+    console.warn("Failed to fetch market news:", e);
+  }
 
   // Fetch price history records
-  const { data: priceHistoryData } = await supabase
-    .from('stock_price_history')
-    .select('*')
-    .eq('stock_id', id)
-    .order('created_at', { ascending: false })
-    .limit(50);
-  const priceHistory = priceHistoryData || [];
-
+  let priceHistory: any[] = [];
+  try {
+    const { data: priceHistoryData } = await supabase
+      .from('stock_price_history')
+      .select('*')
+      .eq('stock_id', id)
+      .order('created_at', { ascending: false })
+      .limit(50);
+    priceHistory = priceHistoryData || [];
+  } catch (e) {
+    console.warn("Failed to fetch price history:", e);
+  }
 
   // For now, chat messages are empty or we can fetch them if there's a chat table
   const messages: any[] = [];
@@ -118,7 +131,7 @@ export default async function StockDetail({
   const marketLink = marketMap[stock.market] || { href: `/markets/${stock.market}`, label: stock.market };
 
   return (
-    <div className="h-screen w-full bg-black text-[#e6edf6] flex flex-col p-2 overflow-hidden font-sans">
+    <div className="min-h-screen w-full bg-black text-[#e6edf6] flex flex-col p-2 md:p-3 overflow-y-auto font-sans">
       <nav className="mb-2 flex items-center gap-2 text-[12px] text-gray-500 shrink-0 px-2">
         <Link href="/" className="hover:text-white">메인홈</Link>
         <span>/</span>
@@ -135,7 +148,7 @@ export default async function StockDetail({
               {stock.ticker}
             </span>
             {stock.isCore && (
-              <span className="rounded bg-yellow-500/15 px-2 py-0.5 text-[11px] font-semibold text-yellow-500">
+              <span className="rounded bg-yellow-500/15 px-2 py-0.5 text-xs font-semibold text-yellow-500">
                 CORE 종목
               </span>
             )}

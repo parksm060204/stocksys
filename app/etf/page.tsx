@@ -316,24 +316,24 @@ export default function ETFPage() {
       {eventBanner && (
         <div className={`p-4 rounded-2xl border font-mono text-xs shadow-2xl flex items-center justify-between animate-bounce ${
           eventBanner.shockPercent > 0
-            ? 'bg-[#F04452]/20 border-[#F04452] text-[#F04452]'
-            : 'bg-[#3182F6]/20 border-[#3182F6] text-[#3182F6]'
+            ? 'bg-up/20 border-[#F04452] text-up'
+            : 'bg-down/20 border-[#3182F6] text-down'
         }`}>
           <div className="flex items-center gap-2">
             <span className="text-base">⚡</span>
             <span className="font-extrabold text-[13px]">{eventBanner.title}</span>
           </div>
-          <span className="text-[11px] font-bold bg-black/40 px-3 py-1 rounded-full border border-white/20">
+          <span className="text-xs font-bold bg-black/40 px-3 py-1 rounded-full border border-white/20">
             변동폭: {eventBanner.shockPercent > 0 ? '+' : ''}{eventBanner.shockPercent}%
           </span>
         </div>
       )}
 
       {/* Header Banner */}
-      <div className="bg-[#0E1117] border border-[#212631] p-6 rounded-3xl flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shadow-2xl">
+      <div className="bg-[#0E1117] border border-border p-6 rounded-3xl flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shadow-2xl">
         <div>
-          <div className="inline-flex items-center gap-2 rounded-full border border-[#F04452]/40 bg-[#F04452]/10 px-3.5 py-1 text-[11px] font-bold text-[#F04452] mb-2 font-mono">
-            <span className="inline-block h-2 w-2 rounded-full bg-[#F04452] animate-pulse" />
+          <div className="inline-flex items-center gap-2 rounded-full border border-[#F04452]/40 bg-up/10 px-3.5 py-1 text-xs font-bold text-up mb-2 font-mono">
+            <span className="inline-block h-2 w-2 rounded-full bg-up animate-pulse" />
             LIVE ETF TERMINAL · 상장지수펀드
           </div>
           <h1 className="text-xl md:text-2xl font-black text-white tracking-tight">
@@ -350,13 +350,13 @@ export default function ETFPage() {
           <div className="flex gap-2">
             <button
               onClick={() => triggerMarketEvent(true)}
-              className="bg-[#F04452]/15 hover:bg-[#F04452]/30 text-[#F04452] border border-[#F04452]/40 px-3 py-1.5 rounded-xl text-[11px] font-bold transition-all cursor-pointer flex items-center gap-1 active:scale-95"
+              className="bg-up/15 hover:bg-up/30 text-up border border-[#F04452]/40 px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1 active:scale-95"
             >
               <span>🔥 4%+ 호재 충격</span>
             </button>
             <button
               onClick={() => triggerMarketEvent(false)}
-              className="bg-[#3182F6]/15 hover:bg-[#3182F6]/30 text-[#3182F6] border border-[#3182F6]/40 px-3 py-1.5 rounded-xl text-[11px] font-bold transition-all cursor-pointer flex items-center gap-1 active:scale-95"
+              className="bg-down/15 hover:bg-down/30 text-down border border-[#3182F6]/40 px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1 active:scale-95"
             >
               <span>⚠️ 4%+ 악재 충격</span>
             </button>
@@ -364,18 +364,18 @@ export default function ETFPage() {
 
           {/* User Balance Display */}
           {userId && userBalance !== null ? (
-            <div className="bg-[#161B22] px-4 py-2.5 rounded-2xl border border-[#212631] text-xs shrink-0 font-mono flex items-center gap-3">
+            <div className="bg-[#161B22] px-4 py-2.5 rounded-2xl border border-border text-xs shrink-0 font-mono flex items-center gap-3">
               <div>
                 <span className="text-[#8E939D] block text-[9.5px] uppercase font-bold tracking-wider">보유 예수금</span>
-                <span className="text-[#F04452] font-black text-[14px] tabular-nums">₩{userBalance.toLocaleString()}</span>
+                <span className="text-up font-black text-[14px] tabular-nums">₩{userBalance.toLocaleString()}</span>
               </div>
-              <div className="border-l border-[#212631] pl-3">
+              <div className="border-l border-border pl-3">
                 <span className="text-[#8E939D] block text-[9.5px] uppercase font-bold tracking-wider">보유 ETF</span>
                 <span className="text-white font-black text-[14px] tabular-nums">{userEtfShares.toLocaleString()}주</span>
               </div>
             </div>
           ) : (
-            <div className="bg-[#161B22] px-4 py-2 rounded-xl border border-[#212631] text-xs font-mono text-[#8E939D]">
+            <div className="bg-[#161B22] px-4 py-2 rounded-xl border border-border text-xs font-mono text-[#8E939D]">
               💡 로그인 시 실시간 ETF 거래 및 실주식 잔고가 연동됩니다.
             </div>
           )}
@@ -383,7 +383,7 @@ export default function ETFPage() {
       </div>
 
       {/* Category Tabs */}
-      <div className="flex gap-2 border-b border-[#212631] pb-3 overflow-x-auto font-mono">
+      <div className="flex gap-2 border-b border-border pb-3 overflow-x-auto font-mono">
         {[
           { key: 'ALL', label: '전체 ETF' },
           { key: 'KOREA', label: '🇰🇷 한국 대표' },
@@ -453,23 +453,23 @@ export default function ETFPage() {
 
           {/* Leverage ETF Rebalance Engine Section */}
           {selectedEtf.leverageFactor !== 1 && (
-            <div className="bg-[#0E1117] border border-[#212631] p-4 rounded-2xl space-y-3 font-mono">
-              <div className="flex justify-between items-center border-b border-[#212631] pb-2">
+            <div className="bg-[#0E1117] border border-border p-4 rounded-2xl space-y-3 font-mono">
+              <div className="flex justify-between items-center border-b border-border pb-2">
                 <span className="text-xs font-black text-amber-400">⚡ 파생 레버리지 리밸런싱 엔진</span>
-                <span className="text-[11px] text-[#8E939D]">타겟 노출: {portfolio.leverageFactor}X</span>
+                <span className="text-xs text-[#8E939D]">타겟 노출: {portfolio.leverageFactor}X</span>
               </div>
 
               <div className="grid grid-cols-2 gap-2 text-xs">
-                <div className="bg-[#05070A] p-2.5 rounded-xl border border-[#212631]">
+                <div className="bg-[#05070A] p-2.5 rounded-xl border border-border">
                   <span className="text-[#8E939D] block text-[10px] font-bold">현재 파생 평가 노출</span>
                   <span className="text-white font-black text-[13px]">
                     ₩{Math.round(portfolio.currentExposure / 100000000).toLocaleString()}억원
                   </span>
                 </div>
-                <div className="bg-[#05070A] p-2.5 rounded-xl border border-[#212631]">
+                <div className="bg-[#05070A] p-2.5 rounded-xl border border-border">
                   <span className="text-[#8E939D] block text-[10px] font-bold">장마감 필요 리밸런싱 주문</span>
                   <span className={`text-[13px] font-black ${
-                    rebalanceResult.orderQuantity > 0 ? 'text-[#F04452]' : rebalanceResult.orderQuantity < 0 ? 'text-[#3182F6]' : 'text-white'
+                    rebalanceResult.orderQuantity > 0 ? 'text-up' : rebalanceResult.orderQuantity < 0 ? 'text-down' : 'text-white'
                   }`}>
                     {rebalanceResult.side} {Math.abs(rebalanceResult.orderQuantity).toLocaleString()} 계약
                   </span>
@@ -479,25 +479,25 @@ export default function ETFPage() {
           )}
 
           {/* AP Arbitrage Decision Banner */}
-          <div className="bg-[#0E1117] border border-[#212631] p-4 rounded-2xl space-y-2 font-mono">
+          <div className="bg-[#0E1117] border border-border p-4 rounded-2xl space-y-2 font-mono">
             <span className="text-xs font-bold text-[#8E939D]">AP 지정참가회사 차익거래 판단 Engine</span>
             <div className={`p-3 rounded-xl border text-xs font-mono font-bold ${
               apDecision.action === 'CREATE_AND_SELL_ETF'
-                ? 'bg-[#F04452]/10 border-[#F04452]/40 text-[#F04452]'
+                ? 'bg-up/10 border-[#F04452]/40 text-up'
                 : apDecision.action === 'BUY_AND_REDEEM_ETF'
-                  ? 'bg-[#3182F6]/10 border-[#3182F6]/40 text-[#3182F6]'
-                  : 'bg-[#161B22] border-[#212631] text-[#8E939D]'
+                  ? 'bg-down/10 border-[#3182F6]/40 text-down'
+                  : 'bg-[#161B22] border-border text-[#8E939D]'
             }`}>
               <div className="font-black">액션: {apDecision.action}</div>
-              {apDecision.reason && <div className="mt-1 text-[11px] font-sans font-medium">{apDecision.reason}</div>}
+              {apDecision.reason && <div className="mt-1 text-xs font-sans font-medium">{apDecision.reason}</div>}
             </div>
           </div>
 
           {/* Order Entry Trading Box */}
-          <div className="bg-[#05070A] border border-[#212631] p-4 rounded-2xl space-y-3 font-mono">
+          <div className="bg-[#05070A] border border-border p-4 rounded-2xl space-y-3 font-mono">
             <h3 className="text-xs font-bold text-[#8E939D] flex items-center justify-between">
               <span>실시간 ETF 매수 / 매도 주문</span>
-              <span className="text-[11px] text-white font-mono font-bold">
+              <span className="text-xs text-white font-mono font-bold">
                 현재가: {isUsOrGlobal ? `$${currentMarketPrice.toFixed(2)}` : `₩${Math.round(currentMarketPrice).toLocaleString('ko-KR')}`}
               </span>
             </h3>
@@ -510,12 +510,12 @@ export default function ETFPage() {
                 max={10000}
                 value={orderQty}
                 onChange={(e) => setOrderQty(Math.max(1, parseInt(e.target.value) || 1))}
-                className="flex-1 bg-[#0E1117] border border-[#212631] rounded-xl px-3 py-2 text-xs text-white font-mono font-bold focus:outline-none focus:border-[#F04452]"
+                className="flex-1 bg-[#0E1117] border border-border rounded-xl px-3 py-2 text-xs text-white font-mono font-bold focus:outline-none focus:border-[#F04452]"
               />
               <span className="text-xs text-[#8E939D] font-bold">주</span>
             </div>
 
-            <div className="text-[12px] text-[#8E939D] flex justify-between px-1 bg-[#161B22] p-2.5 rounded-xl border border-[#212631]">
+            <div className="text-[12px] text-[#8E939D] flex justify-between px-1 bg-[#161B22] p-2.5 rounded-xl border border-border">
               <span className="font-medium">총 주문 금액:</span>
               <span className="font-black text-white tabular-nums">
                 {isUsOrGlobal ? `$${(currentMarketPrice * orderQty).toFixed(2)}` : `₩${Math.round(currentMarketPrice * orderQty).toLocaleString('ko-KR')}`}
@@ -525,13 +525,13 @@ export default function ETFPage() {
             <div className="grid grid-cols-2 gap-2.5 pt-1">
               <button
                 onClick={() => handleUserTrade('BUY')}
-                className="py-3 bg-[#F04452] hover:bg-[#ff5252] text-white font-black rounded-full text-xs transition-all shadow-[0_0_15px_rgba(240,68,82,0.35)] cursor-pointer active:scale-[0.98]"
+                className="py-3 bg-up hover:bg-[#ff5252] text-white font-black rounded-full text-xs transition-all shadow-[0_0_15px_rgba(240,68,82,0.35)] cursor-pointer active:scale-[0.98]"
               >
                 매수 제출 (BUY)
               </button>
               <button
                 onClick={() => handleUserTrade('SELL')}
-                className="py-3 bg-[#3182F6] hover:bg-[#4092ff] text-white font-black rounded-full text-xs transition-all shadow-[0_0_15px_rgba(49,130,246,0.35)] cursor-pointer active:scale-[0.98]"
+                className="py-3 bg-down hover:bg-[#4092ff] text-white font-black rounded-full text-xs transition-all shadow-[0_0_15px_rgba(49,130,246,0.35)] cursor-pointer active:scale-[0.98]"
               >
                 매도 제출 (SELL)
               </button>

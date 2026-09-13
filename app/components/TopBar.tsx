@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useAuth } from "@/lib/auth/useAuth";
-import { ThemeToggle } from "./ThemeToggle";
 
 export default function TopBar() {
   const [now, setNow] = useState<Date | null>(null);
@@ -44,7 +43,7 @@ export default function TopBar() {
     : "--:--:--";
 
   return (
-    <header className="flex h-14 items-center justify-between border-b border-[#212631] bg-[#090B0F] px-6">
+    <header className="flex h-14 items-center justify-between border-b border-border bg-[#090B0F] px-6">
       {/* Search Input Bar (Robinhood Command Palette Style) */}
       <div className="flex items-center gap-3">
         <div className="relative w-64 md:w-80">
@@ -54,20 +53,17 @@ export default function TopBar() {
           <input
             type="text"
             placeholder="종목명, 티커 검색 (예: AAPL, 삼성전자)"
-            className="w-full rounded-full border border-[#212631] bg-[#161B22] pl-9 pr-4 py-1.5 text-[12px] text-white placeholder:text-[#565A63] outline-none focus:border-[#F04452] focus:ring-1 focus:ring-[#F04452] transition-all"
+            className="w-full rounded-full border border-border bg-[#161B22] pl-9 pr-4 py-1.5 text-[12px] text-white placeholder:text-[#565A63] outline-none focus:border-[#F04452] focus:ring-1 focus:ring-[#F04452] transition-all"
           />
         </div>
-        <div className="hidden lg:flex items-center gap-2 rounded-full border border-[#212631] bg-[#12161F] px-3 py-1 text-[11px] font-mono text-[#8E939D]">
-          <span className="inline-block h-2 w-2 rounded-full bg-[#F04452] animate-pulse" />
+        <div className="hidden lg:flex items-center gap-2 rounded-full border border-border bg-[#12161F] px-3 py-1 text-xs font-mono text-[#8E939D]">
+          <span className="inline-block h-2 w-2 rounded-full bg-up animate-pulse" />
           <span>실시간 봇 시뮬레이션 가동 중</span>
         </div>
       </div>
 
       <div className="flex items-center gap-3 md:gap-4">
-        {/* 테마 감지 및 토글 드롭다운 */}
-        <ThemeToggle />
-
-        <span className="font-mono text-[12px] tabular-nums text-[#8E939D] bg-[#161B22] px-2.5 py-1 rounded-md border border-[#212631]">
+        <span className="font-mono text-[12px] tabular-nums text-[#8E939D] bg-[#161B22] px-2.5 py-1 rounded-md border border-border">
           {timeStr}
         </span>
 
@@ -86,14 +82,14 @@ export default function TopBar() {
                 {user.name ?? user.email}
               </span>
               {cash !== null && (
-                <span className="text-[11px] text-[#F04452] font-mono font-bold mt-1">
+                <span className="text-xs text-up font-mono font-bold mt-1">
                   ₩{cash.toLocaleString()}
                 </span>
               )}
             </div>
             <button
               onClick={() => signOut()}
-              className="rounded-xl border border-[#212631] bg-[#161B22] px-3 py-1.5 text-[12px] font-medium text-[#8E939D] transition-all hover:border-[#3182F6]/40 hover:text-[#3182F6]"
+              className="rounded-xl border border-border bg-[#161B22] px-3 py-1.5 text-[12px] font-medium text-[#8E939D] transition-all hover:border-[#3182F6]/40 hover:text-down"
             >
               로그아웃
             </button>
@@ -101,7 +97,7 @@ export default function TopBar() {
         ) : (
           <button
             onClick={() => signIn()}
-            className="rounded-xl border border-[#F04452]/40 bg-[#F04452]/10 px-4 py-1.5 text-[13px] font-bold text-[#F04452] transition-all hover:bg-[#F04452] hover:text-white shadow-[0_0_12px_rgba(240,68,82,0.2)]"
+            className="rounded-xl border border-[#F04452]/40 bg-up/10 px-4 py-1.5 text-[13px] font-bold text-up transition-all hover:bg-up hover:text-white shadow-[0_0_12px_rgba(240,68,82,0.2)]"
           >
             Google 로그인
           </button>

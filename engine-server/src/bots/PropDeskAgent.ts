@@ -68,6 +68,25 @@ export class PropDeskAgent extends BaseAgent {
       this.prevPriceState[stockId] = stock.current_price;
 
       // ==========================================
+      // 🧠 HFT Strategy 2: 스푸핑 & 레이어링 (Spoofing & Layering)
+      // ==========================================
+      // 이전 틱에 설치했던 허수 스푸핑 주문 즉시 전량 취소
+      this.cancelExpiredSpoofs(currentTime, 1);
+
+      // 단기 모멘텀 유도를 위한 가짜 대형벽(Spoofing) 설치
+      if (Math.random() < 0.35) {
+        const isBullishSpoof = Math.random() > 0.45;
+        const spoofOrder = this.executeSpoofLayering(
+          stock,
+          isBullishSpoof ? 'buy' : 'sell',
+          2, // 2틱 아래/위에 대형 허수벽 깔기
+          8.0, // 평소의 8배 규모
+          currentTime
+        );
+        orders.push(spoofOrder);
+      }
+
+      // ==========================================
       // 공격 모드 1: OFI Scalping (호가창 잔량 비대칭 0.5 이상 또는 absolute threshold)
       // ==========================================
       const ofiSum = this.ofiState[stockId]!.getSum();

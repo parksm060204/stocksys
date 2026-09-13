@@ -402,6 +402,267 @@ export class MemoryDatabase {
       vix: 14.2,
       updated_at: new Date().toISOString(),
     });
+
+    // ── 50개 기관 봇 LP 호가 및 실제 체결 시드 적재 ──
+    const bots = [
+      { id: 'bot_citadel', name: 'Citadel Quant' },
+      { id: 'bot_jane_street', name: 'Jane Street Desk' },
+      { id: 'bot_bridgewater', name: 'Bridgewater Hedge' },
+      { id: 'bot_nps', name: '국민연금기금' },
+      { id: 'bot_retail_swarm', name: 'Retail Swarm' },
+    ];
+
+    Array.from(this.stocks.values()).forEach((stk) => {
+      const cp = stk.current_price;
+      const tick = cp < 2000 ? 1 : cp < 5000 ? 5 : cp < 20000 ? 10 : cp < 50000 ? 50 : cp < 200000 ? 100 : 500;
+      
+      // 시총 및 주가 기반 현실적인 호가당 기본 물량 스케일 (삼성전자 등 대형주는 호가당 수만 주)
+      const baseVolMultiplier = cp >= 50000 ? 25000 : cp >= 10000 ? 8000 : 1500;
+
+      // 매도 10호가 주문 적재 (벽 세우기 물량 포함)
+      for (let i = 1; i <= 10; i++) {
+        const orderId = `order_${stk.ticker}_ask_${i}_${Date.now()}`;
+        // 3, 5, 10호가 등에 대량의 기관 매도벽(Wall) 형성
+        const wallFactor = (i === 3 || i === 5 || i === 10) ? 2.4 : 1.0;
+        const depthQty = Math.floor((baseVolMultiplier * (0.8 + (i % 3) * 0.3) * wallFactor) + Math.floor(Math.random() * 800));
+
+        const askOrder: OrderRecord = {
+          id: orderId,
+          stock_id: stk.id,
+          user_id: bots[i % bots.length]?.id ?? 'bot_lp',
+          side: 'sell',
+          price: cp + i * tick,
+          size: depthQty,
+          filled: 0,
+          status: 'open',
+          is_lp: true,
+          created_at: new Date(Date.now() - (10 - i) * 60000).toISOString(),
+        };
+        this.orders.set(orderId, askOrder);
+        this.addOrderToIndex(askOrder);
+      }
+
+      // 매수 10호가 주문 적재 (단단한 지지선 예약 매수벽 형성)
+      for (let i = 0; i < 10; i++) {
+        const orderId = `order_${stk.ticker}_bid_${i}_${Date.now()}`;
+        const wallFactor = (i === 2 || i === 4 || i === 9) ? 2.8 : 1.0;
+        const depthQty = Math.floor((baseVolMultiplier * (0.85 + (i % 3) * 0.35) * wallFactor) + Math.floor(Math.random() * 800));
+
+        const bidOrder: OrderRecord = {
+          id: orderId,
+          stock_id: stk.id,
+          user_id: bots[i % bots.length]?.id ?? 'bot_lp',
+          side: 'buy',
+          price: Math.max(tick, cp - i * tick),
+          size: depthQty,
+          filled: 0,
+          status: 'open',
+          is_lp: true,
+          created_at: new Date(Date.now() - (10 - i) * 60000).toISOString(),
+        };
+        this.orders.set(orderId, bidOrder);
+        this.addOrderToIndex(bidOrder);
+      }
+
+      // 과거 체결 내역 20건 적재
+      for (let i = 20; i >= 1; i--) {
+        const isBuy = Math.random() > 0.48;
+        const tPrice = cp + (isBuy ? (i % 2) * tick : -(i % 2) * tick);
+        const tradeRecord: TradeRecord = {
+          id: `trade_${stk.ticker}_${Date.now() - i * 4000}`,
+          stock_id: stk.id,
+          buyer_id: isBuy ? 'bot_citadel' : 'bot_retail_swarm',
+          seller_id: isBuy ? 'bot_jane_street' : 'bot_bridgewater',
+          buyer_is_bot: true,
+          seller_is_bot: true,
+          price: tPrice,
+          size: Math.floor(50 + Math.random() * 450),
+          created_at: new Date(Date.now() - i * 4000).toISOString(),
+        };
+        this.trades.push(tradeRecord);
+        this.addTradeToIndex(tradeRecord);
+      }
+    });
+
+    // 백그라운드 봇 매칭 엔진 루프 시작
+    this.startContinuousMarketMatchingLoop();
+  }
+
+  /**
+   * 실시간 기관 봇 체결 및 오더북 매칭 루프 (3대 HFT 마이크로스트럭처 탑재)
+   */
+  private startContinuousMarketMatchingLoop(): void {
+    if ((globalThis as any).__MEM_MATCHING_LOOP_STARTED__) return;
+    (globalThis as any).__MEM_MATCHING_LOOP_STARTED__ = true;
+
+    // HFT 상태 추적 맵
+    const icebergState = new Map<string, { totalReserve: number; refillsCount: number }>();
+    const spoofOrders = new Map<string, { orderId: string; stockId: string; tickBorn: number }>();
+    let globalTick = 0;
+
+    setInterval(() => {
+      try {
+        globalTick += 1;
+        const stockList = Array.from(this.stocks.values());
+
+        // 🧠 Strategy 2-B: 만료된 허수 스푸핑 주문 0.1초 만에 전량 취소(Cancellation)
+        for (const [key, spoof] of Array.from(spoofOrders.entries())) {
+          if (globalTick - spoof.tickBorn >= 1) {
+            this.orders.delete(spoof.orderId);
+            spoofOrders.delete(key);
+          }
+        }
+
+        for (const stk of stockList) {
+          const cp = stk.current_price;
+          const tick = cp < 2000 ? 1 : cp < 5000 ? 5 : cp < 20000 ? 10 : cp < 50000 ? 50 : cp < 200000 ? 100 : 500;
+          const baseVolMultiplier = cp >= 50000 ? 25000 : cp >= 10000 ? 8000 : 1500;
+
+          // 🧠 Strategy 1: 빙산 주문(Iceberg Order) 교착 상태 관리
+          const icebergKey = `${stk.id}_iceberg`;
+          if (!icebergState.has(icebergKey)) {
+            icebergState.set(icebergKey, { totalReserve: baseVolMultiplier * 6, refillsCount: 0 });
+          }
+          const ibState = icebergState.get(icebergKey)!;
+
+          // 🧠 Strategy 3: 돌파(Breakout) 및 진공 스윕(Market Sweep) 여부 판별
+          const isBreakoutMoment = ibState.refillsCount >= 4 && Math.random() < 0.35;
+          let isBuy = Math.random() > 0.48;
+          let tradeQty = Math.floor(60 + Math.random() * 450);
+          let execPrice = cp;
+
+          if (isBreakoutMoment) {
+            // 🔥 돌파 발생! 매도벽이 뚫리며 텅 빈 호가창을 모멘텀 봇이 2~3틱 시장가로 쓸어버림 (Flash Spike)
+            isBuy = true;
+            execPrice = cp + tick * (Math.random() > 0.5 ? 2 : 1);
+            tradeQty = Math.floor(baseVolMultiplier * 0.4 + Math.random() * 3000);
+            ibState.refillsCount = 0;
+            ibState.totalReserve = baseVolMultiplier * 6;
+          } else {
+            // 일반 교착 틱 체결
+            execPrice = isBuy ? cp + (Math.random() > 0.8 ? tick : 0) : cp - (Math.random() > 0.8 ? tick : 0);
+          }
+
+          const trade: TradeRecord = {
+            id: `trade_${stk.ticker}_${Date.now()}`,
+            stock_id: stk.id,
+            buyer_id: isBuy ? (isBreakoutMoment ? 'bot_momentum_cta' : 'bot_citadel') : 'bot_retail',
+            seller_id: isBuy ? 'bot_jane_street' : 'bot_nps',
+            buyer_is_bot: true,
+            seller_is_bot: true,
+            price: execPrice,
+            size: tradeQty,
+            created_at: new Date().toISOString(),
+          };
+
+          this.trades.unshift(trade);
+          if (this.trades.length > 5000) this.trades.pop();
+          this.addTradeToIndex(trade);
+
+          // 2. 주식 현재가 & 거래량 업데이트
+          stk.current_price = execPrice;
+          stk.volume += tradeQty;
+          if (execPrice > stk.high_price) stk.high_price = execPrice;
+          if (execPrice < stk.low_price) stk.low_price = execPrice;
+
+          // 🧠 Strategy 2-A: 스푸핑 & 레이어링 (Spoofing Wall 설치)
+          if (Math.random() < 0.3) {
+            const isBullishSpoof = Math.random() > 0.5;
+            const spoofPrice = isBullishSpoof ? execPrice - 2 * tick : execPrice + 2 * tick;
+            const spoofOrderId = `order_spoof_${stk.ticker}_${Date.now()}`;
+            const spoofQty = Math.floor(baseVolMultiplier * 3.5 + Math.random() * 5000);
+
+            const spoofOrder: OrderRecord = {
+              id: spoofOrderId,
+              stock_id: stk.id,
+              user_id: 'bot_prop_desk',
+              side: isBullishSpoof ? 'buy' : 'sell',
+              price: spoofPrice,
+              size: spoofQty,
+              filled: 0,
+              status: 'open',
+              is_lp: true,
+              created_at: new Date().toISOString(),
+            };
+            this.orders.set(spoofOrderId, spoofOrder);
+            spoofOrders.set(spoofOrderId, { orderId: spoofOrderId, stockId: stk.id, tickBorn: globalTick });
+          }
+
+          // 3. 10단계 호가창 업데이트 (1자리수 현실 난수 유동성 & 1호가 Iceberg 리필 & 2~10호가 벽 고정)
+          for (let i = 1; i <= 10; i++) {
+            const askPrice = execPrice + i * tick;
+            const askOrderId = `order_${stk.ticker}_ask_${i}`;
+            let askOrder = this.orders.get(askOrderId);
+            const wallFactor = (i === 3 || i === 5 || i === 10) ? 2.4 : 1.0;
+            const seedOffset = ((askPrice * 9301 + 49297) % 873) + 127;
+            const targetQty = Math.floor(baseVolMultiplier * (0.8 + (i % 3) * 0.3) * wallFactor) + seedOffset;
+
+            if (!askOrder) {
+              askOrder = {
+                id: askOrderId,
+                stock_id: stk.id,
+                side: 'sell',
+                price: askPrice,
+                size: targetQty,
+                filled: 0,
+                status: 'open',
+                is_lp: true,
+                created_at: new Date().toISOString(),
+              };
+              this.orders.set(askOrderId, askOrder);
+              this.addOrderToIndex(askOrder);
+            } else {
+              askOrder.price = askPrice;
+              // 1호가: 체결 시 잔량 차감 및 Iceberg 무한 리필 (교착 상태)
+              if (isBuy && i === 1) {
+                askOrder.size = Math.max(10, askOrder.size - tradeQty);
+                if (askOrder.size < 1500 && ibState.totalReserve > 0) {
+                  // 연기금의 5,000주 단위 아이스버그 무한 리필 발동!
+                  const refillSlice = Math.min(ibState.totalReserve, Math.floor(targetQty * 0.8));
+                  askOrder.size += refillSlice;
+                  ibState.totalReserve -= refillSlice;
+                  ibState.refillsCount += 1;
+                }
+              }
+            }
+
+            const bidPrice = Math.max(tick, execPrice - (i - 1) * tick);
+            const bidOrderId = `order_${stk.ticker}_bid_${i}`;
+            let bidOrder = this.orders.get(bidOrderId);
+            const bidWallFactor = (i === 2 || i === 4 || i === 9) ? 2.8 : 1.0;
+            const bidSeedOffset = ((bidPrice * 7919 + 65537) % 891) + 109;
+            const bidTargetQty = Math.floor(baseVolMultiplier * (0.85 + (i % 3) * 0.35) * bidWallFactor) + bidSeedOffset;
+
+            if (!bidOrder) {
+              bidOrder = {
+                id: bidOrderId,
+                stock_id: stk.id,
+                side: 'buy',
+                price: bidPrice,
+                size: bidTargetQty,
+                filled: 0,
+                status: 'open',
+                is_lp: true,
+                created_at: new Date().toISOString(),
+              };
+              this.orders.set(bidOrderId, bidOrder);
+              this.addOrderToIndex(bidOrder);
+            } else {
+              bidOrder.price = bidPrice;
+              if (!isBuy && i === 1) {
+                bidOrder.size = Math.max(10, bidOrder.size - tradeQty);
+                if (bidOrder.size < 1500 && ibState.totalReserve > 0) {
+                  const refillSlice = Math.min(ibState.totalReserve, Math.floor(bidTargetQty * 0.8));
+                  bidOrder.size += refillSlice;
+                  ibState.totalReserve -= refillSlice;
+                  ibState.refillsCount += 1;
+                }
+              }
+            }
+          }
+        }
+      } catch {}
+    }, 1500);
   }
 
   // ── 5. 스냅샷 내보내기 & 불러오기 ──

@@ -33,10 +33,10 @@ export default function OptionHTSDashboard() {
       </nav>
 
       {/* Header Banner */}
-      <div className="bg-[#0E1117] border border-[#212631] p-6 rounded-3xl flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shadow-2xl">
+      <div className="bg-[#0E1117] border border-border p-6 rounded-3xl flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shadow-2xl">
         <div>
-          <div className="inline-flex items-center gap-2 rounded-full border border-[#F04452]/40 bg-[#F04452]/10 px-3.5 py-1 text-[11px] font-bold text-[#F04452] mb-2 font-mono">
-            <span className="inline-block h-2 w-2 rounded-full bg-[#F04452] animate-pulse" />
+          <div className="inline-flex items-center gap-2 rounded-full border border-[#F04452]/40 bg-up/10 px-3.5 py-1 text-xs font-bold text-up mb-2 font-mono">
+            <span className="inline-block h-2 w-2 rounded-full bg-up animate-pulse" />
             LIVE OPTIONS TERMINAL · [0513] 선물옵션월물별
           </div>
           <h1 className="text-xl md:text-2xl font-black text-white tracking-tight">
@@ -47,10 +47,10 @@ export default function OptionHTSDashboard() {
           </p>
         </div>
 
-        <div className="flex gap-6 text-right bg-[#161B22] px-5 py-3 rounded-2xl border border-[#212631] shrink-0 font-mono">
+        <div className="flex gap-6 text-right bg-[#161B22] px-5 py-3 rounded-2xl border border-border shrink-0 font-mono">
           <div>
             <div className="text-[10px] uppercase font-bold tracking-wider text-[#8E939D]">선택 계약</div>
-            <div className={`text-[14px] font-black ${selectedType === 'CALL' ? 'text-[#F04452]' : 'text-[#3182F6]'}`}>
+            <div className={`text-[14px] font-black ${selectedType === 'CALL' ? 'text-up' : 'text-down'}`}>
               {selectedTicker}
             </div>
           </div>
@@ -85,10 +85,10 @@ export default function OptionHTSDashboard() {
       </div>
 
       {/* 하단 실시간 체결 & 기관 롤오버 피드 */}
-      <div className="bg-[#0E1117] border border-[#212631] rounded-2xl p-4 shadow-2xl">
+      <div className="bg-[#0E1117] border border-border rounded-2xl p-4 shadow-2xl">
         <h3 className="text-xs font-black text-white mb-3 flex items-center justify-between font-mono">
           <span>실시간 옵션 체결 & 기관 롤오버 라이브 피드</span>
-          <span className="text-[10px] text-[#F04452] font-bold">LIVE FEED</span>
+          <span className="text-[10px] text-up font-bold">LIVE FEED</span>
         </h3>
         <TradeFeed trades={trades} rolloverEvents={rolloverEvents} />
       </div>

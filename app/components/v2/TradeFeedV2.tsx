@@ -52,17 +52,17 @@ export default function TradeFeedV2({ stock, trades: externalTrades }: TradeFeed
     isUSD ? `$${p.toFixed(2)}` : `₩${Math.round(p).toLocaleString()}`;
 
   return (
-    <div className="flex flex-col h-full bg-[#0D0F14]">
+    <div className="flex flex-col h-full bg-panel">
       {/* 헤더 */}
       <div className="flex items-center justify-between px-3 py-2 shrink-0">
         <div className="flex items-center gap-2">
-          <span className="text-[11px] font-bold text-[#9CA3AF] uppercase tracking-widest">
+          <span className="text-xs font-bold text-muted uppercase tracking-widest">
             실시간 체결
           </span>
-          <span className="w-1.5 h-1.5 rounded-full bg-[#F04452] animate-ping opacity-75" />
+          <span className="w-1.5 h-1.5 rounded-full bg-up animate-ping opacity-75" />
         </div>
         <span
-          className={`text-[9px] font-bold px-1.5 py-px rounded tracking-widest ${
+          className={`text-[10px] font-bold px-1.5 py-px rounded tracking-widest ${
             source === "db"
               ? "text-emerald-400 bg-emerald-400/10"
               : "text-amber-400 bg-amber-400/10"
@@ -74,13 +74,13 @@ export default function TradeFeedV2({ stock, trades: externalTrades }: TradeFeed
 
       {/* 컬럼 레이블 (border 없이, 텍스트만) */}
       <div className="grid grid-cols-3 px-3 py-1 shrink-0">
-        <span className="text-[9px] font-semibold text-[#6B7280] uppercase tracking-widest">
+        <span className="text-[10px] font-semibold text-dim uppercase tracking-widest">
           시간
         </span>
-        <span className="text-[9px] font-semibold text-[#6B7280] uppercase tracking-widest text-right">
+        <span className="text-[10px] font-semibold text-dim uppercase tracking-widest text-right">
           체결가
         </span>
-        <span className="text-[9px] font-semibold text-[#6B7280] uppercase tracking-widest text-right">
+        <span className="text-[10px] font-semibold text-dim uppercase tracking-widest text-right">
           수량
         </span>
       </div>
@@ -88,7 +88,7 @@ export default function TradeFeedV2({ stock, trades: externalTrades }: TradeFeed
       {/* 체결 피드 — 스크롤 영역 */}
       <div className="flex-1 overflow-y-auto no-scrollbar">
         {trades.length === 0 ? (
-          <div className="py-8 text-center text-[11px] text-[#4B5563]">
+          <div className="py-8 text-center text-xs text-dim">
             체결 대기 중...
           </div>
         ) : (
@@ -103,10 +103,10 @@ export default function TradeFeedV2({ stock, trades: externalTrades }: TradeFeed
                   <span className="text-[10px] font-black text-purple-400">
                     🚨 LIQD
                   </span>
-                  <span className="font-mono text-[11px] tabular-nums text-purple-300 font-bold">
+                  <span className="font-mono text-xs tabular-nums text-purple-300 font-bold">
                     {fmtPrice(t.price)}
                   </span>
-                  <span className="font-mono text-[11px] tabular-nums text-purple-300 font-bold text-right">
+                  <span className="font-mono text-xs tabular-nums text-purple-300 font-bold text-right">
                     {t.quantity.toLocaleString()}
                   </span>
                 </div>
@@ -120,21 +120,21 @@ export default function TradeFeedV2({ stock, trades: externalTrades }: TradeFeed
                 className="grid grid-cols-3 items-center px-3 py-2 hover:bg-white/[0.02] transition-colors"
               >
                 {/* 시간 */}
-                <span className="text-[10px] text-[#4B5563] tabular-nums">
+                <span className="text-[10px] text-dim tabular-nums">
                   {fmtKSTTime(t.timestamp)}
                 </span>
                 {/* 체결가 */}
                 <span
                   className={`text-right font-mono text-[12px] tabular-nums font-semibold ${
-                    isUp ? "text-[#F04452]" : "text-[#3182F6]"
+                    isUp ? "text-up" : "text-down"
                   }`}
                 >
                   {fmtPrice(t.price)}
                 </span>
                 {/* 수량 */}
                 <span
-                  className={`text-right font-mono text-[11px] tabular-nums ${
-                    isUp ? "text-[#F04452]/70" : "text-[#3182F6]/70"
+                  className={`text-right font-mono text-xs tabular-nums ${
+                    isUp ? "text-up/70" : "text-down/70"
                   }`}
                 >
                   {t.quantity.toLocaleString()}
@@ -147,15 +147,15 @@ export default function TradeFeedV2({ stock, trades: externalTrades }: TradeFeed
 
       {/* 푸터 — 체결 건수 요약 */}
       <div className="flex items-center justify-between px-3 py-2 shrink-0">
-        <span className="text-[9px] text-[#4B5563] uppercase tracking-widest">
+        <span className="text-[10px] text-dim uppercase tracking-widest">
           체결 {trades.length}건
         </span>
-        <div className="flex items-center gap-2 text-[9px]">
-          <span className="text-[#F04452]">
+        <div className="flex items-center gap-2 text-[10px]">
+          <span className="text-up">
             매수 {trades.filter((t) => t.side === "BUY").length}
           </span>
           <span className="text-[#374151]">/</span>
-          <span className="text-[#3182F6]">
+          <span className="text-down">
             매도 {trades.filter((t) => t.side === "SELL").length}
           </span>
         </div>

@@ -81,9 +81,9 @@ export default function ParticipantFlowWidget({ stockId }: { stockId: string }) 
       <div className="flex flex-col h-full bg-[#000]">
         {/* 헤더 */}
         <div className="grid grid-cols-[1fr_1fr_1fr] border-b border-[#333] px-3 py-1.5 bg-[#111]">
-          <span className="text-[11px] text-gray-500 font-medium">투자자구분</span>
-          <span className="text-[11px] text-gray-500 font-medium text-right">순매수(억)</span>
-          <span className="text-[11px] text-gray-500 font-medium text-right">증감방향</span>
+          <span className="text-xs text-gray-500 font-medium">투자자구분</span>
+          <span className="text-xs text-gray-500 font-medium text-right">순매수(억)</span>
+          <span className="text-xs text-gray-500 font-medium text-right">증감방향</span>
         </div>
 
         {/* 바디 */}
@@ -91,7 +91,7 @@ export default function ParticipantFlowWidget({ stockId }: { stockId: string }) 
           {flows.map((flow) => {
             const isBuy = flow.netAmount > 0;
             const isSell = flow.netAmount < 0;
-            const colorClass = isBuy ? "text-red-400" : isSell ? "text-blue-400" : "text-gray-400";
+            const colorClass = isBuy ? "text-up" : isSell ? "text-down" : "text-gray-400";
             const sign = isBuy ? "+" : ""; // minus sign is included in number naturally if negative
 
             return (
@@ -103,7 +103,7 @@ export default function ParticipantFlowWidget({ stockId }: { stockId: string }) 
                 <span className={`text-[12px] font-mono tabular-nums text-right font-semibold ${colorClass}`}>
                   {sign}{flow.netAmount.toLocaleString()}
                 </span>
-                <span className={`text-[11px] text-right font-bold tracking-widest ${colorClass}`}>
+                <span className={`text-xs text-right font-bold tracking-widest ${colorClass}`}>
                   {isBuy ? "▲" : isSell ? "▼" : "-"} {flow.trend}
                 </span>
               </div>

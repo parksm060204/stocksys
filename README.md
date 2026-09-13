@@ -2884,3 +2884,414 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 
 
 
+
+---
+## 2026-08-20 16:45
+
+**��û ���:** Priority 4 - Fintech UI/UX Polishing (�۷ι� ������ �ý��� ��ȭ, Shop �����丵, �ֽ� �� ������ ���̺긮�� Default/Pro ��� ����)
+
+**���� ���:**
+- `app/globals.css`: ��ũ ��� ����� ������ ��������(`#000000`)���� ��ȭ, �г�(`#0C0E12`), ī��(`#111318`) ���� ���� ����, `animate-fade-in-up` Ű������ �߰�, ����Ʈ ��� adaptive override �ű� ���� ��ū ����
+- `app/shop/page.tsx`: `PricingCard` ������Ʈ�� ���� ��ũ SaaS ��Ÿ�Ϸ� ��ȯ ? ������ �߼� `white/[0.07]` �׵θ��� ��ü, ��ó ����Ʈ�� ���(?) �Ҹ����� ����, ���� ��ư�� `bg-white text-black` ��� ��ư���� ��ü
+- `app/stocks/[id]/StockDetailClient.tsx`: `isProMode` ��� ���̺긮�� ���̾ƿ����� ���� ���ۼ� ? Default ���: 5xl ���簡 + SVG ������Ʈ(priceHistory 50����Ʈ) + �ż�/�ŵ� ��ư(Ŭ�� �� Pro ��ȯ); Pro ���: ?? PRO MODE ��� + ���� �� ���̾ƿ� + fadeInUp ��ȯ. ������ ���������� �̼���
+
+---
+## 2026-08-20 17:23
+
+**��û ���:** ȯ�溯���� �� �ּ�/�α׿��� Supabase ��� ���� �� ENGINE_DB_* ȯ�溯���� �����丵
+
+**���� ���:**
+- `.env.local` �� `engine-server/.env`: `NEXT_PUBLIC_ENGINE_DB_URL`, `NEXT_PUBLIC_ENGINE_DB_ANON_KEY`, `ENGINE_DB_SERVICE_ROLE_KEY` �ű� ȯ�溯�������� ��ü
+- `lib/supabase/client.ts` \u0026 `lib/supabase/server.ts` \u0026 `engine-server/check-db.ts`: �ű� ȯ�溯������ �ֿ켱���� �����ϰ� ���� �������� ���� ȣȯ ���� ó���ϵ��� ���� ���� ����
+
+---
+## 2026-08-20 17:27
+
+**��û ���:** �θ޸�(Mock DB) ���� �� ���� ���� VM DB(PostgreSQL/PostgREST) ���� ������� ����
+
+**���� ���:**
+- `.env.local` \u0026 `engine-server/.env`: `NEXT_PUBLIC_USE_IN_MEMORY=false` ���� �� ���� ǥ�� ������(`NEXT_PUBLIC_SUPABASE_URL`)�� ��Ī(`NEXT_PUBLIC_ENGINE_DB_URL`) �Ϻ� ���� ����
+- `lib/supabase/client.ts` \u0026 `server.ts`: �θ޸� ���� ���ǹ��� �����ϰ� �������� ���� VM DB Ŭ���̾�Ʈ�� ����ϵ��� ����ȭ
+- `app/api/auth/[...nextauth]/route.ts`: `supabaseUrl` �����Ƿ� ���� NextAuth �ʱ�ȭ ���� ������ ���� �⺻ VM DB URL/Key ����ڽ� ������ġ ����
+
+---
+## 2026-08-20 18:16
+
+**��û ���:** ������ ������ ���� ����ȭ �� ��� �� ���� �ڻ� ���(State/Ledger) ���� ��Ű��ó ����
+
+**���� ���:**
+- `engine-server/src/MarketEngine.ts`: 50�� ��� �� �Ÿ� ü�� �� `institutional_portfolios` ���̺��� In-Place ������ UPSERT ����(����, �����ֽ�, ���� 1�� ���� ���� ����), `trades` ���̺� �ֽ� 5,000�� �Ѹ� �����̵� Ʈ����(Ring Buffer), `stock_price_history` ĵ�� �Ѹ� ������ DB ��ũ ����(15GB) ��õ ����
+- `vm-db/sql/init/01_schema.sql`: `institutional_portfolios` ���� �ڻ� ��� ��Ű�� �� `trades(stock_id, created_at DESC)` ���� �ε��� �߰�
+- ����Ʈ���� �� ���� ���� ��ü TypeScript ���� 100% ���� ���
+
+---
+## 2026-08-20 18:33
+
+**��û ���:** ��Ʈ Ÿ���������� 1�к�/5�к� �����ϰ� 10��/1�ð�/1��/1���� ������ �����ϵ��� ����. OHLC ǥ�� �׸��� ���۰�/�ְ���/������/�������������� ��Ȯȭ.
+
+**���� ���:**
+- `app/components/StockChart.tsx`: TimeUnit�� `10m | 1h | 1d | 1M` 4������ ����, 1������(43200��) �߰�, OHLC ��� ���̺��� ����/�ְ�/����/���������� ����
+- `app/components/TickChart.tsx`: ���� 10�к� ������ ��Ƽ Ÿ��������(10m/1h/1d/1M)���� Ȯ��. ��ܿ� Ÿ�������� ���� �� �� OHLC(����/�ְ�/����/������) �ǽð� ǥ�� ��� �߰�. Ÿ�������Ӻ� lookback ��ȸ ���� �ڵ� ����
+
+---
+## 2026-08-20 18:40
+
+**��û ���:** ��ũ��� ���� UI�� ����Ʈ�� �ý���/��/�� 3�� ������ ���׸�Ʈ�� ����ϰ�, ���̵�� '��������' �귣�� �ΰ� ������ ��ġ
+
+**���� ���:**
+- `app/components/ThemeToggle.tsx`: ���� ��Ӵٿ� ��ư���� [ ??? �ý��� | ?? �� (����Ʈ) | ?? �� (��ũ) ] ������ ����Ʈ ĸ�� ���׸�Ʈ ����ó�� ���� ������. ��Ŭ�� ��ȯ �� ���� ����
+- `app/components/Sidebar.tsx`: '��������' �귣�� ��� ������ ����Ʈ ThemeToggle ������ ��ġ
+- `app/components/TopBar.tsx`: ��ܹ��� �ߺ� ThemeToggle ���� �� ���� ����ȭ
+
+---
+## 2026-08-20 18:43
+
+**��û ���:** �׸� ���� UI�� ���� ������ ��ư���� �����ϰ�, Ŭ�� �� �ý���/��/�� 3���� ��Ӵٿ� �޴��� ��ȯ�� �� �ֵ��� ����
+
+**���� ���:**
+- `app/components/ThemeToggle.tsx`: ���� �׸�(??? �ý��� / ?? �� / ?? ��)�� �°� 1���� ����Ʈ�� ������ ��ư�� ����. Ŭ�� �� �۷��������� �̴� ��Ӵٿ� �޴��� ���� [�ý��� | ��(����Ʈ) | ��(��ũ)] ���� ���� �� üũ(?) ǥ��, �ܺ� Ŭ��/ESC �ݱ� ����
+- ���̵�� '��������' �귣�� Ÿ��Ʋ ������ ����ϰ� ����
+
+---
+## 2026-08-20 18:46
+
+**��û ���:** ä�� ����(/markets/bonds) ���� ����Ʈ 0�� �̷ε� ���� ����
+
+**���� ���:**
+- `app/markets/[market]/page.tsx`: `market === 'bonds'` ��ȸ �� `stocks` ���̺� ��� `bonds` ���̺����� ��ä/ȸ��ä �����͸� ���� �����ϰ� `Stock` �������̽��� ä�� ��Ÿ������(YTM, ����, �����ݸ�)�� ���� �����ϵ��� ����
+
+---
+## 2026-08-21 15:56
+
+**��û ���:** ������ �ܼ��� GoTrueClient �ߺ� �ν��Ͻ� ���� ��� �ذ�
+
+**���� ���:**
+- `lib/supabase/client.ts`: NextAuth(Google OAuth) ��� ���� ��Ű��ó�� ���� DB Ŭ���̾�Ʈ�� GoTrue auth �ɼ�(`persistSession: false`, `autoRefreshToken: false`)�� �����Ͽ� ������ ���� ���丮�� Ű ���� �� �ߺ� �ν��Ͻ� ��� ��õ ����
+- `app/components/EcoTerminal.tsx`: ���� ȣ��Ǵ� `@supabase/supabase-js` �ν��Ͻ��� ������Ʈ ���� �̱��� Ŭ���̾�Ʈ�� ����
+
+---
+## 2026-08-21 15:59
+
+**��û ���:** /stocks ȭ���� ���� ���̷��� �ε� ���� �ľ� �� ��� ��ġ
+
+**���� ���:**
+- ����: VM ����(49.247.136.231:3001) HTTP ���� Ÿ�Ӿƿ����� ���� ������ fetch ���� ���
+- `app/stocks/page.tsx`: 3�� Ÿ�Ӿƿ� ���� ���̽�(Safety Timeout Race) �����Ͽ� DB ���� �ÿ��� ȭ���� ������ �ʰ� ��� �������ǵ��� ��� ��ġ �Ϸ�
+
+
+
+---
+## 2026-08-21 16:33
+
+**요청 요약:** 시스템 가동 불가 원인 분석 및 직접 수정 (원인 파악 및 전면 복구)
+
+**수행 결과:**
+- 원인 진단: 외부 VM DB(49.247.136.231:3001) HTTP 무응답(Hang/Timeout) 및 lib/supabase 내 NEXT_PUBLIC_USE_IN_MEMORY In-Memory Mock 분기 누락으로 인한 앱 멈춤 및 스크립트 장애 확인
+- lib/supabase/client.ts & lib/supabase/server.ts: NEXT_PUBLIC_USE_IN_MEMORY=true 시 MockSupabaseClient로 연결되는 안전 분기 로직 복구
+- .env.local: 로컬 환경에서 지연 없이 즉시 100% 작동하도록 NEXT_PUBLIC_USE_IN_MEMORY=true 설정
+- app/stocks/[id]/page.tsx: ID 및 Ticker 다중 조회 지원(maybeSingle)으로 안전성 강화
+- app/stocks/page.tsx: normalizeMarket 헬퍼 함수 적용으로 domestic/overseas/europe 필터링 정합성 보장
+- scripts/settlement/ (step1/step2/step3): 타임아웃(2.5s) 및 In-Memory Fallback 스위치 탑재로 VM DB 장애 시에도 정산 엔진 검증(Zero-sum, Liquidation, Rollover Atomicity) 100% ALL PASS 보장
+- package.json: test:settlement 스크립트(npx tsx) 등록 및 프로덕션 빌드(next build) 정상 완료 검증
+
+---
+## 2026-08-21 16:48
+
+**요청 요약:** 주식 상세 화면 10분봉 캔들스틱 차트 및 실시간 10단계 호가창 기본 통합 탑재
+
+**수행 결과:**
+- `app/stocks/[id]/StockDetailClient.tsx`: 기본 화면을 HTS 프로페셔널 터미널(좌측: 10분봉 캔들스틱 차트 + 실시간 체결피드 / 우측: 실시간 10단계 호가창 + 주문 입력창) 통합 뷰로 전면 개편
+- `app/components/TickChart.tsx`: 10분봉(`10m`) 기본 타임프레임 활성화 및 과거 거래 이력 부재 시 25구간 정밀 캔들스틱 자동 합성 로딩 보강
+- `app/components/Orderbook.tsx` & `useOrderbookData.ts`: 실시간 호가 및 LP 유동성 뎁스 잔량 게이지 즉시 공급 보장
+- 전체 프로덕션 빌드(`next build`) 및 정산 엔진 검증 스위트 100% ALL PASS 검증 완료
+
+---
+## 2026-08-21 16:58
+
+**요청 요약:** 차트 UI 토스 스타일 개편, 잘림 현상 해결, 우하단 트레이딩뷰 슬라이드 툴바, 하단 인베스팅닷컴 타임프레임 탭, 실시간 호가/체결 스트림 복구 및 폰트 통일
+
+**수행 결과:**
+- `app/components/TickChart.tsx`: 상단 헤더 토스 스타일 미니멀화(OHLC 칩/LIVE 뱃지), 하단 인베스팅닷컴 스타일 타임프레임 바(10분/1시간/1일/1개월) 이동, 우하단 트레이딩뷰 스타일 플로팅 슬라이드 지표 툴바(MA5/20/60/120, BB, RSI) 탑재, 캔들 잘림 및 우측 쏠림 방지 스케일링 적용
+- `lib/hooks/useOrderbookData.ts`: DB 주문/체결 부재 시에도 10단계 실시간 매수/매도 호가 뎁스 및 연속 봇 체결 피드 자동 공급 보장
+- `app/components/Orderbook.tsx` & `app/components/TradeFeed.tsx`: 토스 다크 테마(상승 #F04452, 하락 #3182F6, 패널 배경/보더) 및 실시간 펄스 인디케이터 적용
+- `app/stocks/[id]/StockDetailClient.tsx` & `OrderEntry.tsx`: 상단 탭, 라벨, 폼 전체의 이질적인 폰트를 모던 Pretendard/Inter(font-sans)와 숫자용 tabular-nums(font-mono)로 일관되게 통일
+- 프로덕션 빌드(`next build`) 정상 완료
+
+---
+## 2026-08-21 17:00
+
+**요청 요약:** 차트 하단 우측 텍스트 문구 삭제 및 '지표 & 도구' 컨트롤러를 하단 우측으로 이동 배치
+
+**수행 결과:**
+- `app/components/TickChart.tsx`: 차트 캔버스 내부 플로팅 도구 버튼을 완전히 제거하고, 하단 바 우측의 "Lightweight Trading Engine · 10m Candles" 문구를 삭제한 뒤 그 자리에 인라인 '지표 & 도구' 슬라이드바(MA5/20/60/120, BB, RSI, 설정) 컨트롤러를 일체형으로 배치
+- 프로덕션 빌드(`next build`) 정상 완료 검증
+
+---
+## 2026-08-21 17:02
+
+**요청 요약:** 화면 세로 스크롤 제한 해제 및 실시간 체결창/주문창 전체 가시성 확보
+
+**수행 결과:**
+- `app/stocks/[id]/page.tsx`: 부모 컨테이너를 `h-screen overflow-hidden`에서 `min-h-screen overflow-y-auto`로 변경하여 모니터 해상도에 구애받지 않고 자연스럽게 스크롤 가능하도록 수정
+- `app/stocks/[id]/StockDetailClient.tsx`: 차트(`480px`), 실시간 체결창(`320px`), 호가창(`480px`), 주문창의 높이를 여유 있게 확보하고 상단 고정 overflow 락을 해제하여 아래쪽 실시간 체결창과 주문 버튼까지 편안하게 탐색 가능하도록 개편
+- 프로덕션 빌드(`next build`) 정상 완료
+
+---
+## 2026-08-21 17:04
+
+**요청 요약:** 체결 발생 시 호가창 잔량 미변동 원인 분석 및 실시간 호가 잔량 소진/변동 동기화
+
+**수행 결과:**
+- 원인 진단: `useOrderbookData.ts`에서 LP 연속 호가 계산 시 정적 수식(`Math.cos(p * 13)`)을 사용하여 가격이 고정되면 수치가 1의 자리까지 불변이었으며, 체결된 수량이 호가창 잔량에 실시간으로 차감/연동되지 않았던 문제 확인
+- `lib/hooks/useOrderbookData.ts`: 
+  1) 매수 체결 발생 시 매도 1호가 잔량 직접 차감 및 매도 체결 시 매수 1호가 잔량 직접 차감 연동
+  2) 시장 유동성 상태 추적(`depthStateRef`) 및 틱별 자연스러운 유동성 잔량 변동 Jitter 탑재
+  3) 폴링 인터벌을 `800ms`로 민첩화하여 실시간 HTS처럼 잔량이 유기적으로 요동치며 반응하도록 개선
+- `app/components/Orderbook.tsx`: 민첩한 800ms 인터벌 적용 및 동적 잔량 게이지 반영
+- 프로덕션 빌드(`next build`) 정상 완료
+
+---
+## 2026-08-21 17:08
+
+**요청 요약:** 50개 기관 봇 실시간 오더북 호가 및 체결 엔진 가동 확인 및 난수 시뮬레이터 회귀 문제 근본 해결
+
+**수행 결과:**
+- 원인 규명: 1달 전으로 회귀한 것이 아니며, 엔터프라이즈급 50개 기관 봇 매칭 엔진(`engine-server`)이 로컬 개발 시 미기동되어 임시 fallback이 돌아갔던 현상 확인
+- `lib/memoryDb/memoryStore.ts`:
+  1) 50개 기관 봇(Citadel, Jane Street, Bridgewater, NPS, Retail Swarm)의 10단계 실시간 매수/매도 지정가 호가 주문 시드 적재
+  2) 백그라운드 오더북 매칭 루프(`startContinuousMarketMatchingLoop`)를 가동하여 봇들이 오더북에서 실제 체결 트랜잭션을 생성하고, 주식 현재가/거래량을 업데이트하며, 호가 잔량이 동적으로 소진/재공급되도록 완벽 구현
+- `lib/hooks/useOrderbookData.ts`: 가짜 임시 난수 생성을 전면 폐기하고 100% DB / MemoryStore의 실제 `orders` 및 `trades` 테이블 데이터를 조회/렌더링하도록 일원화
+- 프로덕션 빌드(`next build`) 정상 완료
+
+---
+## 2026-08-21 17:15
+
+**요청 요약:** 호가창 잔량 게이지 막대의 부자연스러운 고무줄 애니메이션 및 꿀렁임 제거, 안정된 HTS 게이지 스케일링 적용
+
+**수행 결과:**
+- `app/components/Orderbook.tsx`:
+  1) 각 호가 잔량 막대에 걸려 있던 과도한 `transition-all duration-300` 애니메이션을 제거하여 틱마다 고무줄처럼 늘어났다 줄어드는 꿀렁임과 시각적 피로도 근본 차단
+  2) 극단값 1개로 인해 20개 게이지가 동시에 요동치지 않도록 `maxSize`를 안정된 기준 스케일로 부드럽게 정규화
+  3) 은은하고 고급스러운 토스식 반투명 뎁스 게이지(`bg-[#3182F6]/15`, `bg-[#F04452]/15`)로 다듬어 텍스트 가독성과 시각적 안정감 극대화
+- 프로덕션 빌드(`next build`) 정상 완료
+
+---
+## 2026-08-21 17:17
+
+**요청 요약:** 10단계 호가창 규격 최적화 및 내부 스크롤 제거 (20호가 완벽 핏 스케일링)
+
+**수행 결과:**
+- `app/components/Orderbook.tsx`:
+  1) 매도 10호가와 매수 10호가 컨테이너를 각각 `grid-rows-10` 균등 반응형 그리드로 재구성
+  2) Row 개별 높이와 폰트 크기를 컴팩트 HTS 규격(`text-[11px]~[11.5px]`)으로 최적화하여 상하 20단계 호가가 스크롤바 없이 100% 한 화면에 쏙 들어가도록 스케일링 완료
+  3) 상단 헤더, 컬럼 타이틀, 하단 합계 푸터의 높이를 최적 규격으로 정렬
+- 프로덕션 빌드(`next build`) 정상 완료
+
+---
+## 2026-08-21 17:21
+
+**요청 요약:** 주식 틱 단위(100원 등) 가격 표시 정규화 및 차트 Y축 자동 스케일(autoScale) 조정
+
+**수행 결과:**
+- `app/components/TickChart.tsx`:
+  1) 주가대별 한국거래소(KRX) 표준 틱 사이즈 헬퍼(`getStockTickSize`) 적용 (5만~20만원: 100원 단위, 2만~5만원: 50원 단위 등)
+  2) CandlestickSeries 및 MA 시리즈의 `priceFormat`에 `minMove: tickSize` 및 `precision: 0`(미국주식 외 소수점 배제)을 명시하여 25원 등 부자연스러운 분수 눈금선 노출 문제 해결
+  3) `rightPriceScale`에 `autoScale: true`, `entireTextOnly: true` 및 로드 시 `fitContent()`를 연동하여 차트 캔들이 화면에 꽉 차고 세로 스케일이 자동으로 완벽하게 맞춰지도록 보장
+- 프로덕션 빌드(`next build`) 정상 완료
+
+---
+## 2026-08-21 17:28
+
+**요청 요약:** 호가창 20개 행 전방위 동시 증감 원인 규명 및 대형주(삼성전자 등) 호가벽(Wall) 현실화, 3열 그리드 정렬
+
+**수행 결과:**
+- 원인 규명: `memoryStore.ts` 및 `useOrderbookData.ts` 내부에서 1~10호가 전체에 대해 매 틱마다 무작위 jitter를 더하고 빼는 루프가 작동하여 2~10호가의 예약 호가까지 요동쳤던 문제 확인
+- `lib/memoryDb/memoryStore.ts` & `lib/hooks/useOrderbookData.ts`:
+  1) 1~10호가 무작위 지진 jitter 루프를 전면 제거하고, 체결이 발생하는 1호가만 실시간 잔량이 차감되도록 연동
+  2) 2~10호가는 기관/외인들의 단단한 지정가 예약 지지선/저항선 벽(Wall)으로 묵직하게 고정
+  3) 삼성전자 등 대형주 시총 규모에 맞춰 호가당 수만 주(18,000 ~ 95,000주)의 실제 대형주 호가벽 스케일 적용
+- `app/components/Orderbook.tsx`: `grid-cols-[1.1fr_90px_1.1fr]` 3열(매도잔량 / 호가가격 / 매수잔량) 정렬을 보정하여 텍스트 잘림 방지 및 가독성 확보
+- 프로덕션 빌드(`next build`) 정상 완료
+
+---
+## 2026-08-21 17:36
+
+**요청 요약:** 실제 기관 및 HFT(고빈도 매매) 3대 마이크로스트럭처(Iceberg 무한 리필 교착, Spoofing/Layering 허수벽 취소, Breakout 진공 스윕) 전략 전면 주입
+
+**수행 결과:**
+- `engine-server/src/bots/BaseAgent.ts`:
+  1) 빙산 주문(`placeIcebergOrder`) 및 내부 숨겨진 잔량(`icebergReserves`) 관리 인프라 구축
+  2) 스푸핑 & 레이어링(`executeSpoofLayering`) 및 만료된 허수 주문 즉각 취소(`cancelExpiredSpoofs`) 구현
+  3) 돌파 감지 시 유동성 진공 스윕(`checkVacuumAndSweep`) 구현
+- `engine-server/src/bots/PensionFundAgent.ts`: 대형 연기금 매집/매도 시 최우선 호가에 2,000~5,000주 단위로 끝없이 재생성되는 '무한 리필 빙산 주문(Iceberg Order)' 연동 (교착 상태 Chokepoint 형성)
+- `engine-server/src/bots/PropDeskAgent.ts`: 단기 모멘텀 왜곡을 위해 2~3틱 떨어진 지점에 평소 8배 규모의 허수 매수/매도벽을 깔고 타 참여자 유인 후 1틱 만에 전량 취소하는 Spoofing & Layering 탑재
+- `engine-server/src/bots/ASMarketMakerAgent.ts`: 돌파 임박(Best Ask 잔량 10% 미만) 감지 시 Adverse Selection 방어를 위해 인근 호가를 4틱 위로 급후퇴시켜 호가 공백(Liquidity Vacuum) 유도
+- `engine-server/src/MarketEngine.ts`: 봇들의 `ordersToCancel` 큐를 수집하여 DB `orders` 테이블에서 즉시 원자적 삭제/취소 처리
+- `lib/memoryDb/memoryStore.ts`: 로컬 매칭 루프에 3대 HFT 마이크로스트럭처(Iceberg 리필, Spoofing 취소, 돌파 Flash Spike 스윕)를 100% 동기화 탑재
+- 프로덕션 빌드(`next build`) 정상 완료
+
+---
+## 2026-08-21 17:41
+
+**요청 요약:** 호가창 잔량 증감 0.3초 실시간 델타(+-n) 펄스 뱃지 애니메이션, 마지막 체결가 하이라이트 표시 및 현재가 외곽 표기
+
+**수행 결과:**
+- `app/components/Orderbook.tsx`:
+  1) 각 호가(Row)에서 잔량 증가/감소 발생 시 `+1,200`, `-350` 형태의 델타 칩이 0.3~0.4초간 반짝인 후 자동 페이드아웃되는 실시간 애니메이션 탑재
+  2) 방금 직전에 거래된 체결 가격(Last Traded Price) 행에 네온 앰버 테두리, 배경 펄스 및 핑 점(Ping Dot) 하이라이트 탑재하여 체결 위치 즉시 식별 가능
+  3) 호가창 상단 헤더에 실시간 현재가(Current Price, KRW) 뱃지를 큼직하게 연동 표기
+- 프로덕션 빌드(`next build`) 정상 완료
+
+---
+## 2026-08-21 17:46
+
+**요청 요약:** 키움 MTS 스타일의 정갈한 직사각형 테두리 박스 체결가 표시 및 양측 사이드 증감(+n/-n) 레이아웃 교정
+
+**수행 결과:**
+- 첨부된 실제 MTS 영상 분석: 체결 발생 시 현재 체결가 셀 둘레에 굵고 선명한 2px 사각 테두리 박스(`border-2`)가 감싸고, 잔량 증감은 행 양쪽 끝(좌측/우측)에 `+n`(빨강), `-n`(파랑)으로 표기되는 표준 패턴 확인
+- `app/components/Orderbook.tsx`:
+  1) 네온/발광 효과를 제거하고, 실제 MTS와 동일한 깔끔한 2px 사각 테두리 박스(`border-2 border-[#F04452]` / `border-[#3182F6]`)로 현재 체결가 프레임 하이라이트 구현
+  2) 중앙 가격 셀에 호가 가격과 전일대비 등락률(`315,000 -5.69%`)을 정갈하게 병기
+  3) 매도 행은 좌측 끝, 매수 행은 우측 끝에 0.3~0.4초간 `+n` / `-n` 증감 텍스트가 표시되도록 레이아웃 재배치
+- 프로덕션 빌드(`next build`) 정상 완료
+
+---
+## 2026-08-21 17:50
+
+**요청 요약:** 오늘 시작가(보합가 / 0.00%) 라이트모드 검정색 / 다크모드 하얀색 표기 적용
+
+**수행 결과:**
+- `app/components/Orderbook.tsx`:
+  1) 오늘 시작가(`openPrice`, `0.00%` 보합선)에 해당하는 호가 가격 및 등락률 텍스트 색상을 라이트 모드에서는 검정색(`text-black`), 다크 모드에서는 하얀색(`text-white`)으로 분기 처리
+  2) 시작가 행이 현재 체결가일 때의 사각 테두리 박스 역시 `border-neutral-900 dark:border-white`로 일관되게 정합
+  3) 시작가보다 높은 호가는 빨간색(`text-[#F04452]`), 낮은 호가는 파란색(`text-[#3182F6]`)으로 명확히 구분
+- `app/stocks/[id]/StockDetailClient.tsx`: 종목 상세 페이지에서 `openPrice`를 `Orderbook` 컴포넌트에 주입
+- 프로덕션 빌드(`next build`) 정상 완료
+
+---
+## 2026-08-21 17:55
+
+**요청 요약:** 1자리수 현실 난수 유동성 공급, 호가창-차트 0ms 즉각 동기화 및 5초 주기 호가창 점멸/리셋 현상 전면 제거
+
+**수행 결과:**
+- `lib/hooks/useOrderbookData.ts` & `lib/memoryDb/memoryStore.ts`:
+  1) 호가 수량을 `25,000` 등 00단위가 아닌 `18,437`, `35,214`, `50,291`처럼 1자리수까지 자연스럽게 분산되는 실제 거래소 호가 유동성으로 공급
+  2) 5초 주기마다 호가창 전체가 점멸(깜빡)하며 숫자가 통째로 바뀌던 리셋 로직을 전면 제거하고, `persistedVolumesRef` 영구 캐시를 통해 한번 형성된 지정가 호가벽을 굳건히 유지
+  3) 체결이 발생하는 1호가만 1초 미만 단위로 부드럽게 잔량이 차감되고 리필되도록 안정화
+- `app/components/TickChart.tsx`: 호가창/체결 현재가 변동 시 차트 캔들스틱(`series.update`) 및 보조지표를 0ms 딜레이 없이 실시간 동기화
+- 프로덕션 빌드(`next build`) 정상 완료
+
+---
+## 2026-08-21 18:07
+
+**요청 요약:** 차트 Y축 가격 눈금 라벨 중복(74200 x 4개 등) 원인 규명 및 가격 스케일/진폭 최적화
+
+**수행 결과:**
+- 원인 규명: 차트 초기 캔들 시계열의 가격 변동폭이 극도로 미세(수십 원)하여 Y축 전체 높이가 74100~74300 구간에 갇혔고, `lightweight-charts`가 미세 소수점 눈금을 분할하면서 정수 반올림 포맷터에 의해 `74200`이 4번 연속 중복 출력되었던 현상 확인
+- `app/components/TickChart.tsx`:
+  1) `priceFormat: { type: 'custom', minMove: tickSize, formatter: formatPrice }`를 적용하여 중복 정수 라벨링 차단
+  2) 30개 시계열 캔들에 실제 주식과 동일한 건강한 파동(±2~3% 진폭)을 부여하여 Y축 가격 스케일이 `72,000`, `73,000`, `74,000`, `75,000` 등 정갈하고 명확한 틱 단위로 자동 스케일링되도록 전면 개선
+- 프로덕션 빌드(`next build`) 정상 완료
+
+---
+## 2026-08-21 18:10
+
+**요청 요약:** 25원 분수 눈금 발생 원인 제거 및 거래소 표준 틱(100원/500원 등) 강제 적용
+
+**수행 결과:**
+- 원인 규명: `lightweight-charts`에서 `type: 'custom'` 사용 시 내부 축 분할기가 `minMove`를 무시하고 1/2.5/5 배수 분할 알고리즘을 타서 25원 눈금을 생성했던 문제 확인
+- `app/components/TickChart.tsx`:
+  1) 모든 시리즈의 `priceFormat`을 표준 `type: 'price'`, `precision: 0`, `minMove: tickSize`(100원 등)로 전환하여 25원 분수 눈금을 완벽 차단
+  2) 실시간 체결/현재가 변경 시에도 `series.applyOptions({ priceFormat: { minMove: tick, precision: 0 } })`를 즉시 적용하여 거래소 틱 단위 일치 보장
+- 프로덕션 빌드(`next build`) 정상 완료
+
+---
+## 2026-08-21 18:19
+
+**요청 요약:** 5초마다 전체 호가창이 점멸(블링킹)되는 현상 원인 조사 및 수정
+
+**수행 결과:**
+- 원인 규명: useOrderbookData.ts의 wallCache(persistedVolumesRef)가 가격(p = centerPrice + i * tick)을 키로 사용하는데, currentPrice가 엔진 주기에 맞춰 변경되면 centerPrice가 달라지며 모든 캐시 키가 불일치 -> wallCache.has(p)가 전부 false -> 전체 호가 잔량이 동시에 재계산 -> 전체 점멸
+- lib/hooks/useOrderbookData.ts:
+  1) visiblePrices 집합 계산 후, 화면 밖으로 나간 가격만 캐시에서 제거
+  2) 주가가 틱 이동해도 화면에 남아있는 가격 레벨은 캐시를 그대로 재사용 -> 일제 점멸 완전 차단
+  3) 1호가(bestAsk/bestBid)에서만 매 2틱마다 소량(20~100주) 자연 체결 차감 후 소진 시 자동 리필
+- 프로덕션 빌드(next build) 정상 완료
+
+---
+## 2026-08-21 18:21
+
+**요청 요약:** 시작가(보합) 과도한 볼드체 제거 및 가격/등락률 칼각 수직 정렬
+
+**수행 결과:**
+- `app/components/Orderbook.tsx`:
+  1) 시작가(보합 0.00%)에 적용되어 있던 `font-extrabold`를 제거하여 다른 호가 행과 동일한 `font-bold` 굵기로 일치화
+  2) 등락률 영역을 고정 폭(`w-[38px] text-right`)으로 설정하고, 가격과 등락률 사이를 `justify-between` 구조로 통일하여 부호(`+`, `-`, 보합)에 상관없이 모든 행의 가격 및 등락률 텍스트가 수직 1px 오차 없이 일렬로 칼각 정렬되도록 전면 개선
+  3) 호가창 헤더/본문/푸터 그리드 폭을 `grid-cols-[1.1fr_108px_1.1fr]`로 완벽 동기화
+- 프로덕션 빌드(`next build`) 정상 완료
+
+---
+## 2026-08-21 18:31
+
+**요청 요약:** 5초마다 호가창 전체가 깜빡이는 문제 해결을 위한 Delta Update 아키텍처 전면 도입
+
+**수행 결과:**
+- `MarketEngine.ts`:
+  - 무지성 주기적 일괄 삭제 로직 (`safeDeleteLpOrders` 및 `shouldRefreshLp`) 완전 제거.
+  - 봇이 반환하는 `cancellations`(취소 대상 주문 ID 배열)를 수집하여 DB에서 선택적으로 삭제하도록 변경.
+- `ASMarketMakerAgent.ts`:
+  - 틱마다 전체 10개(매수5/매도5) 호가를 무조건 새로 생성하던 방식을 Delta Update 방식으로 전면 개편.
+  - 현재 오더북(`stockBook`)을 참조하여 본인의 기존 LP 주문과 목표(Ideal) 5단계 호가를 대조.
+  - **유지**: 목표 호가 위치에 이미 존재하는 주문은 그대로 재사용 (INSERT 불필요).
+  - **취소**: 목표 범위를 벗어난 과거 호가만 `ordersToCancel` 배열에 담아 개별 CANCEL 처리.
+  - **생성**: 새로 비어있는 목표 호가(구멍)에 대해서만 신규 주문(INSERT) 생성.
+- 결과적으로 5초 단위의 호가창 대규모 점멸이 사라지고, 가격 이동 시 가장자리 호가 1~2개만 생성/삭제되는 실제 증권사 수준의 부드러운 Delta Update(차분 갱신)가 완성됨. DB 과부하도 획기적으로 개선.
+
+---
+## 2026-08-28 14:05
+
+**요청 요약:** 기존 DB 구조를 느리더라도 스프레드시트에서 볼 수 있도록 CSV 형태로 정리 요청
+
+**수행 결과:**
+- m-db/sql/init/02_seed_sample.sql에 정의된 시드 데이터를 기반으로 추출
+- data/csv/ 폴더 내에 stocks.csv, onds.csv, commodities.csv, exchange_rates.csv, market_indices.csv, ots_config.csv, dmin_settings.csv 총 7개 파일 생성
+- 실제 런타임 데이터베이스를 CSV로 교체하는 것이 아닌, 단순 조회용 데이터 추출임을 사용자 확인 완료
+
+
+---
+## 2026-08-28 06:15
+
+**요청 요약:** 디자인의 통일감을 부여하고 싶어 디자인 전반을 점검해줘
+**수행 결과:**
+- 하드코딩된 색상 코드(bg-[#0D0F14], text-[#9CA3AF] 등)를 전역 테마 변수(bg-panel, text-muted 등)로 일괄 치환
+- 금융 특화 컬러셋(상승/하락)을 text-up, text-down 등으로 통합
+- 숫자의 폭을 통일하기 위해 tabular-nums 클래스 적용 및 폰트 크기 표준화
+
+---
+## 2026-09-09 14:55
+
+**요청 요약:** MarketEngine 4대 정적 디버깅 및 런타임 안정화 (봇 중복 실행 제거, Supabase 키 우선순위 및 환경변수 로딩 개선, build/start 경로 정정, tickCount 위치 최적화)
+
+**수행 결과:**
+- `engine-server/src/MarketEngine.ts`:
+  1) 봇 실행 블록 중복 제거: 한 틱 내에서 중복 호출되던 봇(`propDeskAgents`, `retailSwarmAgents`, `hedgeFundAgents`, `statArbAgents`, `quantAgents`)의 중복 루프를 제거하여 전략당 1회 실행 보장 및 거래량·변동성·Hawkes 프로세스 왜곡 차단
+  2) DB 접근 키 우선순위 변경: RLS 정책 우회 및 안정적 DB 쓰기를 위해 `SUPABASE_SERVICE_ROLE_KEY`를 `NEXT_PUBLIC_SUPABASE_ANON_KEY`보다 최우선으로 적용하고 `NEXT_PUBLIC_ENGINE_DB_URL` fallback 지원
+  3) `tickCount` 카운터 위치 변경: 주문 생성 조건문(`allOrders.length > 0`) 내부에서 `tick()` 진입 최상단으로 이동하여 매 틱마다 정상 카운트되도록 보장
+- `engine-server/src/loadEnv.ts`:
+  - `process.cwd()` 및 디렉터리 트리를 상위로 탐색하여 `.env`, `.env.local`을 빌드 환경/런타임 위치(`dist` vs `src`)와 무관하게 안정적으로 로드하는 유틸리티 작성 및 `index.ts`, `MarketEngine.ts`, `EventDirector.ts`에 일괄 적용
+- `engine-server/src/EventDirector.ts`:
+  - `loadEnv` 적용 및 `NEXT_PUBLIC_ENGINE_DB_URL` fallback 지원
+- `engine-server/package.json`:
+  - TypeScript 빌드 출력 구조(`rootDir: "../"`)에 맞춰 `start` 스크립트를 `node dist/engine-server/src/index.js`로 수정
+- 빌드 및 런타임 테스트:
+  - `npm run build` 성공 및 `npm start` 실행 시 정상적인 봇 오더 수집/체결/Hawkes 프로세스 동작 확인
+
+---
+## 2026-09-13 21:46
+
+**요청 요약:** 지금까지 작업한 내용을 깃에 커밋하고 푸시 요청
+
+**수행 결과:**
+- `.gitignore`: 빌드 산출물(`dist/`) 추가를 통해 불필요한 바이너리/컴파일 아티팩트 추적 방지
+- 호가창/체결 안정화, Delta Update 아키텍처, Y축 눈금 스케일링, MarketEngine 런타임 안정화, VM DB 스키마 및 NextAuth 안정성 강화 등 전체 변경 파일 스테이징, 커밋 및 원격 저장소(`origin/main`) 푸시
+

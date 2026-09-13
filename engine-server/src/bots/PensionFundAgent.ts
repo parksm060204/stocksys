@@ -68,42 +68,24 @@ export class PensionFundAgent extends BaseAgent {
       const tolerance = 0.005; // 0.5% 오차
       const tickSize = this.getTickSize(stock.current_price);
 
-      // 내생적 트리거 1: 목표 비중 초과 시 기계적 익절/리밸런싱 매도 (TWAP Sliced)
+      // 내생적 트리거 1: 목표 비중 초과 시 기계적 익절/리밸런싱 매도 (Iceberg 분할 방어벽)
       if (currentWeight > targetWeightPerStock + tolerance && holdingsQty > 10) {
         const excessVal = (currentWeight - targetWeightPerStock) * this.config.capital;
         const totalSellQty = Math.min(holdingsQty, Math.floor(excessVal / stock.current_price));
-        const sellQtySlice = Math.max(1, Math.floor(totalSellQty * 0.01)); // 틱당 최대 1% 분할 매도
-        if (sellQtySlice > 0) {
-          const rawOrder = {
-            stock_id: stock.id,
-            user_id: null,
-            side: 'sell',
-            price: stock.current_price + tickSize,
-            size: sellQtySlice,
-            status: 'open',
-            is_lp: true,
-            _botId: this.botId
-          };
-          orders.push(this.applyInstitutionalRiskControls(rawOrder, stock.current_price));
+        if (totalSellQty > 0) {
+          const displaySlice = Math.max(500, Math.floor(totalSellQty * 0.05));
+          const icebergOrder = this.placeIcebergOrder(stock, 'sell', stock.current_price + tickSize, totalSellQty, displaySlice);
+          orders.push(icebergOrder);
         }
       }
-      // 내생적 트리거 2: 목표 비중 미달 시 지정가 받침 매수 (TWAP Sliced)
+      // 내생적 트리거 2: 목표 비중 미달 시 지정가 받침 매수 (Iceberg 무한 리필 받침 매수벽)
       else if (currentWeight < targetWeightPerStock - tolerance) {
         const deficitVal = (targetWeightPerStock - currentWeight) * this.config.capital;
         const totalBuyQty = Math.floor(deficitVal / stock.current_price);
-        const buyQtySlice = Math.max(1, Math.floor(totalBuyQty * 0.01)); // 틱당 최대 1% 분할 매수
-        if (buyQtySlice > 0) {
-          const rawOrder = {
-            stock_id: stock.id,
-            user_id: null,
-            side: 'buy',
-            price: stock.current_price - tickSize,
-            size: buyQtySlice,
-            status: 'open',
-            is_lp: true,
-            _botId: this.botId
-          };
-          orders.push(this.applyInstitutionalRiskControls(rawOrder, stock.current_price));
+        if (totalBuyQty > 0) {
+          const displaySlice = Math.max(500, Math.floor(totalBuyQty * 0.05));
+          const icebergOrder = this.placeIcebergOrder(stock, 'buy', stock.current_price - tickSize, totalBuyQty, displaySlice);
+          orders.push(icebergOrder);
         }
       }
     }

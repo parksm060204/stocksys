@@ -32,9 +32,9 @@ export const OptionAccountPanel: React.FC = () => {
   };
 
   return (
-    <div className="flex flex-col h-full bg-[#0E1117] border border-[#212631] rounded-2xl overflow-hidden font-mono select-none shadow-xl text-xs">
+    <div className="flex flex-col h-full bg-[#0E1117] border border-border rounded-2xl overflow-hidden font-mono select-none shadow-xl text-xs">
       {/* 탭 헤더 */}
-      <div className="flex items-center bg-[#090B0F] border-b border-[#212631] px-2 py-1.5 overflow-x-auto no-scrollbar">
+      <div className="flex items-center bg-[#090B0F] border-b border-border px-2 py-1.5 overflow-x-auto no-scrollbar">
         {[
           { id: 'ALL', label: '잔고+미체결' },
           { id: 'POSITIONS', label: '보유 잔고' },
@@ -63,10 +63,10 @@ export const OptionAccountPanel: React.FC = () => {
         {(tab === 'ALL' || tab === 'POSITIONS') && (
           <div className="space-y-2">
             <div className="flex items-center justify-between">
-              <span className="text-[11px] font-extrabold text-[#8E939D]">보유 옵션 포지션</span>
+              <span className="text-xs font-extrabold text-[#8E939D]">보유 옵션 포지션</span>
               <button
                 onClick={handleLiquidateAll}
-                className="px-2.5 py-1 bg-[#F04452]/20 hover:bg-[#F04452] text-[#F04452] hover:text-white font-extrabold text-[10.5px] rounded-lg border border-[#F04452]/40 transition-all"
+                className="px-2.5 py-1 bg-up/20 hover:bg-up text-up hover:text-white font-extrabold text-[10.5px] rounded-lg border border-[#F04452]/40 transition-all"
               >
                 🚨 전체 포지션 일괄 청산
               </button>
@@ -76,7 +76,7 @@ export const OptionAccountPanel: React.FC = () => {
               {positions.map((pos) => (
                 <div
                   key={pos.ticker}
-                  className="flex items-center justify-between bg-[#0E1117] p-2.5 rounded-xl border border-[#212631]"
+                  className="flex items-center justify-between bg-[#0E1117] p-2.5 rounded-xl border border-border"
                 >
                   <div>
                     <div className="font-extrabold text-white text-[12px]">{pos.ticker}</div>
@@ -85,7 +85,7 @@ export const OptionAccountPanel: React.FC = () => {
                     </div>
                   </div>
                   <div className="text-right">
-                    <div className="font-black text-[#F04452] text-[13px]">
+                    <div className="font-black text-up text-[13px]">
                       +₩{pos.pnl.toLocaleString()} ({pos.pnlPct}%)
                     </div>
                     <div className="text-[10.5px] text-[#8E939D]">현재가: ₩{pos.currentPrice.toLocaleString()}</div>
@@ -98,12 +98,12 @@ export const OptionAccountPanel: React.FC = () => {
 
         {/* 2. 미체결 내역 탭 / 일괄 취소 */}
         {(tab === 'ALL' || tab === 'UNFILLED') && (
-          <div className="space-y-2 pt-2 border-t border-[#212631]">
+          <div className="space-y-2 pt-2 border-t border-border">
             <div className="flex items-center justify-between">
-              <span className="text-[11px] font-extrabold text-[#8E939D]">미체결 주문 내역 ({unfilled.length}건)</span>
+              <span className="text-xs font-extrabold text-[#8E939D]">미체결 주문 내역 ({unfilled.length}건)</span>
               <button
                 onClick={handleCancelAll}
-                className="px-2.5 py-1 bg-[#161B22] hover:bg-[#212631] text-[#8E939D] hover:text-white font-extrabold text-[10.5px] rounded-lg border border-[#212631] transition-all"
+                className="px-2.5 py-1 bg-[#161B22] hover:bg-[#212631] text-[#8E939D] hover:text-white font-extrabold text-[10.5px] rounded-lg border border-border transition-all"
               >
                 일괄 미체결 취소
               </button>
@@ -114,12 +114,12 @@ export const OptionAccountPanel: React.FC = () => {
                 unfilled.map((u) => (
                   <div
                     key={u.id}
-                    className="flex items-center justify-between bg-[#0E1117] p-2.5 rounded-xl border border-[#212631]"
+                    className="flex items-center justify-between bg-[#0E1117] p-2.5 rounded-xl border border-border"
                   >
                     <div>
                       <div className="flex items-center gap-1.5">
                         <span className={`px-1.5 py-0.2 rounded text-[9.5px] font-bold ${
-                          u.side === 'BUY' ? 'bg-[#F04452]/20 text-[#F04452]' : 'bg-[#3182F6]/20 text-[#3182F6]'
+                          u.side === 'BUY' ? 'bg-up/20 text-up' : 'bg-down/20 text-down'
                         }`}>
                           {u.side === 'BUY' ? '매수' : '매도'}
                         </span>
@@ -131,14 +131,14 @@ export const OptionAccountPanel: React.FC = () => {
                     </div>
                     <button
                       onClick={() => setUnfilled(unfilled.filter((item) => item.id !== u.id))}
-                      className="px-2 py-1 bg-[#161B22] hover:bg-[#F04452]/20 text-[#8E939D] hover:text-[#F04452] font-bold rounded border border-[#212631]"
+                      className="px-2 py-1 bg-[#161B22] hover:bg-up/20 text-[#8E939D] hover:text-up font-bold rounded border border-border"
                     >
                       취소
                     </button>
                   </div>
                 ))
               ) : (
-                <div className="text-center py-4 text-[#8E939D] text-[11px]">미체결 주문이 없습니다.</div>
+                <div className="text-center py-4 text-[#8E939D] text-xs">미체결 주문이 없습니다.</div>
               )}
             </div>
           </div>
@@ -146,24 +146,24 @@ export const OptionAccountPanel: React.FC = () => {
 
         {/* 3. 예탁금 & 증거금 탭 */}
         {tab === 'MARGIN' && (
-          <div className="space-y-3 bg-[#0E1117] p-3 rounded-xl border border-[#212631]">
-            <span className="text-[11px] font-extrabold text-[#8E939D] block">예탁금 및 위탁증거금 현황</span>
+          <div className="space-y-3 bg-[#0E1117] p-3 rounded-xl border border-border">
+            <span className="text-xs font-extrabold text-[#8E939D] block">예탁금 및 위탁증거금 현황</span>
             <div className="grid grid-cols-2 gap-2 text-xs">
-              <div className="bg-[#05070A] p-2.5 rounded-lg border border-[#212631]">
+              <div className="bg-[#05070A] p-2.5 rounded-lg border border-border">
                 <span className="text-[#8E939D] text-[10px] block font-bold">예탁 총액</span>
                 <span className="text-white font-black tabular-nums text-[13px]">₩10,000,000</span>
               </div>
-              <div className="bg-[#05070A] p-2.5 rounded-lg border border-[#212631]">
+              <div className="bg-[#05070A] p-2.5 rounded-lg border border-border">
                 <span className="text-[#8E939D] text-[10px] block font-bold">주문 가능 현금</span>
-                <span className="text-[#F04452] font-black tabular-nums text-[13px]">₩8,500,000</span>
+                <span className="text-up font-black tabular-nums text-[13px]">₩8,500,000</span>
               </div>
-              <div className="bg-[#05070A] p-2.5 rounded-lg border border-[#212631]">
+              <div className="bg-[#05070A] p-2.5 rounded-lg border border-border">
                 <span className="text-[#8E939D] text-[10px] block font-bold">위탁 증거금율</span>
                 <span className="text-white font-bold tabular-nums">15.0%</span>
               </div>
-              <div className="bg-[#05070A] p-2.5 rounded-lg border border-[#212631]">
+              <div className="bg-[#05070A] p-2.5 rounded-lg border border-border">
                 <span className="text-[#8E939D] text-[10px] block font-bold">유지 증거금율</span>
-                <span className="text-[#3182F6] font-bold tabular-nums">10.0%</span>
+                <span className="text-down font-bold tabular-nums">10.0%</span>
               </div>
             </div>
           </div>
@@ -171,26 +171,26 @@ export const OptionAccountPanel: React.FC = () => {
 
         {/* 4. 피봇 분석 탭 */}
         {tab === 'PIVOT' && (
-          <div className="space-y-2 bg-[#0E1117] p-3 rounded-xl border border-[#212631]">
-            <span className="text-[11px] font-extrabold text-[#8E939D] block">KOSPI 200 피봇 분석 수치 (PIVOT)</span>
-            <div className="space-y-1 text-[11px]">
-              <div className="flex justify-between text-[#F04452]">
+          <div className="space-y-2 bg-[#0E1117] p-3 rounded-xl border border-border">
+            <span className="text-xs font-extrabold text-[#8E939D] block">KOSPI 200 피봇 분석 수치 (PIVOT)</span>
+            <div className="space-y-1 text-xs">
+              <div className="flex justify-between text-up">
                 <span>2차 저항선 (R2)</span>
                 <span className="font-bold">355.00</span>
               </div>
-              <div className="flex justify-between text-[#F04452]">
+              <div className="flex justify-between text-up">
                 <span>1차 저항선 (R1)</span>
                 <span className="font-bold">345.00</span>
               </div>
-              <div className="flex justify-between text-amber-400 font-bold border-y border-[#212631] py-1 my-1">
+              <div className="flex justify-between text-amber-400 font-bold border-y border-border py-1 my-1">
                 <span>피봇 기준가 (PIVOT)</span>
                 <span>335.00</span>
               </div>
-              <div className="flex justify-between text-[#3182F6]">
+              <div className="flex justify-between text-down">
                 <span>1차 지지선 (S1)</span>
                 <span className="font-bold">325.00</span>
               </div>
-              <div className="flex justify-between text-[#3182F6]">
+              <div className="flex justify-between text-down">
                 <span>2차 지지선 (S2)</span>
                 <span className="font-bold">315.00</span>
               </div>

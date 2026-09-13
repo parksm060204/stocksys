@@ -24,7 +24,7 @@ class MemoryQueryBuilder {
   private isMaybeSingle: boolean = false;
   private action: 'select' | 'insert' | 'update' | 'delete' | 'upsert' = 'select';
   private payloadData: any = null;
-  private upsertOptions?: { onConflict?: string };
+  private upsertOptions: { onConflict?: string } | undefined;
 
   constructor(tableName: string) {
     this.tableName = tableName;
@@ -391,6 +391,17 @@ export class MockSupabaseClient {
             buyer.cash -= tradeAmount;
             buyer.net_worth -= tradeAmount;
           }
+          const holdingId = `${buyerId}_${t.stock_id}`;
+          let h = db.holdings.get(holdingId);
+          if (h) {
+            h.quantity += Number(t.size);
+            h.avg_price = ((h.quantity - Number(t.size)) * h.avg_price + tradeAmount) / h.quantity;
+          } else {
+            db.holdings.set(holdingId, { id: holdingId, user_id: buyerId, stock_id: t.stock_id, quantity: Number(t.size), avg_price: Number(t.price), created_at: new Date().toISOString() });
+            let userSet = db.holdingUserIndex.get(buyerId);
+            if (!userSet) { userSet = new Set(); db.holdingUserIndex.set(buyerId, userSet); }
+            userSet.add(holdingId);
+          }
         }
 
         if (!t.seller_is_bot && sellerId) {
@@ -398,6 +409,16 @@ export class MockSupabaseClient {
           if (seller) {
             seller.cash += tradeAmount;
             seller.net_worth += tradeAmount;
+          }
+          const holdingId = `${sellerId}_${t.stock_id}`;
+          let h = db.holdings.get(holdingId);
+          if (h) {
+            h.quantity -= Number(t.size);
+            if (h.quantity <= 0) {
+              db.holdings.delete(holdingId);
+              const userSet = db.holdingUserIndex.get(sellerId);
+              if (userSet) userSet.delete(holdingId);
+            }
           }
         }
 

@@ -16,8 +16,8 @@ export default function V2VersionToggle() {
         href={v1Target}
         className={`px-3 py-1.5 rounded-full font-bold transition-all ${
           !isV2
-            ? "bg-[#3182F6] text-white shadow-sm"
-            : "text-[#9CA3AF] hover:text-white hover:bg-white/5"
+            ? "bg-down text-white shadow-sm"
+            : "text-muted hover:text-white hover:bg-white/5"
         }`}
       >
         V1 라이브
@@ -26,8 +26,8 @@ export default function V2VersionToggle() {
         href={v2Target}
         className={`px-3 py-1.5 rounded-full font-bold transition-all flex items-center gap-1.5 ${
           isV2
-            ? "bg-[#F04452] text-white shadow-sm"
-            : "text-[#9CA3AF] hover:text-white hover:bg-white/5"
+            ? "bg-up text-white shadow-sm"
+            : "text-muted hover:text-white hover:bg-white/5"
         }`}
       >
         <span className="h-2 w-2 rounded-full bg-white animate-ping" />

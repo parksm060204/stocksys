@@ -157,7 +157,7 @@ export default function ActiveOrdersPanel({
     return (
       <div className="p-8 text-center text-[12px] font-mono text-[#8E939D] space-y-2">
         <div>🔒 로그인이 필요한 메뉴입니다.</div>
-        <p className="text-[11px] text-[#565A63]">로그인 후 미체결 주문을 조회하고 관리할 수 있습니다.</p>
+        <p className="text-xs text-[#565A63]">로그인 후 미체결 주문을 조회하고 관리할 수 있습니다.</p>
       </div>
     );
   }
@@ -165,13 +165,13 @@ export default function ActiveOrdersPanel({
   return (
     <div className="flex flex-col h-full font-mono text-xs select-none">
       {/* 서브 헤더 (필터 & 일괄 취소 버튼) */}
-      <div className="flex items-center justify-between p-3 border-b border-[#212631] bg-[#090B0F]">
+      <div className="flex items-center justify-between p-3 border-b border-border bg-[#090B0F]">
         <div className="flex items-center gap-1.5">
           {currentStockId && (
-            <div className="flex bg-[#161B22] p-0.5 rounded-lg border border-[#212631]">
+            <div className="flex bg-[#161B22] p-0.5 rounded-lg border border-border">
               <button
                 onClick={() => setFilterMode('CURRENT')}
-                className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition-colors cursor-pointer ${
+                className={`px-2.5 py-1 rounded-md text-xs font-bold transition-colors cursor-pointer ${
                   filterMode === 'CURRENT' ? 'bg-[#212631] text-white' : 'text-[#8E939D] hover:text-white'
                 }`}
               >
@@ -179,7 +179,7 @@ export default function ActiveOrdersPanel({
               </button>
               <button
                 onClick={() => setFilterMode('ALL')}
-                className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition-colors cursor-pointer ${
+                className={`px-2.5 py-1 rounded-md text-xs font-bold transition-colors cursor-pointer ${
                   filterMode === 'ALL' ? 'bg-[#212631] text-white' : 'text-[#8E939D] hover:text-white'
                 }`}
               >
@@ -196,7 +196,7 @@ export default function ActiveOrdersPanel({
           <button
             onClick={handleCancelAll}
             disabled={cancellingId !== null}
-            className="px-2.5 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 text-[11px] font-bold transition-colors cursor-pointer disabled:opacity-50"
+            className="px-2.5 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 text-xs font-bold transition-colors cursor-pointer disabled:opacity-50"
           >
             전량 일괄 취소
           </button>
@@ -231,8 +231,8 @@ export default function ActiveOrdersPanel({
                     <span
                       className={`px-2 py-0.5 rounded text-[10.5px] font-black shrink-0 border ${
                         isBuy
-                          ? 'bg-[#F04452]/10 text-[#F04452] border-[#F04452]/30'
-                          : 'bg-[#3182F6]/10 text-[#3182F6] border-[#3182F6]/30'
+                          ? 'bg-up/10 text-up border-[#F04452]/30'
+                          : 'bg-down/10 text-down border-[#3182F6]/30'
                       }`}
                     >
                       {isBuy ? '매수' : '매도'}
@@ -242,7 +242,7 @@ export default function ActiveOrdersPanel({
                       <div className="flex items-center gap-1.5 truncate">
                         <Link
                           href={`/stocks/${o.stock_id}`}
-                          className="font-bold text-white hover:text-[#F04452] transition-colors truncate"
+                          className="font-bold text-white hover:text-up transition-colors truncate"
                         >
                           {stockName}
                         </Link>
@@ -282,7 +282,7 @@ export default function ActiveOrdersPanel({
                     <button
                       onClick={() => handleCancelOrder(o)}
                       disabled={cancellingId === o.id || cancellingId === 'ALL'}
-                      className="px-2.5 py-1 rounded bg-[#212631] hover:bg-rose-500 hover:text-white text-[#8E939D] text-[11px] font-bold transition-all cursor-pointer disabled:opacity-40"
+                      className="px-2.5 py-1 rounded bg-[#212631] hover:bg-rose-500 hover:text-white text-[#8E939D] text-xs font-bold transition-all cursor-pointer disabled:opacity-40"
                     >
                       {cancellingId === o.id ? '취소중..' : '취소'}
                     </button>

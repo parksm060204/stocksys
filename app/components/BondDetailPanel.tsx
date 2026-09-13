@@ -80,11 +80,11 @@ export default function BondDetailPanel({ stock }: { stock: Stock }) {
       <div className="px-4 py-4 border-b border-border bg-gradient-to-br from-panel to-panel2">
         <div className="flex items-end justify-between">
           <div>
-            <div className="text-[11px] text-dim uppercase tracking-wider mb-1">만기수익률 (YTM)</div>
+            <div className="text-xs text-dim uppercase tracking-wider mb-1">만기수익률 (YTM)</div>
             <div className={`text-3xl font-bold font-mono tabular-nums ${liveYtm > bm.couponRate ? "text-up" : "text-down"}`}>
               {fmtYTM(liveYtm)}
             </div>
-            <div className="text-[11px] text-muted mt-1">
+            <div className="text-xs text-muted mt-1">
               표면금리 {fmtYTM(bm.couponRate)} 기준
               {liveYtm > bm.couponRate
                 ? <span className="text-up ml-1">↑ 할인 거래 중 (가격 ↓)</span>
@@ -114,7 +114,7 @@ export default function BondDetailPanel({ stock }: { stock: Stock }) {
           📊 만기 보유 시 확정 수익 시뮬레이터
         </div>
         <div className="flex items-center gap-3 mb-3">
-          <label className="text-[11px] text-dim whitespace-nowrap">매수 수량</label>
+          <label className="text-xs text-dim whitespace-nowrap">매수 수량</label>
           <input
             type="number"
             min={1}
@@ -122,7 +122,7 @@ export default function BondDetailPanel({ stock }: { stock: Stock }) {
             onChange={(e) => setQty(Math.max(1, Number(e.target.value)))}
             className="flex-1 rounded-lg border border-border bg-bg px-3 py-1.5 text-right font-mono text-[13px] text-tx outline-none focus:border-accent/50"
           />
-          <span className="text-[11px] text-dim">주</span>
+          <span className="text-xs text-dim">주</span>
         </div>
 
         <div className="rounded-lg border border-border bg-bg/60 p-3 space-y-2 text-[12px]">
@@ -152,7 +152,7 @@ export default function BondDetailPanel({ stock }: { stock: Stock }) {
         </div>
 
         {bm.riskCategory === "high_yield" && (
-          <div className="mt-3 rounded-lg border border-down/40 bg-down/10 px-3 py-2 text-[11px] text-down">
+          <div className="mt-3 rounded-lg border border-down/40 bg-down/10 px-3 py-2 text-xs text-down">
             ⚠️ <strong>하이일드 위험 경고</strong>: 발행사 부도 시 원금 전액 손실 가능. 높은 쿠폰 수익률은 신용 위험의 대가입니다.
           </div>
         )}

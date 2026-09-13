@@ -7,9 +7,9 @@ import { ChangeBadge } from "./PriceTag";
 
 export default function StockTable({ stocks }: { stocks: Stock[] }) {
   return (
-    <div className="overflow-x-auto rounded-2xl bg-[#0E1117] border border-[#212631] shadow-2xl">
+    <div className="overflow-x-auto rounded-2xl bg-[#0E1117] border border-border shadow-2xl">
       <table className="w-full text-left text-[13px] border-collapse">
-        <thead className="border-b border-[#212631] bg-[#090B0F] text-[11px] font-extrabold text-[#8E939D] tracking-wider uppercase">
+        <thead className="border-b border-border bg-[#090B0F] text-xs font-extrabold text-[#8E939D] tracking-wider uppercase">
           <tr>
             <th className="px-5 py-4 border-none">종목명</th>
             <th className="px-5 py-4 border-none">섹터</th>
@@ -24,27 +24,27 @@ export default function StockTable({ stocks }: { stocks: Stock[] }) {
           {stocks.map((s) => {
             const currentPrice = s.currentPrice;
             const { percent, dir } = change(currentPrice, s.previousClose);
-            const pColor = dir === "up" ? "text-[#F04452]" : dir === "down" ? "text-[#3182F6]" : "text-[#8E939D]";
-            const badgeBg = dir === "up" ? "bg-[#F04452]/10 border-[#F04452]/30 text-[#F04452]" : dir === "down" ? "bg-[#3182F6]/10 border-[#3182F6]/30 text-[#3182F6]" : "bg-[#161B22] border-[#212631] text-[#8E939D]";
+            const pColor = dir === "up" ? "text-up" : dir === "down" ? "text-down" : "text-[#8E939D]";
+            const badgeBg = dir === "up" ? "bg-up/10 border-[#F04452]/30 text-up" : dir === "down" ? "bg-down/10 border-[#3182F6]/30 text-down" : "bg-[#161B22] border-border text-[#8E939D]";
             
             return (
               <tr
                 key={s.id}
-                className="transition-colors hover:bg-[#161B22] border-b border-[#212631] last:border-none group cursor-pointer"
+                className="transition-colors hover:bg-[#161B22] border-b border-border last:border-none group cursor-pointer"
               >
                 {/* 종목명 */}
                 <td className="px-5 py-4 border-none">
                   <Link href={`/stocks/${s.id}`} className="group flex flex-col">
-                    <span className="font-extrabold text-white group-hover:text-[#F04452] transition-colors text-[14.5px]">
+                    <span className="font-extrabold text-white group-hover:text-up transition-colors text-[14.5px]">
                       {s.name}
                     </span>
-                    <span className="font-mono text-[11px] text-[#565A63] font-bold">{s.ticker}</span>
+                    <span className="font-mono text-xs text-[#565A63] font-bold">{s.ticker}</span>
                   </Link>
                 </td>
 
                 {/* 섹터 */}
                 <td className="px-5 py-4 border-none">
-                  <span className="rounded-full bg-[#161B22] border border-[#212631] px-3 py-1 text-[11px] text-[#8E939D] font-medium">
+                  <span className="rounded-full bg-[#161B22] border border-border px-3 py-1 text-xs text-[#8E939D] font-medium">
                     {s.sector}
                   </span>
                 </td>

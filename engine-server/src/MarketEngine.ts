@@ -1,3 +1,4 @@
+import './loadEnv';
 import { createClient } from '@supabase/supabase-js';
 import { ExecutionTrader } from './bots/ExecutionTrader';
 import { AdversarialAgent } from './bots/AdversarialAgent';
@@ -21,19 +22,26 @@ import { SettlementBatchService } from './settlement/SettlementBatchService';
 import * as dotenv from 'dotenv';
 import * as path from 'path';
 import * as os from 'os';
+import { createMockSupabaseClient } from '../../lib/memoryDb/mockSupabaseClient';
 
-dotenv.config({ path: path.resolve(__dirname, '../.env') });
-dotenv.config({ path: path.resolve(__dirname, '../../.env.local') });
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
-const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-if (!supabaseUrl || !supabaseKey) {
-  console.error("❌ [MarketEngine] Critical Error: Missing Supabase credentials in environment variables.");
-  throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY");
+const useInMemory = process.env.NEXT_PUBLIC_USE_IN_MEMORY === 'true';
+const supabaseUrl = process.env.NEXT_PUBLIC_ENGINE_DB_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+let supabase: any;
+
+if (useInMemory) {
+  console.log("🛠️ [MarketEngine] Using IN_MEMORY mock DB...");
+  supabase = createMockSupabaseClient();
+} else {
+  if (!supabaseUrl || !supabaseKey) {
+    console.error("❌ [MarketEngine] Critical Error: Missing Supabase credentials in environment variables.");
+    throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL (or NEXT_PUBLIC_ENGINE_DB_URL) or SUPABASE_SERVICE_ROLE_KEY");
+  }
+  supabase = createClient(supabaseUrl, supabaseKey);
 }
-
-const supabase = createClient(supabaseUrl, supabaseKey);
 
 /**
  * 서버 CPU/RAM 사용량을 모니터링하여 고부하 시 봇 가동률 조절을 지원하는 클래스
@@ -366,6 +374,8 @@ export class MarketEngine {
 
   private async tick() {
     try {
+      this.tickCount++;
+
       // 24시간 연속 봇 매매 지원 (MARKET_HOURS_ONLY가 명시적으로 'true'가 아니면 24시간 상시 거래)
       const isMarketHoursOnly = process.env.MARKET_HOURS_ONLY === 'true';
       if (isMarketHoursOnly) {
@@ -486,24 +496,8 @@ export class MarketEngine {
       for (const bot of this.commercialBankAgents) {
         allOrders.push(...bot.executeArbitrage(marketState, marketState.adminBaseRate));
       }
-      for (const bot of this.propDeskAgents) {
-        allOrders.push(...bot.executeMarketMaking(marketState, marketState.orderBook, {}));
-      }
-      
-      for (const bot of this.retailSwarmAgents) {
-        allOrders.push(...bot.executeSwarmBehavior(marketState, {}));
-      }
-      for (const bot of this.hedgeFundAgents) {
-        allOrders.push(...bot.executeAggressiveSweep(marketState));
-      }
-      for (const bot of this.statArbAgents) {
-        allOrders.push(...bot.executePairsTrading(marketState.stocks));
-      }
       for (const bot of this.pensionFundAgents) {
         allOrders.push(...bot.evaluateMarketAndPlaceOrders(marketState, false));
-      }
-      for (const bot of this.quantAgents) {
-        allOrders.push(...bot.executeQuantStrategy(marketState, marketState.orderBook));
       }
       for (const bot of this.commercialHedgerAgents) {
         const cmd = (marketState.commodities || []).find((c: any) => c.commodity_id === bot.config.targetCommodity || c.id === bot.config.targetCommodity);
@@ -589,7 +583,6 @@ export class MarketEngine {
         });
 
         await this.processBatchOrders(allOrders, marketState, shouldRefreshLp);
-        this.tickCount++;
         
         // 자체 여기(Self-excitation) 발생: 주문량에 비례하여 강도 증가
         this.hawkesIntensity += this.alpha * allOrders.length;
@@ -870,17 +863,6 @@ export class MarketEngine {
     // 5. DB 일괄 트랜잭션 반영 (Batch Commit)
     const promises: any[] = [];
 
-    // 5.1 체결 내역 Insert (trades는 영구 보관 — 절대 삭제 안 함)
-    if (tradesToInsert.length > 0) {
-      for (let i = 0; i < tradesToInsert.length; i += 200) {
-        const chunk = tradesToInsert.slice(i, i + 200);
-        promises.push(supabase.from('trades').insert(chunk).then(res => {
-          if (res.error) console.error('[Engine] Failed to insert trades chunk:', res.error);
-          return res;
-        }));
-      }
-    }
-
     // 5.2 LP 호가 슬라이딩 윈도우 (Sliding Window)
     //   이전 틱 LP 주문 DELETE → 새 LP 주문 INSERT
     //   종목당 최대 5 bid + 5 ask = 10개로 엄격 제한 (DB 과부하 방지)
@@ -928,7 +910,7 @@ export class MarketEngine {
       }
 
       if (safeLpOrders.length > 0) {
-        const affectedStockIds = [...new Set(safeLpOrders.map(o => o.stock_id))];
+        const affectedStockIds = [...new Set(safeLpOrders.map((o: any) => o.stock_id))];
 
         // DELETE 먼저 (청크 단위 안전 삭제) → 그 다음 500개씩 청크 INSERT
         if (refreshLpOrders) {
@@ -938,7 +920,7 @@ export class MarketEngine {
         for (let i = 0; i < safeLpOrders.length; i += 500) {
           const chunk = safeLpOrders.slice(i, i + 500);
           promises.push(
-            supabase.from('orders').insert(chunk).then(res => {
+            supabase.from('orders').insert(chunk).then((res: any) => {
               if (res.error) console.error('[Engine] Failed to insert LP orders chunk:', res.error);
               return res;
             })
@@ -947,49 +929,31 @@ export class MarketEngine {
       }
     }
 
-
-
     // 5.3 유저 주문 잔량 Update
     for (const uOrder of userOrdersToUpdate) {
-      promises.push(supabase.from('orders').update({ size: uOrder.size, status: uOrder.status }).eq('id', uOrder.id).then(res => res));
+      promises.push(supabase.from('orders').update({ size: uOrder.size, status: uOrder.status }).eq('id', uOrder.id).then((res: any) => res));
     }
 
-    // 5.3.1 유저 예수금(cash) 원자적 회계 반영 — RPC 호출 (Race Condition 방지)
-    for (const [userId, delta] of Object.entries(cashChanges)) {
-      const roundedDelta = Math.round(delta);
-      if (roundedDelta !== 0) {
+    // 5.3.1 ~ 5.3.2 통합 체결 처리: 체결 내역 Insert 및 예수금/보유수량 갱신을 단일 RPC로 일괄 처리 (Race Condition 방지)
+    if (tradesToInsert.length > 0) {
+      for (let i = 0; i < tradesToInsert.length; i += 200) {
+        const chunk = tradesToInsert.slice(i, i + 200);
         promises.push(
-          supabase.rpc('increment_user_cash', { p_user_id: userId, p_delta: roundedDelta }).then(res => {
-            if (res.error) console.error('[Engine] Failed RPC increment_user_cash:', res.error);
+          supabase.rpc('bulk_settle_trades', { p_trades: chunk }).then((res: any) => {
+            if (res.error) console.error('[Engine] Failed RPC bulk_settle_trades:', res.error);
             return res;
           })
         );
       }
     }
 
-    // 5.3.2 유저 보유 주식(holdings) 원자적 회계 반영 — RPC 호출 (Race Condition 방지)
-    for (const [userId, stockMap] of Object.entries(holdingsChanges)) {
-      for (const [stockId, delta] of Object.entries(stockMap)) {
-        if (delta !== 0) {
-          const refTrade = tradesToInsert.find(t => t.stock_id === stockId);
-          const fillPrice = refTrade ? refTrade.price : 0;
-          promises.push(
-            supabase.rpc('update_user_holding', {
-              p_user_id: userId,
-              p_stock_id: stockId,
-              p_qty_delta: delta,
-              p_fill_price: fillPrice
-            }).then(res => {
-              if (res.error) console.error('[Engine] Failed RPC update_user_holding:', res.error);
-              return res;
-            })
-          );
-        }
-      }
-    }
 
+    // 5.4 현재가 Update (자산별 테이블 구분 + KRX 틱/상하한가 정렬) - Batch Optimized
+    const stockUpdates: any[] = [];
+    const historyInserts: any[] = [];
+    const bondUpdates: any[] = [];
+    const commodityCurrentUpdates: any[] = [];
 
-    // 5.4 현재가 Update (자산별 테이블 구분 + KRX 틱/상하한가 정렬)
     for (const [sId, rawPrice] of Object.entries(updatedStocks)) {
       const stockItem = marketState.stocks.find((s: any) => s.id === sId);
       const bondItem = marketState.bonds.find((b: any) => b.id === sId);
@@ -1015,17 +979,29 @@ export class MarketEngine {
           finalPrice = Math.max(1, this.alignToTickSize(rawPrice, 'stocks'));
         }
 
-        promises.push(supabase.from('stocks').update({ current_price: finalPrice }).eq('id', sId).then(res => res));
-        // 과거 주가 이력 기록 저장 (stock_price_history)
-        promises.push(supabase.from('stock_price_history').insert({ stock_id: sId, price: finalPrice, volume: stockItem.volume || 0 }).then(res => res));
+        stockUpdates.push({ id: sId, current_price: finalPrice });
+        historyInserts.push({ stock_id: sId, price: finalPrice, volume: stockItem.volume || 0 });
       } else if (bondItem) {
         const finalPrice = Math.max(80.00, Math.min(120.00, this.alignToTickSize(rawPrice, 'bonds')));
-        promises.push(supabase.from('bonds').update({ current_price: finalPrice }).eq('id', sId).then(res => res));
+        bondUpdates.push({ id: sId, current_price: finalPrice });
       } else if (commodityItem) {
         const prevClose = Number(commodityItem.previous_close || commodityItem.current_price || 100);
         const finalPrice = Math.max(prevClose * 0.50, Math.min(prevClose * 2.00, rawPrice));
-        promises.push(supabase.from('commodities').update({ current_price: finalPrice }).eq('id', sId).then(res => res));
+        commodityCurrentUpdates.push({ id: sId, current_price: finalPrice });
       }
+    }
+
+    if (stockUpdates.length > 0) {
+      promises.push(supabase.from('stocks').upsert(stockUpdates, { onConflict: 'id' }).then((res: any) => res));
+    }
+    if (historyInserts.length > 0) {
+      promises.push(supabase.from('stock_price_history').insert(historyInserts).then((res: any) => res));
+    }
+    if (bondUpdates.length > 0) {
+      promises.push(supabase.from('bonds').upsert(bondUpdates, { onConflict: 'id' }).then((res: any) => res));
+    }
+    if (commodityCurrentUpdates.length > 0) {
+      promises.push(supabase.from('commodities').upsert(commodityCurrentUpdates, { onConflict: 'id' }).then((res: any) => res));
     }
 
     // 5.4.1 신규 원자재 시장 엔진 틱 가동 및 DB 정기 반영
@@ -1042,7 +1018,7 @@ export class MarketEngine {
         volume: c.volume,
       }));
       promises.push(
-        supabase.from('commodities').upsert(commodityUpdates, { onConflict: 'commodity_id' }).then((res) => {
+        supabase.from('commodities').upsert(commodityUpdates, { onConflict: 'commodity_id' }).then((res: any) => {
           if (res.error) console.error('[Engine] Commodity Upsert Error:', res.error);
           return res;
         })
@@ -1106,7 +1082,7 @@ export class MarketEngine {
             updated_at: new Date().toISOString()
           };
         });
-        promises.push(supabase.from('institutional_portfolios').upsert(portfoliosToUpsert).then(res => res));
+        promises.push(supabase.from('institutional_portfolios').upsert(portfoliosToUpsert).then((res: any) => res));
         this.lastPortfolioUpsertMs = now;
       }
     }
@@ -1145,7 +1121,7 @@ export class MarketEngine {
           .limit(1000);
 
         if (lpOrders && lpOrders.length > 0) {
-          const ids = lpOrders.map(o => o.id);
+          const ids = lpOrders.map((o: any) => o.id);
           await supabase.from('orders').delete().in('id', ids);
         }
       }
@@ -1199,8 +1175,8 @@ export class MarketEngine {
       };
 
       const updates = rates
-        .filter(rate => rate.currency_code !== 'KRW')
-        .map(rate => {
+        .filter((rate: any) => rate.currency_code !== 'KRW')
+        .map((rate: any) => {
           const limits = currencyLimits[rate.currency_code] || { min: 1, max: 10000 };
           const changePct = 1 + (Math.random() - 0.5) * 0.002;
           let newRate = Number(rate.rate_to_krw) * changePct;

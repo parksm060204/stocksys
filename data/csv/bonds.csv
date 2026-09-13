@@ -1,0 +1,8 @@
+ticker,name,country,bond_type,maturity,coupon_rate,face_value,current_price,previous_close,ytm,duration,volume
+KR_GVT_2Y,한국 국고채 2년,KR,govt,2Y,0.0325,10000,99.80,99.85,0.0335,1.92,0
+KR_GVT_5Y,한국 국고채 5년,KR,govt,5Y,0.0350,10000,98.50,98.60,0.0375,4.55,0
+KR_GVT_10Y,한국 국고채 10년,KR,govt,10Y,0.0375,10000,97.20,97.40,0.0405,8.40,0
+US_GVT_2Y,미국 국고채 2년,US,govt,2Y,0.0475,10000,99.50,99.55,0.0480,1.94,0
+US_GVT_10Y,미국 국고채 10년,US,govt,10Y,0.0425,10000,97.80,97.90,0.0435,8.25,0
+KR_CORP_IG,한국 우량 회사채,KR,corp_ig,3Y,0.0410,10000,98.80,98.85,0.0435,2.78,0
+KR_CORP_HY,한국 투기 회사채,KR,corp_hy,3Y,0.0725,10000,95.20,95.10,0.0785,2.62,0

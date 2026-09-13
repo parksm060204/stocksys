@@ -661,5 +661,31 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.stock_price_history TO anon
 ALTER TABLE public.stock_price_history ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "passthrough price_history" ON public.stock_price_history FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
 
+-- =====================================================================
+-- 21) 기관 봇 영구 포트폴리오 자산 장부 (institutional_portfolios)
+-- =====================================================================
+CREATE TABLE IF NOT EXISTS public.institutional_portfolios (
+    bot_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    total_capital NUMERIC NOT NULL,
+    current_cash NUMERIC NOT NULL,
+    current_stock NUMERIC NOT NULL,
+    current_kr_equity NUMERIC NOT NULL DEFAULT 0,
+    current_us_equity NUMERIC NOT NULL DEFAULT 0,
+    current_eu_equity NUMERIC NOT NULL DEFAULT 0,
+    current_bond NUMERIC NOT NULL DEFAULT 0,
+    current_commodity NUMERIC NOT NULL DEFAULT 0,
+    current_derivatives NUMERIC NOT NULL DEFAULT 0,
+    target_weights JSONB NOT NULL DEFAULT '{}'::jsonb,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_trades_created_at ON public.trades(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_trades_stock_created ON public.trades(stock_id, created_at DESC);
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.institutional_portfolios TO anon, authenticated, service_role;
+ALTER TABLE public.institutional_portfolios ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "passthrough institutional_portfolios" ON public.institutional_portfolios FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+
 -- 완료
 DO $$ BEGIN RAISE NOTICE 'VM DB 스키마 초기화 완료'; END $$;

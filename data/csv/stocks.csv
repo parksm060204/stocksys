@@ -1,0 +1,19 @@
+ticker,name,market,sector,description,current_price,previous_close,open_price,volume,market_cap,is_listed,is_core
+0010,오성전자,domestic,반도체,,72000,71500,0,0,400000000000000,true,true
+0015,미래자동차,domestic,자동차,,210000,209000,0,0,95000000000000,true,true
+0020,에코에너지,domestic,에너지,,45000,44800,0,0,22000000000000,true,false
+0025,NVC,domestic,IT,,185000,184500,0,0,60000000000000,true,false
+0030,KKA,domestic,통신,,52000,51800,0,0,30000000000000,true,false
+AAPL,파인애플,overseas,IT,,185.50,185.20,0,0,2900000000000,true,true
+MSFT,매크로소프트,overseas,소프트웨어,,425.30,424.00,0,0,3150000000000,true,true
+NVDA,엔비디아스,overseas,반도체,,875.20,870.50,0,0,2100000000000,true,true
+TSLA,와트 모빌리티,overseas,자동차,,248.50,247.80,0,0,790000000000,true,false
+GOOGL,구골,overseas,IT,,141.20,140.90,0,0,1750000000000,true,false
+ASML,ADML,europe,반도체,,705.40,703.20,0,0,280000000000,true,true
+SAP,SAP 넥스트,europe,소프트웨어,,175.30,174.80,0,0,210000000000,true,false
+KODEX200,KODEX 200,etf,Index ETF,코스피 200 지수 추종,35000,35000,35000,0,5000000000000,true,false
+KODEXLEV,KODEX 레버리지,etf,Leverage ETF,코스피 200 지수 2배 추종,17000,17000,17000,0,2000000000000,true,false
+KODEXINV,KODEX 인버스,etf,Inverse ETF,코스피 200 지수 역방향(-1배) 추종,4500,4500,4500,0,1000000000000,true,false
+SPY,SPDR S&P 500 ETF Trust,etf,Index ETF,S&P 500 지수 추종,500.00,500.00,500.00,0,600000000000000,true,false
+QQQ,Invesco QQQ Trust,etf,Index ETF,나스닥 100 지수 추종,430.00,430.00,430.00,0,300000000000000,true,false
+TQQQ,ProShares UltraPro QQQ,etf,Leverage ETF,나스닥 100 지수 3배 레버리지,60.00,60.00,60.00,0,30000000000000,true,false

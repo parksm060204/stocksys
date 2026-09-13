@@ -23,21 +23,21 @@ export const InstitutionalSectorPortfolioWidget: React.FC<InstitutionalSectorPor
   const profile = InstitutionalSectorEngine.getProfile(selectedInstId, activeRegime);
 
   return (
-    <div className="bg-[#0E1117] border border-[#212631] p-5 text-xs font-mono rounded-3xl select-none shadow-2xl space-y-4">
+    <div className="bg-[#0E1117] border border-border p-5 text-xs font-mono rounded-3xl select-none shadow-2xl space-y-4">
       {/* 헤더 타이틀 및 기관 선택 드롭다운 */}
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 border-b border-[#212631] pb-3">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 border-b border-border pb-3">
         <div>
           <div className="flex items-center gap-2">
             <span className="text-base">📊</span>
             <h3 className="text-sm font-black text-white">기관별 구체적 7대 섹터 주식 포트폴리오 터미널</h3>
           </div>
-          <p className="text-[11px] text-[#8E939D] mt-0.5 font-sans font-medium">
+          <p className="text-xs text-[#8E939D] mt-0.5 font-sans font-medium">
             월스트리트 & 여의도 50개 금융기관의 섹터별 편입 비중(%) 및 실물 주요 편입 종목 상세 현황
           </p>
         </div>
 
         {/* 기관 선택 셀렉터 */}
-        <div className="bg-[#161B22] border border-[#212631] px-3 py-1.5 rounded-xl">
+        <div className="bg-[#161B22] border border-border px-3 py-1.5 rounded-xl">
           <select
             value={selectedInstId}
             onChange={(e) => setSelectedInstId(e.target.value)}
@@ -53,7 +53,7 @@ export const InstitutionalSectorPortfolioWidget: React.FC<InstitutionalSectorPor
       </div>
 
       {/* 개요 정보 카드 */}
-      <div className="bg-[#05070A] p-4 rounded-2xl border border-[#212631] space-y-3">
+      <div className="bg-[#05070A] p-4 rounded-2xl border border-border space-y-3">
         <div className="flex justify-between items-center text-[11.5px]">
           <div>
             <span className="text-white font-black text-[13.5px]">{profile.institution.name}</span>
@@ -75,7 +75,7 @@ export const InstitutionalSectorPortfolioWidget: React.FC<InstitutionalSectorPor
             <span>7대 산업 섹터 자산배분 구성비</span>
             <span>총 100%</span>
           </div>
-          <div className="h-3.5 w-full bg-[#161B22] rounded-full overflow-hidden flex border border-[#212631]">
+          <div className="h-3.5 w-full bg-[#161B22] rounded-full overflow-hidden flex border border-border">
             {profile.sectorAllocations.map((sec) => (
               <div
                 key={sec.sectorId}
@@ -90,7 +90,7 @@ export const InstitutionalSectorPortfolioWidget: React.FC<InstitutionalSectorPor
 
       {/* 7대 섹터 세부 포트폴리오 리스트 */}
       <div className="space-y-2">
-        <span className="text-[11px] font-extrabold text-[#8E939D] block">
+        <span className="text-xs font-extrabold text-[#8E939D] block">
           섹터별 할당 비중(%) & 실물 핵심 편입 종목 (Sector Breakdown & Top Holdings)
         </span>
 
@@ -98,9 +98,9 @@ export const InstitutionalSectorPortfolioWidget: React.FC<InstitutionalSectorPor
           {profile.sectorAllocations.map((sec) => (
             <div
               key={sec.sectorId}
-              className="bg-[#05070A] p-3.5 rounded-2xl border border-[#212631] space-y-2.5 hover:border-white/20 transition-all"
+              className="bg-[#05070A] p-3.5 rounded-2xl border border-border space-y-2.5 hover:border-white/20 transition-all"
             >
-              <div className="flex justify-between items-center border-b border-[#212631] pb-2">
+              <div className="flex justify-between items-center border-b border-border pb-2">
                 <div className="flex items-center gap-1.5">
                   <span className="text-sm">{sec.icon}</span>
                   <span className="font-extrabold text-white text-[12.5px]">{sec.sectorName}</span>
@@ -122,7 +122,7 @@ export const InstitutionalSectorPortfolioWidget: React.FC<InstitutionalSectorPor
                   {sec.topConstituentStocks.map((stk) => (
                     <span
                       key={stk.name}
-                      className="bg-[#161B22] border border-[#212631] px-2 py-1 rounded-lg text-[10.5px] text-[#C1C7D0] flex items-center gap-1"
+                      className="bg-[#161B22] border border-border px-2 py-1 rounded-lg text-[10.5px] text-[#C1C7D0] flex items-center gap-1"
                     >
                       <strong className="text-white">{stk.name}</strong>
                       <span className="text-[9.5px] text-[#8E939D] font-mono">${stk.estimatedAmountBillion}B</span>

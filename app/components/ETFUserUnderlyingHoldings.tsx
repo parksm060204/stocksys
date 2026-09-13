@@ -43,17 +43,17 @@ export const ETFUserUnderlyingHoldings: React.FC<ETFUserUnderlyingHoldingsProps>
   });
 
   return (
-    <div className="bg-[#05070A] border border-[#212631] p-4 rounded-2xl space-y-3 font-mono text-xs shadow-xl">
-      <div className="flex justify-between items-center border-b border-[#212631] pb-2">
+    <div className="bg-[#05070A] border border-border p-4 rounded-2xl space-y-3 font-mono text-xs shadow-xl">
+      <div className="flex justify-between items-center border-b border-border pb-2">
         <span className="text-[12px] font-black text-amber-400 flex items-center gap-1.5">
           <span>🏦 내 계좌 보유 ETF의 실물 담보 주식 연계 내역 (AUM 비중 포함)</span>
         </span>
-        <span className="text-[11px] font-bold text-white bg-[#161B22] px-2.5 py-0.5 rounded-full border border-[#212631]">
+        <span className="text-xs font-bold text-white bg-[#161B22] px-2.5 py-0.5 rounded-full border border-border">
           보유 수량: {userEtfShares.toLocaleString()}주
         </span>
       </div>
 
-      <p className="text-[11px] text-[#8E939D] font-medium font-sans">
+      <p className="text-xs text-[#8E939D] font-medium font-sans">
         고객님이 보유하신 {etf.name} {userEtfShares.toLocaleString()}주 뒤에는 운용자산(AUM) 대비 아래 비중의 실물 주식이 안전하게 담보 보관되고 있습니다:
       </p>
 
@@ -61,12 +61,12 @@ export const ETFUserUnderlyingHoldings: React.FC<ETFUserUnderlyingHoldingsProps>
         {underlyingSharesBreakdown.map((item) => (
           <div
             key={item.ticker}
-            className="flex items-center justify-between bg-[#0E1117] p-2.5 rounded-xl border border-[#212631]"
+            className="flex items-center justify-between bg-[#0E1117] p-2.5 rounded-xl border border-border"
           >
             <div>
               <div className="flex items-center gap-1.5">
-                <span className="font-extrabold text-[#F04452] text-[12px]">{item.ticker}</span>
-                <span className="text-[9.5px] font-bold bg-[#3182F6]/15 text-[#3182F6] px-1.5 py-0.2 rounded border border-[#3182F6]/30">
+                <span className="font-extrabold text-up text-[12px]">{item.ticker}</span>
+                <span className="text-[9.5px] font-bold bg-down/15 text-down px-1.5 py-0.2 rounded border border-[#3182F6]/30">
                   AUM 비중 {item.aumWeightPercent.toFixed(1)}%
                 </span>
               </div>
@@ -78,7 +78,7 @@ export const ETFUserUnderlyingHoldings: React.FC<ETFUserUnderlyingHoldingsProps>
               <span className="font-black text-white text-[13px] block tabular-nums">
                 {item.realPhysicalShares.toLocaleString()} 주
               </span>
-              <span className="text-[10.5px] text-[#3182F6] font-bold tabular-nums">
+              <span className="text-[10.5px] text-down font-bold tabular-nums">
                 {isUsOrGlobal ? `$${item.totalPhysicalValue.toFixed(2)}` : `₩${Math.round(item.totalPhysicalValue).toLocaleString('ko-KR')}`}
               </span>
             </div>

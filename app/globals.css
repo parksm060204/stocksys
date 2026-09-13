@@ -6,27 +6,27 @@
    ========================================================================== */
 
 :root {
-  --bg-base: #05070A;
-  --bg-panel: #0E1117;
-  --bg-panel-2: #161B22;
-  --bg-panel-3: #090B0F;
-  --bg-hover: rgba(255, 255, 255, 0.05);
-  --border: #212631;
-  --border-soft: rgba(255, 255, 255, 0.08);
+  --bg-base: #000000;
+  --bg-panel: #0C0E12;
+  --bg-panel-2: #111318;
+  --bg-panel-3: #0a0b0f;
+  --bg-hover: rgba(255, 255, 255, 0.04);
+  --border: #1e2230;
+  --border-soft: rgba(255, 255, 255, 0.07);
   --text: #F4F5F6;
   --text-main: #FFFFFF;
   --text-muted: #8E939D;
   --text-sub: #C1C7D0;
-  --text-dim: #565A63;
+  --text-dim: #4d5162;
   --up: #F04452; /* 상승 = 빨강 (한국 표준) */
   --down: #3182F6; /* 하락 = 파랑 (한국 표준) */
   --ask: #3182F6; /* 매도호가 = 파랑 */
   --bid: #F04452; /* 매수호가 = 빨강 */
   --accent: #F04452;
   --warn: #F59E0B;
-  --scrollbar-thumb: #212631;
-  --input-bg: #161B22;
-  --card-bg-hover: #12161F;
+  --scrollbar-thumb: #1e2230;
+  --input-bg: #111318;
+  --card-bg-hover: #0f1117;
   color-scheme: dark;
 }
 
@@ -86,27 +86,27 @@ html[data-theme="light"] {
 
 /* Explicit Dark Mode Override */
 html[data-theme="dark"] {
-  --bg-base: #05070A;
-  --bg-panel: #0E1117;
-  --bg-panel-2: #161B22;
-  --bg-panel-3: #090B0F;
-  --bg-hover: rgba(255, 255, 255, 0.05);
-  --border: #212631;
-  --border-soft: rgba(255, 255, 255, 0.08);
+  --bg-base: #000000;
+  --bg-panel: #0C0E12;
+  --bg-panel-2: #111318;
+  --bg-panel-3: #0a0b0f;
+  --bg-hover: rgba(255, 255, 255, 0.04);
+  --border: #1e2230;
+  --border-soft: rgba(255, 255, 255, 0.07);
   --text: #F4F5F6;
   --text-main: #FFFFFF;
   --text-muted: #8E939D;
   --text-sub: #C1C7D0;
-  --text-dim: #565A63;
+  --text-dim: #4d5162;
   --up: #F04452;
   --down: #3182F6;
   --ask: #3182F6;
   --bid: #F04452;
   --accent: #F04452;
   --warn: #F59E0B;
-  --scrollbar-thumb: #212631;
-  --input-bg: #161B22;
-  --card-bg-hover: #12161F;
+  --scrollbar-thumb: #1e2230;
+  --input-bg: #111318;
+  --card-bg-hover: #0f1117;
   color-scheme: dark;
 }
 
@@ -142,12 +142,12 @@ code, kbd, samp, pre, .font-mono {
   font-family: var(--font-jetbrains), "JetBrains Mono", "SF Mono", "Fira Code", monospace;
 }
 
-/* Dynamic Robinhood Card Style */
+/* Fintech True Black Card Style */
 .bg-panel {
   background: var(--bg-panel) !important;
   border: 1px solid var(--border-soft) !important;
-  border-radius: 14px;
-  transition: background-color 0.15s ease, border-color 0.15s ease;
+  border-radius: 12px;
+  transition: background-color 0.12s ease, border-color 0.12s ease;
 }
 
 .bg-panel:hover {
@@ -158,13 +158,22 @@ code, kbd, samp, pre, .font-mono {
 .fintech-card {
   background: var(--bg-panel);
   border: 1px solid var(--border-soft);
-  border-radius: 14px;
-  transition: background-color 0.15s ease, border-color 0.15s ease;
+  border-radius: 12px;
+  transition: background-color 0.12s ease, border-color 0.12s ease;
 }
 
 .fintech-card:hover {
-  background: var(--bg-hover);
+  background: var(--card-bg-hover);
   border-color: var(--border);
+}
+
+/* Pro mode fade-in transition */
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-in-up {
+  animation: fadeInUp 0.22s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 /* Tabular nums for clean financial figures */
@@ -210,21 +219,27 @@ code, kbd, samp, pre, .font-mono {
 
 @media (prefers-color-scheme: light) {
   html:not([data-theme="dark"]) .bg-\[\#05070A\],
-  html:not([data-theme="dark"]) .bg-\[\#090B0F\] {
+  html:not([data-theme="dark"]) .bg-\[\#090B0F\],
+  html:not([data-theme="dark"]) .bg-\[\#000000\],
+  html:not([data-theme="dark"]) .bg-black {
     background-color: var(--bg-base) !important;
   }
-  html:not([data-theme="dark"]) .bg-\[\#0E1117\] {
+  html:not([data-theme="dark"]) .bg-\[\#0E1117\],
+  html:not([data-theme="dark"]) .bg-\[\#0C0E12\] {
     background-color: var(--bg-panel) !important;
   }
-  html:not([data-theme="dark"]) .bg-\[\#161B22\] {
+  html:not([data-theme="dark"]) .bg-\[\#161B22\],
+  html:not([data-theme="dark"]) .bg-\[\#111318\] {
     background-color: var(--bg-panel-2) !important;
   }
   html:not([data-theme="dark"]) .bg-\[\#12161F\],
-  html:not([data-theme="dark"]) .bg-\[\#151821\] {
+  html:not([data-theme="dark"]) .bg-\[\#151821\],
+  html:not([data-theme="dark"]) .bg-\[\#13161d\] {
     background-color: var(--card-bg-hover) !important;
   }
   html:not([data-theme="dark"]) .border-\[\#212631\],
-  html:not([data-theme="dark"]) .border-\[\#222736\] {
+  html:not([data-theme="dark"]) .border-\[\#222736\],
+  html:not([data-theme="dark"]) .border-\[\#1e2230\] {
     border-color: var(--border) !important;
   }
   html:not([data-theme="dark"]) .text-white {

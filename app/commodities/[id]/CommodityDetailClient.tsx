@@ -70,7 +70,7 @@ export default function CommodityDetailClient({
   const changePct = commodity.previousPrice > 0 ? (changeAmount / commodity.previousPrice) * 100 : 0;
   const isUp = changeAmount > 0;
   const isDown = changeAmount < 0;
-  const changeColor = isUp ? 'text-[#F04452]' : isDown ? 'text-[#3182F6]' : 'text-[#8E939D]';
+  const changeColor = isUp ? 'text-up' : isDown ? 'text-down' : 'text-[#8E939D]';
 
   const tabs: { id: TabId; label: string; icon: string }[] = [
     { id: 'chart', label: '차트 / 선물 주문', icon: '📈' },
@@ -97,18 +97,18 @@ export default function CommodityDetailClient({
   return (
     <div className="flex h-[calc(100vh-56px)] flex-col bg-[#05070A] text-white font-mono overflow-hidden select-none">
       {/* ── 1. 상단 글로벌 시세 헤더 ── */}
-      <div className="flex-none border-b border-[#212631] bg-[#0E1117] px-6 py-3 flex items-center justify-between shadow-lg">
+      <div className="flex-none border-b border-border bg-[#0E1117] px-6 py-3 flex items-center justify-between shadow-lg">
         <div className="flex items-center gap-4">
           <Link
             href="/commodities"
-            className="text-[#8E939D] hover:text-white text-xs font-bold flex items-center gap-1 transition-colors bg-[#161B22] px-3 py-1.5 rounded-xl border border-[#212631]"
+            className="text-[#8E939D] hover:text-white text-xs font-bold flex items-center gap-1 transition-colors bg-[#161B22] px-3 py-1.5 rounded-xl border border-border"
           >
             ← 원자재 목록
           </Link>
           <div className="h-4 w-px bg-[#212631]" />
           <div className="flex items-center gap-2.5">
             <h1 className="text-base font-black tracking-tight text-white">{commodity.nameKo}</h1>
-            <span className="text-[11px] text-[#F04452] font-mono font-extrabold bg-[#F04452]/10 border border-[#F04452]/30 px-2 py-0.5 rounded-full">
+            <span className="text-xs text-up font-mono font-extrabold bg-up/10 border border-[#F04452]/30 px-2 py-0.5 rounded-full">
               {commodity.ticker}
             </span>
           </div>
@@ -120,11 +120,11 @@ export default function CommodityDetailClient({
             <span className="text-[#565A63] mr-1.5">단위</span>
             <span className="text-white">{commodity.unit}</span>
           </div>
-          <div className="border-l border-[#212631] pl-4">
+          <div className="border-l border-border pl-4">
             <span className="text-[#565A63] mr-1.5">증거금</span>
-            <span className="text-[#F04452] font-black">{fmtPrice(commodity.marginRequirement, 'overseas')}</span>
+            <span className="text-up font-black">{fmtPrice(commodity.marginRequirement, 'overseas')}</span>
           </div>
-          <div className="border-l border-[#212631] pl-4">
+          <div className="border-l border-border pl-4">
             <span className="text-[#8E939D] mr-1.5">전일대비</span>
             <span className={`font-black text-sm ${changeColor}`}>
               {fmtSigned(changeAmount)} ({fmtSigned(changePct)}%)
@@ -134,14 +134,14 @@ export default function CommodityDetailClient({
       </div>
 
       {/* ── 2. HTS 탭 바 ── */}
-      <div className="flex border-b border-[#212631] bg-[#090B0F] px-4 shrink-0 gap-1.5">
+      <div className="flex border-b border-border bg-[#090B0F] px-4 shrink-0 gap-1.5">
         {tabs.map((tab) => (
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
             className={`px-5 py-3 text-[12.5px] font-bold border-b-2 flex items-center gap-1.5 transition-all cursor-pointer ${
               activeTab === tab.id
-                ? 'border-[#F04452] text-[#F04452] bg-[#F04452]/5 font-black'
+                ? 'border-[#F04452] text-up bg-up/5 font-black'
                 : 'border-transparent text-[#8E939D] hover:text-white'
             }`}
           >
@@ -158,25 +158,25 @@ export default function CommodityDetailClient({
           <div className="grid grid-cols-12 gap-3 h-full overflow-hidden">
             {/* 좌측 (8) - 차트 & 스펙 바 */}
             <div className="col-span-12 lg:col-span-8 flex flex-col gap-3 h-full overflow-hidden">
-              <div className="flex-1 overflow-hidden border border-[#212631] bg-[#0E1117] rounded-2xl shadow-xl">
+              <div className="flex-1 overflow-hidden border border-border bg-[#0E1117] rounded-2xl shadow-xl">
                 <StrictWidget title="COMMODITY REALTIME TICK / CANDLE CHART">
                   <TickChart ticker={commodity.ticker} currentPrice={commodity.currentPrice} />
                 </StrictWidget>
               </div>
 
               {/* 스펙 및 OHLCV 요약 바 */}
-              <div className="shrink-0 border border-[#212631] bg-[#0E1117] rounded-2xl overflow-hidden shadow-xl p-3 grid grid-cols-4 divide-x divide-[#212631] text-center text-[11px]">
+              <div className="shrink-0 border border-border bg-[#0E1117] rounded-2xl overflow-hidden shadow-xl p-3 grid grid-cols-4 divide-x divide-[#212631] text-center text-xs">
                 <div>
                   <div className="text-[#565A63] font-bold">시가</div>
                   <div className="font-black text-white">{fmtPrice(commodity.openPrice, 'overseas')}</div>
                 </div>
                 <div>
                   <div className="text-[#565A63] font-bold">고가</div>
-                  <div className="font-black text-[#F04452]">{fmtPrice(commodity.high, 'overseas')}</div>
+                  <div className="font-black text-up">{fmtPrice(commodity.high, 'overseas')}</div>
                 </div>
                 <div>
                   <div className="text-[#565A63] font-bold">저가</div>
-                  <div className="font-black text-[#3182F6]">{fmtPrice(commodity.low, 'overseas')}</div>
+                  <div className="font-black text-down">{fmtPrice(commodity.low, 'overseas')}</div>
                 </div>
                 <div>
                   <div className="text-[#565A63] font-bold">틱 가치</div>
@@ -195,10 +195,10 @@ export default function CommodityDetailClient({
         {/* ② 호가 / 실시간 체결 탭 */}
         {activeTab === 'orderbook' && (
           <div className="grid grid-cols-12 gap-3 h-full overflow-hidden">
-            <div className="col-span-6 h-full overflow-hidden border border-[#212631] bg-[#0E1117] rounded-2xl shadow-xl">
+            <div className="col-span-6 h-full overflow-hidden border border-border bg-[#0E1117] rounded-2xl shadow-xl">
               <Orderbook ticker={commodity.ticker} currentPrice={commodity.currentPrice} />
             </div>
-            <div className="col-span-6 h-full overflow-hidden border border-[#212631] bg-[#0E1117] rounded-2xl shadow-xl">
+            <div className="col-span-6 h-full overflow-hidden border border-border bg-[#0E1117] rounded-2xl shadow-xl">
               <TradeFeed stock={stockCompat as any} />
             </div>
           </div>
@@ -238,7 +238,7 @@ export default function CommodityDetailClient({
 
         {/* ⑤ 내 미체결 탭 */}
         {activeTab === 'orders' && (
-          <div className="h-full overflow-hidden flex flex-col border border-[#212631] bg-[#0E1117] rounded-2xl shadow-xl">
+          <div className="h-full overflow-hidden flex flex-col border border-border bg-[#0E1117] rounded-2xl shadow-xl">
             <ActiveOrdersPanel />
           </div>
         )}

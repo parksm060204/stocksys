@@ -385,13 +385,13 @@ export default function ShopPage() {
   });
 
   return (
-    <div className="min-h-screen bg-[#0C0E12] text-[#F3F4F6] font-sans pb-20">
+    <div className="min-h-screen bg-panel text-[#F3F4F6] font-sans pb-20">
       
       {/* 1. MINIMAL FINTECH HEADER */}
-      <header className="h-16 border-b border-white/10 bg-[#0C0E12] px-6 flex items-center justify-between sticky top-0 z-20 backdrop-blur-md">
+      <header className="h-16 border-b border-white/10 bg-panel px-6 flex items-center justify-between sticky top-0 z-20 backdrop-blur-md">
         <div className="flex items-center gap-8">
           <div className="flex items-center gap-2.5">
-            <div className="w-2 h-5 bg-[#3182F6] rounded-full"></div>
+            <div className="w-2 h-5 bg-down rounded-full"></div>
             <h1 className="text-lg font-bold text-white tracking-tight">
               트레이딩 솔루션 & 구독 상점
             </h1>
@@ -402,8 +402,8 @@ export default function ShopPage() {
               onClick={() => setActiveTab("shop")}
               className={`px-4 py-1.5 rounded-lg text-[13px] font-medium transition-all ${
                 activeTab === "shop"
-                  ? "bg-[#1C1C1E] text-white font-bold shadow-sm"
-                  : "text-[#9CA3AF] hover:text-white"
+                  ? "bg-panel2 text-white font-bold shadow-sm"
+                  : "text-muted hover:text-white"
               }`}
             >
               플랫폼 상품
@@ -412,13 +412,13 @@ export default function ShopPage() {
               onClick={() => setActiveTab("subscriptions")}
               className={`px-4 py-1.5 rounded-lg text-[13px] font-medium transition-all flex items-center gap-1.5 ${
                 activeTab === "subscriptions"
-                  ? "bg-[#1C1C1E] text-white font-bold shadow-sm"
-                  : "text-[#9CA3AF] hover:text-white"
+                  ? "bg-panel2 text-white font-bold shadow-sm"
+                  : "text-muted hover:text-white"
               }`}
             >
               보유 내역
               {purchasedItemsList.length > 0 && (
-                <span className="px-1.5 py-0.2 text-[10px] bg-[#3182F6] text-white font-mono rounded-full font-bold">
+                <span className="px-1.5 py-0.2 text-[10px] bg-down text-white font-mono rounded-full font-bold">
                   {purchasedItemsList.length}
                 </span>
               )}
@@ -428,7 +428,7 @@ export default function ShopPage() {
 
         {/* Balance HUD */}
         <div className="flex items-center gap-3">
-          <span className="text-[12px] text-[#9CA3AF]">보유 예수금</span>
+          <span className="text-[12px] text-muted">보유 예수금</span>
           <span className="font-mono font-bold text-[15px] text-white tabular-nums bg-[#151821] px-3 py-1 rounded-lg border border-white/5">
             ₩{cash.toLocaleString()}
           </span>
@@ -445,7 +445,7 @@ export default function ShopPage() {
               <h2 className="text-xl font-bold text-white tracking-tight">
                 프리미엄 핀테크 플랜 & 터미널 구독
               </h2>
-              <p className="text-[13px] text-[#9CA3AF] mt-1">
+              <p className="text-[13px] text-muted mt-1">
                 기관급 파생상품 인프라부터 미디어 정보망 터미널까지 투명하고 미니멀한 요금으로 이용하세요.
               </p>
             </div>
@@ -463,8 +463,8 @@ export default function ShopPage() {
                   onClick={() => setCategory(tab.id as any)}
                   className={`px-3 py-1.5 rounded-lg text-[12px] font-medium transition-all ${
                     category === tab.id
-                      ? "bg-[#3182F6] text-white font-bold"
-                      : "text-[#9CA3AF] hover:text-white"
+                      ? "bg-down text-white font-bold"
+                      : "text-muted hover:text-white"
                   }`}
                 >
                   {tab.label}
@@ -602,11 +602,11 @@ export default function ShopPage() {
               <h2 className="text-xl font-bold text-white">
                 보유 라이선스 및 구독 현황
               </h2>
-              <p className="text-[13px] text-[#9CA3AF] mt-0.5">
+              <p className="text-[13px] text-muted mt-0.5">
                 현재 계정에서 이용 중인 영구 거래 라이선스 및 터미널 구독 내역입니다.
               </p>
             </div>
-            <span className="text-[12px] font-mono font-bold text-[#3182F6] bg-[#151821] px-3 py-1 rounded-lg border border-white/5">
+            <span className="text-[12px] font-mono font-bold text-down bg-[#151821] px-3 py-1 rounded-lg border border-white/5">
               총 {purchasedItemsList.length}개 보유
             </span>
           </div>
@@ -614,12 +614,12 @@ export default function ShopPage() {
           {purchasedItemsList.length === 0 ? (
             <div className="p-12 text-center border border-white/5 bg-[#151821] rounded-2xl space-y-3">
               <h3 className="text-base font-bold text-white">보유 중인 상품이 없습니다</h3>
-              <p className="text-[13px] text-[#9CA3AF] max-w-sm mx-auto">
+              <p className="text-[13px] text-muted max-w-sm mx-auto">
                 플랫폼 상품 탭에서 트레이딩 솔루션 및 미디어 터미널을 이용해보세요.
               </p>
               <button
                 onClick={() => setActiveTab("shop")}
-                className="mt-2 px-4 py-2 bg-[#3182F6] text-white font-bold text-[13px] rounded-xl hover:bg-[#3182F6]/90 transition"
+                className="mt-2 px-4 py-2 bg-down text-white font-bold text-[13px] rounded-xl hover:bg-down/90 transition"
               >
                 상품 목록 둘러보기
               </button>
@@ -629,21 +629,21 @@ export default function ShopPage() {
               {purchasedItemsList.map((item) => (
                 <div key={item.id} className="p-5 border border-white/10 bg-[#151821] rounded-xl space-y-3">
                   <div className="flex items-center justify-between">
-                    <span className="text-[11px] font-bold text-[#3182F6] bg-[#3182F6]/10 border border-[#3182F6]/20 px-2 py-0.5 rounded-md">
+                    <span className="text-xs font-bold text-down bg-down/10 border border-[#3182F6]/20 px-2 py-0.5 rounded-md">
                       {item.category}
                     </span>
-                    <span className="text-[11px] font-mono text-emerald-400 flex items-center gap-1 font-bold">
+                    <span className="text-xs font-mono text-emerald-400 flex items-center gap-1 font-bold">
                       ● 활성화
                     </span>
                   </div>
 
                   <div>
                     <h3 className="text-base font-bold text-white">{item.name}</h3>
-                    <p className="text-[12.5px] text-[#9CA3AF] mt-1">{item.desc}</p>
+                    <p className="text-[12.5px] text-muted mt-1">{item.desc}</p>
                   </div>
 
                   <div className="pt-3 border-t border-white/5 flex items-center justify-between text-[12px] font-mono">
-                    <span className="text-[#6B7280]">상태:</span>
+                    <span className="text-dim">상태:</span>
                     <span className="text-white font-bold">{item.expiry}</span>
                   </div>
                 </div>
@@ -660,7 +660,7 @@ export default function ShopPage() {
             
             <div className="flex items-center justify-between border-b border-white/10 pb-3">
               <div>
-                <span className="text-[11px] font-mono font-bold text-[#3182F6]">
+                <span className="text-xs font-mono font-bold text-down">
                   MEDIA TERMINAL SUBSCRIPTION
                 </span>
                 <h3 className="text-lg font-bold text-white mt-0.5">
@@ -669,14 +669,14 @@ export default function ShopPage() {
               </div>
               <button 
                 onClick={() => setSelectedOutlet(null)}
-                className="text-[#6B7280] hover:text-white text-base"
+                className="text-dim hover:text-white text-base"
               >
                 ✕
               </button>
             </div>
 
             <div className="space-y-2.5">
-              <label className="block text-[12px] text-[#9CA3AF]">
+              <label className="block text-[12px] text-muted">
                 구독 기간 선택:
               </label>
 
@@ -690,8 +690,8 @@ export default function ShopPage() {
                   onClick={() => setSelectedDays(opt.days)}
                   className={`p-3.5 rounded-xl border cursor-pointer transition-all flex items-center justify-between ${
                     selectedDays === opt.days
-                      ? "border-[#3182F6] bg-[#3182F6]/10 text-white font-bold"
-                      : "border-white/5 bg-[#1C1C1E] text-[#9CA3AF] hover:border-white/20"
+                      ? "border-[#3182F6] bg-down/10 text-white font-bold"
+                      : "border-white/5 bg-panel2 text-muted hover:border-white/20"
                   }`}
                 >
                   <div className="flex items-center gap-2">
@@ -712,14 +712,14 @@ export default function ShopPage() {
             <div className="flex items-center justify-end gap-3 border-t border-white/10 pt-4">
               <button
                 onClick={() => setSelectedOutlet(null)}
-                className="px-4 py-2 text-[13px] text-[#9CA3AF] hover:text-white rounded-xl border border-white/10"
+                className="px-4 py-2 text-[13px] text-muted hover:text-white rounded-xl border border-white/10"
               >
                 취소
               </button>
               <button
                 onClick={executeNewsPurchase}
                 disabled={loading}
-                className="px-5 py-2 bg-[#3182F6] hover:bg-[#3182F6]/90 text-white font-bold text-[13px] rounded-xl transition shadow-md"
+                className="px-5 py-2 bg-down hover:bg-down/90 text-white font-bold text-[13px] rounded-xl transition shadow-md"
               >
                 결제 진행하기
               </button>
@@ -733,7 +733,7 @@ export default function ShopPage() {
   );
 }
 
-/* Minimal Fintech Pricing Card Component */
+/* Premium Minimal Fintech Pricing Card */
 function PricingCard({
   badge,
   title,
@@ -756,54 +756,55 @@ function PricingCard({
   features?: string[];
 }) {
   return (
-    <div className="bg-[#151821] border border-white/10 rounded-2xl p-6 flex flex-col justify-between transition-all hover:bg-[#181B26] hover:border-white/20">
+    <div className="bg-panel2 border border-white/[0.08] rounded-2xl p-6 flex flex-col justify-between transition-all duration-200 hover:bg-[#13161d] hover:border-white/[0.14]">
       <div className="space-y-4">
         <div className="flex items-center justify-between">
-          <span className="text-[11px] font-bold text-[#3182F6] bg-[#3182F6]/10 border border-[#3182F6]/20 px-2.5 py-0.5 rounded-md">
+          <span className="text-[10px] font-bold text-white/35 bg-white/[0.05] border border-white/[0.07] px-2.5 py-0.5 rounded-md tracking-widest uppercase font-mono">
             {badge}
           </span>
           {isUnlocked && (
-            <span className="text-[11px] font-mono text-emerald-400 font-bold">
-              ● 보유 중
+            <span className="text-[10.5px] font-mono text-white/45 font-bold flex items-center gap-1.5">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500/60" />
+              활성화됨
             </span>
           )}
         </div>
 
         <div>
-          <h3 className="text-lg font-bold text-white tracking-tight">{title}</h3>
-          <p className="text-[12.5px] text-[#9CA3AF] mt-1 leading-relaxed">{desc}</p>
+          <h3 className="text-[15px] font-bold text-white tracking-tight leading-snug">{title}</h3>
+          <p className="text-[12px] text-white/35 mt-1.5 leading-relaxed">{desc}</p>
         </div>
 
-        <div className="pt-2 border-t border-white/5">
-          <div className="text-[11px] text-[#6B7280] uppercase tracking-wider mb-1">이용 금액</div>
-          <div className="font-mono text-2xl font-bold text-white tabular-nums">
+        <div className="pt-3 border-t border-white/[0.06]">
+          <div className="text-[9.5px] text-white/20 uppercase tracking-widest mb-1.5 font-mono">이용 금액</div>
+          <div className="font-mono text-[22px] font-bold text-white tabular-nums">
             ₩{price.toLocaleString()}
           </div>
         </div>
 
         {features.length > 0 && (
-          <ul className="space-y-2 pt-2 text-[12px] text-[#9CA3AF]">
+          <ul className="space-y-1.5 pt-0.5 text-[11.5px] text-white/35">
             {features.map((f, i) => (
-              <li key={i} className="flex items-center gap-2">
-                <span className="text-[#3182F6] font-bold">✓</span>
-                <span>{f}</span>
+              <li key={i} className="flex items-start gap-2">
+                <span className="text-white/20 font-bold mt-px shrink-0">—</span>
+                <span className="leading-relaxed">{f}</span>
               </li>
             ))}
           </ul>
         )}
       </div>
 
-      <div className="pt-6">
+      <div className="pt-5">
         <button
           onClick={onPurchase}
           disabled={isUnlocked || loading}
-          className={`w-full py-2.5 rounded-xl font-bold text-[13px] transition-all ${
+          className={`w-full py-2.5 rounded-xl font-bold text-[13px] transition-all active:scale-[0.98] ${
             isUnlocked
-              ? "bg-[#1C1C1E] text-[#6B7280] cursor-default border border-white/5"
-              : "bg-[#3182F6] hover:bg-[#3182F6]/90 text-white cursor-pointer shadow-md"
+              ? "bg-white/[0.04] text-white/20 cursor-default border border-white/[0.06]"
+              : "bg-white text-black hover:bg-white/90 cursor-pointer"
           }`}
         >
-          {isUnlocked ? "이미 이용 중" : buttonText}
+          {isUnlocked ? "이용 중" : buttonText}
         </button>
       </div>
     </div>

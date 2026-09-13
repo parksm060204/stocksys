@@ -109,10 +109,10 @@ export default function NewsPage() {
   return (
     <div className="mx-auto max-w-5xl px-6 py-6 font-sans space-y-6">
       {/* Header Banner */}
-      <div className="bg-[#0E1117] border border-[#212631] p-6 rounded-3xl flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shadow-2xl">
+      <div className="bg-[#0E1117] border border-border p-6 rounded-3xl flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shadow-2xl">
         <div>
-          <div className="inline-flex items-center gap-2 rounded-full border border-[#F04452]/40 bg-[#F04452]/10 px-3.5 py-1 text-[11px] font-mono font-bold text-[#F04452] mb-2">
-            <span className="inline-block h-2 w-2 rounded-full bg-[#F04452] animate-pulse" />
+          <div className="inline-flex items-center gap-2 rounded-full border border-[#F04452]/40 bg-up/10 px-3.5 py-1 text-xs font-mono font-bold text-up mb-2">
+            <span className="inline-block h-2 w-2 rounded-full bg-up animate-pulse" />
             AI NEWS LOUNGE · 글로벌 속보 & 찌라시
           </div>
           <h1 className="text-xl md:text-2xl font-black text-white tracking-tight">
@@ -123,8 +123,8 @@ export default function NewsPage() {
           </p>
         </div>
         <div className="flex items-center gap-2 font-mono shrink-0">
-          <span className="px-3 py-1.5 bg-[#F04452]/10 border border-[#F04452]/30 text-[11px] font-bold text-[#F04452] rounded-full flex items-center gap-2">
-            <span className="h-2 w-2 rounded-full bg-[#F04452] animate-pulse" />
+          <span className="px-3 py-1.5 bg-up/10 border border-[#F04452]/30 text-xs font-bold text-up rounded-full flex items-center gap-2">
+            <span className="h-2 w-2 rounded-full bg-up animate-pulse" />
             LIVE STREAMING
           </span>
         </div>
@@ -138,32 +138,32 @@ export default function NewsPage() {
           const isRumor = n.category === 'RUMOR';
           const isSubscribed = isAdmin || isOfficial || isCorrection;
 
-          const impactColor = (n.impact_score || 0) > 0 ? "text-[#F04452]" : (n.impact_score || 0) < 0 ? "text-[#3182F6]" : "text-[#8E939D]";
+          const impactColor = (n.impact_score || 0) > 0 ? "text-up" : (n.impact_score || 0) < 0 ? "text-down" : "text-[#8E939D]";
 
           return (
             <article
               key={n.id}
               className={`rounded-2xl border p-5 transition-all relative overflow-hidden bg-[#0E1117] shadow-xl ${
-                isCorrection ? "border-[#F04452]/60 bg-[#F04452]/5" : isRumor ? "border-[#F59E0B]/40" : "border-[#212631]"
+                isCorrection ? "border-[#F04452]/60 bg-up/5" : isRumor ? "border-[#F59E0B]/40" : "border-border"
               }`}
             >
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
                   <span className={`rounded-full px-3 py-0.5 text-[10.5px] font-black border ${
-                    isCorrection ? "bg-[#F04452]/15 text-[#F04452] border-[#F04452]/30" : isRumor ? "bg-[#F59E0B]/15 text-[#F59E0B] border-[#F59E0B]/30" : "bg-[#3182F6]/15 text-[#3182F6] border-[#3182F6]/30"
+                    isCorrection ? "bg-up/15 text-up border-[#F04452]/30" : isRumor ? "bg-[#F59E0B]/15 text-[#F59E0B] border-[#F59E0B]/30" : "bg-down/15 text-down border-[#3182F6]/30"
                   }`}>
                     {n.category}
                   </span>
-                  <span className="rounded-full bg-[#161B22] border border-[#212631] px-3 py-0.5 text-[11px] text-[#8E939D] font-bold">
+                  <span className="rounded-full bg-[#161B22] border border-border px-3 py-0.5 text-xs text-[#8E939D] font-bold">
                     {n.publisher}
                   </span>
                   {n.target_ticker && (
-                    <span className="rounded-full bg-[#F04452]/10 border border-[#F04452]/30 px-2.5 py-0.5 text-[11px] text-[#F04452] font-black">
+                    <span className="rounded-full bg-up/10 border border-[#F04452]/30 px-2.5 py-0.5 text-xs text-up font-black">
                       ${n.target_ticker}
                     </span>
                   )}
                   {n.target_sector && (
-                    <span className="rounded-full bg-[#3182F6]/10 border border-[#3182F6]/30 px-2.5 py-0.5 text-[11px] text-[#3182F6] font-bold">
+                    <span className="rounded-full bg-down/10 border border-[#3182F6]/30 px-2.5 py-0.5 text-xs text-down font-bold">
                       #{n.target_sector}
                     </span>
                   )}
@@ -175,14 +175,14 @@ export default function NewsPage() {
                       IMPACT: {n.impact_score > 0 ? `+${n.impact_score.toFixed(1)}` : n.impact_score.toFixed(1)}
                     </span>
                   )}
-                  <span className="text-[11px] font-mono text-[#565A63] font-bold">
+                  <span className="text-xs font-mono text-[#565A63] font-bold">
                     {new Date(n.created_at).toLocaleString("ko-KR", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
                   </span>
                 </div>
               </div>
 
               <h2 className="text-[15.5px] font-black text-white flex items-center gap-2 tracking-tight font-sans">
-                {isCorrection && <span className="text-[#F04452]">⚠️</span>}
+                {isCorrection && <span className="text-up">⚠️</span>}
                 {n.title}
               </h2>
 
@@ -200,13 +200,13 @@ export default function NewsPage() {
                       {userId ? (
                         <Link
                           href="/shop"
-                          className="flex items-center gap-2 px-5 py-2.5 bg-[#F04452] text-white font-black text-[12px] rounded-full hover:bg-[#ff5252] transition shadow-lg cursor-pointer"
+                          className="flex items-center gap-2 px-5 py-2.5 bg-up text-white font-black text-[12px] rounded-full hover:bg-[#ff5252] transition shadow-lg cursor-pointer"
                         >
                           <span>🔒</span>
                           <span>구독권 구매 후 본문 열람하기</span>
                         </Link>
                       ) : (
-                        <button disabled className="px-4 py-2 bg-[#161B22] text-[#8E939D] border border-[#212631] rounded-full font-bold text-[12px]">
+                        <button disabled className="px-4 py-2 bg-[#161B22] text-[#8E939D] border border-border rounded-full font-bold text-[12px]">
                           로그인 후 구독 가능
                         </button>
                       )}
@@ -219,7 +219,7 @@ export default function NewsPage() {
         })}
 
         {newsList.length === 0 && (
-          <div className="text-center py-12 text-[#8E939D] border border-dashed border-[#212631] rounded-3xl bg-[#0E1117] font-mono">
+          <div className="text-center py-12 text-[#8E939D] border border-dashed border-border rounded-3xl bg-[#0E1117] font-mono">
             새로운 AI 뉴스를 기다리는 중입니다... (엔진 5분 주기 발행)
           </div>
         )}

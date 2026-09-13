@@ -64,22 +64,22 @@ export default function OrderbookV2({
     return (
       <div
         className={`relative flex items-center justify-between py-[7px] px-3 transition-colors ${
-          isCurrent ? "bg-[#3182F6]/10" : "hover:bg-white/[0.02]"
+          isCurrent ? "bg-down/10" : "hover:bg-white/[0.02]"
         }`}
       >
         {/* 배경 바 — 오른쪽에서 왼쪽으로 */}
         <div
-          className="absolute right-0 top-0 bottom-0 bg-[#3182F6]/12 pointer-events-none"
+          className="absolute right-0 top-0 bottom-0 bg-down/12 pointer-events-none"
           style={{ width: `${pct}%` }}
         />
         {/* 잔량 (좌) */}
-        <span className="relative z-10 font-mono text-[11px] tabular-nums text-[#9CA3AF]">
+        <span className="relative z-10 font-mono text-xs tabular-nums text-muted">
           {ask.totalSize.toLocaleString()}
         </span>
         {/* 호가 (우) */}
         <span
           className={`relative z-10 font-mono text-[12px] tabular-nums font-semibold ${
-            isCurrent ? "text-white" : "text-[#3182F6]"
+            isCurrent ? "text-white" : "text-down"
           }`}
         >
           {ask.price.toLocaleString()}
@@ -95,24 +95,24 @@ export default function OrderbookV2({
     return (
       <div
         className={`relative flex items-center justify-between py-[7px] px-3 transition-colors ${
-          isCurrent ? "bg-[#F04452]/10" : "hover:bg-white/[0.02]"
+          isCurrent ? "bg-up/10" : "hover:bg-white/[0.02]"
         }`}
       >
         {/* 배경 바 — 왼쪽에서 오른쪽으로 */}
         <div
-          className="absolute left-0 top-0 bottom-0 bg-[#F04452]/12 pointer-events-none"
+          className="absolute left-0 top-0 bottom-0 bg-up/12 pointer-events-none"
           style={{ width: `${pct}%` }}
         />
         {/* 호가 (좌) */}
         <span
           className={`relative z-10 font-mono text-[12px] tabular-nums font-semibold ${
-            isCurrent ? "text-white" : "text-[#F04452]"
+            isCurrent ? "text-white" : "text-up"
           }`}
         >
           {bid.price.toLocaleString()}
         </span>
         {/* 잔량 (우) */}
-        <span className="relative z-10 font-mono text-[11px] tabular-nums text-[#9CA3AF]">
+        <span className="relative z-10 font-mono text-xs tabular-nums text-muted">
           {bid.totalSize.toLocaleString()}
         </span>
       </div>
@@ -120,25 +120,25 @@ export default function OrderbookV2({
   };
 
   return (
-    <div className="flex flex-col h-full bg-[#0D0F14]">
+    <div className="flex flex-col h-full bg-panel">
       {/* 헤더 */}
       <div className="flex items-center justify-between px-3 py-2 shrink-0">
         <div className="flex items-center gap-2">
-          <span className="text-[11px] font-bold text-[#9CA3AF] uppercase tracking-widest">
+          <span className="text-xs font-bold text-muted uppercase tracking-widest">
             호가창
           </span>
           <span
             className={`w-1.5 h-1.5 rounded-full animate-pulse ${
               flashType === "up"
-                ? "bg-[#F04452]"
+                ? "bg-up"
                 : flashType === "down"
-                ? "bg-[#3182F6]"
+                ? "bg-down"
                 : "bg-[#374151]"
             }`}
           />
         </div>
         <span
-          className={`text-[9px] font-bold px-1.5 py-px rounded tracking-widest ${
+          className={`text-[10px] font-bold px-1.5 py-px rounded tracking-widest ${
             source === "db"
               ? "text-emerald-400 bg-emerald-400/10"
               : "text-amber-400 bg-amber-400/10"
@@ -150,10 +150,10 @@ export default function OrderbookV2({
 
       {/* 컬럼 레이블 (border 없이 텍스트만) */}
       <div className="flex items-center justify-between px-3 py-1 shrink-0">
-        <span className="text-[9px] font-semibold text-[#6B7280] uppercase tracking-widest">
+        <span className="text-[10px] font-semibold text-dim uppercase tracking-widest">
           잔량
         </span>
-        <span className="text-[9px] font-semibold text-[#6B7280] uppercase tracking-widest">
+        <span className="text-[10px] font-semibold text-dim uppercase tracking-widest">
           호가
         </span>
       </div>
@@ -174,19 +174,19 @@ export default function OrderbookV2({
         <div
           className={`flex items-center justify-between px-3 py-2 shrink-0 transition-colors duration-200 ${
             flashType === "up"
-              ? "bg-[#F04452]/15"
+              ? "bg-up/15"
               : flashType === "down"
-              ? "bg-[#3182F6]/15"
+              ? "bg-down/15"
               : "bg-[#151821]"
           }`}
         >
-          <span className="text-[10px] text-[#6B7280] font-medium">현재가</span>
+          <span className="text-[10px] text-dim font-medium">현재가</span>
           <span
             className={`font-mono text-[15px] font-bold tabular-nums ${
               flashType === "up"
-                ? "text-[#F04452]"
+                ? "text-up"
                 : flashType === "down"
-                ? "text-[#3182F6]"
+                ? "text-down"
                 : "text-white"
             }`}
           >
@@ -203,18 +203,18 @@ export default function OrderbookV2({
       </div>
 
       {/* 푸터 — 총잔량 요약 (border 없이) */}
-      <div className="flex items-center justify-between px-3 py-2 shrink-0 bg-[#0D0F14]">
+      <div className="flex items-center justify-between px-3 py-2 shrink-0 bg-panel">
         <div className="flex items-center gap-1">
-          <span className="text-[9px] text-[#6B7280]">매도</span>
-          <span className="font-mono text-[11px] text-[#3182F6] tabular-nums font-bold">
+          <span className="text-[10px] text-dim">매도</span>
+          <span className="font-mono text-xs text-down tabular-nums font-bold">
             {totalAskSize.toLocaleString()}
           </span>
         </div>
         <div className="flex items-center gap-1">
-          <span className="font-mono text-[11px] text-[#F04452] tabular-nums font-bold">
+          <span className="font-mono text-xs text-up tabular-nums font-bold">
             {totalBidSize.toLocaleString()}
           </span>
-          <span className="text-[9px] text-[#6B7280]">매수</span>
+          <span className="text-[10px] text-dim">매수</span>
         </div>
       </div>
     </div>

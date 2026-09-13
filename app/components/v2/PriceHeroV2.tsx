@@ -68,7 +68,7 @@ export default function PriceHeroV2({ stock }: { stock: Stock }) {
       </div>
 
       <div className="flex items-center gap-1.5 mt-3">
-        <span className="text-[11px] text-dim">전일종가</span>
+        <span className="text-xs text-dim">전일종가</span>
         <span className="font-mono text-[12px] tabular-nums text-muted font-semibold">
           {fmtPrice(stock.previousClose, stock.market)}
         </span>
@@ -78,7 +78,7 @@ export default function PriceHeroV2({ stock }: { stock: Stock }) {
         <span
           className={`w-1.5 h-1.5 rounded-full transition-all duration-200 ${priceColor} ${flash ? "scale-125 opacity-100" : "opacity-30"}`}
         />
-        <span className="text-[9px] text-dim font-mono uppercase tracking-widest">
+        <span className="text-[10px] text-dim font-mono uppercase tracking-widest">
           실시간 · {stock.ticker}
         </span>
       </div>

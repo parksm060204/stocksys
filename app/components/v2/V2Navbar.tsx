@@ -16,7 +16,7 @@ export default function V2Navbar() {
   const pathname = usePathname();
 
   return (
-    <nav className="sticky top-0 z-40 bg-[#0C0E12]/80 backdrop-blur-md border-b border-white/5 px-6 py-3.5">
+    <nav className="sticky top-0 z-40 bg-panel/80 backdrop-blur-md border-b border-white/5 px-6 py-3.5">
       <div className="mx-auto max-w-7xl flex items-center justify-between">
         {/* Brand */}
         <Link href="/v2" className="flex items-center gap-2.5 group">
@@ -24,10 +24,10 @@ export default function V2Navbar() {
             S2
           </div>
           <div className="flex flex-col">
-            <span className="font-bold text-white text-[15px] tracking-tight group-hover:text-[#3182F6] transition-colors">
-              Antigravity <span className="text-[10px] bg-[#F04452]/20 text-[#F04452] px-1.5 py-0.5 rounded font-mono border border-[#F04452]/30 ml-1">V2</span>
+            <span className="font-bold text-white text-[15px] tracking-tight group-hover:text-down transition-colors">
+              Antigravity <span className="text-[10px] bg-up/20 text-up px-1.5 py-0.5 rounded font-mono border border-[#F04452]/30 ml-1">V2</span>
             </span>
-            <span className="text-[10px] text-[#6B7280] font-mono">FINTECH NEXT-GEN</span>
+            <span className="text-[10px] text-dim font-mono">FINTECH NEXT-GEN</span>
           </div>
         </Link>
 
@@ -41,8 +41,8 @@ export default function V2Navbar() {
                 href={item.href}
                 className={`px-3.5 py-1.5 rounded-lg transition-all ${
                   isActive
-                    ? "bg-[#1C1C1E] text-white font-bold shadow-sm"
-                    : "text-[#9CA3AF] hover:text-white hover:bg-white/5"
+                    ? "bg-panel2 text-white font-bold shadow-sm"
+                    : "text-muted hover:text-white hover:bg-white/5"
                 }`}
               >
                 {item.label}

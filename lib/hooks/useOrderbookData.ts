@@ -64,7 +64,7 @@ export function useOrderbookData(
   stockId: string,
   _ticker: string,
   currentPrice: number,
-  intervalMs = 2000,
+  intervalMs = 1000,
 ): UseOrderbookDataResult {
   const [bids, setBids] = useState<OrderbookLevel[]>([]);
   const [asks, setAsks] = useState<OrderbookLevel[]>([]);
@@ -72,6 +72,9 @@ export function useOrderbookData(
   const [price, setPrice] = useState(currentPrice);
   const mountedRef = useRef(true);
   const currentPriceRef = useRef(currentPrice);
+  const depthStateRef = useRef<Map<number, number>>(new Map());
+  const persistedVolumesRef = useRef<Map<number, number>>(new Map());
+  const tickSeqRef = useRef(0);
 
   useEffect(() => {
     currentPriceRef.current = currentPrice;
@@ -82,8 +85,7 @@ export function useOrderbookData(
     return () => { mountedRef.current = false; };
   }, []);
 
-
-  // ─── DB 폴링 ────────────────────────────────────────────────────────────
+  // ─── DB 폴링 및 실시간 동적 호가 매칭 ────────────────────────────────────
   const fetchFromDB = useCallback(async () => {
     if (!stockId || stockId === '__none__') return;
     const supabase = createClient();
@@ -113,13 +115,8 @@ export function useOrderbookData(
       const hasOrders = orders && orders.length > 0;
       const hasTrades = dbTrades && dbTrades.length > 0;
 
-      if (!hasOrders && !hasTrades) {
-        setBids([]);
-        setAsks([]);
-        setTrades([]);
-        setPrice(currentPriceRef.current);
-        return;
-      }
+      tickSeqRef.current += 1;
+      const seq = tickSeqRef.current;
 
       // 최신 체결가 추정
       let latestPrice = currentPriceRef.current;
@@ -174,48 +171,107 @@ export function useOrderbookData(
         }
       }
 
-      const centerPrice = alignToTickSize(latestPrice);
+      const centerPrice = alignToTickSize(latestPrice > 0 ? latestPrice : currentPriceRef.current);
       const tick = getTickSize(centerPrice);
+      const baseVolMultiplier = centerPrice >= 50000 ? 25000 : centerPrice >= 10000 ? 8000 : 1500;
 
-      // 매도 10호가 (Center Price + 1*tick, Center Price + 2*tick, ...)
+      const wallCache = persistedVolumesRef.current;
+
+      // ── 현재 보여야 할 가격 집합 계산 ──
+      const visiblePrices = new Set<number>();
+      for (let i = 1; i <= 10; i++) visiblePrices.add(centerPrice + i * tick);
+      for (let i = 0; i < 10; i++) visiblePrices.add(Math.max(tick, centerPrice - i * tick));
+
+      // ── 더 이상 보이지 않는 가격 캐시 정리 (메모리 누수 방지) ──
+      for (const cachedPrice of Array.from(wallCache.keys())) {
+        if (!visiblePrices.has(cachedPrice)) {
+          wallCache.delete(cachedPrice);
+        }
+      }
+
+      // ── 초당 체결 차감: 1호가(bestAsk, bestBid)에서 소량 자연 감소 ──
+      if (seq % 2 === 0) {
+        const bestAskPrice = centerPrice + tick;
+        const bestBidPrice = centerPrice;
+        if (wallCache.has(bestAskPrice)) {
+          const cur = wallCache.get(bestAskPrice)!;
+          const drain = Math.floor(Math.random() * 80) + 20;
+          const after = cur - drain;
+          if (after > 200) {
+            wallCache.set(bestAskPrice, after);
+          } else {
+            // 소진되면 자연 리필 (새 지정가 주문 유입 시뮬)
+            const seedOffset = Math.floor(((bestAskPrice * 9301 + 49297) % 233280) / 233280 * 873) + 127;
+            wallCache.set(bestAskPrice, Math.floor(baseVolMultiplier * 0.8) + seedOffset + Math.floor(Math.random() * 200));
+          }
+        }
+        if (wallCache.has(bestBidPrice)) {
+          const cur = wallCache.get(bestBidPrice)!;
+          const drain = Math.floor(Math.random() * 80) + 20;
+          const after = cur - drain;
+          if (after > 200) {
+            wallCache.set(bestBidPrice, after);
+          } else {
+            const seedOffset = Math.floor(((bestBidPrice * 7919 + 65537) % 233280) / 233280 * 891) + 109;
+            wallCache.set(bestBidPrice, Math.floor(baseVolMultiplier * 0.85) + seedOffset + Math.floor(Math.random() * 200));
+          }
+        }
+      }
+
+      // 매도 10호가
       const newAsks: OrderbookLevel[] = [];
       for (let i = 1; i <= 10; i++) {
         const p = centerPrice + i * tick;
         const dbVol = askMap.get(p) ?? 0;
-        // LP 마켓메이커 연속 유동성 뎁스 (스프레드 단절 및 0잔량 갭 완벽 방지)
-        const lpDepthVol = Math.max(15, Math.floor((1200 + Math.abs(Math.cos(p * 13)) * 800) * Math.exp(-0.22 * i)));
-        const totalSize = dbVol > 0 ? dbVol : lpDepthVol;
+
+        let size = dbVol;
+        if (size <= 0) {
+          if (!wallCache.has(p)) {
+            const wallFactor = (i === 3 || i === 5 || i === 10) ? 2.4 : 1.0;
+            const seedOffset = Math.floor(((p * 9301 + 49297) % 233280) / 233280 * 873) + 127;
+            const generated = Math.floor(baseVolMultiplier * (0.8 + (i % 3) * 0.3) * wallFactor) + seedOffset;
+            wallCache.set(p, generated);
+          }
+          size = wallCache.get(p)!;
+        } else {
+          // DB 실제 주문이 있으면 캐시도 업데이트
+          wallCache.set(p, size);
+        }
 
         newAsks.push({
           price: p,
-          totalSize: Math.round(totalSize)
+          totalSize: Math.max(10, Math.round(size)),
         });
       }
-      newAsks.sort((a, b) => a.price - b.price); // 오름차순 (매도 1호가가 배열[0])
+      newAsks.sort((a, b) => a.price - b.price);
 
-      // 매수 10호가 (Center Price, Center Price - 1*tick, ...)
+      // 매수 10호가
       const newBids: OrderbookLevel[] = [];
       for (let i = 0; i < 10; i++) {
         const p = Math.max(tick, centerPrice - i * tick);
         const dbVol = bidMap.get(p) ?? 0;
-        // LP 마켓메이커 연속 유동성 뎁스
-        const lpDepthVol = Math.max(15, Math.floor((1200 + Math.abs(Math.sin(p * 17)) * 800) * Math.exp(-0.22 * (i + 1))));
-        const totalSize = dbVol > 0 ? dbVol : lpDepthVol;
+
+        let size = dbVol;
+        if (size <= 0) {
+          if (!wallCache.has(p)) {
+            const bidWallFactor = (i === 2 || i === 4 || i === 9) ? 2.8 : 1.0;
+            const seedOffset = Math.floor(((p * 7919 + 65537) % 233280) / 233280 * 891) + 109;
+            const generated = Math.floor(baseVolMultiplier * (0.85 + (i % 3) * 0.35) * bidWallFactor) + seedOffset;
+            wallCache.set(p, generated);
+          }
+          size = wallCache.get(p)!;
+        } else {
+          wallCache.set(p, size);
+        }
 
         newBids.push({
           price: p,
-          totalSize: Math.round(totalSize)
+          totalSize: Math.max(10, Math.round(size)),
         });
       }
-      newBids.sort((a, b) => b.price - a.price); // 내림차순 (매수 1호가가 배열[0])
+      newBids.sort((a, b) => b.price - a.price);
 
-      if (mountedRef.current) {
-        setBids(newBids);
-        setAsks(newAsks);
-        setPrice(latestPrice);
-      }
-
-      // ── 체결 피드 구성 ──
+      // ── 체결 피드 구성 (100% DB trades 테이블 데이터) ──
       if (hasTrades && mountedRef.current) {
         let lastPrice = currentPriceRef.current;
         const newTrades: TradeRecord[] = (dbTrades as DBTrade[]).map((t, index) => {
@@ -243,6 +299,12 @@ export function useOrderbookData(
           };
         });
         setTrades(newTrades);
+      }
+
+      if (mountedRef.current) {
+        setBids(newBids);
+        setAsks(newAsks);
+        setPrice(centerPrice);
       }
     } catch {
       // ignore fetch errors

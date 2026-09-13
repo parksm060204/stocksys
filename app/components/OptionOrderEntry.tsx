@@ -52,20 +52,20 @@ export const OptionOrderEntry: React.FC<OptionOrderEntryProps> = ({
   };
 
   return (
-    <div className="flex flex-col h-full text-xs font-mono select-none bg-[#0E1117] p-4 rounded-2xl border border-[#212631] space-y-4 shadow-xl">
+    <div className="flex flex-col h-full text-xs font-mono select-none bg-[#0E1117] p-4 rounded-2xl border border-border space-y-4 shadow-xl">
       {/* Header & Order Mode Switcher */}
-      <div className="flex items-center justify-between border-b border-[#212631] pb-3">
+      <div className="flex items-center justify-between border-b border-border pb-3">
         <div className="flex items-center gap-2">
           <span className="font-extrabold text-white text-[13.5px]">HTS 파생 주문 실행</span>
-          <span className="text-[10.5px] font-bold text-[#F04452] bg-[#F04452]/10 px-2 py-0.5 rounded border border-[#F04452]/30">
+          <span className="text-[10.5px] font-bold text-up bg-up/10 px-2 py-0.5 rounded border border-[#F04452]/30">
             {ticker}
           </span>
         </div>
-        <div className="flex items-center gap-1 bg-[#161B22] p-1 rounded-xl border border-[#212631]">
+        <div className="flex items-center gap-1 bg-[#161B22] p-1 rounded-xl border border-border">
           <button
             onClick={() => setSide('BUY')}
             className={`px-3 py-1 font-extrabold rounded-lg transition-all ${
-              side === 'BUY' ? 'bg-[#F04452] text-white' : 'text-[#8E939D] hover:text-white'
+              side === 'BUY' ? 'bg-up text-white' : 'text-[#8E939D] hover:text-white'
             }`}
           >
             매수
@@ -73,7 +73,7 @@ export const OptionOrderEntry: React.FC<OptionOrderEntryProps> = ({
           <button
             onClick={() => setSide('SELL')}
             className={`px-3 py-1 font-extrabold rounded-lg transition-all ${
-              side === 'SELL' ? 'bg-[#3182F6] text-white' : 'text-[#8E939D] hover:text-white'
+              side === 'SELL' ? 'bg-down text-white' : 'text-[#8E939D] hover:text-white'
             }`}
           >
             매도
@@ -83,8 +83,8 @@ export const OptionOrderEntry: React.FC<OptionOrderEntryProps> = ({
 
       {/* 1. 6개 주문 유형 선택 탭 (지정가, 시장가, 조건부지정가, 최유리지정가, IOC, FOK) */}
       <div className="space-y-1.5">
-        <span className="text-[11px] font-extrabold text-[#8E939D] block">주문 방식 (ORDER TYPE)</span>
-        <div className="grid grid-cols-3 sm:grid-cols-6 gap-1.5 text-[11px] font-extrabold">
+        <span className="text-xs font-extrabold text-[#8E939D] block">주문 방식 (ORDER TYPE)</span>
+        <div className="grid grid-cols-3 sm:grid-cols-6 gap-1.5 text-xs font-extrabold">
           {[
             { id: 'LIMIT', label: '지정가' },
             { id: 'MARKET', label: '시장가' },
@@ -99,7 +99,7 @@ export const OptionOrderEntry: React.FC<OptionOrderEntryProps> = ({
               className={`py-1.5 rounded-lg border text-center transition-all ${
                 orderType === t.id
                   ? 'bg-[#161B22] text-white border-white/20 shadow-sm'
-                  : 'bg-[#05070A] text-[#8E939D] border-[#212631] hover:text-white'
+                  : 'bg-[#05070A] text-[#8E939D] border-border hover:text-white'
               }`}
             >
               {t.label}
@@ -109,15 +109,15 @@ export const OptionOrderEntry: React.FC<OptionOrderEntryProps> = ({
       </div>
 
       {/* 2. 주문 수량 설정 (직접입력, 퀵 버튼, % 비율, 수량고정) */}
-      <div className="space-y-2 bg-[#05070A] p-3 rounded-xl border border-[#212631]">
+      <div className="space-y-2 bg-[#05070A] p-3 rounded-xl border border-border">
         <div className="flex items-center justify-between">
-          <span className="text-[11px] font-extrabold text-[#8E939D]">주문 수량 (계약)</span>
+          <span className="text-xs font-extrabold text-[#8E939D]">주문 수량 (계약)</span>
           <label className="flex items-center gap-1.5 text-[10.5px] text-[#8E939D] cursor-pointer">
             <input
               type="checkbox"
               checked={fixedQty}
               onChange={(e) => setFixedQty(e.target.checked)}
-              className="rounded border-[#212631] bg-[#161B22] text-[#F04452] focus:ring-0"
+              className="rounded border-border bg-[#161B22] text-up focus:ring-0"
             />
             <span>수량고정</span>
           </label>
@@ -130,7 +130,7 @@ export const OptionOrderEntry: React.FC<OptionOrderEntryProps> = ({
             value={qty}
             disabled={fixedQty}
             onChange={(e) => setQty(Math.max(1, parseInt(e.target.value) || 1))}
-            className="flex-1 rounded-xl border border-[#212631] bg-[#0E1117] px-3 py-2 text-right font-mono text-[13.5px] font-black text-white outline-none focus:border-[#F04452]"
+            className="flex-1 rounded-xl border border-border bg-[#0E1117] px-3 py-2 text-right font-mono text-[13.5px] font-black text-white outline-none focus:border-[#F04452]"
           />
           <span className="text-[#8E939D] font-bold">계약</span>
         </div>
@@ -141,7 +141,7 @@ export const OptionOrderEntry: React.FC<OptionOrderEntryProps> = ({
             <button
               key={q}
               onClick={() => handleQuickQty(q)}
-              className="flex-1 rounded-lg border border-[#212631] bg-[#161B22] py-1 text-[10.5px] font-bold text-[#8E939D] hover:bg-white/10 hover:text-white transition-all"
+              className="flex-1 rounded-lg border border-border bg-[#161B22] py-1 text-[10.5px] font-bold text-[#8E939D] hover:bg-white/10 hover:text-white transition-all"
             >
               {q}계약
             </button>
@@ -154,7 +154,7 @@ export const OptionOrderEntry: React.FC<OptionOrderEntryProps> = ({
             <button
               key={pct}
               onClick={() => handlePctQty(pct)}
-              className="flex-1 rounded-lg border border-[#F04452]/20 bg-[#F04452]/5 py-1 text-[10.5px] font-bold text-[#F04452] hover:bg-[#F04452]/15 transition-all"
+              className="flex-1 rounded-lg border border-[#F04452]/20 bg-up/5 py-1 text-[10.5px] font-bold text-up hover:bg-up/15 transition-all"
             >
               {pct}% 가능
             </button>
@@ -163,12 +163,12 @@ export const OptionOrderEntry: React.FC<OptionOrderEntryProps> = ({
       </div>
 
       {/* 3. 주문 가격 설정 (직접입력, 현재가, 틱 조정) */}
-      <div className="space-y-2 bg-[#05070A] p-3 rounded-xl border border-[#212631]">
+      <div className="space-y-2 bg-[#05070A] p-3 rounded-xl border border-border">
         <div className="flex items-center justify-between">
-          <span className="text-[11px] font-extrabold text-[#8E939D]">주문 가격 (원)</span>
+          <span className="text-xs font-extrabold text-[#8E939D]">주문 가격 (원)</span>
           <button
             onClick={() => setPrice(currentPrice)}
-            className="text-[10px] bg-[#161B22] text-white px-2 py-0.5 rounded border border-[#212631] font-bold hover:bg-[#212631]"
+            className="text-[10px] bg-[#161B22] text-white px-2 py-0.5 rounded border border-border font-bold hover:bg-[#212631]"
           >
             현재가 적용
           </button>
@@ -180,7 +180,7 @@ export const OptionOrderEntry: React.FC<OptionOrderEntryProps> = ({
             value={orderType === 'MARKET' ? 0 : price}
             disabled={orderType === 'MARKET'}
             onChange={(e) => setPrice(parseInt(e.target.value) || 0)}
-            className="flex-1 rounded-xl border border-[#212631] bg-[#0E1117] px-3 py-2 text-right font-mono text-[13.5px] font-black text-white outline-none focus:border-[#F04452]"
+            className="flex-1 rounded-xl border border-border bg-[#0E1117] px-3 py-2 text-right font-mono text-[13.5px] font-black text-white outline-none focus:border-[#F04452]"
           />
           <span className="text-[#8E939D] font-bold">원</span>
         </div>
@@ -189,25 +189,25 @@ export const OptionOrderEntry: React.FC<OptionOrderEntryProps> = ({
         <div className="grid grid-cols-4 gap-1">
           <button
             onClick={() => handlePriceTickOffset(+2)}
-            className="rounded-lg border border-[#212631] bg-[#161B22] py-1 text-[10.5px] font-bold text-[#F04452] hover:bg-white/10"
+            className="rounded-lg border border-border bg-[#161B22] py-1 text-[10.5px] font-bold text-up hover:bg-white/10"
           >
             +2틱
           </button>
           <button
             onClick={() => handlePriceTickOffset(+1)}
-            className="rounded-lg border border-[#212631] bg-[#161B22] py-1 text-[10.5px] font-bold text-[#F04452] hover:bg-white/10"
+            className="rounded-lg border border-border bg-[#161B22] py-1 text-[10.5px] font-bold text-up hover:bg-white/10"
           >
             +1틱
           </button>
           <button
             onClick={() => handlePriceTickOffset(-1)}
-            className="rounded-lg border border-[#212631] bg-[#161B22] py-1 text-[10.5px] font-bold text-[#3182F6] hover:bg-white/10"
+            className="rounded-lg border border-border bg-[#161B22] py-1 text-[10.5px] font-bold text-down hover:bg-white/10"
           >
             -1틱
           </button>
           <button
             onClick={() => handlePriceTickOffset(-2)}
-            className="rounded-lg border border-[#212631] bg-[#161B22] py-1 text-[10.5px] font-bold text-[#3182F6] hover:bg-white/10"
+            className="rounded-lg border border-border bg-[#161B22] py-1 text-[10.5px] font-bold text-down hover:bg-white/10"
           >
             -2틱
           </button>
@@ -215,7 +215,7 @@ export const OptionOrderEntry: React.FC<OptionOrderEntryProps> = ({
       </div>
 
       {/* 4. 총 주문 금액 표시 */}
-      <div className="flex justify-between items-center bg-[#161B22] px-3.5 py-2.5 rounded-xl border border-[#212631]">
+      <div className="flex justify-between items-center bg-[#161B22] px-3.5 py-2.5 rounded-xl border border-border">
         <span className="text-[#8E939D] font-medium">총 주문 예상금액</span>
         <span className="font-mono text-[14px] font-black text-white tabular-nums">
           ₩{totalAmount.toLocaleString()}
@@ -226,13 +226,13 @@ export const OptionOrderEntry: React.FC<OptionOrderEntryProps> = ({
       <div className="grid grid-cols-2 gap-2 pt-1">
         <button
           onClick={() => handleSubmit('BUY')}
-          className="py-3 bg-[#F04452] hover:bg-[#ff5252] text-white font-black text-xs rounded-full shadow-[0_0_15px_rgba(240,68,82,0.35)] transition-all active:scale-[0.98]"
+          className="py-3 bg-up hover:bg-[#ff5252] text-white font-black text-xs rounded-full shadow-[0_0_15px_rgba(240,68,82,0.35)] transition-all active:scale-[0.98]"
         >
           신규 매수 제출 (BUY)
         </button>
         <button
           onClick={() => handleSubmit('SELL')}
-          className="py-3 bg-[#3182F6] hover:bg-[#4092ff] text-white font-black text-xs rounded-full shadow-[0_0_15px_rgba(49,130,246,0.35)] transition-all active:scale-[0.98]"
+          className="py-3 bg-down hover:bg-[#4092ff] text-white font-black text-xs rounded-full shadow-[0_0_15px_rgba(49,130,246,0.35)] transition-all active:scale-[0.98]"
         >
           신규 매도 제출 (SELL)
         </button>

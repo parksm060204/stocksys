@@ -230,7 +230,7 @@ function ProSideTabSection({ relatedNews, stockId }: { relatedNews: NewsItem[]; 
         <div className="flex gap-1">
           <button
             onClick={() => setTab('orders')}
-            className={`px-2.5 py-0.5 rounded text-[11px] font-bold transition-colors cursor-pointer ${
+            className={`px-2.5 py-0.5 rounded text-xs font-bold transition-colors cursor-pointer ${
               tab === 'orders' ? 'bg-accent/20 text-accent border border-accent/40' : 'text-dim hover:text-white'
             }`}
           >
@@ -238,7 +238,7 @@ function ProSideTabSection({ relatedNews, stockId }: { relatedNews: NewsItem[]; 
           </button>
           <button
             onClick={() => setTab('news')}
-            className={`px-2.5 py-0.5 rounded text-[11px] font-bold transition-colors cursor-pointer ${
+            className={`px-2.5 py-0.5 rounded text-xs font-bold transition-colors cursor-pointer ${
               tab === 'news' ? 'bg-accent/20 text-accent border border-accent/40' : 'text-dim hover:text-white'
             }`}
           >
@@ -283,7 +283,7 @@ export default function StockDetailV2Client({
       <header className="shrink-0 px-4 pt-3 pb-2 flex flex-wrap items-end justify-between gap-3">
         <div className="flex flex-col gap-1">
           {/* 브레드크럼 */}
-          <nav className="flex items-center gap-1.5 text-[11px] text-dim">
+          <nav className="flex items-center gap-1.5 text-xs text-dim">
             <Link href="/v2" className="hover:text-white transition-colors">홈</Link>
             <span>/</span>
             <Link href="/v2/stocks" className="hover:text-white transition-colors">주식</Link>
@@ -296,7 +296,7 @@ export default function StockDetailV2Client({
             <h1 className="text-[22px] font-bold text-white tracking-tight leading-none">
               {stock.name}
             </h1>
-            <span className="rounded-md bg-panel2 px-2 py-0.5 font-mono text-[11px] text-muted">
+            <span className="rounded-md bg-panel2 px-2 py-0.5 font-mono text-xs text-muted">
               {stock.ticker}
             </span>
             {stock.isCore && (
@@ -358,11 +358,11 @@ export default function StockDetailV2Client({
 function SectionHeader({ title, badge }: { title: string; badge?: string }) {
   return (
     <div className="flex items-center justify-between px-3 py-2 border-b border-panel2 shrink-0">
-      <span className="text-[11px] font-bold text-muted uppercase tracking-widest">
+      <span className="text-xs font-bold text-muted uppercase tracking-widest">
         {title}
       </span>
       {badge && (
-        <span className="text-[9px] font-bold text-accent bg-accent/10 px-1.5 py-px rounded tracking-widest">
+        <span className="text-[10px] font-bold text-accent bg-accent/10 px-1.5 py-px rounded tracking-widest">
           {badge}
         </span>
       )}
@@ -383,7 +383,7 @@ function MetaCell({
     tone === "up" ? "text-bid" : tone === "down" ? "text-ask" : "text-tx";
   return (
     <div className="px-4 py-3 bg-panel">
-      <div className="text-[9px] text-dim uppercase tracking-widest mb-1.5 font-semibold">
+      <div className="text-[10px] text-dim uppercase tracking-widest mb-1.5 font-semibold">
         {label}
       </div>
       <div className={`font-mono text-[13px] tabular-nums font-bold leading-none ${colorClass}`}>
@@ -402,7 +402,7 @@ function NewsList({
 }) {
   if (news.length === 0) {
     return (
-      <p className="px-4 py-6 text-center text-[11px] text-dim">
+      <p className="px-4 py-6 text-center text-xs text-dim">
         관련 뉴스 없음
       </p>
     );
@@ -413,7 +413,7 @@ function NewsList({
         <div key={n.id} className={`px-4 ${compact ? "py-2" : "py-3"}`}>
           <div className="flex items-center gap-1.5 mb-1">
             <span
-              className={`rounded px-1.5 py-px text-[9px] font-bold ${
+              className={`rounded px-1.5 py-px text-[10px] font-bold ${
                 n.sentiment === "positive"
                   ? "bg-bid/15 text-bid"
                   : n.sentiment === "negative"
@@ -427,19 +427,19 @@ function NewsList({
                 ? "악재"
                 : "중립"}
             </span>
-            <span className="text-[9px] text-dim">
+            <span className="text-[10px] text-dim">
               {n.publisher || "언론사"}
             </span>
           </div>
           <p
             className={`text-white font-medium leading-snug ${
-              compact ? "text-[11px] line-clamp-1" : "text-[12px] line-clamp-2"
+              compact ? "text-xs line-clamp-1" : "text-[12px] line-clamp-2"
             }`}
           >
             {n.headline}
           </p>
           {!compact && (
-            <p className="mt-0.5 text-[11px] text-dim line-clamp-1">
+            <p className="mt-0.5 text-xs text-dim line-clamp-1">
               {n.content}
             </p>
           )}
@@ -477,7 +477,7 @@ function BigTradeButtons({ stock }: { stock: Stock }) {
         className="group relative flex flex-col items-center justify-center rounded-2xl py-8 px-6 overflow-hidden cursor-pointer transition-all duration-200 active:scale-[0.98] bg-bid/8 border border-bid/15 hover:bg-bid/12"
         aria-label="매수"
       >
-        <span className="relative z-10 text-[11px] font-semibold tracking-widest uppercase text-bid/60 mb-2">
+        <span className="relative z-10 text-xs font-semibold tracking-widest uppercase text-bid/60 mb-2">
           매수 Buy
         </span>
         <span className="relative z-10 font-mono text-[28px] font-black tabular-nums text-bid leading-none">
@@ -496,7 +496,7 @@ function BigTradeButtons({ stock }: { stock: Stock }) {
         className="group relative flex flex-col items-center justify-center rounded-2xl py-8 px-6 overflow-hidden cursor-pointer transition-all duration-200 active:scale-[0.98] bg-ask/8 border border-ask/15 hover:bg-ask/12"
         aria-label="매도"
       >
-        <span className="relative z-10 text-[11px] font-semibold tracking-widest uppercase text-ask/60 mb-2">
+        <span className="relative z-10 text-xs font-semibold tracking-widest uppercase text-ask/60 mb-2">
           매도 Sell
         </span>
         <span className="relative z-10 font-mono text-[28px] font-black tabular-nums text-ask leading-none">

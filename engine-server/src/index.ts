@@ -1,13 +1,13 @@
+import './loadEnv';
 import { MarketEngine } from './MarketEngine';
 import { EventDirector } from './EventDirector';
 import * as dotenv from 'dotenv';
 import * as http from 'http';
 
-dotenv.config({ path: '.env.local' });
-dotenv.config();
-
 function checkEnv() {
-  if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+  const url = process.env.NEXT_PUBLIC_ENGINE_DB_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!url || !key) {
     console.error("❌ SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is missing in environment variables.");
     process.exit(1);
   }

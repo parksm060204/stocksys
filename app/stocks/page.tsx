@@ -18,6 +18,13 @@ const TABS: { id: RegionTab; label: string; flag: string; market: MarketId }[] =
   { id: "eurostoxx50", label: "유로스톡스 50", flag: "🇪🇺", market: "europe" },
 ];
 
+function normalizeMarket(m: string): MarketId {
+  if (m === 'KR' || m === 'domestic') return 'domestic';
+  if (m === 'US' || m === 'overseas') return 'overseas';
+  if (m === 'EU' || m === 'europe') return 'europe';
+  return (m as MarketId) || 'domestic';
+}
+
 export default function StocksPage() {
   return (
     <Suspense fallback={<StocksSkeleton />}>
@@ -36,20 +43,20 @@ function StocksSkeleton() {
       </div>
       <div className="h-7 w-28 rounded bg-[#222736]" />
       {/* Tab skeleton */}
-      <div className="flex gap-1 rounded-lg border border-[#222736] bg-[#151821] p-1">
+      <div className="flex gap-1 rounded-lg border border-border bg-[#151821] p-1">
         {[1, 2, 3].map((i) => (
           <div key={i} className="flex-1 h-14 rounded-md bg-[#1c2030]" />
         ))}
       </div>
       {/* Index card skeleton */}
-      <div className="rounded-xl border border-[#222736] bg-[#151821] p-5 space-y-3">
+      <div className="rounded-xl border border-border bg-[#151821] p-5 space-y-3">
         <div className="h-6 w-40 rounded bg-[#222736]" />
         <div className="h-9 w-52 rounded bg-[#222736]" />
       </div>
       {/* Table skeleton */}
       <div className="space-y-2">
         {Array.from({ length: 8 }).map((_, i) => (
-          <div key={i} className="flex items-center justify-between rounded-lg border border-[#222736]/50 bg-[#151821] px-4 py-3.5">
+          <div key={i} className="flex items-center justify-between rounded-lg border border-border/50 bg-[#151821] px-4 py-3.5">
             <div className="space-y-1.5">
               <div className="h-4 w-24 rounded bg-[#222736]" />
               <div className="h-3 w-16 rounded bg-[#1c2030]" />
@@ -75,30 +82,48 @@ function StocksContent() {
   const supabase = createClient();
 
   useEffect(() => {
+    let isMounted = true;
+
     async function fetchStocks() {
-      const { data } = await supabase
-        .from('stocks')
-        .select('id, name, ticker, market, sector, current_price, previous_close');
-      
-      if (data) {
-        setAllStocks(data.map((row: { id: string; name: string; ticker: string; market: string; sector: string; current_price: number; previous_close: number }) => ({
-          id: row.id,
-          name: row.name,
-          ticker: row.ticker,
-          market: row.market,
-          sector: row.sector,
-          currentPrice: row.current_price,
-          previousClose: row.previous_close,
-          marketCap: row.current_price * 1000000,
-        } as Stock)));
+      try {
+        // 3초 타임아웃 안전 가드 (DB 지연 시 무한 스켈레톤 방지)
+        const fetchPromise = supabase
+          .from('stocks')
+          .select('id, name, ticker, market, sector, current_price, previous_close');
+        
+        const timeoutPromise = new Promise<{ data: any; error: any }>((_, reject) =>
+          setTimeout(() => reject(new Error('Network timeout (3s)')), 3000)
+        );
+
+        const { data, error } = await Promise.race([fetchPromise, timeoutPromise]);
+        
+        if (isMounted && data && !error && data.length > 0) {
+          setAllStocks(data.map((row: { id: string; name: string; ticker: string; market: string; sector: string; current_price: number; previous_close: number }) => ({
+            id: row.id,
+            name: row.name,
+            ticker: row.ticker,
+            market: normalizeMarket(row.market),
+            sector: row.sector,
+            currentPrice: Number(row.current_price) || 1000,
+            previousClose: Number(row.previous_close) || 1000,
+            marketCap: (Number(row.current_price) || 1000) * 1000000,
+          } as Stock)));
+        }
+      } catch (e) {
+        console.warn('[Stocks] Live DB sync notice:', e);
+      } finally {
+        if (isMounted) setLoading(false);
       }
-      setLoading(false);
     }
+
     fetchStocks();
 
-    // Polling for live prices every 5 seconds
+    // 5초마다 실시간 시세 폴링
     const interval = setInterval(fetchStocks, 5000);
-    return () => clearInterval(interval);
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
   }, [supabase]);
 
   useEffect(() => {
@@ -139,10 +164,10 @@ function StocksContent() {
       </nav>
 
       {/* Header Banner */}
-      <div className="mb-6 bg-[#0E1117] border border-[#212631] p-6 rounded-3xl flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shadow-2xl">
+      <div className="mb-6 bg-[#0E1117] border border-border p-6 rounded-3xl flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shadow-2xl">
         <div>
-          <div className="inline-flex items-center gap-2 rounded-full border border-[#F04452]/40 bg-[#F04452]/10 px-3.5 py-1 text-[11px] font-bold text-[#F04452] mb-2">
-            <span className="inline-block h-2 w-2 rounded-full bg-[#F04452] animate-pulse" />
+          <div className="inline-flex items-center gap-2 rounded-full border border-[#F04452]/40 bg-up/10 px-3.5 py-1 text-xs font-bold text-up mb-2">
+            <span className="inline-block h-2 w-2 rounded-full bg-up animate-pulse" />
             LIVE STOCKS MARKET · 주식 시장
           </div>
           <h1 className="text-xl md:text-2xl font-black text-white tracking-tight">
@@ -153,24 +178,24 @@ function StocksContent() {
           </p>
         </div>
 
-        <div className="flex gap-6 text-right bg-[#161B22] px-5 py-3 rounded-2xl border border-[#212631] shrink-0 font-mono">
+        <div className="flex gap-6 text-right bg-[#161B22] px-5 py-3 rounded-2xl border border-border shrink-0 font-mono">
           <div>
             <div className="text-[10px] uppercase font-bold tracking-wider text-[#8E939D]">선택 시장</div>
             <div className="text-[15px] font-black text-white">{currentTab.label}</div>
           </div>
           <div>
             <div className="text-[10px] uppercase font-bold tracking-wider text-[#8E939D]">상승 / 하락</div>
-            <div className="text-[15px] font-black text-[#F04452] tabular-nums">{up} <span className="text-[#8E939D]">/</span> <span className="text-[#3182F6]">{down}</span></div>
+            <div className="text-[15px] font-black text-up tabular-nums">{up} <span className="text-[#8E939D]">/</span> <span className="text-down">{down}</span></div>
           </div>
         </div>
       </div>
 
       {/* === 3개 지수 탭 (Robinhood Segmented Pills) === */}
-      <div className="mb-6 flex gap-2 rounded-2xl border border-[#212631] bg-[#0E1117] p-1.5 shadow-lg">
+      <div className="mb-6 flex gap-2 rounded-2xl border border-border bg-[#0E1117] p-1.5 shadow-lg">
         {TABS.map((t) => {
           const idx = indices[t.id];
           const tDir = idx.changeAmount > 0 ? "up" : idx.changeAmount < 0 ? "down" : "flat";
-          const tColor = tDir === "up" ? "text-[#F04452]" : tDir === "down" ? "text-[#3182F6]" : "text-[#8E939D]";
+          const tColor = tDir === "up" ? "text-up" : tDir === "down" ? "text-down" : "text-[#8E939D]";
           const isSelected = tab === t.id;
           return (
             <button
@@ -188,7 +213,7 @@ function StocksContent() {
               </div>
               <div className={`mt-1 font-mono text-[15px] font-black tabular-nums ${tColor}`}>
                 {Math.round(idx.currentValue).toLocaleString("ko-KR")}
-                <span className="ml-1.5 text-[11px] font-bold">
+                <span className="ml-1.5 text-xs font-bold">
                   {fmtSigned(idx.changePct)}%
                 </span>
 
@@ -199,7 +224,7 @@ function StocksContent() {
       </div>
 
       {/* === 현재 지수 상세 === */}
-      <div className="mb-6 rounded-2xl border border-[#212631] bg-[#0E1117] p-6 shadow-xl">
+      <div className="mb-6 rounded-2xl border border-border bg-[#0E1117] p-6 shadow-xl">
         <div className="flex items-start justify-between">
           <div>
             <div className="flex items-center gap-2.5">
@@ -221,9 +246,9 @@ function StocksContent() {
         </div>
 
         {/* 상승/하락 TOP 5 */}
-        <div className="mt-6 grid grid-cols-2 gap-6 pt-5 border-t border-[#212631]">
+        <div className="mt-6 grid grid-cols-2 gap-6 pt-5 border-t border-border">
           <div>
-            <div className="mb-2 text-[10.5px] font-mono font-bold uppercase tracking-wider text-[#F04452]">
+            <div className="mb-2 text-[10.5px] font-mono font-bold uppercase tracking-wider text-up">
               ▲ 실시간 상승 TOP 5
             </div>
             <div className="space-y-1.5">
@@ -231,23 +256,23 @@ function StocksContent() {
                 <Link
                   key={g.ticker}
                   href={`/stocks/${g.ticker}`}
-                  className="flex justify-between text-[12.5px] hover:text-[#F04452] transition-colors group"
+                  className="flex justify-between text-[12.5px] hover:text-up transition-colors group"
                 >
                   <span className="text-[#8E939D] group-hover:text-white font-medium">{g.name}</span>
-                  <span className="font-mono font-bold tabular-nums text-[#F04452]">+{g.changePct.toFixed(2)}%</span>
+                  <span className="font-mono font-bold tabular-nums text-up">+{g.changePct.toFixed(2)}%</span>
                 </Link>
               ))}
             </div>
           </div>
           <div>
-            <div className="mb-2 text-[10.5px] font-mono font-bold uppercase tracking-wider text-[#3182F6]">
+            <div className="mb-2 text-[10.5px] font-mono font-bold uppercase tracking-wider text-down">
               ▼ 실시간 하락 TOP 5
             </div>
             <div className="space-y-1.5">
               {index.topLosers.map((l) => (
                 <div key={l.ticker} className="flex justify-between text-[12.5px]">
                   <span className="text-[#8E939D] font-medium">{l.name}</span>
-                  <span className="font-mono font-bold tabular-nums text-[#3182F6]">{l.changePct.toFixed(2)}%</span>
+                  <span className="font-mono font-bold tabular-nums text-down">{l.changePct.toFixed(2)}%</span>
                 </div>
               ))}
             </div>

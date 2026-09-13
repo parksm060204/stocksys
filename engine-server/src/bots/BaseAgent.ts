@@ -8,6 +8,11 @@ export class BaseAgent {
   public currentPortfolio: AgentPortfolio;
   public pendingNewsOrders: any[] = [];
 
+  // ── HFT Microstructure 상태 추적 ──
+  public icebergReserves: Map<string, { side: 'buy' | 'sell'; price: number; remainingQty: number; sliceQty: number }> = new Map();
+  public activeSpoofOrders: Array<{ orderId: string; stockId: string; side: 'buy' | 'sell'; price: number; tickCreated: number }> = [];
+  public ordersToCancel: string[] = [];
+
   constructor(configOrId: any, initialCapital?: number) {
     if (typeof configOrId === 'string') {
       this.botId = configOrId;
@@ -449,5 +454,123 @@ export class BaseAgent {
     }, stock.current_price));
     
     return orders;
+  }
+
+  // =========================================================================
+  // 🧠 HFT Strategy 1: 빙산 주문(Iceberg Order) 및 무한 리필 교착 상태 구축
+  // =========================================================================
+  public placeIcebergOrder(
+    stock: any,
+    side: 'buy' | 'sell',
+    price: number,
+    totalTargetQty: number,
+    displaySliceQty: number = 2000
+  ): any {
+    const alignedPrice = this.alignToTickSize(price);
+    const key = `${stock.id}_${side}_${alignedPrice}`;
+    let reserve = this.icebergReserves.get(key);
+
+    if (!reserve || reserve.remainingQty <= 0) {
+      reserve = {
+        side,
+        price: alignedPrice,
+        remainingQty: totalTargetQty,
+        sliceQty: displaySliceQty
+      };
+      this.icebergReserves.set(key, reserve);
+    }
+
+    const currentDisplay = Math.min(reserve.remainingQty, reserve.sliceQty);
+    reserve.remainingQty -= currentDisplay;
+
+    return this.applyInstitutionalRiskControls({
+      stock_id: stock.id,
+      user_id: null,
+      side,
+      price: alignedPrice,
+      size: currentDisplay,
+      status: 'open',
+      is_lp: true,
+      is_iceberg: true,
+      _botId: this.botId
+    }, stock.current_price);
+  }
+
+  // =========================================================================
+  // 🧠 HFT Strategy 2: 스푸핑 & 레이어링 (가짜 대형벽 깔고 취소하기)
+  // =========================================================================
+  public executeSpoofLayering(
+    stock: any,
+    side: 'buy' | 'sell',
+    offsetTicks: number = 2,
+    multiplier: number = 8.0,
+    currentTick: number = 0
+  ): any {
+    const tickSize = this.getTickSize(stock.current_price);
+    const spoofPrice = side === 'buy'
+      ? this.alignToTickSize(stock.current_price - offsetTicks * tickSize)
+      : this.alignToTickSize(stock.current_price + offsetTicks * tickSize);
+
+    const baseQty = Math.max(500, Math.floor((this.capital * 0.03) / stock.current_price));
+    const spoofQty = Math.floor(baseQty * multiplier);
+    const orderId = `spoof_${this.botId}_${stock.id}_${Date.now()}`;
+
+    const spoofOrder = this.applyInstitutionalRiskControls({
+      id: orderId,
+      stock_id: stock.id,
+      user_id: null,
+      side,
+      price: spoofPrice,
+      size: spoofQty,
+      status: 'open',
+      is_lp: true,
+      is_spoof: true,
+      _botId: this.botId
+    }, stock.current_price);
+
+    this.activeSpoofOrders.push({
+      orderId,
+      stockId: stock.id,
+      side,
+      price: spoofPrice,
+      tickCreated: currentTick
+    });
+
+    return spoofOrder;
+  }
+
+  public cancelExpiredSpoofs(currentTick: number, maxAgeTicks: number = 1): string[] {
+    const toCancel: string[] = [];
+    this.activeSpoofOrders = this.activeSpoofOrders.filter((s) => {
+      if (currentTick - s.tickCreated >= maxAgeTicks) {
+        toCancel.push(s.orderId);
+        return false;
+      }
+      return true;
+    });
+    this.ordersToCancel.push(...toCancel);
+    return toCancel;
+  }
+
+  // =========================================================================
+  // 🧠 HFT Strategy 3: 돌파 감지 시 유동성 진공 스윕 (Market Sweep)
+  // =========================================================================
+  public checkVacuumAndSweep(stock: any, bestAskSize: number, askPrice: number): any | null {
+    // 최우선 매도호가 잔량이 10% 이하로 급감하여 돌파 임박 감지 시 시장가 스윕 발사
+    if (bestAskSize > 0 && bestAskSize < 1000) {
+      const sweepQty = Math.max(500, Math.floor((this.capital * 0.05) / stock.current_price));
+      return {
+        stock_id: stock.id,
+        user_id: null,
+        side: 'buy',
+        type: 'market',
+        price: askPrice,
+        size: sweepQty,
+        status: 'open',
+        is_sweep: true,
+        _botId: this.botId
+      };
+    }
+    return null;
   }
 }

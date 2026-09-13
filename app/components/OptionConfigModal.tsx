@@ -61,8 +61,8 @@ export const OptionConfigModal: React.FC<OptionConfigModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 font-sans select-none">
-      <div className="w-full max-w-md rounded-3xl border border-[#212631] bg-[#0E1117] p-6 shadow-2xl space-y-5">
-        <div className="flex items-center justify-between border-b border-[#212631] pb-3">
+      <div className="w-full max-w-md rounded-3xl border border-border bg-[#0E1117] p-6 shadow-2xl space-y-5">
+        <div className="flex items-center justify-between border-b border-border pb-3">
           <div className="flex items-center gap-2">
             <span className="text-lg">⚙️</span>
             <h2 className="text-base font-black text-white">HTS 선물옵션 호가 및 주문 환경설정</h2>
@@ -83,8 +83,8 @@ export const OptionConfigModal: React.FC<OptionConfigModalProps> = ({
               onClick={() => onChangeConfig({ ...config, orderbookLevels: 10 })}
               className={`py-2 rounded-xl border font-bold transition-all ${
                 config.orderbookLevels === 10
-                  ? 'bg-[#F04452] text-white border-[#F04452]'
-                  : 'bg-[#161B22] text-[#8E939D] border-[#212631] hover:text-white'
+                  ? 'bg-up text-white border-[#F04452]'
+                  : 'bg-[#161B22] text-[#8E939D] border-border hover:text-white'
               }`}
             >
               10단계 호가
@@ -93,8 +93,8 @@ export const OptionConfigModal: React.FC<OptionConfigModalProps> = ({
               onClick={() => onChangeConfig({ ...config, orderbookLevels: 5 })}
               className={`py-2 rounded-xl border font-bold transition-all ${
                 config.orderbookLevels === 5
-                  ? 'bg-[#F04452] text-white border-[#F04452]'
-                  : 'bg-[#161B22] text-[#8E939D] border-[#212631] hover:text-white'
+                  ? 'bg-up text-white border-[#F04452]'
+                  : 'bg-[#161B22] text-[#8E939D] border-border hover:text-white'
               }`}
             >
               5단계 호가
@@ -118,14 +118,14 @@ export const OptionConfigModal: React.FC<OptionConfigModalProps> = ({
             ].map(({ key, label }) => (
               <label
                 key={key}
-                className="flex items-center justify-between bg-[#161B22] px-3 py-2 rounded-xl border border-[#212631] cursor-pointer hover:bg-[#212631]/60 transition-colors"
+                className="flex items-center justify-between bg-[#161B22] px-3 py-2 rounded-xl border border-border cursor-pointer hover:bg-[#212631]/60 transition-colors"
               >
                 <span className="text-white text-[11.5px] font-medium">{label}</span>
                 <input
                   type="checkbox"
                   checked={Boolean(config[key as keyof OptionConfigState])}
                   onChange={() => toggle(key as keyof OptionConfigState)}
-                  className="rounded border-[#212631] bg-[#05070A] text-[#F04452] focus:ring-0 cursor-pointer"
+                  className="rounded border-border bg-[#05070A] text-up focus:ring-0 cursor-pointer"
                 />
               </label>
             ))}
@@ -143,14 +143,14 @@ export const OptionConfigModal: React.FC<OptionConfigModalProps> = ({
             ].map(({ key, label }) => (
               <label
                 key={key}
-                className="flex items-center justify-between bg-[#161B22] px-2.5 py-2 rounded-xl border border-[#212631] cursor-pointer hover:bg-[#212631]/60 transition-colors"
+                className="flex items-center justify-between bg-[#161B22] px-2.5 py-2 rounded-xl border border-border cursor-pointer hover:bg-[#212631]/60 transition-colors"
               >
-                <span className="text-white text-[11px] font-medium">{label}</span>
+                <span className="text-white text-xs font-medium">{label}</span>
                 <input
                   type="checkbox"
                   checked={Boolean(config[key as keyof OptionConfigState])}
                   onChange={() => toggle(key as keyof OptionConfigState)}
-                  className="rounded border-[#212631] bg-[#05070A] text-[#F04452] focus:ring-0 cursor-pointer"
+                  className="rounded border-border bg-[#05070A] text-up focus:ring-0 cursor-pointer"
                 />
               </label>
             ))}
@@ -159,7 +159,7 @@ export const OptionConfigModal: React.FC<OptionConfigModalProps> = ({
 
         <button
           onClick={onClose}
-          className="w-full py-3 bg-[#F04452] hover:bg-[#ff5252] text-white font-extrabold rounded-2xl text-xs transition-all shadow-[0_0_15px_rgba(240,68,82,0.35)] cursor-pointer"
+          className="w-full py-3 bg-up hover:bg-[#ff5252] text-white font-extrabold rounded-2xl text-xs transition-all shadow-[0_0_15px_rgba(240,68,82,0.35)] cursor-pointer"
         >
           설정 저장 및 적용
         </button>

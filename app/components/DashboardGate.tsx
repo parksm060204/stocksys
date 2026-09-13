@@ -59,12 +59,12 @@ function DashboardSkeleton() {
       </div>
       <div className="mb-8 grid gap-4 md:grid-cols-3">
         {[1, 2, 3].map((i) => (
-          <div key={i} className="h-28 rounded-2xl border border-[#212631] bg-[#0E1117]" />
+          <div key={i} className="h-28 rounded-2xl border border-border bg-[#0E1117]" />
         ))}
       </div>
       <div className="grid gap-6 lg:grid-cols-3">
         {[1, 2, 3].map((i) => (
-          <div key={i} className="h-64 rounded-2xl border border-[#212631] bg-[#0E1117]" />
+          <div key={i} className="h-64 rounded-2xl border border-border bg-[#0E1117]" />
         ))}
       </div>
     </div>
@@ -121,7 +121,7 @@ function DashboardContent() {
         <div>
           <div className="flex items-center gap-2.5">
             <h1 className="text-2xl font-black text-white tracking-tight">포트폴리오 & 대시보드</h1>
-            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-[#F04452]/15 text-[#F04452] border border-[#F04452]/30 tracking-wide">
+            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-up/15 text-up border border-[#F04452]/30 tracking-wide">
               UNLOCKED
             </span>
           </div>
@@ -139,10 +139,10 @@ function DashboardContent() {
         <MoverCard title="상승 TOP 5" stocks={gainers} />
         <MoverCard title="하락 TOP 5" stocks={losers} />
 
-        <div className="rounded-2xl border border-[#212631] bg-[#0E1117] flex flex-col overflow-hidden">
-          <div className="flex items-center justify-between border-b border-[#212631] px-5 py-3.5 bg-[#090B0F]">
+        <div className="rounded-2xl border border-border bg-[#0E1117] flex flex-col overflow-hidden">
+          <div className="flex items-center justify-between border-b border-border px-5 py-3.5 bg-[#090B0F]">
             <h3 className="text-[13.5px] font-extrabold text-white">최신 시황 뉴스</h3>
-            <Link href="/news" className="text-[11px] text-[#F04452] hover:underline font-bold">
+            <Link href="/news" className="text-xs text-up hover:underline font-bold">
               전체 보기
             </Link>
           </div>
@@ -150,16 +150,16 @@ function DashboardContent() {
             {news.length > 0 ? news.map((n: any) => (
               <Link key={n.id} href="/news" className="block px-5 py-3.5 hover:bg-[#161B22] transition-colors group">
                 <div className="flex items-center gap-2">
-                  <span className="rounded-full bg-[#161B22] border border-[#212631] px-2 py-0.5 text-[10px] font-bold text-[#8E939D]">
+                  <span className="rounded-full bg-[#161B22] border border-border px-2 py-0.5 text-[10px] font-bold text-[#8E939D]">
                     {n.publisher || "언론사"}
                   </span>
                   <span className={`text-[10px] font-bold ${
-                    n.sentiment === "positive" ? "text-[#F04452]" : n.sentiment === "negative" ? "text-[#3182F6]" : "text-[#8E939D]"
+                    n.sentiment === "positive" ? "text-up" : n.sentiment === "negative" ? "text-down" : "text-[#8E939D]"
                   }`}>
                     {n.sentiment === "positive" ? "호재" : n.sentiment === "negative" ? "악재" : "중립"}
                   </span>
                 </div>
-                <p className="mt-1.5 line-clamp-2 text-[12.5px] text-white font-medium group-hover:text-[#F04452] transition-colors leading-snug">{n.headline}</p>
+                <p className="mt-1.5 line-clamp-2 text-[12.5px] text-white font-medium group-hover:text-up transition-colors leading-snug">{n.headline}</p>
               </Link>
             )) : (
               <div className="flex-1 flex flex-col items-center justify-center p-6 text-center">
@@ -175,7 +175,7 @@ function DashboardContent() {
 
 function IndexCard({ index }: { index: MarketIndex }) {
   const dir = index.changeAmount > 0 ? "up" : index.changeAmount < 0 ? "down" : "flat";
-  const color = dir === "up" ? "text-[#F04452]" : dir === "down" ? "text-[#3182F6]" : "text-[#8E939D]";
+  const color = dir === "up" ? "text-up" : dir === "down" ? "text-down" : "text-[#8E939D]";
   const arrow = dir === "up" ? "▲" : dir === "down" ? "▼" : "–";
   const flag = index.market === "domestic" ? "🇰🇷" : index.market === "europe" ? "🇪🇺" : "🇺🇸";
   const href = index.market === "domestic" ? "/stocks?tab=kospi" : index.market === "europe" ? "/stocks?tab=eurostoxx50" : "/stocks?tab=sp50";
@@ -185,9 +185,9 @@ function IndexCard({ index }: { index: MarketIndex }) {
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
           <span className="text-xl">{flag}</span>
-          <span className="text-[16px] font-extrabold text-white tracking-tight group-hover:text-[#F04452] transition-colors">{index.nameKo}</span>
+          <span className="text-[16px] font-extrabold text-white tracking-tight group-hover:text-up transition-colors">{index.nameKo}</span>
         </div>
-        <span className="text-[11px] font-mono font-bold text-[#8E939D] bg-[#161B22] px-2.5 py-0.5 rounded-full border border-[#212631]">
+        <span className="text-xs font-mono font-bold text-[#8E939D] bg-[#161B22] px-2.5 py-0.5 rounded-full border border-border">
           {index.constituentCount}종목
         </span>
       </div>

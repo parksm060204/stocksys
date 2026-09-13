@@ -44,10 +44,10 @@ export default async function CommoditiesPage() {
       </nav>
 
       {/* ── 헤더 배너 ── */}
-      <div className="bg-[#0E1117] border border-[#212631] p-6 rounded-3xl flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shadow-2xl">
+      <div className="bg-[#0E1117] border border-border p-6 rounded-3xl flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shadow-2xl">
         <div>
-          <div className="inline-flex items-center gap-2 rounded-full border border-[#F04452]/40 bg-[#F04452]/10 px-3.5 py-1 text-[11px] font-bold text-[#F04452] mb-2">
-            <span className="inline-block h-2 w-2 rounded-full bg-[#F04452] animate-pulse" />
+          <div className="inline-flex items-center gap-2 rounded-full border border-[#F04452]/40 bg-up/10 px-3.5 py-1 text-xs font-bold text-up mb-2">
+            <span className="inline-block h-2 w-2 rounded-full bg-up animate-pulse" />
             COMMODITIES DERIVATIVES MARKET · 5대 카테고리 12개 선물 시장
           </div>
           <h1 className="text-xl md:text-2xl font-black text-white tracking-tight">
@@ -58,14 +58,14 @@ export default async function CommoditiesPage() {
           </p>
         </div>
 
-        <div className="flex gap-6 text-right bg-[#161B22] px-5 py-3 rounded-2xl border border-[#212631] shrink-0 font-mono text-xs">
+        <div className="flex gap-6 text-right bg-[#161B22] px-5 py-3 rounded-2xl border border-border shrink-0 font-mono text-xs">
           <div>
             <div className="text-[10.5px] text-[#565A63] font-bold">상장 상품</div>
             <div className="text-white font-black text-[15px]">{COMMODITY_DEFINITIONS.length} 종목</div>
           </div>
-          <div className="border-l border-[#212631] pl-6">
+          <div className="border-l border-border pl-6">
             <div className="text-[10.5px] text-[#565A63] font-bold">거래 메커니즘</div>
-            <div className="text-[#F04452] font-black text-[15px]">5종 기관 봇</div>
+            <div className="text-up font-black text-[15px]">5종 기관 봇</div>
           </div>
         </div>
       </div>

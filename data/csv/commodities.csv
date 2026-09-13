@@ -1,0 +1,6 @@
+commodity_id,name,category,unit,tick_size,current_price,previous_close,volume
+WTI_CRUDE,WTI 원유,energy,USD,0.01,78.50,78.20,0
+BRENT_CRUDE,브렌트 원유,energy,USD,0.01,82.30,82.00,0
+GOLD,금,metal,USD,0.10,2050.00,2045.00,0
+SILVER,은,metal,USD,0.01,24.30,24.20,0
+COPPER,구리,metal,USD,0.01,3.85,3.83,0

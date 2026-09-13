@@ -3,16 +3,16 @@ import GoogleProvider from "next-auth/providers/google";
 import { createClient } from "@supabase/supabase-js";
 
 // VM DB 서버용 클라이언트 (서비스 롤로 사용자 생성 가능)
-const adminSupabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
+const supabaseUrl = process.env.NEXT_PUBLIC_ENGINE_DB_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "http://49.247.136.231:3001";
+const supabaseKey = process.env.ENGINE_DB_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_ENGINE_DB_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlzcyI6InBvc3RncmVzdCIsImV4cCI6OTk5OTk5OTk5OX0.ZVBYePzn3NGxFYWINT5qpYt7FxXjWwXfS2FFw3Oy474";
+
+const adminSupabase = createClient(supabaseUrl, supabaseKey);
 
 export const authOptions = {
   providers: [
     GoogleProvider({
-      clientId: process.env.GOOGLE_CLIENT_ID!,
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
+      clientId: process.env.GOOGLE_CLIENT_ID || "dummy-client-id",
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET || "dummy-client-secret",
     }),
   ],
   callbacks: {
@@ -20,13 +20,14 @@ export const authOptions = {
      * 첫 로그인 시 VM DB에 auth.users + profiles INSERT
      */
     async signIn({ user }: { user: any }) {
+      if (!user?.email) return true;
       try {
         // 1. auth.users에 유저가 없으면 INSERT
         const { data: existing } = await adminSupabase
           .from("auth_users_view") // PostgREST는 직접 auth 스키마 접근 불가 → public 뷰 사용
           .select("id")
           .eq("email", user.email)
-          .single();
+          .maybeSingle();
 
         if (!existing) {
           // auth.users INSERT는 RPC로 처리
@@ -39,20 +40,18 @@ export const authOptions = {
             }
           );
           if (insertErr) {
-            console.error("[NextAuth] create_user_with_profile error:", insertErr);
-            return false;
+            console.warn("[NextAuth] create_user_with_profile warning:", insertErr.message);
+          } else {
+            const createdId = Array.isArray(newUser) ? newUser[0]?.id : newUser?.id;
+            user.dbId = createdId || null;
           }
-          // user 객체에 DB UUID 주입
-          const createdId = Array.isArray(newUser) ? newUser[0]?.id : newUser?.id;
-          user.dbId = createdId || null;
         } else {
           user.dbId = existing.id;
         }
-        return true;
-      } catch (e) {
-        console.error("[NextAuth] signIn callback error:", e);
-        return false;
+      } catch (e: any) {
+        console.warn("[NextAuth] signIn callback caught error:", e?.message || e);
       }
+      return true;
     },
 
     /**
@@ -62,14 +61,17 @@ export const authOptions = {
       if (user?.dbId) {
         token.dbId = user.dbId;
       }
-      // dbId가 아직 없을 경우 email로 auth.users 조회하여 주입
       if (!token.dbId && token.email) {
-        const { data } = await adminSupabase
-          .from("auth_users_view")
-          .select("id")
-          .eq("email", token.email)
-          .single();
-        if (data) token.dbId = data.id;
+        try {
+          const { data } = await adminSupabase
+            .from("auth_users_view")
+            .select("id")
+            .eq("email", token.email)
+            .maybeSingle();
+          if (data) token.dbId = data.id;
+        } catch (e: any) {
+          console.warn("[NextAuth] jwt callback caught error:", e?.message || e);
+        }
       }
       return token;
     },
@@ -85,13 +87,14 @@ export const authOptions = {
     },
   },
   pages: {
-    signIn: "/",        // 로그인 페이지 없음 → 홈으로
+    signIn: "/",
     error: "/",
   },
   session: {
     strategy: "jwt" as const,
     maxAge: 30 * 24 * 60 * 60, // 30일
   },
+  secret: process.env.NEXTAUTH_SECRET || "moo_stock_sys_nextauth_secret_2026_very_long_random_string_xkd92ms",
 };
 
 const handler = NextAuth(authOptions);

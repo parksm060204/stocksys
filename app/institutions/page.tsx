@@ -84,10 +84,10 @@ export default function InstitutionsDashboard() {
   return (
     <div className="min-h-screen bg-[#05070A] text-[#F4F5F6] font-sans p-6 max-w-7xl mx-auto space-y-6">
       {/* Header Banner */}
-      <header className="bg-[#0E1117] border border-[#212631] p-6 rounded-3xl flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shadow-2xl">
+      <header className="bg-[#0E1117] border border-border p-6 rounded-3xl flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shadow-2xl">
         <div>
-          <div className="inline-flex items-center gap-2 rounded-full border border-[#F04452]/40 bg-[#F04452]/10 px-3.5 py-1 text-[11px] font-bold text-[#F04452] mb-2 font-mono">
-            <span className="inline-block h-2 w-2 rounded-full bg-[#F04452] animate-pulse" />
+          <div className="inline-flex items-center gap-2 rounded-full border border-[#F04452]/40 bg-up/10 px-3.5 py-1 text-xs font-bold text-up mb-2 font-mono">
+            <span className="inline-block h-2 w-2 rounded-full bg-up animate-pulse" />
             INSTITUTIONAL PORTFOLIOS · 기관 프롭데스크
           </div>
           <h1 className="text-xl md:text-2xl font-black text-white tracking-tight">
@@ -98,8 +98,8 @@ export default function InstitutionsDashboard() {
           </p>
         </div>
         <div className="flex items-center gap-3 text-[12px] font-mono shrink-0">
-          <span className="inline-flex items-center gap-2 rounded-full bg-[#F04452]/10 px-3.5 py-1 text-[#F04452] font-bold border border-[#F04452]/30">
-            <span className="h-2 w-2 rounded-full bg-[#F04452] animate-pulse" />
+          <span className="inline-flex items-center gap-2 rounded-full bg-up/10 px-3.5 py-1 text-up font-bold border border-[#F04452]/30">
+            <span className="h-2 w-2 rounded-full bg-up animate-pulse" />
             실시간 DB 연동 중
           </span>
         </div>
@@ -116,7 +116,7 @@ export default function InstitutionsDashboard() {
 
       <div className="grid grid-cols-1 gap-5">
         {portfolios.length === 0 ? (
-          <div className="p-12 text-center text-[#8E939D] bg-[#0E1117] rounded-3xl border border-[#212631] font-mono">
+          <div className="p-12 text-center text-[#8E939D] bg-[#0E1117] rounded-3xl border border-border font-mono">
             엔진으로부터 기관 포트폴리오 데이터를 동기화하는 중...
           </div>
         ) : (
@@ -140,20 +140,20 @@ export default function InstitutionsDashboard() {
             }
 
             return (
-              <div key={p.bot_id} className="bg-[#0E1117] border border-[#212631] p-6 rounded-3xl space-y-4 shadow-xl">
-                <div className="flex items-center justify-between border-b border-[#212631] pb-3">
+              <div key={p.bot_id} className="bg-[#0E1117] border border-border p-6 rounded-3xl space-y-4 shadow-xl">
+                <div className="flex items-center justify-between border-b border-border pb-3">
                   <h3 className="text-[15px] font-black text-white flex items-center gap-2">
-                    <span className="w-2.5 h-2.5 rounded-full bg-[#F04452]" />
+                    <span className="w-2.5 h-2.5 rounded-full bg-up" />
                     <span>{displayName}</span>
                   </h3>
-                  <span className="text-[11px] font-mono font-bold text-[#8E939D]">
+                  <span className="text-xs font-mono font-bold text-[#8E939D]">
                     최종 동기화 시각: {new Date(p.updated_at).toLocaleTimeString('ko-KR', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                   </span>
                 </div>
 
                 <div className="text-[12.5px] font-mono">
                   {/* Table Header */}
-                  <div className="grid grid-cols-5 border-b border-[#212631] pb-2.5 mb-2 font-extrabold text-[#8E939D] text-[11px] uppercase tracking-wider bg-[#090B0F] p-3 rounded-xl">
+                  <div className="grid grid-cols-5 border-b border-border pb-2.5 mb-2 font-extrabold text-[#8E939D] text-xs uppercase tracking-wider bg-[#090B0F] p-3 rounded-xl">
                     <div>자산군 (ASSET CLASS)</div>
                     <div className="text-right">평가 금액 (원)</div>
                     <div className="text-right">현재 비중</div>
@@ -170,21 +170,21 @@ export default function InstitutionsDashboard() {
                     <div className="text-right tabular-nums text-white font-black">{formatNumber(p.current_cash)}</div>
                     <div className="text-right tabular-nums font-black text-white">{formatPercent(cashRatio)}</div>
                     <div className="text-right tabular-nums text-[#8E939D] font-bold">{formatPercent(targetCash)}</div>
-                    <div className={`text-right tabular-nums font-black ${cashRatio - targetCash > 0.001 ? "text-[#F04452]" : cashRatio - targetCash < -0.001 ? "text-[#3182F6]" : "text-[#565A63]"}`}>
+                    <div className={`text-right tabular-nums font-black ${cashRatio - targetCash > 0.001 ? "text-up" : cashRatio - targetCash < -0.001 ? "text-down" : "text-[#565A63]"}`}>
                       {formatPercent(cashRatio - targetCash)}
                     </div>
                   </div>
 
                   {/* Stock */}
                   <div className="grid grid-cols-5 py-2 items-center hover:bg-[#161B22] rounded-xl transition-colors px-3">
-                    <div className="text-[#3182F6] font-bold flex items-center gap-2">
-                      <span className="h-2 w-2 rounded-full bg-[#3182F6]" />
+                    <div className="text-down font-bold flex items-center gap-2">
+                      <span className="h-2 w-2 rounded-full bg-down" />
                       주식 자산 (EQUITY)
                     </div>
                     <div className="text-right tabular-nums text-white font-black">{formatNumber(p.current_stock)}</div>
                     <div className="text-right tabular-nums font-black text-white">{formatPercent(stockRatio)}</div>
                     <div className="text-right tabular-nums text-[#8E939D] font-bold">{formatPercent(targetStock)}</div>
-                    <div className={`text-right tabular-nums font-black ${stockRatio - targetStock > 0.001 ? "text-[#F04452]" : stockRatio - targetStock < -0.001 ? "text-[#3182F6]" : "text-[#565A63]"}`}>
+                    <div className={`text-right tabular-nums font-black ${stockRatio - targetStock > 0.001 ? "text-up" : stockRatio - targetStock < -0.001 ? "text-down" : "text-[#565A63]"}`}>
                       {formatPercent(stockRatio - targetStock)}
                     </div>
                   </div>
@@ -198,7 +198,7 @@ export default function InstitutionsDashboard() {
                     <div className="text-right tabular-nums text-white font-black">{formatNumber(p.current_bond)}</div>
                     <div className="text-right tabular-nums font-black text-white">{formatPercent(bondRatio)}</div>
                     <div className="text-right tabular-nums text-[#8E939D] font-bold">{formatPercent(targetBond)}</div>
-                    <div className={`text-right tabular-nums font-black ${bondRatio - targetBond > 0.001 ? "text-[#F04452]" : bondRatio - targetBond < -0.001 ? "text-[#3182F6]" : "text-[#565A63]"}`}>
+                    <div className={`text-right tabular-nums font-black ${bondRatio - targetBond > 0.001 ? "text-up" : bondRatio - targetBond < -0.001 ? "text-down" : "text-[#565A63]"}`}>
                       {formatPercent(bondRatio - targetBond)}
                     </div>
                   </div>
@@ -212,15 +212,15 @@ export default function InstitutionsDashboard() {
                     <div className="text-right tabular-nums text-white font-black">{formatNumber(p.current_commodity)}</div>
                     <div className="text-right tabular-nums font-black text-white">{formatPercent(commodityRatio)}</div>
                     <div className="text-right tabular-nums text-[#8E939D] font-bold">{formatPercent(targetCommodity)}</div>
-                    <div className={`text-right tabular-nums font-black ${commodityRatio - targetCommodity > 0.001 ? "text-[#F04452]" : commodityRatio - targetCommodity < -0.001 ? "text-[#3182F6]" : "text-[#565A63]"}`}>
+                    <div className={`text-right tabular-nums font-black ${commodityRatio - targetCommodity > 0.001 ? "text-up" : commodityRatio - targetCommodity < -0.001 ? "text-down" : "text-[#565A63]"}`}>
                       {formatPercent(commodityRatio - targetCommodity)}
                     </div>
                   </div>
 
                   {/* Total */}
-                  <div className="grid grid-cols-5 border-t border-[#212631] mt-3 pt-3 font-black text-[13.5px] bg-[#161B22] p-3 rounded-xl">
+                  <div className="grid grid-cols-5 border-t border-border mt-3 pt-3 font-black text-[13.5px] bg-[#161B22] p-3 rounded-xl">
                     <div className="text-white">총 운용 자산 (AUM)</div>
-                    <div className="text-right text-[#F04452] tabular-nums font-black">{formatNumber(total)} 원</div>
+                    <div className="text-right text-up tabular-nums font-black">{formatNumber(total)} 원</div>
                     <div className="text-right text-white tabular-nums">100.0%</div>
                     <div className="text-right text-white tabular-nums">100.0%</div>
                     <div className="text-right text-[#565A63] tabular-nums">0.0%</div>

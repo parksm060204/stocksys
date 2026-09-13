@@ -4,7 +4,7 @@ export default function Loading() {
       <div className="h-6 w-48 rounded bg-[#222736]" />
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         {Array.from({ length: 8 }).map((_, i) => (
-          <div key={i} className="rounded-xl border border-[#222736] bg-[#151821] p-5 space-y-3">
+          <div key={i} className="rounded-xl border border-border bg-[#151821] p-5 space-y-3">
             <div className="h-4 w-20 rounded bg-[#222736]" />
             <div className="h-6 w-32 rounded bg-[#222736]" />
             <div className="h-3 w-full rounded bg-[#1c2030]" />

@@ -3,8 +3,8 @@ import * as dotenv from 'dotenv';
 dotenv.config(); // engine-server/.env 에서 SUPABASE_SERVICE_ROLE_KEY 읽기
 
 const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!, // service role로 RLS 우회
+  (process.env.NEXT_PUBLIC_ENGINE_DB_URL || process.env.NEXT_PUBLIC_SUPABASE_URL)!,
+  (process.env.ENGINE_DB_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY)!, // service role로 RLS 우회
   { auth: { persistSession: false } }
 );
 

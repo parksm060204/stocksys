@@ -651,22 +651,22 @@ export default function StockChartV2({ ticker, currentPrice, isProMode }: Props)
      Render
   ───────────────────────────────────────────────────────── */
   return (
-    <div className="relative w-full h-full flex flex-col bg-[#0D0F14]">
+    <div className="relative w-full h-full flex flex-col bg-panel">
       {/* 상단 레이블 바 */}
       <div className="flex items-center justify-between px-3 py-1.5 shrink-0">
         <div className="flex items-center gap-2">
-          <span className="text-[11px] font-bold text-[#9CA3AF] uppercase tracking-widest">
+          <span className="text-xs font-bold text-muted uppercase tracking-widest">
             {isProMode ? "봉 차트 (10분)" : "실시간 선 차트"}
           </span>
           {isProMode && (
             <div className="flex items-center gap-1">
-              <span className="text-[9px] text-[#F59E0B]/80 bg-[#F59E0B]/10 px-1.5 py-px rounded tracking-widest">
+              <span className="text-[10px] text-[#F59E0B]/80 bg-[#F59E0B]/10 px-1.5 py-px rounded tracking-widest">
                 BB(20,2)
               </span>
-              <span className="text-[9px] text-[#6B7280] bg-[#1C1C1E] px-1.5 py-px rounded tracking-widest">
+              <span className="text-[10px] text-dim bg-panel2 px-1.5 py-px rounded tracking-widest">
                 RSI(14)
               </span>
-              <span className="text-[9px] text-[#6B7280] bg-[#1C1C1E] px-1.5 py-px rounded tracking-widest">
+              <span className="text-[10px] text-dim bg-panel2 px-1.5 py-px rounded tracking-widest">
                 VOL
               </span>
             </div>
@@ -674,7 +674,7 @@ export default function StockChartV2({ ticker, currentPrice, isProMode }: Props)
         </div>
 
         {isFallback && (
-          <span className="text-[9px] text-yellow-500/70 bg-yellow-500/10 px-2 py-px rounded tracking-widest">
+          <span className="text-[10px] text-yellow-500/70 bg-yellow-500/10 px-2 py-px rounded tracking-widest">
             시뮬레이션
           </span>
         )}
@@ -685,7 +685,7 @@ export default function StockChartV2({ ticker, currentPrice, isProMode }: Props)
 
       {/* Pro 모드 범례 */}
       {isProMode && (
-        <div className="flex items-center gap-3 px-3 py-1.5 shrink-0 border-t border-[#1C1C1E]">
+        <div className="flex items-center gap-3 px-3 py-1.5 shrink-0 border-t border-border">
           <LegendItem color="#F04452" label="상승봉" />
           <LegendItem color="#3182F6" label="하락봉" />
           <LegendItem color="rgba(245,158,11,0.7)" label="볼린저밴드" dashed />
@@ -715,7 +715,7 @@ function LegendItem({
           borderTop: dashed ? `1px dashed ${color}` : undefined,
         }}
       />
-      <span className="text-[9px] text-[#6B7280]">{label}</span>
+      <span className="text-[10px] text-dim">{label}</span>
     </div>
   );
 }

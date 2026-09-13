@@ -130,14 +130,14 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
 
 
   return (
-    <div className="w-full flex flex-col h-full bg-[#0E1117] border border-[#212631] rounded-2xl overflow-hidden shadow-2xl">
+    <div className="w-full flex flex-col h-full bg-[#090B0F] border border-[#1e2230] rounded-2xl overflow-hidden shadow-2xl font-sans">
       {/* Tab Switcher */}
-      <div className="grid grid-cols-2 border-b border-[#212631] bg-[#090B0F]">
+      <div className="grid grid-cols-2 border-b border-[#1e2230] bg-[#05070A]">
         <button
           onClick={() => setSide("buy")}
-          className={`py-3 text-[13.5px] font-black transition-all cursor-pointer ${
+          className={`py-3 text-[13px] font-bold transition-all cursor-pointer font-sans ${
             side === "buy" 
-              ? "bg-[#F04452]/15 text-[#F04452] border-b-2 border-[#F04452]" 
+              ? "bg-up/15 text-up border-b-2 border-[#F04452]" 
               : "text-[#8E939D] hover:text-white"
           }`}
         >
@@ -145,9 +145,9 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
         </button>
         <button
           onClick={() => setSide("sell")}
-          className={`py-3 text-[13.5px] font-black transition-all border-l border-[#212631] cursor-pointer ${
+          className={`py-3 text-[13px] font-bold transition-all border-l border-[#1e2230] cursor-pointer font-sans ${
             side === "sell" 
-              ? "bg-[#3182F6]/15 text-[#3182F6] border-b-2 border-[#3182F6]" 
+              ? "bg-down/15 text-down border-b-2 border-[#3182F6]" 
               : "text-[#8E939D] hover:text-white"
           }`}
         >
@@ -162,13 +162,13 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
               <input
                 value={price}
                 onChange={(e) => setPrice(e.target.value)}
-                className={`w-full rounded-xl border border-[#212631] bg-[#05070A] px-3.5 py-2.5 text-right font-mono text-[13.5px] text-white font-black outline-none ${
+                className={`w-full rounded-xl border border-[#1e2230] bg-[#05070A] px-3.5 py-2.5 text-right font-mono text-[13.5px] text-white font-black outline-none transition-colors ${
                   side === "buy" ? "focus:border-[#F04452]" : "focus:border-[#3182F6]"
                 }`}
               />
               <button 
                 onClick={() => setPrice(String(stock.currentPrice))}
-                className="absolute left-2.5 top-2 text-[10.5px] text-[#8E939D] hover:text-white bg-[#161B22] border border-[#212631] px-2 py-0.5 rounded-md font-bold"
+                className="absolute left-2.5 top-2 text-[10.5px] text-[#8E939D] hover:text-white bg-[#141721] border border-[#1e2230] px-2 py-0.5 rounded-md font-bold cursor-pointer font-sans"
               >
                 현재가
               </button>
@@ -179,19 +179,19 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
             <input
               value={qty}
               onChange={(e) => setQty(e.target.value)}
-              className={`w-full rounded-xl border border-[#212631] bg-[#05070A] px-3.5 py-2.5 text-right font-mono text-[13.5px] text-white font-black outline-none ${
+              className={`w-full rounded-xl border border-[#1e2230] bg-[#05070A] px-3.5 py-2.5 text-right font-mono text-[13.5px] text-white font-black outline-none transition-colors ${
                 side === "buy" ? "focus:border-[#F04452]" : "focus:border-[#3182F6]"
               }`}
             />
           </Field>
 
           {/* 수량 프리셋 버튼 */}
-          <div className="flex gap-1.5">
+          <div className="flex gap-1.5 font-sans">
             {["10", "50", "100", "500"].map((q) => (
               <button
                 key={q}
                 onClick={() => setQty(q)}
-                className="flex-1 rounded-lg border border-[#212631] bg-[#161B22] py-1 text-[11px] font-mono font-bold text-[#8E939D] hover:bg-white/10 hover:text-white transition-all cursor-pointer"
+                className="flex-1 rounded-lg border border-[#1e2230] bg-[#141721] py-1 text-xs font-bold text-[#8E939D] hover:bg-white/10 hover:text-white transition-all cursor-pointer font-mono"
               >
                 {q}주
               </button>
@@ -199,32 +199,32 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
           </div>
 
           {/* 초고속 매매 패널 */}
-          <div className="pt-3 border-t border-[#212631]">
+          <div className="pt-3 border-t border-[#1e2230] font-sans">
             <span className="text-[10px] uppercase font-bold tracking-wider text-[#8E939D] block mb-2 font-mono">
               QUICK ORDER SCALPING
             </span>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-2 gap-2 font-sans">
               <button
                 onClick={() => handleQuickBuy(10)}
-                className="border border-[#F04452]/40 bg-[#F04452]/10 text-[#F04452] hover:bg-[#F04452]/20 py-2 text-[11px] font-extrabold rounded-xl transition-all cursor-pointer"
+                className="border border-[#F04452]/40 bg-up/10 text-up hover:bg-up/20 py-2 text-xs font-bold rounded-xl transition-all cursor-pointer"
               >
                 10% 시장가 매수
               </button>
               <button
                 onClick={() => handleQuickBuy(50)}
-                className="border border-[#F04452]/40 bg-[#F04452]/10 text-[#F04452] hover:bg-[#F04452]/20 py-2 text-[11px] font-extrabold rounded-xl transition-all cursor-pointer"
+                className="border border-[#F04452]/40 bg-up/10 text-up hover:bg-up/20 py-2 text-xs font-bold rounded-xl transition-all cursor-pointer"
               >
                 50% 시장가 매수
               </button>
               <button
                 onClick={() => handleQuickSell(10)}
-                className="border border-[#3182F6]/40 bg-[#3182F6]/10 text-[#3182F6] hover:bg-[#3182F6]/20 py-2 text-[11px] font-extrabold rounded-xl transition-all cursor-pointer"
+                className="border border-[#3182F6]/40 bg-down/10 text-down hover:bg-down/20 py-2 text-xs font-bold rounded-xl transition-all cursor-pointer"
               >
                 10% 시장가 매도
               </button>
               <button
                 onClick={() => handleQuickSell(100)}
-                className="border border-[#3182F6]/40 bg-[#3182F6]/10 text-[#3182F6] hover:bg-[#3182F6]/20 py-2 text-[11px] font-extrabold rounded-xl transition-all cursor-pointer"
+                className="border border-[#3182F6]/40 bg-down/10 text-down hover:bg-down/20 py-2 text-xs font-bold rounded-xl transition-all cursor-pointer"
               >
                 전량(100%) 매도
               </button>
@@ -232,10 +232,10 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
           </div>
         </div>
 
-        <div>
+        <div className="font-sans">
           {/* 예상 금액 요약 */}
-          <div className="flex items-center justify-between bg-[#161B22] px-3.5 py-2.5 mb-3 border border-[#212631] rounded-xl">
-            <span className="text-[11.5px] text-[#8E939D] font-medium">총 주문 예상금액</span>
+          <div className="flex items-center justify-between bg-[#141721] px-3.5 py-2.5 mb-3 border border-[#1e2230] rounded-xl">
+            <span className="text-[11.5px] text-[#8E939D] font-medium font-sans">총 주문 예상금액</span>
             <span className="font-mono text-[14.5px] font-black tabular-nums text-white">
               {fmtPrice(total, stock.market)}
             </span>
@@ -244,13 +244,13 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
           <button
             onClick={handleOrder}
             disabled={loading}
-            className={`w-full py-3.5 text-[14px] font-black transition-all rounded-full cursor-pointer shadow-lg active:scale-[0.98] ${
+            className={`w-full py-3 text-[13.5px] font-bold transition-all rounded-xl cursor-pointer shadow-lg active:scale-[0.98] font-sans ${
               side === "buy" 
-                ? "bg-[#F04452] text-white hover:bg-[#ff5252] shadow-[0_0_20px_rgba(240,68,82,0.35)]" 
-                : "bg-[#3182F6] text-white hover:bg-[#4092ff] shadow-[0_0_20px_rgba(49,130,246,0.35)]"
+                ? "bg-up text-white hover:bg-[#ff5252] shadow-[0_0_20px_rgba(240,68,82,0.35)]" 
+                : "bg-down text-white hover:bg-[#4092ff] shadow-[0_0_20px_rgba(49,130,246,0.35)]"
             }`}
           >
-            {loading ? "주문 처리 중..." : side === "buy" ? "매수 주문 제출 (BUY)" : "매도 주문 제출 (SELL)"}
+            {loading ? "주문 처리 중..." : side === "buy" ? "매수 주문 제출" : "매도 주문 제출"}
           </button>
         </div>
       </div>
@@ -262,7 +262,7 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label className="block">
-      <span className="mb-1 block text-[11px] text-[#8E939D] font-bold">{label}</span>
+      <span className="mb-1 block text-xs text-[#8E939D] font-bold">{label}</span>
       {children}
     </label>
   );

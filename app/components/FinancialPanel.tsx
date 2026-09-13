@@ -10,16 +10,16 @@ export default function FinancialPanel({ stock }: { stock: Stock }) {
   return (
     <StrictWidget title="기업 실적 및 밸류에이션 (FINANCIALS)">
       {/* Valuation Metrics */}
-      <div className="grid grid-cols-4 border-b border-[#212631] text-center bg-[#090B0F] font-mono">
-        <div className="py-3 border-r border-[#212631]">
+      <div className="grid grid-cols-4 border-b border-border text-center bg-[#090B0F] font-mono">
+        <div className="py-3 border-r border-border">
           <div className="text-[10px] text-[#8E939D] uppercase font-bold">PER</div>
           <div className="mt-0.5 text-[12.5px] font-black text-white">{financials.per.toFixed(2)}배</div>
         </div>
-        <div className="py-3 border-r border-[#212631]">
+        <div className="py-3 border-r border-border">
           <div className="text-[10px] text-[#8E939D] uppercase font-bold">PBR</div>
           <div className="mt-0.5 text-[12.5px] font-black text-white">{financials.pbr.toFixed(2)}배</div>
         </div>
-        <div className="py-3 border-r border-[#212631]">
+        <div className="py-3 border-r border-border">
           <div className="text-[10px] text-[#8E939D] uppercase font-bold">EV/EBITDA</div>
           <div className="mt-0.5 text-[12.5px] font-black text-white">{financials.evEbitda.toFixed(2)}배</div>
         </div>
@@ -29,7 +29,7 @@ export default function FinancialPanel({ stock }: { stock: Stock }) {
         </div>
       </div>
 
-      <div className="grid grid-cols-4 border-b border-[#212631] text-center bg-[#090B0F] font-mono">
+      <div className="grid grid-cols-4 border-b border-border text-center bg-[#090B0F] font-mono">
         <div className="p-2.5 text-[10px] text-[#8E939D] font-bold">연도</div>
         <div className="p-2.5 text-[10px] text-[#8E939D] font-bold">영업익</div>
         <div className="p-2.5 text-[10px] text-[#8E939D] font-bold">순이익</div>
@@ -45,7 +45,7 @@ export default function FinancialPanel({ stock }: { stock: Stock }) {
             <div className="p-2.5 text-[11.5px] text-white font-bold">
               {fmtCap(h.netIncome)}
             </div>
-            <div className={`p-2.5 text-[11.5px] font-black ${h.opYoY > 0 ? "text-[#F04452]" : "text-[#3182F6]"}`}>
+            <div className={`p-2.5 text-[11.5px] font-black ${h.opYoY > 0 ? "text-up" : "text-down"}`}>
               {h.opYoY > 0 ? "+" : ""}{h.opYoY.toFixed(1)}%
             </div>
           </div>

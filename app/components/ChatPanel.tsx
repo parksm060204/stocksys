@@ -39,14 +39,14 @@ export default function ChatPanel({
       <div className="flex-1 space-y-3 overflow-y-auto p-4">
         {messages.map((m) => (
           <div key={m.id} className="flex gap-2.5">
-            <div className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-panel2 text-[11px] font-bold text-muted">
+            <div className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-panel2 text-xs font-bold text-muted">
               {m.userName.slice(0, 1)}
             </div>
             <div className="min-w-0">
               <div className="flex items-center gap-1.5">
                 <span className="text-[12px] font-semibold text-tx">{m.userName}</span>
                 {m.isShareholder && (
-                  <span className="rounded bg-accent/15 px-1.5 py-px text-[9px] font-semibold text-accent">
+                  <span className="rounded bg-accent/15 px-1.5 py-px text-[10px] font-semibold text-accent">
                     주주
                   </span>
                 )}

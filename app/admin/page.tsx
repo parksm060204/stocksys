@@ -146,11 +146,11 @@ export default function AdminPage() {
   return (
     <div className="mx-auto max-w-7xl px-6 py-8 space-y-6 font-mono">
       {/* ── 1. 헤더 ── */}
-      <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 border-b border-[#212631] pb-6">
+      <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 border-b border-border pb-6">
         <div>
           <div className="flex items-center gap-3">
             <h1 className="text-2xl font-black text-white tracking-tight">👑 ADMIN COMMAND CENTER</h1>
-            <span className="px-3 py-1 rounded-full text-[11px] font-black bg-[#F04452]/10 text-[#F04452] border border-[#F04452]/30">
+            <span className="px-3 py-1 rounded-full text-xs font-black bg-up/10 text-up border border-[#F04452]/30">
               {isAdmin ? "SYSTEM ADMIN ACTIVE" : "DEVELOPER PREVIEW"}
             </span>
           </div>
@@ -159,12 +159,12 @@ export default function AdminPage() {
           </p>
         </div>
 
-        <div className="flex items-center gap-4 bg-[#0E1117] px-4 py-2.5 rounded-2xl border border-[#212631] text-xs">
+        <div className="flex items-center gap-4 bg-[#0E1117] px-4 py-2.5 rounded-2xl border border-border text-xs">
           <div>
             <span className="text-[#565A63] font-bold block text-[10px]">상장 주식</span>
             <span className="font-black text-white">{stocks.length}개</span>
           </div>
-          <div className="border-l border-[#212631] pl-4">
+          <div className="border-l border-border pl-4">
             <span className="text-[#565A63] font-bold block text-[10px]">활성 모듈</span>
             <span className="font-black text-emerald-400">
               {unlockedFeatures.length > 0 ? `${unlockedFeatures.length}개` : "ALL ACTIVE"}
@@ -174,7 +174,7 @@ export default function AdminPage() {
       </div>
 
       {/* ── 2. 네비게이션 탭 ── */}
-      <div className="flex border-b border-[#212631] gap-2 overflow-x-auto no-scrollbar">
+      <div className="flex border-b border-border gap-2 overflow-x-auto no-scrollbar">
         {[
           { id: "scenarios" as AdminTab, label: "🎛️ 시나리오 제어기 (작전/거시충격)", primary: true },
           { id: "listing" as AdminTab, label: "📝 신규 종목 상장", primary: false },
@@ -186,7 +186,7 @@ export default function AdminPage() {
             onClick={() => setActiveTab(tab.id)}
             className={`px-5 py-3 rounded-t-xl font-bold text-xs transition-all cursor-pointer whitespace-nowrap border-t border-x ${
               activeTab === tab.id
-                ? "bg-[#0E1117] border-[#212631] text-[#F04452] font-black border-b-transparent"
+                ? "bg-[#0E1117] border-border text-up font-black border-b-transparent"
                 : "border-transparent text-[#8E939D] hover:text-white bg-[#05070A]"
             }`}
           >
@@ -201,8 +201,8 @@ export default function AdminPage() {
       )}
 
       {activeTab === "listing" && (
-        <div className="rounded-2xl border border-[#212631] bg-[#0E1117] p-6 space-y-4 max-w-2xl shadow-xl">
-          <div className="flex items-center justify-between border-b border-[#212631] pb-3">
+        <div className="rounded-2xl border border-border bg-[#0E1117] p-6 space-y-4 max-w-2xl shadow-xl">
+          <div className="flex items-center justify-between border-b border-border pb-3">
             <h2 className="text-sm font-black text-white flex items-center gap-2">
               <span>📝 신규 종목 즉시 상장 (IPO)</span>
             </h2>
@@ -214,59 +214,59 @@ export default function AdminPage() {
           <div className="space-y-4 text-xs">
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="block text-[11px] text-[#8E939D] mb-1">티커 심볼 (Ticker)</label>
+                <label className="block text-xs text-[#8E939D] mb-1">티커 심볼 (Ticker)</label>
                 <input
                   type="text"
                   placeholder="예: 005930, AAPL"
                   value={newTicker}
                   onChange={(e) => setNewTicker(e.target.value)}
-                  className="w-full rounded-xl border border-[#212631] bg-[#05070A] px-3.5 py-2 text-white font-mono outline-none focus:border-[#3182F6]"
+                  className="w-full rounded-xl border border-border bg-[#05070A] px-3.5 py-2 text-white font-mono outline-none focus:border-[#3182F6]"
                 />
               </div>
               <div>
-                <label className="block text-[11px] text-[#8E939D] mb-1">종목명 (Company Name)</label>
+                <label className="block text-xs text-[#8E939D] mb-1">종목명 (Company Name)</label>
                 <input
                   type="text"
                   placeholder="예: 삼성전자, 애플"
                   value={newName}
                   onChange={(e) => setNewName(e.target.value)}
-                  className="w-full rounded-xl border border-[#212631] bg-[#05070A] px-3.5 py-2 text-white outline-none focus:border-[#3182F6]"
+                  className="w-full rounded-xl border border-border bg-[#05070A] px-3.5 py-2 text-white outline-none focus:border-[#3182F6]"
                 />
               </div>
             </div>
 
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="block text-[11px] text-[#8E939D] mb-1">시장 구분</label>
+                <label className="block text-xs text-[#8E939D] mb-1">시장 구분</label>
                 <select
                   value={newMarket}
                   onChange={(e) => setNewMarket(e.target.value)}
-                  className="w-full rounded-xl border border-[#212631] bg-[#05070A] px-3.5 py-2 text-white outline-none focus:border-[#3182F6]"
+                  className="w-full rounded-xl border border-border bg-[#05070A] px-3.5 py-2 text-white outline-none focus:border-[#3182F6]"
                 >
                   <option value="domestic">국내 코스피/코스닥</option>
                   <option value="overseas">미국 나스닥/NYSE</option>
                 </select>
               </div>
               <div>
-                <label className="block text-[11px] text-[#8E939D] mb-1">섹터 분류</label>
+                <label className="block text-xs text-[#8E939D] mb-1">섹터 분류</label>
                 <input
                   type="text"
                   placeholder="예: 반도체, AI, 2차전지"
                   value={newSector}
                   onChange={(e) => setNewSector(e.target.value)}
-                  className="w-full rounded-xl border border-[#212631] bg-[#05070A] px-3.5 py-2 text-white outline-none focus:border-[#3182F6]"
+                  className="w-full rounded-xl border border-border bg-[#05070A] px-3.5 py-2 text-white outline-none focus:border-[#3182F6]"
                 />
               </div>
             </div>
 
             <div>
-              <label className="block text-[11px] text-[#8E939D] mb-1">공모/시초가 (KRW)</label>
+              <label className="block text-xs text-[#8E939D] mb-1">공모/시초가 (KRW)</label>
               <input
                 type="number"
                 placeholder="50000"
                 value={newPrice}
                 onChange={(e) => setNewPrice(e.target.value)}
-                className="w-full rounded-xl border border-[#212631] bg-[#05070A] px-3.5 py-2 text-white font-mono outline-none focus:border-[#3182F6]"
+                className="w-full rounded-xl border border-border bg-[#05070A] px-3.5 py-2 text-white font-mono outline-none focus:border-[#3182F6]"
               />
             </div>
 
@@ -282,8 +282,8 @@ export default function AdminPage() {
       )}
 
       {activeTab === "events" && (
-        <div className="rounded-2xl border border-[#212631] bg-[#0E1117] p-6 space-y-4 max-w-2xl shadow-xl">
-          <div className="flex items-center justify-between border-b border-[#212631] pb-3">
+        <div className="rounded-2xl border border-border bg-[#0E1117] p-6 space-y-4 max-w-2xl shadow-xl">
+          <div className="flex items-center justify-between border-b border-border pb-3">
             <h2 className="text-sm font-black text-white flex items-center gap-2">
               <span>📰 AI 시황/웹소설 이벤트 강제 생성</span>
             </h2>
@@ -294,24 +294,24 @@ export default function AdminPage() {
 
           <div className="space-y-4 text-xs">
             <div>
-              <label className="block text-[11px] text-[#8E939D] mb-1">이벤트 제목 (Headline)</label>
+              <label className="block text-xs text-[#8E939D] mb-1">이벤트 제목 (Headline)</label>
               <input
                 type="text"
                 placeholder="예: [단독] 정부, 차세대 AI 반도체 10조원 전폭 지원 발표"
                 value={eventTitle}
                 onChange={(e) => setEventTitle(e.target.value)}
-                className="w-full rounded-xl border border-[#212631] bg-[#05070A] px-3.5 py-2 text-white outline-none focus:border-[#3182F6]"
+                className="w-full rounded-xl border border-border bg-[#05070A] px-3.5 py-2 text-white outline-none focus:border-[#3182F6]"
               />
             </div>
 
             <div>
-              <label className="block text-[11px] text-[#8E939D] mb-1">상세 원문 기사</label>
+              <label className="block text-xs text-[#8E939D] mb-1">상세 원문 기사</label>
               <textarea
                 rows={4}
                 placeholder="시장에 전파될 상세 뉴스 및 웹소설 스토리 텍스트를 입력하세요..."
                 value={eventRawText}
                 onChange={(e) => setEventRawText(e.target.value)}
-                className="w-full rounded-xl border border-[#212631] bg-[#05070A] px-3.5 py-2 text-white font-sans outline-none focus:border-[#3182F6] resize-none"
+                className="w-full rounded-xl border border-border bg-[#05070A] px-3.5 py-2 text-white font-sans outline-none focus:border-[#3182F6] resize-none"
               />
             </div>
 
@@ -327,41 +327,41 @@ export default function AdminPage() {
       )}
 
       {activeTab === "emergency" && (
-        <div className="rounded-2xl border border-[#212631] bg-[#0E1117] p-6 space-y-4 max-w-2xl shadow-xl">
-          <div className="flex items-center justify-between border-b border-[#212631] pb-3">
+        <div className="rounded-2xl border border-border bg-[#0E1117] p-6 space-y-4 max-w-2xl shadow-xl">
+          <div className="flex items-center justify-between border-b border-border pb-3">
             <h2 className="text-sm font-black text-white flex items-center gap-2">
               <span>🚨 시스템 긴급 서킷브레이커</span>
             </h2>
-            <span className="text-[10px] font-mono text-red-400 bg-red-500/10 px-2 py-0.5 rounded border border-red-500/20">
+            <span className="text-[10px] font-mono text-up bg-up/10 px-2 py-0.5 rounded border border-red-500/20">
               CIRCUIT BREAKER
             </span>
           </div>
 
           <div className="space-y-4 text-xs">
-            <div className="flex items-center justify-between p-4 rounded-xl bg-[#05070A] border border-[#212631]">
+            <div className="flex items-center justify-between p-4 rounded-xl bg-[#05070A] border border-border">
               <div>
                 <div className="font-bold text-white">거래 전면 중단 (Trading Halt)</div>
-                <div className="text-[11px] text-[#565A63]">주문 매칭 및 봇 거래를 일시 동결합니다.</div>
+                <div className="text-xs text-[#565A63]">주문 매칭 및 봇 거래를 일시 동결합니다.</div>
               </div>
               <button
                 onClick={() => setTradingHalt(!tradingHalt)}
                 className={`px-4 py-2 rounded-xl font-bold text-xs transition-colors cursor-pointer ${
-                  tradingHalt ? "bg-red-600 text-white" : "bg-[#161B22] text-[#8E939D] border border-[#212631]"
+                  tradingHalt ? "bg-red-600 text-white" : "bg-[#161B22] text-[#8E939D] border border-border"
                 }`}
               >
                 {tradingHalt ? "🔴 동결 해제" : "⚪ 거래 동결"}
               </button>
             </div>
 
-            <div className="flex items-center justify-between p-4 rounded-xl bg-[#05070A] border border-[#212631]">
+            <div className="flex items-center justify-between p-4 rounded-xl bg-[#05070A] border border-border">
               <div>
                 <div className="font-bold text-white">LP 무한 유동성 공급 (Infinite Liquidity)</div>
-                <div className="text-[11px] text-[#565A63]">호가 공백 발생 시 자동 마켓메이커 개입</div>
+                <div className="text-xs text-[#565A63]">호가 공백 발생 시 자동 마켓메이커 개입</div>
               </div>
               <button
                 onClick={() => setLpInfiniteLiquidity(!lpInfiniteLiquidity)}
                 className={`px-4 py-2 rounded-xl font-bold text-xs transition-colors cursor-pointer ${
-                  lpInfiniteLiquidity ? "bg-emerald-600 text-white" : "bg-[#161B22] text-[#8E939D] border border-[#212631]"
+                  lpInfiniteLiquidity ? "bg-emerald-600 text-white" : "bg-[#161B22] text-[#8E939D] border border-border"
                 }`}
               >
                 {lpInfiniteLiquidity ? "🟢 LP 가동 중" : "⚪ LP 중단됨"}

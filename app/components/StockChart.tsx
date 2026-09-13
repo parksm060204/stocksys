@@ -14,19 +14,28 @@ interface Candle {
   volume: number;
 }
 
-type TimeUnit = "1m" | "5m" | "10m" | "1h" | "1d";
+type TimeUnit = "10m" | "1h" | "1d" | "1M";
 
 const INTERVAL_MINUTES: Record<TimeUnit, number> = {
-  "1m": 1,
-  "5m": 5,
   "10m": 10,
   "1h": 60,
   "1d": 1440,
+  "1M": 43200,
+};
+
+const TIME_UNIT_LABEL: Record<TimeUnit, string> = {
+  "10m": "10분",
+  "1h": "1시간",
+  "1d": "1일",
+  "1M": "1개월",
 };
 
 function formatCandleTime(date: Date, unit: TimeUnit): string {
   const h = String(date.getHours()).padStart(2, "0");
   const m = String(date.getMinutes()).padStart(2, "0");
+  if (unit === "1M") {
+    return `${date.getFullYear()}/${date.getMonth() + 1}`;
+  }
   if (unit === "1d") {
     return `${date.getMonth() + 1}/${date.getDate()}`;
   }
@@ -221,34 +230,32 @@ export default function StockChart({ stock }: { stock: Stock }) {
   return (
     <div className="flex flex-col h-full w-full">
       {/* 1. 상단 정보창 및 툴바 */}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#212631] pb-3 px-1">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-3 px-1">
         {/* OHLCV 인포 */}
         <div className="flex flex-wrap items-center gap-3 font-mono text-[11.5px] text-[#8E939D] font-medium">
-          <span className="text-[#565A63]">시간: <span className="text-white font-bold">{activeCandle.time}</span></span>
-          <span>시: <span className={`font-bold ${activeCandle.open >= stock.previousClose ? "text-[#F04452]" : "text-[#3182F6]"}`}>{fmtPrice(activeCandle.open, stock.market)}</span></span>
-          <span>고: <span className="text-[#F04452] font-bold">{fmtPrice(activeCandle.high, stock.market)}</span></span>
-          <span>저: <span className="text-[#3182F6] font-bold">{fmtPrice(activeCandle.low, stock.market)}</span></span>
-          <span>종: <span className={`font-bold ${activeCandle.close >= stock.previousClose ? "text-[#F04452]" : "text-[#3182F6]"}`}>{fmtPrice(activeCandle.close, stock.market)}</span></span>
+          <span className="text-[#565A63]"><span className="text-white font-bold">{activeCandle.time}</span></span>
+          <span>시작: <span className={`font-bold ${activeCandle.open >= stock.previousClose ? "text-up" : "text-down"}`}>{fmtPrice(activeCandle.open, stock.market)}</span></span>
+          <span>최고: <span className="text-up font-bold">{fmtPrice(activeCandle.high, stock.market)}</span></span>
+          <span>최저: <span className="text-down font-bold">{fmtPrice(activeCandle.low, stock.market)}</span></span>
+          <span>마지막: <span className={`font-bold ${activeCandle.close >= stock.previousClose ? "text-up" : "text-down"}`}>{fmtPrice(activeCandle.close, stock.market)}</span></span>
           <span className="text-[10px] text-emerald-400 font-bold bg-emerald-400/10 px-2 py-0.5 rounded border border-emerald-400/20 ml-1">
-            LIVE DB ({realTrades.length}건 체결)
+            LIVE ({realTrades.length}건)
           </span>
         </div>
 
         {/* 봉 주기 버튼 */}
-        <div className="flex items-center gap-1 rounded-full bg-[#161B22] p-1 border border-[#212631]">
-          {(["1m", "5m", "10m", "1h", "1d"] as TimeUnit[]).map((u) => (
+        <div className="flex items-center gap-1 rounded-full bg-[#161B22] p-1 border border-border">
+          {(["10m", "1h", "1d", "1M"] as TimeUnit[]).map((u) => (
             <button
               key={u}
-              onClick={() => {
-                setUnit(u);
-              }}
-              className={`rounded-full px-3 py-1 font-mono text-[11px] font-bold transition-all cursor-pointer ${
+              onClick={() => setUnit(u)}
+              className={`rounded-full px-3 py-1 font-mono text-xs font-bold transition-all cursor-pointer ${
                 unit === u
-                  ? "bg-[#F04452] text-white shadow-[0_0_10px_rgba(240,68,82,0.4)]"
+                  ? "bg-up text-white shadow-[0_0_10px_rgba(240,68,82,0.4)]"
                   : "text-[#8E939D] hover:text-white hover:bg-white/5"
               }`}
             >
-              {u === "1m" ? "1분" : u === "5m" ? "5분" : u === "10m" ? "10분" : u === "1h" ? "1시간" : "1일"}
+              {TIME_UNIT_LABEL[u]}
             </button>
           ))}
         </div>
@@ -267,7 +274,7 @@ export default function StockChart({ stock }: { stock: Stock }) {
             return (
               <g key={`y-${t}`}>
                 <line x1="0" y1={y} x2={w - 50} y2={y} stroke="#212631" strokeOpacity="0.6" strokeDasharray="2 4" strokeWidth="1" />
-                <text x={w} y={y + 3} textAnchor="end" className="fill-[#8E939D] font-mono text-[9px] font-medium">{t.toLocaleString()}</text>
+                <text x={w} y={y + 3} textAnchor="end" className="fill-[#8E939D] font-mono text-[10px] font-medium">{t.toLocaleString()}</text>
               </g>
             );
           })}
@@ -278,7 +285,7 @@ export default function StockChart({ stock }: { stock: Stock }) {
             return (
               <g key={`x-${t.index}`}>
                 <line x1={cx} y1="0" x2={cx} y2={chartHeight} stroke="#212631" strokeOpacity="0.4" strokeDasharray="2 4" strokeWidth="1" />
-                <text x={cx} y={chartHeight + 14} textAnchor="middle" className="fill-[#8E939D] font-mono text-[9px] font-medium">{t.time}</text>
+                <text x={cx} y={chartHeight + 14} textAnchor="middle" className="fill-[#8E939D] font-mono text-[10px] font-medium">{t.time}</text>
               </g>
             );
           })}
@@ -299,7 +306,7 @@ export default function StockChart({ stock }: { stock: Stock }) {
                 x={w - 5}
                 y={prevCloseY - 4}
                 textAnchor="end"
-                className="fill-[#8E939D] font-mono text-[9px] font-bold"
+                className="fill-[#8E939D] font-mono text-[10px] font-bold"
               >
                 전일대비 기준선
               </text>

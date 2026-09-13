@@ -7,6 +7,8 @@ import { MARKETS } from "@/lib/constants";
 import { createClient } from "@/lib/supabase/client";
 import { useAuth } from "@/lib/auth/useAuth";
 
+import { ThemeToggle } from "./ThemeToggle";
+
 const STOCK_MARKET_IDS = ["domestic", "overseas", "europe"];
 const NON_STOCK_MARKETS = MARKETS.filter((m) => !STOCK_MARKET_IDS.includes(m.id));
 
@@ -145,19 +147,22 @@ export default function Sidebar() {
   const hasEcoCalendar = unlockedFeatures.includes("eco_calendar") || isAdmin;
 
   return (
-    <aside className="flex w-56 shrink-0 flex-col border-r border-[#212631] bg-[#090B0F]">
-      {/* Robinhood Style Brand Header */}
-      <Link href="/" className="flex items-center gap-3 border-b border-[#212631] px-5 py-4 group">
-        <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-[#F04452] text-xs font-black text-white shadow-[0_0_12px_rgba(240,68,82,0.4)] group-hover:scale-105 transition-transform">
-          <svg className="h-4 w-4 fill-current" viewBox="0 0 24 24">
-            <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
-          </svg>
-        </div>
-        <div className="leading-tight">
-          <div className="text-[14px] font-extrabold tracking-tight text-white group-hover:text-[#F04452] transition-colors">무명증권</div>
-          <div className="text-[10px] text-[#8E939D] font-medium tracking-wide">ROBINHOOD SIM</div>
-        </div>
-      </Link>
+    <aside className="flex w-56 shrink-0 flex-col border-r border-border bg-[#090B0F]">
+      {/* Robinhood Style Brand Header + Theme Toggle */}
+      <div className="flex items-center justify-between border-b border-border px-4 py-3.5 gap-2">
+        <Link href="/" className="flex items-center gap-2.5 group min-w-0 flex-1">
+          <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-up text-xs font-black text-white shadow-[0_0_12px_rgba(240,68,82,0.4)] group-hover:scale-105 transition-transform">
+            <svg className="h-4 w-4 fill-current" viewBox="0 0 24 24">
+              <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
+            </svg>
+          </div>
+          <div className="leading-tight truncate">
+            <div className="text-[13.5px] font-extrabold tracking-tight text-white group-hover:text-up transition-colors truncate">무명증권</div>
+            <div className="text-[9.5px] text-[#8E939D] font-medium tracking-wide">ROBINHOOD SIM</div>
+          </div>
+        </Link>
+        <ThemeToggle className="shrink-0" />
+      </div>
 
 
       {/* Navigation */}
@@ -206,7 +211,7 @@ export default function Sidebar() {
       </nav>
 
       {/* Footer */}
-      <div className="border-t border-[#212631] px-4 py-3 text-[11px] text-[#565A63] flex flex-col gap-1.5">
+      <div className="border-t border-border px-4 py-3 text-xs text-[#565A63] flex flex-col gap-1.5">
         <div className="text-[10px] font-mono tracking-tight text-[#8E939D]">정규 장 18:00 – 22:30</div>
         <div
           onClick={handleAdminClick}
@@ -239,11 +244,11 @@ function NavItem({
           : "text-[#8E939D] hover:bg-[#12161F] hover:text-white"
       }`}
     >
-      <span className={`transition-colors ${active ? "text-[#F04452]" : "text-[#8E939D]"}`}>
+      <span className={`transition-colors ${active ? "text-up" : "text-[#8E939D]"}`}>
         <SidebarIcon name={icon} />
       </span>
       <span>{label}</span>
-      {active && <span className="ml-auto h-1.5 w-1.5 rounded-full bg-[#F04452] shadow-[0_0_6px_#F04452]" />}
+      {active && <span className="ml-auto h-1.5 w-1.5 rounded-full bg-up shadow-[0_0_6px_#F04452]" />}
     </Link>
   );
 }

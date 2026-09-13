@@ -69,15 +69,15 @@ function ToastItem({ toast, onClose }: { toast: ToastMessage; onClose: () => voi
     switch (type) {
       case 'buy':
         return {
-          badgeBg: 'bg-[#F04452]/15 text-[#F04452] border-[#F04452]/40',
-          barColor: 'bg-[#F04452]',
+          badgeBg: 'bg-up/15 text-up border-[#F04452]/40',
+          barColor: 'bg-up',
           icon: '📈',
           label: '매수 체결',
         };
       case 'sell':
         return {
-          badgeBg: 'bg-[#3182F6]/15 text-[#3182F6] border-[#3182F6]/40',
-          barColor: 'bg-[#3182F6]',
+          badgeBg: 'bg-down/15 text-down border-[#3182F6]/40',
+          barColor: 'bg-down',
           icon: '📉',
           label: '매도 체결',
         };
@@ -116,7 +116,7 @@ function ToastItem({ toast, onClose }: { toast: ToastMessage; onClose: () => voi
   const style = getBadgeStyle(toast.type);
 
   return (
-    <div className="pointer-events-auto rounded-2xl border border-[#212631] bg-[#0E1117]/95 backdrop-blur-md p-4 shadow-2xl transition-all animate-in fade-in slide-in-from-top-4 duration-300 font-sans overflow-hidden relative">
+    <div className="pointer-events-auto rounded-2xl border border-border bg-[#0E1117]/95 backdrop-blur-md p-4 shadow-2xl transition-all animate-in fade-in slide-in-from-top-4 duration-300 font-sans overflow-hidden relative">
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-start gap-2.5">
           <span className="text-lg leading-none mt-0.5">{style.icon}</span>

@@ -62,17 +62,17 @@ export const OptionMonthChainGrid: React.FC<OptionMonthChainGridProps> = ({
   ];
 
   return (
-    <div className="flex flex-col h-full bg-[#0E1117] border border-[#212631] rounded-2xl overflow-hidden font-mono select-none shadow-2xl">
+    <div className="flex flex-col h-full bg-[#0E1117] border border-border rounded-2xl overflow-hidden font-mono select-none shadow-2xl">
       {/* 1. 상단 HTS [0513] 헤더 툴바 */}
-      <div className="bg-[#090B0F] px-4 py-2.5 border-b border-[#212631] flex flex-wrap items-center justify-between gap-3 text-xs">
+      <div className="bg-[#090B0F] px-4 py-2.5 border-b border-border flex flex-wrap items-center justify-between gap-3 text-xs">
         <div className="flex items-center gap-3">
           <span className="font-extrabold text-white text-[13px] tracking-wide flex items-center gap-1.5">
-            <span className="text-[#F04452] font-black">[0513]</span>
+            <span className="text-up font-black">[0513]</span>
             <span>선물옵션 월물별 행사가 매트릭스</span>
           </span>
 
           {/* 월물 선택 드롭다운 */}
-          <div className="flex items-center gap-1 bg-[#161B22] border border-[#212631] px-2.5 py-1 rounded-lg">
+          <div className="flex items-center gap-1 bg-[#161B22] border border-border px-2.5 py-1 rounded-lg">
             <select
               value={selectedMonth}
               onChange={(e) => setSelectedMonth(e.target.value)}
@@ -87,35 +87,35 @@ export const OptionMonthChainGrid: React.FC<OptionMonthChainGridProps> = ({
         </div>
 
         {/* 기초 선물 시세 현황 (260.45 ▲ 0.20 +0.08% 126,293) */}
-        <div className="flex items-center gap-3 text-[12px] bg-[#161B22] px-3.5 py-1 rounded-xl border border-[#212631] font-mono tabular-nums">
+        <div className="flex items-center gap-3 text-[12px] bg-[#161B22] px-3.5 py-1 rounded-xl border border-border font-mono tabular-nums">
           <span className="text-[#8E939D] font-bold">기초 선물:</span>
-          <span className="text-[#F04452] font-black text-[13px]">{futuresPrice.toFixed(2)}</span>
-          <span className="text-[#F04452] font-bold">▲ {futuresChange.toFixed(2)}</span>
-          <span className="text-[#F04452] font-bold">+{futuresChangePct}%</span>
-          <span className="text-[#8E939D] text-[11px]">거래량 {futuresVolume.toLocaleString()}</span>
+          <span className="text-up font-black text-[13px]">{futuresPrice.toFixed(2)}</span>
+          <span className="text-up font-bold">▲ {futuresChange.toFixed(2)}</span>
+          <span className="text-up font-bold">+{futuresChangePct}%</span>
+          <span className="text-[#8E939D] text-xs">거래량 {futuresVolume.toLocaleString()}</span>
         </div>
       </div>
 
       {/* 2. HTS 상단 카테고리 헤더 (콜옵션 / 선물 / 풋옵션) */}
-      <div className="grid grid-cols-7 bg-[#090B0F] border-b border-[#212631] text-center font-bold text-[11px]">
-        <div className="col-span-3 py-1.5 bg-[#F04452]/10 text-[#F04452] border-r border-[#212631]">
+      <div className="grid grid-cols-7 bg-[#090B0F] border-b border-border text-center font-bold text-xs">
+        <div className="col-span-3 py-1.5 bg-up/10 text-up border-r border-border">
           콜옵션 (CALL OPTION)
         </div>
-        <div className="col-span-1 py-1.5 bg-[#161B22] text-amber-400 border-r border-[#212631]">
+        <div className="col-span-1 py-1.5 bg-[#161B22] text-amber-400 border-r border-border">
           선물 / 행사가
         </div>
-        <div className="col-span-3 py-1.5 bg-[#3182F6]/10 text-[#3182F6]">
+        <div className="col-span-3 py-1.5 bg-down/10 text-down">
           풋옵션 (PUT OPTION)
         </div>
       </div>
 
       {/* 3. 세부 7개 서브 컬럼 헤더 */}
-      <div className="grid grid-cols-7 bg-[#161B22] border-b border-[#212631] text-[11px] font-extrabold text-[#8E939D] text-center py-1.5">
+      <div className="grid grid-cols-7 bg-[#161B22] border-b border-border text-xs font-extrabold text-[#8E939D] text-center py-1.5">
         <div className="px-2 text-right">거래량</div>
         <div className="px-2 text-right">대비</div>
-        <div className="px-2 text-right border-r border-[#212631]">현재가</div>
-        <div className="px-2 text-center text-white border-r border-[#212631]">행사가</div>
-        <div className="px-2 text-left border-r border-[#212631]">현재가</div>
+        <div className="px-2 text-right border-r border-border">현재가</div>
+        <div className="px-2 text-center text-white border-r border-border">행사가</div>
+        <div className="px-2 text-left border-r border-border">현재가</div>
         <div className="px-2 text-left">대비</div>
         <div className="px-2 text-left">거래량</div>
       </div>
@@ -143,32 +143,32 @@ export const OptionMonthChainGrid: React.FC<OptionMonthChainGridProps> = ({
               {/* === [콜옵션 영역] 거래량 | 대비 | 현재가 === */}
               <div
                 onClick={() => onSelectContract(row.callTicker, row.callPrice, 'CALL')}
-                className={`col-span-3 grid grid-cols-3 h-full items-center cursor-pointer border-r border-[#212631] px-1 transition-all ${
-                  isCallSelected ? 'bg-[#F04452]/25 ring-1 ring-[#F04452]' : isCallITM ? 'bg-[#F04452]/5' : ''
+                className={`col-span-3 grid grid-cols-3 h-full items-center cursor-pointer border-r border-border px-1 transition-all ${
+                  isCallSelected ? 'bg-up/25 ring-1 ring-[#F04452]' : isCallITM ? 'bg-up/5' : ''
                 }`}
               >
                 {/* 1. 콜 거래량 */}
-                <div className="text-right text-[#8E939D] text-[11px] pr-2 truncate">
+                <div className="text-right text-[#8E939D] text-xs pr-2 truncate">
                   {row.callVolume.toLocaleString()}
                 </div>
 
                 {/* 2. 콜 대비 */}
                 <div className={`text-right text-[11.5px] pr-2 font-bold ${
-                  row.callChange > 0 ? 'text-[#F04452]' : row.callChange < 0 ? 'text-[#3182F6]' : 'text-[#8E939D]'
+                  row.callChange > 0 ? 'text-up' : row.callChange < 0 ? 'text-down' : 'text-[#8E939D]'
                 }`}>
                   {row.callChange > 0 ? `▲ ${row.callChange.toFixed(2)}` : row.callChange < 0 ? `▼ ${Math.abs(row.callChange).toFixed(2)}` : '0'}
                 </div>
 
                 {/* 3. 콜 현재가 (프리미엄) */}
                 <div className={`text-right text-[12.5px] font-black pr-2 ${
-                  row.callChange > 0 ? 'text-[#F04452]' : row.callChange < 0 ? 'text-[#3182F6]' : 'text-white'
+                  row.callChange > 0 ? 'text-up' : row.callChange < 0 ? 'text-down' : 'text-white'
                 }`}>
                   {row.callPrice.toFixed(2)}
                 </div>
               </div>
 
               {/* === [중앙 앵커] 행사가 (Strike Price) === */}
-              <div className={`col-span-1 h-full flex items-center justify-center text-center font-black text-[12.5px] border-r border-[#212631] ${
+              <div className={`col-span-1 h-full flex items-center justify-center text-center font-black text-[12.5px] border-r border-border ${
                 isATM ? 'text-amber-400 bg-amber-500/20' : 'text-white bg-[#0E1117]'
               }`}>
                 {row.strike.toFixed(2)}
@@ -178,25 +178,25 @@ export const OptionMonthChainGrid: React.FC<OptionMonthChainGridProps> = ({
               <div
                 onClick={() => onSelectContract(row.putTicker, row.putPrice, 'PUT')}
                 className={`col-span-3 grid grid-cols-3 h-full items-center cursor-pointer px-1 transition-all ${
-                  isPutSelected ? 'bg-[#3182F6]/25 ring-1 ring-[#3182F6]' : isPutITM ? 'bg-[#3182F6]/5' : ''
+                  isPutSelected ? 'bg-down/25 ring-1 ring-[#3182F6]' : isPutITM ? 'bg-down/5' : ''
                 }`}
               >
                 {/* 5. 풋 현재가 (프리미엄) */}
                 <div className={`text-left text-[12.5px] font-black pl-2 ${
-                  row.putChange > 0 ? 'text-[#F04452]' : row.putChange < 0 ? 'text-[#3182F6]' : 'text-white'
+                  row.putChange > 0 ? 'text-up' : row.putChange < 0 ? 'text-down' : 'text-white'
                 }`}>
                   {row.putPrice.toFixed(2)}
                 </div>
 
                 {/* 6. 풋 대비 */}
                 <div className={`text-left text-[11.5px] pl-2 font-bold ${
-                  row.putChange > 0 ? 'text-[#F04452]' : row.putChange < 0 ? 'text-[#3182F6]' : 'text-[#8E939D]'
+                  row.putChange > 0 ? 'text-up' : row.putChange < 0 ? 'text-down' : 'text-[#8E939D]'
                 }`}>
                   {row.putChange > 0 ? `▲ ${row.putChange.toFixed(2)}` : row.putChange < 0 ? `▼ ${Math.abs(row.putChange).toFixed(2)}` : '0'}
                 </div>
 
                 {/* 7. 풋 거래량 */}
-                <div className="text-left text-[#8E939D] text-[11px] pl-2 truncate">
+                <div className="text-left text-[#8E939D] text-xs pl-2 truncate">
                   {row.putVolume.toLocaleString()}
                 </div>
               </div>
@@ -206,18 +206,18 @@ export const OptionMonthChainGrid: React.FC<OptionMonthChainGridProps> = ({
       </div>
 
       {/* 푸터 범례 */}
-      <div className="bg-[#090B0F] border-t border-[#212631] px-4 py-2 flex items-center justify-between text-[11px] text-[#8E939D]">
+      <div className="bg-[#090B0F] border-t border-border px-4 py-2 flex items-center justify-between text-xs text-[#8E939D]">
         <div className="flex items-center gap-3">
           <span className="flex items-center gap-1">
             <span className="w-3 h-3 rounded bg-[#3A3215] border border-amber-500 inline-block" />
             <span className="text-amber-400 font-bold">ATM (등가격 260.00)</span>
           </span>
           <span className="flex items-center gap-1">
-            <span className="w-3 h-3 rounded bg-[#F04452]/20 border border-[#F04452]/40 inline-block" />
+            <span className="w-3 h-3 rounded bg-up/20 border border-[#F04452]/40 inline-block" />
             <span>콜 내가격(ITM)</span>
           </span>
           <span className="flex items-center gap-1">
-            <span className="w-3 h-3 rounded bg-[#3182F6]/20 border border-[#3182F6]/40 inline-block" />
+            <span className="w-3 h-3 rounded bg-down/20 border border-[#3182F6]/40 inline-block" />
             <span>풋 내가격(ITM)</span>
           </span>
         </div>

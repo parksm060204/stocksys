@@ -99,7 +99,7 @@ export default function CommoditiesClientList({
             </div>
           </div>
           <div className="shrink-0 flex items-center gap-2">
-            <span className="text-[11px] text-[#8E939D] font-bold">
+            <span className="text-xs text-[#8E939D] font-bold">
               지속 잔여: <strong className="text-white">{events[0].remainingTicks}</strong>/{events[0].totalTicks}틱
             </span>
           </div>
@@ -107,7 +107,7 @@ export default function CommoditiesClientList({
       )}
 
       {/* ── 2. 요약 통계 & 카테고리 탭 ── */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-[#212631] pb-4">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-border pb-4">
         {/* 카테고리 탭 스위처 */}
         <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-1">
           {CATEGORY_TABS.map((tab) => (
@@ -116,8 +116,8 @@ export default function CommoditiesClientList({
               onClick={() => setActiveCategory(tab.id)}
               className={`px-4 py-2 rounded-xl font-bold text-[12px] flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap ${
                 activeCategory === tab.id
-                  ? 'bg-[#F04452] text-white shadow-[0_0_16px_rgba(240,68,82,0.35)]'
-                  : 'bg-[#161B22] text-[#8E939D] hover:text-white border border-[#212631]'
+                  ? 'bg-up text-white shadow-[0_0_16px_rgba(240,68,82,0.35)]'
+                  : 'bg-[#161B22] text-[#8E939D] hover:text-white border border-border'
               }`}
             >
               <span>{tab.icon}</span>
@@ -127,14 +127,14 @@ export default function CommoditiesClientList({
         </div>
 
         {/* 시장 상태 요약 */}
-        <div className="flex items-center gap-4 text-xs font-bold text-[#8E939D] bg-[#161B22] px-4 py-2 rounded-xl border border-[#212631] shrink-0">
+        <div className="flex items-center gap-4 text-xs font-bold text-[#8E939D] bg-[#161B22] px-4 py-2 rounded-xl border border-border shrink-0">
           <span>
             총 <strong className="text-white">{totalCount}</strong>종목
           </span>
           <span>·</span>
-          <span className="text-[#F04452]">상승 {upCount}</span>
+          <span className="text-up">상승 {upCount}</span>
           <span>·</span>
-          <span className="text-[#3182F6]">하락 {downCount}</span>
+          <span className="text-down">하락 {downCount}</span>
         </div>
       </div>
 
@@ -169,33 +169,33 @@ export default function CommoditiesClientList({
             <Link
               key={c.id}
               href={`/commodities/${c.id}`}
-              className="bg-[#0E1117] border border-[#212631] hover:border-[#F04452]/50 hover:bg-[#161B22]/80 transition-all rounded-2xl p-5 shadow-xl flex flex-col justify-between group space-y-4"
+              className="bg-[#0E1117] border border-border hover:border-[#F04452]/50 hover:bg-[#161B22]/80 transition-all rounded-2xl p-5 shadow-xl flex flex-col justify-between group space-y-4"
             >
               {/* 카드 헤더 */}
               <div>
                 <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded bg-[#161B22] border border-[#212631] text-[#8E939D]">
+                  <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded bg-[#161B22] border border-border text-[#8E939D]">
                     {c.category.replace('_', ' ')}
                   </span>
-                  <span className="text-[11px] font-black text-[#F04452] font-mono group-hover:scale-105 transition-transform">
+                  <span className="text-xs font-black text-up font-mono group-hover:scale-105 transition-transform">
                     {c.ticker}
                   </span>
                 </div>
-                <h3 className="text-[15px] font-black text-white group-hover:text-[#F04452] transition-colors truncate">
+                <h3 className="text-[15px] font-black text-white group-hover:text-up transition-colors truncate">
                   {c.nameKo}
                 </h3>
                 <div className="text-[10.5px] text-[#565A63] truncate">{c.name}</div>
               </div>
 
               {/* 가격 & 스파크라인 중앙 */}
-              <div className="flex items-end justify-between gap-2 pt-2 border-t border-[#212631]/60">
+              <div className="flex items-end justify-between gap-2 pt-2 border-t border-border/60">
                 <div>
                   <div className="text-[17px] font-black text-white tabular-nums tracking-tight">
                     {fmtPrice(c.currentPrice, 'overseas')}
                   </div>
                   <div
                     className={`text-[12px] font-bold tabular-nums flex items-center gap-1 mt-0.5 ${
-                      isUp ? 'text-[#F04452]' : isDown ? 'text-[#3182F6]' : 'text-[#8E939D]'
+                      isUp ? 'text-up' : isDown ? 'text-down' : 'text-[#8E939D]'
                     }`}
                   >
                     <span>{isUp ? '▲' : isDown ? '▼' : '―'}</span>
@@ -218,14 +218,14 @@ export default function CommoditiesClientList({
               </div>
 
               {/* 카드 푸터 (단위 & 증거금) */}
-              <div className="grid grid-cols-2 gap-2 pt-3 border-t border-[#212631]/50 text-[10.5px] text-[#8E939D]">
+              <div className="grid grid-cols-2 gap-2 pt-3 border-t border-border/50 text-[10.5px] text-[#8E939D]">
                 <div>
                   <span className="text-[#565A63] block text-[9.5px]">단위</span>
                   <span className="truncate font-bold text-white block">{c.unit}</span>
                 </div>
                 <div className="text-right">
                   <span className="text-[#565A63] block text-[9.5px]">위탁증거금</span>
-                  <span className="font-bold text-[#F04452] block tabular-nums">
+                  <span className="font-bold text-up block tabular-nums">
                     {fmtPrice(c.marginRequirement, 'overseas')}
                   </span>
                 </div>

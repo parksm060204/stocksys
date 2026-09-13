@@ -57,11 +57,11 @@ export const OptionOrderBook: React.FC<OrderBookProps> = ({
   const s2 = 3150; // 2차 지지선
 
   const getPivotTag = (price: number) => {
-    if (price === r2) return { label: 'R2 (2차저항)', color: 'text-[#F04452] bg-[#F04452]/20' };
-    if (price === r1) return { label: 'R1 (1차저항)', color: 'text-[#F04452] bg-[#F04452]/10' };
+    if (price === r2) return { label: 'R2 (2차저항)', color: 'text-up bg-up/20' };
+    if (price === r1) return { label: 'R1 (1차저항)', color: 'text-up bg-up/10' };
     if (price === pivot) return { label: 'PIVOT 기준', color: 'text-amber-400 bg-amber-400/10' };
-    if (price === s1) return { label: 'S1 (1차지지)', color: 'text-[#3182F6] bg-[#3182F6]/10' };
-    if (price === s2) return { label: 'S2 (2차지지)', color: 'text-[#3182F6] bg-[#3182F6]/20' };
+    if (price === s1) return { label: 'S1 (1차지지)', color: 'text-down bg-down/10' };
+    if (price === s2) return { label: 'S2 (2차지지)', color: 'text-down bg-down/20' };
     return null;
   };
 
@@ -77,25 +77,25 @@ export const OptionOrderBook: React.FC<OrderBookProps> = ({
   return (
     <div className="flex flex-col h-full text-xs font-mono select-none">
       {/* 헤더 */}
-      <div className="bg-[#090B0F] px-4 py-3 border-b border-[#212631] flex justify-between items-center">
+      <div className="bg-[#090B0F] px-4 py-3 border-b border-border flex justify-between items-center">
         <span className="font-extrabold text-white text-[13px] tracking-wide flex items-center gap-2">
           <span>X-Ray {levelsCount}호가창</span>
           <span className="text-[10px] text-[#8E939D] font-bold">({config.layoutType === 'SYMMETRIC' ? '좌우대칭' : '일자형'})</span>
         </span>
-        <span className="text-[10.5px] text-[#F04452] font-black">{ticker}</span>
+        <span className="text-[10.5px] text-up font-black">{ticker}</span>
       </div>
 
       {/* 실시간 체결량 이퀄라이저 바 */}
       {config.showEqualizer && (
-        <div className="bg-[#161B22] border-b border-[#212631] px-3 py-1 flex items-center justify-between text-[10.5px]">
+        <div className="bg-[#161B22] border-b border-border px-3 py-1 flex items-center justify-between text-[10.5px]">
           <span className="text-[#8E939D] font-bold">매수/매도 세력 이퀄라이저:</span>
           <div className="flex items-center gap-1.5 flex-1 max-w-[140px] ml-2">
-            <span className="text-[#F04452] font-bold text-[10px]">매수 62%</span>
-            <div className="flex-1 bg-[#0E1117] h-2 rounded-full overflow-hidden flex border border-[#212631]">
-              <div className="bg-[#F04452] h-full w-[62%]" />
-              <div className="bg-[#3182F6] h-full w-[38%]" />
+            <span className="text-up font-bold text-[10px]">매수 62%</span>
+            <div className="flex-1 bg-[#0E1117] h-2 rounded-full overflow-hidden flex border border-border">
+              <div className="bg-up h-full w-[62%]" />
+              <div className="bg-down h-full w-[38%]" />
             </div>
-            <span className="text-[#3182F6] font-bold text-[10px]">38%</span>
+            <span className="text-down font-bold text-[10px]">38%</span>
           </div>
         </div>
       )}
@@ -117,14 +117,14 @@ export const OptionOrderBook: React.FC<OrderBookProps> = ({
                 onClick={() => onSelectPrice?.(price)}
                 className={`relative flex justify-between items-center h-6 px-2.5 rounded-lg border transition-all cursor-pointer overflow-hidden ${
                   isCurrentPrice && config.showPriceOutline
-                    ? 'border-[#F04452] ring-1 ring-[#F04452] bg-[#F04452]/10'
-                    : 'border-[#212631] bg-[#0E1117] hover:border-white/20'
+                    ? 'border-[#F04452] ring-1 ring-[#F04452] bg-up/10'
+                    : 'border-border bg-[#0E1117] hover:border-white/20'
                 }`}
               >
                 {/* 잔량 막대 그래프 */}
                 {config.showVolumeBar && (
                   <div
-                    className="absolute right-0 top-0 bottom-0 bg-[#3182F6]/20 z-0 transition-all duration-300"
+                    className="absolute right-0 top-0 bottom-0 bg-down/20 z-0 transition-all duration-300"
                     style={{ width: `${pct}%` }}
                   />
                 )}
@@ -141,13 +141,13 @@ export const OptionOrderBook: React.FC<OrderBookProps> = ({
                           onCancelOrder?.(unfilled.id);
                         }
                       }}
-                      className="cursor-grab active:cursor-grabbing text-[11px] bg-[#3182F6]/20 text-[#3182F6] px-1 rounded font-bold border border-[#3182F6]/40"
+                      className="cursor-grab active:cursor-grabbing text-xs bg-down/20 text-down px-1 rounded font-bold border border-[#3182F6]/40"
                       title="드래그하거나 클릭하여 정정/취소"
                     >
                       🔴 {unfilled.qty}
                     </span>
                   )}
-                  <span className={`font-bold tabular-nums ${config.useSideColors ? 'text-[#3182F6]' : 'text-white'}`}>
+                  <span className={`font-bold tabular-nums ${config.useSideColors ? 'text-down' : 'text-white'}`}>
                     ₩{price.toLocaleString()}
                   </span>
                   {config.showChangeRate && (
@@ -173,13 +173,13 @@ export const OptionOrderBook: React.FC<OrderBookProps> = ({
 
         {/* 현재가 경계선 (체결 중앙선) */}
         <div
-          className={`my-1 py-1 px-3 text-center font-black border-y border-[#212631] text-[11px] rounded-lg flex justify-between items-center ${
-            config.showPriceOutline ? 'bg-[#161B22] text-[#F04452] border-[#F04452]/40' : 'bg-[#161B22] text-white'
+          className={`my-1 py-1 px-3 text-center font-black border-y border-border text-xs rounded-lg flex justify-between items-center ${
+            config.showPriceOutline ? 'bg-[#161B22] text-up border-[#F04452]/40' : 'bg-[#161B22] text-white'
           }`}
         >
           <span className="text-[10px] text-[#8E939D] font-bold">현재가</span>
           <span className="font-mono text-[13px] tabular-nums">₩{currentPrice.toLocaleString()}</span>
-          <span className="text-[10px] text-[#F04452] font-bold">기준선 SPREAD</span>
+          <span className="text-[10px] text-up font-bold">기준선 SPREAD</span>
         </div>
 
         {/* 매수 호가 (Bids) */}
@@ -197,14 +197,14 @@ export const OptionOrderBook: React.FC<OrderBookProps> = ({
                 onClick={() => onSelectPrice?.(price)}
                 className={`relative flex justify-between items-center h-6 px-2.5 rounded-lg border transition-all cursor-pointer overflow-hidden ${
                   isCurrentPrice && config.showPriceOutline
-                    ? 'border-[#F04452] ring-1 ring-[#F04452] bg-[#F04452]/10'
-                    : 'border-[#212631] bg-[#0E1117] hover:border-white/20'
+                    ? 'border-[#F04452] ring-1 ring-[#F04452] bg-up/10'
+                    : 'border-border bg-[#0E1117] hover:border-white/20'
                 }`}
               >
                 {/* 잔량 막대 그래프 */}
                 {config.showVolumeBar && (
                   <div
-                    className="absolute right-0 top-0 bottom-0 bg-[#F04452]/20 z-0 transition-all duration-300"
+                    className="absolute right-0 top-0 bottom-0 bg-up/20 z-0 transition-all duration-300"
                     style={{ width: `${pct}%` }}
                   />
                 )}
@@ -221,13 +221,13 @@ export const OptionOrderBook: React.FC<OrderBookProps> = ({
                           onCancelOrder?.(unfilled.id);
                         }
                       }}
-                      className="cursor-grab active:cursor-grabbing text-[11px] bg-[#F04452]/20 text-[#F04452] px-1 rounded font-bold border border-[#F04452]/40"
+                      className="cursor-grab active:cursor-grabbing text-xs bg-up/20 text-up px-1 rounded font-bold border border-[#F04452]/40"
                       title="드래그하거나 클릭하여 정정/취소"
                     >
                       🔵 {unfilled.qty}
                     </span>
                   )}
-                  <span className={`font-bold tabular-nums ${config.useSideColors ? 'text-[#F04452]' : 'text-white'}`}>
+                  <span className={`font-bold tabular-nums ${config.useSideColors ? 'text-up' : 'text-white'}`}>
                     ₩{price.toLocaleString()}
                   </span>
                   {config.showChangeRate && (
@@ -257,9 +257,9 @@ export const OptionOrderBook: React.FC<OrderBookProps> = ({
         <div
           onDragOver={(e) => e.preventDefault()}
           onDrop={handleDropCancel}
-          className="border-t border-[#212631] bg-[#161B22] p-2 text-center transition-colors hover:bg-[#F04452]/10 cursor-pointer"
+          className="border-t border-border bg-[#161B22] p-2 text-center transition-colors hover:bg-up/10 cursor-pointer"
         >
-          <span className="text-[11px] text-[#8E939D] font-bold flex items-center justify-center gap-1.5">
+          <span className="text-xs text-[#8E939D] font-bold flex items-center justify-center gap-1.5">
             <span>🗑️</span>
             <span>미체결 주문 아이콘을 이 구역으로 드래그하면 취소됩니다</span>
           </span>

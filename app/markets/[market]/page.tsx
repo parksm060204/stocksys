@@ -28,12 +28,39 @@ export default async function MarketPage({
   const meta = MARKETS.find((m) => m.id === id)!;
   
   const supabase = await createClient();
-  const { data: stocksData } = await supabase
-    .from('stocks')
-    .select('id, name, ticker, market, sector, current_price, previous_close, volume, market_cap')
-    .eq('market', id);
+  let stocksData: any[] = [];
+  try {
+    if (id === 'bonds') {
+      const { data } = await supabase.from('bonds').select('*');
+      stocksData = (data || []).map((row: any) => ({
+        id: row.id || row.ticker,
+        name: row.name,
+        ticker: row.ticker,
+        market: 'bonds',
+        sector: row.bond_type === 'govt' ? '국채' : row.bond_type === 'corp_ig' ? '우량회사채' : '투기회사채',
+        current_price: Number(row.current_price) || 100,
+        previous_close: Number(row.previous_close) || 100,
+        volume: Number(row.volume) || 0,
+        market_cap: 100000000000,
+        bondMeta: {
+          faceValue: row.face_value || 10000,
+          couponRate: row.coupon_rate || 0.035,
+          maturityYears: row.maturity ? parseInt(row.maturity) || 5 : 5,
+          riskCategory: row.bond_type === 'govt' ? 'sovereign' : row.bond_type === 'corp_ig' ? 'corporate_ig' : 'corporate_hy',
+        }
+      }));
+    } else {
+      const { data } = await supabase
+        .from('stocks')
+        .select('id, name, ticker, market, sector, current_price, previous_close, volume, market_cap')
+        .eq('market', id);
+      stocksData = data || [];
+    }
+  } catch (e) {
+    console.warn("Failed to fetch market stocks:", e);
+  }
 
-  const stocks: Stock[] = (stocksData || []).map((row: any) => ({
+  const stocks: Stock[] = stocksData.map((row: any) => ({
     id: row.id,
     name: row.name,
     ticker: row.ticker,
@@ -43,6 +70,7 @@ export default async function MarketPage({
     previousClose: row.previous_close,
     volume: row.volume || 100000,
     marketCap: row.market_cap || (row.current_price * 1000000),
+    bondMeta: row.bondMeta,
   } as Stock));
 
   const up = stocks.filter((s) => s.currentPrice > s.previousClose).length;
@@ -62,10 +90,10 @@ export default async function MarketPage({
       </nav>
 
       {/* Header Banner */}
-      <div className="bg-[#0E1117] border border-[#212631] p-6 rounded-3xl flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shadow-2xl">
+      <div className="bg-[#0E1117] border border-border p-6 rounded-3xl flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shadow-2xl">
         <div>
-          <div className="inline-flex items-center gap-2 rounded-full border border-[#F04452]/40 bg-[#F04452]/10 px-3.5 py-1 text-[11px] font-mono font-bold text-[#F04452] mb-2">
-            <span className="inline-block h-2 w-2 rounded-full bg-[#F04452] animate-pulse" />
+          <div className="inline-flex items-center gap-2 rounded-full border border-[#F04452]/40 bg-up/10 px-3.5 py-1 text-xs font-mono font-bold text-up mb-2">
+            <span className="inline-block h-2 w-2 rounded-full bg-up animate-pulse" />
             {meta.id.toUpperCase()} MARKET · {meta.nameKo}
           </div>
           <h1 className="text-xl md:text-2xl font-black text-white tracking-tight">
@@ -74,7 +102,7 @@ export default async function MarketPage({
           <p className="text-[12.5px] text-[#8E939D] mt-1 font-medium leading-relaxed font-sans">{meta.description}</p>
         </div>
 
-        <div className="flex gap-6 text-right bg-[#161B22] px-5 py-3 rounded-2xl border border-[#212631] shrink-0 font-mono">
+        <div className="flex gap-6 text-right bg-[#161B22] px-5 py-3 rounded-2xl border border-border shrink-0 font-mono">
           <Stat label="종목 수" value={`${stocks.length}`} />
           <Stat label="평균 등락" value={`${fmtSigned(avgPct)}%`} tone={avgPct >= 0 ? "up" : "down"} />
           <Stat label="상승/보합/하락" value={`${up} / ${flat} / ${down}`} />
@@ -95,7 +123,7 @@ function Stat({
   value: string;
   tone?: "up" | "down";
 }) {
-  const color = tone === "up" ? "text-[#F04452]" : tone === "down" ? "text-[#3182F6]" : "text-white";
+  const color = tone === "up" ? "text-up" : tone === "down" ? "text-down" : "text-white";
   return (
     <div>
       <div className="text-[10px] uppercase tracking-wider text-[#8E939D] font-bold">{label}</div>

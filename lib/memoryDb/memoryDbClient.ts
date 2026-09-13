@@ -413,7 +413,7 @@ export class MemoryQueryBuilder {
   }
 }
 
-export class MockSupabaseClient {
+export class MemoryDbClient {
   public from(tableName: string): MemoryQueryBuilder {
     return new MemoryQueryBuilder(tableName);
   }
@@ -647,6 +647,10 @@ export class MockSupabaseClient {
   public removeChannel(_channel: any): void {}
 }
 
-export function createMockSupabaseClient(): MockSupabaseClient {
-  return new MockSupabaseClient();
+export function createMemoryDbClient(): MemoryDbClient {
+  return new MemoryDbClient();
 }
+
+// 하위 호환용 alias
+export const createMockSupabaseClient = createMemoryDbClient;
+export { MemoryDbClient as MockSupabaseClient };

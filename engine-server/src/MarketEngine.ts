@@ -22,7 +22,7 @@ import { SettlementBatchService } from './settlement/SettlementBatchService';
 import * as dotenv from 'dotenv';
 import * as path from 'path';
 import * as os from 'os';
-import { createMockSupabaseClient } from '../../lib/memoryDb/mockSupabaseClient';
+import { createMemoryDbClient } from '../../lib/memoryDb/memoryDbClient';
 
 
 
@@ -38,7 +38,7 @@ let supabase: any;
 
 if (useInMemory) {
   console.log("🛠️ [MarketEngine] Using IN_MEMORY mock DB...");
-  supabase = createMockSupabaseClient();
+  supabase = createMemoryDbClient();
 } else {
   if (!supabaseUrl || !supabaseKey) {
     console.error("❌ [MarketEngine] Critical Error: Missing Supabase credentials in environment variables.");

@@ -1,8 +1,8 @@
 import { memoryDb } from '../../lib/memoryDb/memoryStore';
-import { createMockSupabaseClient } from '../../lib/memoryDb/mockSupabaseClient';
+import { createMemoryDbClient } from '../../lib/memoryDb/memoryDbClient';
 
 async function profileScaling(userCount: number) {
-  const supabase = createMockSupabaseClient();
+  const supabase = createMemoryDbClient();
   const userIds = Array.from({ length: userCount }, (_, i) => `prof_user_${i}`);
 
   // 유저 초기화

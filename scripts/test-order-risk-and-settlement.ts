@@ -16,7 +16,7 @@ import {
   TAKER_FEE_RATE,
   SettlementTrade,
 } from '../lib/engine/settlement';
-import { createMockSupabaseClient } from '../lib/memoryDb/mockSupabaseClient';
+import { createMemoryDbClient } from '../lib/memoryDb/memoryDbClient';
 import { memoryDb } from '../lib/memoryDb/memoryStore';
 import { submitAndMatchOrder } from '../lib/engine/dbMatching';
 
@@ -161,7 +161,7 @@ async function runAllTests() {
   // Maker rebate: -0.1%, Taker fee: +0.25%
   // ----------------------------------------------------
   console.log('\n[TEST E] Maker/Taker Fee & Price-Time Priority Settlement Test');
-  const client = createMockSupabaseClient();
+  const client = createMemoryDbClient();
   const testStockId = '00000000-0000-4000-8000-000000000101';
   const buyerUid = 'user_maker_buyer';
   const sellerUid = 'user_taker_seller';

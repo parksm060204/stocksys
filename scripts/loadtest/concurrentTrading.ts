@@ -1,6 +1,6 @@
 import * as crypto from 'crypto';
-import { createMockSupabaseClient } from '../../lib/memoryDb/mockSupabaseClient';
-const createSupabaseClient: any = (..._args: any[]) => createMockSupabaseClient();
+import { createMemoryDbClient } from '../../lib/memoryDb/memoryDbClient';
+const createSupabaseClient: any = (..._args: any[]) => createMemoryDbClient();
 import { memoryDb, OrderRecord, TradeRecord } from '../../lib/memoryDb/memoryStore';
 import { ResourceSampler } from './ResourceSampler';
 
@@ -75,7 +75,7 @@ async function runConcurrentTradingLoadTest() {
       },
     });
   } else {
-    supabase = createMockSupabaseClient();
+    supabase = createMemoryDbClient();
   }
 
   const sampler = new ResourceSampler();

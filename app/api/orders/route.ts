@@ -1,9 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
-
 import { authOptions } from '@/app/api/auth/[...nextauth]/route';
-import { isLocalStandaloneMode } from '@/lib/engine/localDevMode';
-import { getLocalStandaloneClient, ensureLocalStandaloneEngine } from '@/lib/engine/localStandaloneServer';
+import { LocalMarketService } from '@/lib/engine/marketService';
 import { GUEST_USER_ID } from '@/lib/memoryDb/memoryStore';
 
 // 인메모리 슬라이딩 윈도우 Rate Limiter (유저당 1초 최대 15회 요청 허용)
@@ -26,22 +24,11 @@ function checkRateLimit(userId: string): boolean {
   return true;
 }
 
-function getOrderServiceClient() {
-  ensureLocalStandaloneEngine();
-  return getLocalStandaloneClient();
-}
-
 export async function POST(request: Request) {
   try {
-    // 1. 서버 세션 인증 (클라이언트 body.user_id는 절대 신뢰하지 않고 무시)
-    let authenticatedUserId: string | null = null;
-
-    if (isLocalStandaloneMode()) {
-      authenticatedUserId = GUEST_USER_ID;
-    } else {
-      const session = await getServerSession(authOptions);
-      authenticatedUserId = session?.user?.id || null;
-    }
+    // 1. 서버 세션 인증 (세션 사용자 ID 또는 로컬 게스트 ID)
+    const session = await getServerSession(authOptions);
+    const authenticatedUserId = session?.user?.id || GUEST_USER_ID;
 
     if (!authenticatedUserId) {
       return NextResponse.json(
@@ -93,20 +80,18 @@ export async function POST(request: Request) {
       );
     }
 
-    // 4. 단일 DB 트랜잭션 RPC(submit_and_match_order) 호출
-    const client = getOrderServiceClient();
-    const { data, error } = await client.rpc('submit_and_match_order', {
-      p_user_id: authenticatedUserId,
-      p_stock_id: stock_id,
-      p_side: side,
-      p_price: numPrice,
-      p_size: numSize,
+    // 4. LocalMarketService를 통한 주문 검증, 매칭, 정산 처리
+    const result = await LocalMarketService.submitOrder({
+      userId: authenticatedUserId,
+      stockId: stock_id,
+      side,
+      price: numPrice,
+      size: numSize,
     });
 
-    if (error) {
-      console.warn('[Order RPC Warning]', error.message || error);
+    if (!result.success) {
       return NextResponse.json(
-        { success: false, filledQty: 0, message: error.message || '주문 처리 중 오류가 발생했습니다.' },
+        { success: false, filledQty: 0, message: result.message },
         { status: 400 }
       );
     }
@@ -114,11 +99,11 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         success: true,
-        orderId: data?.order_id,
-        filledQty: data?.filled_qty ?? 0,
-        execPrice: data?.exec_price,
-        status: data?.status,
-        message: data?.message || '주문이 처리되었습니다.',
+        orderId: result.orderId,
+        filledQty: result.filledQty,
+        execPrice: result.execPrice,
+        status: result.status,
+        message: result.message,
       },
       { status: 200 }
     );

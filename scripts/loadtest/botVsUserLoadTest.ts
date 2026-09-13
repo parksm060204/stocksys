@@ -1,4 +1,4 @@
-import { createMockSupabaseClient } from '../../lib/memoryDb/mockSupabaseClient';
+import { createMemoryDbClient } from '../../lib/memoryDb/memoryDbClient';
 import { memoryDb } from '../../lib/memoryDb/memoryStore';
 import { PensionFundAgent } from '../../engine-server/src/bots/PensionFundAgent';
 import { QuantAgent } from '../../engine-server/src/bots/QuantAgent';
@@ -24,7 +24,7 @@ async function runBotVsUserLoadTest() {
   console.log('🤖 vs 👤 [BOT vs USER LOAD TEST] 50+ 봇과 실유저 동시 트래픽 매칭 검증');
   console.log('================================================================\n');
 
-  const supabase = createMockSupabaseClient();
+  const supabase = createMemoryDbClient();
   const sampler = new ResourceSampler();
   sampler.start(500);
 

@@ -3424,3 +3424,21 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 - `scripts/test-order-security-and-atomic.ts` 및 `scripts/test-order-risk-and-settlement.ts` 16개 자동화 테스트 100% 통과.
 - `npm run build` Next.js Turbopack 23개 라우트 빌드 100% 성공.
 - `npm run dev` 가동 및 브라우저 E2E를 통한 주식 목록, 호가창, 주문 제출, 마이페이지 자산 반영 및 시장 리셋 검증 완료.
+
+---
+## 2026-09-14 00:25
+
+**요청 요약:** Supabase 잔존 네이밍/구조 완전 정리 및 Local Native 아키텍처 완성 (memoryDbClient rename, legacy SQL archive 격리, LocalMarketService 도입, NextAuth credentials 정리)
+
+**수행 결과:**
+- `lib/memoryDb/memoryDbClient.ts`: `mockSupabaseClient.ts`를 `memoryDbClient.ts`로 완전 rename. 클래스명 `MemoryDbClient` 및 팩토리 함수 `createMemoryDbClient()`로 정비.
+- `lib/db/server.ts`, `app/api/local-db/route.ts`, `lib/engine/localStandaloneServer.ts`, 테스트 스크립트 등 9개 파일의 import 경로 및 함수 호출을 `memoryDbClient`로 전면 동기화.
+- `archive/legacy-postgres/`: 과거 Supabase/PostgreSQL 마이그레이션 SQL(`sql/`) 및 Docker VM DB 인프라 파일(`vm-db/`)을 `archive/legacy-postgres/` 폴더로 완전히 격리하여 루트 작업 트리를 순수 로컬 코드로 정리.
+- `lib/engine/marketService.ts` [NEW]: 주문 검증, 매칭, 정산 책임을 단일 서비스 인터페이스로 캡슐화한 `LocalMarketService` 신설.
+- `app/api/orders/route.ts`: Supabase RPC 호출 형태(`client.rpc('submit_and_match_order', ...)`)를 전면 제거하고 `LocalMarketService.submitOrder()` 직접 호출로 단순화.
+- `app/api/auth/[...nextauth]/route.ts`: 하드코딩된 더미 자격증명(`dummy-client-id/secret`) 및 고정 시크릿을 제거하고, `process.env.NEXTAUTH_SECRET` 및 유효한 환경변수 존재 시에만 GoogleProvider를 등록하도록 개선. 세션 콜백 내 중복 게스트 UUID fallback 제거.
+- `npx tsc --noEmit` 전체 타입 검사 통과 (오류 0건).
+- `scripts/test-order-security-and-atomic.ts` 및 `scripts/test-order-risk-and-settlement.ts` 16개 자동화 테스트 100% 통과.
+- `npm run build` Next.js Turbopack 23개 라우트 빌드 100% 통과.
+- `npm run dev` 구동 상태에서 `POST /api/orders` 주문 접수 정상 동작 확인.
+

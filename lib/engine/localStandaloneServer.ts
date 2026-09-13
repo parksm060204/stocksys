@@ -1,5 +1,5 @@
 import { memoryDb, StockRecord, TradeRecord, OrderRecord } from '../memoryDb/memoryStore';
-import { createMockSupabaseClient } from '../memoryDb/mockSupabaseClient';
+import { createMemoryDbClient } from '../memoryDb/memoryDbClient';
 import { printLocalBannerOnce } from './localDevMode';
 
 interface GlobalWithEngine {
@@ -14,7 +14,7 @@ class LocalMarketEngineInstance {
   private tickIntervalMs: number = 1000;
   private timer: NodeJS.Timeout | null = null;
   private tickCount: number = 0;
-  private client = createMockSupabaseClient();
+  private client = createMemoryDbClient();
   private readonly LP_REFRESH_TICKS: number = 5;
 
   // SDE: Merton Jump-Diffusion 가치 변동
@@ -343,6 +343,6 @@ export function ensureLocalStandaloneEngine(): void {
 }
 
 export function getLocalStandaloneClient(): any {
-  return createMockSupabaseClient();
+  return createMemoryDbClient();
 }
 

@@ -3,7 +3,7 @@
  * 실행: npx tsx scripts/test-order-security-and-atomic.ts
  */
 
-import { createMockSupabaseClient } from '../lib/memoryDb/mockSupabaseClient';
+import { createMemoryDbClient } from '../lib/memoryDb/memoryDbClient';
 import { memoryDb, GUEST_USER_ID } from '../lib/memoryDb/memoryStore';
 import { submitAndMatchOrder } from '../lib/engine/dbMatching';
 
@@ -20,7 +20,7 @@ async function runSecurityAndSafetyTests() {
   console.log('🔒 MUMYEONG Production Order Security & Atomic Tx Tests');
   console.log('==================================================\n');
 
-  const client = createMockSupabaseClient();
+  const client = createMemoryDbClient();
   const testStockId = '00000000-0000-4000-8000-000000000101'; // 오성전자
 
   // ----------------------------------------------------

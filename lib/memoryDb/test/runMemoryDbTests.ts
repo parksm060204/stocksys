@@ -1,4 +1,4 @@
-import { createMockSupabaseClient } from '../mockSupabaseClient';
+import { createMemoryDbClient } from '../memoryDbClient';
 import { memoryDb } from '../memoryStore';
 
 async function runMemoryDbTestSuite() {
@@ -9,7 +9,7 @@ async function runMemoryDbTestSuite() {
   let passedTests = 0;
   const totalTests = 5;
 
-  const supabase = createMockSupabaseClient();
+  const supabase = createMemoryDbClient();
 
   // ── [TEST 1] 주식 및 원자재 마스터 데이터 조회 검증 ──
   console.log('▶ [TEST 1] 주식 & 원자재 마스터 목록 조회 (.select)');

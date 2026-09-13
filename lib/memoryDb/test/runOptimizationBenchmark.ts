@@ -1,4 +1,4 @@
-import { createMockSupabaseClient } from '../mockSupabaseClient';
+import { createMemoryDbClient } from '../memoryDbClient';
 import { memoryDb } from '../memoryStore';
 import { PersistenceManager } from '../PersistenceManager';
 import { MemoryOnlyStorageAdapter } from '../StorageAdapter';
@@ -12,7 +12,7 @@ async function runOptimizationBenchmarkSuite() {
   let passedTests = 0;
   const totalTests = 4;
 
-  const supabase = createMockSupabaseClient();
+  const supabase = createMemoryDbClient();
 
   // ── [TEST 1] 인덱스 기반 10,000회 조회 벤치마크 ──
   console.log('▶ [TEST 1] 보조 인덱스 기반 10,000회 .eq("ticker", "005930") 조회 벤치마크');

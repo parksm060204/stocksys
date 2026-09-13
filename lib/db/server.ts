@@ -1,7 +1,7 @@
-import { createMockSupabaseClient } from "../memoryDb/mockSupabaseClient";
+import { createMemoryDbClient } from "../memoryDb/memoryDbClient";
 import { ensureLocalStandaloneEngine } from "../engine/localStandaloneServer";
 
 export async function createClient() {
   ensureLocalStandaloneEngine();
-  return createMockSupabaseClient() as any;
+  return createMemoryDbClient() as any;
 }

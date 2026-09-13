@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { memoryDb } from '@/lib/memoryDb/memoryStore';
-import { createMockSupabaseClient } from '@/lib/memoryDb/mockSupabaseClient';
+import { createMemoryDbClient } from '@/lib/memoryDb/memoryDbClient';
 import { ensureLocalStandaloneEngine } from '@/lib/engine/localStandaloneServer';
 import { isLocalStandaloneMode } from '@/lib/engine/localDevMode';
 
@@ -17,7 +17,7 @@ export async function POST(request: Request) {
     const body = await request.json();
     const { action, tableName, query, fnName, params } = body;
 
-    const mockClient = createMockSupabaseClient();
+    const mockClient = createMemoryDbClient();
 
     if (action === 'rpc') {
       const result = await mockClient.rpc(fnName, params);

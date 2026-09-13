@@ -105,7 +105,7 @@ BEGIN
   END LOOP;
 END $$;
 
--- 6. 슬라이딩 윈도우 트리밍 RPC (trades 5,000건 / price_history 3,000건 유지)
+-- 6. 슬라이딩 윈도우 트리밍 RPC (trades 5,000건 / price_history 3,000건 유지, 최소 1,000건 가드)
 CREATE OR REPLACE FUNCTION public.trim_old_market_data(
   p_max_trades INT DEFAULT 5000,
   p_max_history INT DEFAULT 3000
@@ -115,14 +115,19 @@ LANGUAGE plpgsql
 SECURITY DEFINER
 AS $$
 DECLARE
+  v_max_trades INT;
+  v_max_history INT;
   v_deleted_trades INT := 0;
   v_deleted_history INT := 0;
 BEGIN
+  v_max_trades := GREATEST(COALESCE(p_max_trades, 5000), 1000);
+  v_max_history := GREATEST(COALESCE(p_max_history, 3000), 1000);
+
   WITH to_delete AS (
     SELECT id
     FROM public.trades
     ORDER BY created_at DESC
-    OFFSET p_max_trades
+    OFFSET v_max_trades
   ),
   del_t AS (
     DELETE FROM public.trades
@@ -135,7 +140,7 @@ BEGIN
     SELECT id
     FROM public.stock_price_history
     ORDER BY created_at DESC
-    OFFSET p_max_history
+    OFFSET v_max_history
   ),
   del_h AS (
     DELETE FROM public.stock_price_history
@@ -152,5 +157,128 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.trim_old_market_data(INT, INT) TO anon, authenticated, service_role;
+REVOKE EXECUTE ON FUNCTION public.trim_old_market_data(INT, INT) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.trim_old_market_data(INT, INT) TO service_role;
+
+-- 7. 일괄 원자적 정산 RPC (bulk_settle_trades - service_role 전용)
+CREATE OR REPLACE FUNCTION public.bulk_settle_trades(p_trades JSONB)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  trade_record RECORD;
+  v_trade_count INT := 0;
+  v_existing_qty INT;
+  v_existing_avg NUMERIC;
+  v_new_qty INT;
+  v_new_avg NUMERIC;
+  v_buyer_cash NUMERIC;
+  v_seller_qty INT;
+BEGIN
+  FOR trade_record IN 
+    SELECT 
+      (t->>'stock_id')::uuid AS stock_id,
+      (t->>'buyer_id')::uuid AS buyer_id,
+      (t->>'seller_id')::uuid AS seller_id,
+      (t->>'buyer_is_bot')::boolean AS buyer_is_bot,
+      (t->>'seller_is_bot')::boolean AS seller_is_bot,
+      (t->>'price')::numeric AS price,
+      (t->>'size')::bigint AS size,
+      (t->>'buyer_fee')::numeric AS buyer_fee,
+      (t->>'seller_fee')::numeric AS seller_fee,
+      ((t->>'price')::numeric * (t->>'size')::bigint)::numeric AS trade_amount
+    FROM jsonb_array_elements(p_trades) AS t
+  LOOP
+    IF trade_record.price <= 0 OR trade_record.size <= 0 THEN
+      RAISE EXCEPTION 'Invalid trade price or size: price=%, size=%', trade_record.price, trade_record.size;
+    END IF;
+
+    -- 1. 매수자 현금 차감 및 주식 입고
+    IF NOT trade_record.buyer_is_bot AND trade_record.buyer_id IS NOT NULL THEN
+      SELECT cash INTO v_buyer_cash
+      FROM public.profiles
+      WHERE id = trade_record.buyer_id
+      FOR UPDATE;
+
+      IF NOT FOUND THEN
+        RAISE EXCEPTION 'Buyer profile not found for user %', trade_record.buyer_id;
+      END IF;
+
+      IF v_buyer_cash < (trade_record.trade_amount * (1 + COALESCE(trade_record.buyer_fee, 0.0))) THEN
+        RAISE EXCEPTION 'Insufficient cash for buyer %: required=%, available=%', 
+          trade_record.buyer_id, 
+          (trade_record.trade_amount * (1 + COALESCE(trade_record.buyer_fee, 0.0))), 
+          v_buyer_cash;
+      END IF;
+
+      UPDATE public.profiles
+      SET cash = cash - (trade_record.trade_amount * (1 + COALESCE(trade_record.buyer_fee, 0.0)))
+      WHERE id = trade_record.buyer_id;
+
+      SELECT quantity, avg_price INTO v_existing_qty, v_existing_avg
+      FROM public.holdings
+      WHERE user_id = trade_record.buyer_id AND stock_id = trade_record.stock_id
+      FOR UPDATE;
+
+      IF NOT FOUND THEN
+        INSERT INTO public.holdings (user_id, stock_id, quantity, avg_price)
+        VALUES (trade_record.buyer_id, trade_record.stock_id, trade_record.size, trade_record.price);
+      ELSE
+        v_new_qty := v_existing_qty + trade_record.size;
+        v_new_avg := ((v_existing_avg * v_existing_qty) + (trade_record.price * trade_record.size)) / v_new_qty;
+        
+        UPDATE public.holdings
+        SET quantity = v_new_qty, avg_price = ROUND(v_new_avg, 4)
+        WHERE user_id = trade_record.buyer_id AND stock_id = trade_record.stock_id;
+      END IF;
+    END IF;
+
+    -- 2. 매도자 현금 입금 및 주식 출고
+    IF NOT trade_record.seller_is_bot AND trade_record.seller_id IS NOT NULL THEN
+      SELECT quantity, avg_price INTO v_seller_qty, v_existing_avg
+      FROM public.holdings
+      WHERE user_id = trade_record.seller_id AND stock_id = trade_record.stock_id
+      FOR UPDATE;
+
+      IF NOT FOUND OR v_seller_qty < trade_record.size THEN
+        RAISE EXCEPTION 'Insufficient holdings for seller %: required=%, available=%',
+          trade_record.seller_id,
+          trade_record.size,
+          COALESCE(v_seller_qty, 0);
+      END IF;
+
+      v_new_qty := v_seller_qty - trade_record.size;
+      IF v_new_qty = 0 THEN
+        DELETE FROM public.holdings WHERE user_id = trade_record.seller_id AND stock_id = trade_record.stock_id;
+      ELSE
+        UPDATE public.holdings
+        SET quantity = v_new_qty
+        WHERE user_id = trade_record.seller_id AND stock_id = trade_record.stock_id;
+      END IF;
+
+      UPDATE public.profiles
+      SET cash = cash + (trade_record.trade_amount * (1 - COALESCE(trade_record.seller_fee, 0.0)))
+      WHERE id = trade_record.seller_id;
+    END IF;
+
+    -- 3. 체결 내역 기록
+    INSERT INTO public.trades (
+      stock_id, buyer_id, seller_id, buyer_is_bot, seller_is_bot, price, size, created_at
+    ) VALUES (
+      trade_record.stock_id, trade_record.buyer_id, trade_record.seller_id,
+      trade_record.buyer_is_bot, trade_record.seller_is_bot,
+      trade_record.price, trade_record.size, now()
+    );
+
+    v_trade_count := v_trade_count + 1;
+  END LOOP;
+
+  RETURN jsonb_build_object('success', true, 'settled_count', v_trade_count);
+END;
+$$;
+
+REVOKE EXECUTE ON FUNCTION public.bulk_settle_trades(JSONB) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.bulk_settle_trades(JSONB) TO service_role;
+
 

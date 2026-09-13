@@ -40,8 +40,8 @@ export interface StockRecord {
   current_price: number;
   previous_close: number;
   open_price: number;
-  high_price: number;
-  low_price: number;
+  high: number;
+  low: number;
   volume: number;
   change_rate: number;
   market_cap: number;
@@ -49,6 +49,9 @@ export interface StockRecord {
   dividend_yield: number;
   sector: string;
   is_core?: boolean;
+  // 하위 호환용 optional alias
+  high_price?: number;
+  low_price?: number;
 }
 
 export interface StockPriceHistoryRecord {
@@ -392,6 +395,8 @@ export class MemoryDatabase {
         current_price: cp,
         previous_close: pc,
         open_price: pc,
+        high: Math.max(cp, pc) * 1.015,
+        low: Math.min(cp, pc) * 0.985,
         high_price: Math.max(cp, pc) * 1.015,
         low_price: Math.min(cp, pc) * 0.985,
         volume: 154000 + idx * 12000,

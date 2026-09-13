@@ -447,8 +447,39 @@ export class MockSupabaseClient {
 
     if (fnName === 'bulk_settle_trades') {
       const trades = Array.isArray(params?.p_trades) ? params.p_trades : [];
-      let settledCount = 0;
+      
+      // 1. 사전 검증 단계 (트랜잭션 원자성 보장: 하나라도 잔고/주식 부족 시 전체 롤백)
+      for (const t of trades) {
+        const tradeAmount = Number(t.price) * Number(t.size);
+        const buyerFee = Number(t.buyer_fee ?? 0);
 
+        if (Number(t.price) <= 0 || Number(t.size) <= 0) {
+          return { data: null, error: { message: `Invalid trade price or size: price=${t.price}, size=${t.size}` } };
+        }
+
+        if (!t.buyer_is_bot && t.buyer_id) {
+          const buyer = db.profiles.get(t.buyer_id);
+          if (!buyer) {
+            return { data: null, error: { message: `Buyer profile not found for user ${t.buyer_id}` } };
+          }
+          const requiredCash = tradeAmount * (1 + buyerFee);
+          if (buyer.cash < requiredCash) {
+            return { data: null, error: { message: `Insufficient cash for buyer ${t.buyer_id}: required=${requiredCash}, available=${buyer.cash}` } };
+          }
+        }
+
+        if (!t.seller_is_bot && t.seller_id) {
+          const holdingId = `${t.seller_id}_${t.stock_id}`;
+          const h = db.holdings.get(holdingId);
+          const availableQty = h?.quantity ?? 0;
+          if (availableQty < Number(t.size)) {
+            return { data: null, error: { message: `Insufficient holdings for seller ${t.seller_id}: required=${t.size}, available=${availableQty}` } };
+          }
+        }
+      }
+
+      // 2. 실행 단계 (사전 검증 통과 후 상태 갱신)
+      let settledCount = 0;
       for (const t of trades) {
         const buyerId = t.buyer_id;
         const sellerId = t.seller_id;
@@ -459,9 +490,7 @@ export class MockSupabaseClient {
         if (!t.buyer_is_bot && buyerId) {
           const buyer = db.profiles.get(buyerId);
           if (buyer) {
-            // 현금: 매수 대금 + 매수 수수료 차감
             buyer.cash -= tradeAmount * (1 + buyerFee);
-            // 순자산: 현금이 주식 자산으로 전환되었으므로, 거래로 인한 순자산 변동은 오직 수수료(손실/리베이트)뿐
             buyer.net_worth -= tradeAmount * buyerFee;
           }
           const holdingId = `${buyerId}_${t.stock_id}`;
@@ -480,9 +509,7 @@ export class MockSupabaseClient {
         if (!t.seller_is_bot && sellerId) {
           const seller = db.profiles.get(sellerId);
           if (seller) {
-            // 현금: 매도 대금 - 매도 수수료 입금
             seller.cash += tradeAmount * (1 - sellerFee);
-            // 순자산: 주식이 현금 자산으로 전환되었으므로, 거래로 인한 순자산 변동은 오직 수수료(손실/리베이트)뿐
             seller.net_worth -= tradeAmount * sellerFee;
           }
           const holdingId = `${sellerId}_${t.stock_id}`;
@@ -513,9 +540,7 @@ export class MockSupabaseClient {
         };
 
         db.trades.push(tradeRecord);
-        // 종목별 체결 인덱스(tradeStockIndex)에 즉시 추가하여 호가창/체결피드에서 실시간 조회 가능하도록 보장
         db.addTradeToIndex(tradeRecord);
-
         settledCount++;
       }
 
@@ -523,8 +548,8 @@ export class MockSupabaseClient {
     }
 
     if (fnName === 'trim_old_market_data') {
-      const maxTrades = Number(params?.p_max_trades || 5000);
-      const maxHistory = Number(params?.p_max_history || 3000);
+      const maxTrades = Math.max(Number(params?.p_max_trades || 5000), 1000);
+      const maxHistory = Math.max(Number(params?.p_max_history || 3000), 1000);
       let deletedTrades = 0;
       let deletedHistory = 0;
 
@@ -537,7 +562,6 @@ export class MockSupabaseClient {
         db.stockPriceHistory = db.stockPriceHistory.slice(-maxHistory);
       }
 
-      // 슬라이딩 윈도우 트리밍 후 tradeStockIndex 등 보조 인덱스 재구축으로 인덱스-스토어 정합성 동기화
       if (deletedTrades > 0 || deletedHistory > 0) {
         db.rebuildIndexes();
       }

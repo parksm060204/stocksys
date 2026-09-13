@@ -3358,5 +3358,26 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 - `lib/memoryDb/mockSupabaseClient.ts`: `trim_old_market_data` 슬라이딩 윈도우 트리밍 후 `db.rebuildIndexes()`를 호출하여 `tradeStockIndex`와 잘려진 실제 `trades` 배열의 정합성 100% 동기화.
 - scratch 자동화 단위 테스트 및 `tsc --noEmit` 전체 검증 통과.
 
+---
+## 2026-09-13 23:05
+
+**요청 요약:** RPC 보안 잠금, 미체결 주문 자산 예약(Holdings/Cash Reservation), dbMatching 및 MarketEngine 정산 로직 통일, Stock 스키마 high/low 정합성 보강
+
+**수행 결과:**
+- `supabase/migrations/bulk_settle_trades.sql`, `vm-db/sql/init/01_schema.sql`, `vm-db/sql/runtime/fix_rls_security_lockdown.sql`: `bulk_settle_trades` SECURITY DEFINER RPC의 실행 권한을 `anon`, `authenticated`로부터 박탈(`REVOKE`)하고 `service_role` 전용으로 잠금. 함수 내부에서 매도자 주식 부족 및 매수자 현금 부족 시 `GREATEST(0, ...)` 강제 정리를 배제하고 즉시 예외(`RAISE EXCEPTION`) 발생으로 트랜잭션 전체 롤백 및 불변식(`cash >= 0`, `holdings.quantity >= 0`) 보장.
+- `supabase/migrations/trim_old_market_data.sql`, `vm-db/sql/init/01_schema.sql`, `vm-db/sql/runtime/fix_rls_security_lockdown.sql`: `trim_old_market_data` 실행 권한을 `service_role` 전용으로 제한하고, 최소 1,000건 미만으로 트리밍 파라미터가 들어올 경우 1,000건으로 강제 클램핑(`GREATEST(..., 1000)`)하여 악의적 전체 데이터 삭제 방지.
+- `lib/memoryDb/mockSupabaseClient.ts`: 로컬 모드 `bulk_settle_trades`에서도 매수자/매도자 잔고 부족 시 사전 에러 반환을 통해 원자적 롤백 구현 및 `trim_old_market_data` 최소 1,000건 제한 적용.
+- `lib/engine/orderRisk.ts`: 미체결(`open`, `partial`) 매수 주문의 미체결 금액 합산(`calculateReservedCash`), 미체결 매도 주문의 미체결 수량 합산(`calculateReservedQty`), 가용 자산 검증(`validateOrderCapacity`)을 담당하는 공통 리스크 모듈 구축. 동일 자산 이중 매수/매도 원천 차단.
+- `lib/engine/settlement.ts`: 통합 정산 페이로드 `SettlementTrade` 정의, 메이커 리베이트(-0.1%) / 테이커 수수료(+0.25%) 상수화 및 `executeSettlement` 일원화 계층 구현.
+- `lib/engine/dbMatching.ts`: 주문 검증 시 `orderRisk` 모듈을 연동하여 가용 예수금/가용 주식 엄격 검증, resting maker 가격 기반 체결가 산정, 직접 테이블 write를 제거하고 `executeSettlement`(`bulk_settle_trades`)로 일괄 원자적 정산 위임.
+- `app/api/orders/route.ts`: 브라우저 클라이언트가 service_role 키를 노출하거나 직접 RPC를 부르지 않도록 서버 사이드 주문 처리 API 구축 (로컬 모드 시 `memoryDb`, 프로덕션 시 `service_role` 클라이언트 사용).
+- `app/components/OrderEntry.tsx`: 브라우저에서 직접 `submitAndMatchOrder`를 호출하던 코드를 `POST /api/orders` 연동으로 전환.
+- `lib/memoryDb/memoryStore.ts` & `lib/engine/localStandaloneServer.ts`: 로컬 메모리 DB의 `StockRecord`와 seed 데이터, 체결 갱신부를 canonical 스키마인 `high`, `low`로 통일 (하위 호환용 `high_price`, `low_price` alias 지원).
+- `scripts/test-order-risk-and-settlement.ts`: TEST A (Cash Reservation), TEST B (Holdings Reservation), TEST C (Partial Fill Reservation), TEST D (Cancel Release), TEST E (Settlement Accuracy & Fees), TEST F (DB Invariant & Rollback), TEST G (High/Low Schema), TEST H (20 Concurrent Race Condition) 8개 종합 자동화 테스트 작성 및 100% 통과.
+- `npx tsc --noEmit` 타입 검사 무결점 통과 및 `npm run build` Next.js 프로덕션 빌드 성공.
+- 브라우저 서브에이전트를 통한 실제 주문 -> 체결 -> 마이페이지 포트폴리오(예수금 ₩99,280,720, 보유 110주) E2E 검증 완료.
+
+
+
 
 

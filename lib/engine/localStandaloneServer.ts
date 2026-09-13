@@ -291,8 +291,10 @@ class LocalMarketEngineInstance {
       // 종목 현재가 및 통계 업데이트
       if (lastExecPrice !== null && lastExecPrice > 0) {
         stock.current_price = lastExecPrice;
-        stock.high_price = Math.max(stock.high_price, lastExecPrice);
-        stock.low_price = Math.min(stock.low_price, lastExecPrice);
+        stock.high = Math.max(Number(stock.high || 0), lastExecPrice);
+        stock.low = Number(stock.low || 0) === 0 ? lastExecPrice : Math.min(Number(stock.low), lastExecPrice);
+        stock.high_price = stock.high;
+        stock.low_price = stock.low;
         stock.volume += matchedVol;
         stock.change_rate = parseFloat((((lastExecPrice - stock.previous_close) / stock.previous_close) * 100).toFixed(2));
         memoryDb.publish('stocks_changes', { eventType: 'UPDATE', new: stock });
@@ -339,3 +341,8 @@ export function ensureLocalStandaloneEngine(): void {
     globalObj.__STOCKSYS_ENGINE_INITIALIZING__ = false;
   }
 }
+
+export function getLocalStandaloneClient(): any {
+  return createMockSupabaseClient();
+}
+

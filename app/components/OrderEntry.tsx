@@ -5,7 +5,6 @@ import type { Stock } from "@/lib/types";
 import { fmtPrice } from "@/lib/format";
 import { createClient } from "@/lib/supabase/client";
 import { useAuth } from "@/lib/auth/useAuth";
-import { submitAndMatchOrder } from "@/lib/engine/dbMatching";
 import { useToast } from "@/app/components/ToastProvider";
 
 export default function OrderEntry({ stock }: { stock: Stock }) {
@@ -101,13 +100,19 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
         }
       }
 
-      const res = await submitAndMatchOrder(supabase, {
-        stock_id: stockId,
-        user_id: userId,
-        side,
-        price: Number(price),
-        size: Number(qty)
+      const apiRes = await fetch('/api/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          stock_id: stockId,
+          user_id: userId,
+          side,
+          price: Number(price),
+          size: Number(qty),
+        }),
       });
+
+      const res = await apiRes.json();
 
       if (res.success) {
         showToast({
@@ -123,6 +128,12 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
           description: res.message,
         });
       }
+    } catch (err: any) {
+      showToast({
+        type: 'error',
+        title: '주문 오류',
+        description: err.message || '주문 처리 중 통신 오류가 발생했습니다.',
+      });
     } finally {
       setLoading(false);
     }

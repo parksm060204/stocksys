@@ -3400,10 +3400,27 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
   - TEST 8 (Stock Stats Update Consistency)
   8개 항목에 대한 종합 테스트 작성 및 100% 통과.
 - `npx tsx scripts/test-order-risk-and-settlement.ts` 기존 8개 테스트 회귀 검증 100% 통과.
-- `npx tsc --noEmit` 전체 타입 검사 통과 및 `npm run build` Next.js 프로덕션 빌드 성공.
+---
+## 2026-09-14 00:10
 
+**요청 요약:** Supabase 및 Render 관련 의존성, 설정, 코드 전면 제거 및 Local Standalone Mode 일원화
 
-
-
-
-
+**수행 결과:**
+- `package.json`: `@supabase/supabase-js`, `@supabase/ssr` 의존성 완전 제거 및 `npm install` 실행하여 `node_modules` 및 `package-lock.json` 동기화 (10개 패키지 제거).
+- `lib/supabase`: 디렉터리 및 내부 `client.ts`, `server.ts` 완전 삭제.
+- `lib/db`: 신규 공통 데이터베이스 레이어(`client.ts`, `server.ts`, `index.ts`) 구축. 외부 패키지 의존 0%의 순수 `HttpMemoryClient` 및 `createClient()` 제공.
+- 전체 컴포넌트/엔진/API 32개 파일: `@/lib/supabase/client` 및 `@/lib/supabase/server` import를 `@/lib/db/client`, `@/lib/db/server`로 전면 교체.
+- `app/api/auth/[...nextauth]/route.ts`: `@supabase/supabase-js` import 및 외부 DB 쿼리(`auth_users_view`, `create_user_with_profile` RPC) 제거, JWT 기반 세션 관리로 전환.
+- `app/api/orders/route.ts`: `createSupabaseJsClient` 및 외부 DB fallback 코드 제거, 내부 `getLocalStandaloneClient()` 고정 반환.
+- `lib/engine/dbMatching.ts`: `@supabase/supabase-js` import 제거 및 `DbClient` 인터페이스 추상화.
+- `lib/engine/localDevMode.ts`: `isLocalStandaloneMode()`가 항상 `true`를 반환하도록 고정하여 외부 DB 없이 항상 자립 실행 보장.
+- `proxy.ts`: `@supabase/ssr` 기반 쿠키 갱신 코드 제거, 순수 Next.js 패스스루 미들웨어로 단순화.
+- `render.yaml`: Render 배포 매니페스트 삭제.
+- `engine-server/src/index.ts`: Render 더미 서버 주석 및 헬스체크 코드 정리.
+- `supabase/` 디렉터리: 루트의 `supabase/` 폴더를 `sql/`로 이동하여 보관.
+- `.env.local` & `.env.example`: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` 전면 삭제.
+- `README.md`: Supabase 및 Render 관련 안내 삭제, Zero-Dependency Local Standalone 아키텍처 및 퀵스타트 가이드로 개정.
+- `npx tsc --noEmit` 타입 검사 오류 0건 통과.
+- `scripts/test-order-security-and-atomic.ts` 및 `scripts/test-order-risk-and-settlement.ts` 16개 자동화 테스트 100% 통과.
+- `npm run build` Next.js Turbopack 23개 라우트 빌드 100% 성공.
+- `npm run dev` 가동 및 브라우저 E2E를 통한 주식 목록, 호가창, 주문 제출, 마이페이지 자산 반영 및 시장 리셋 검증 완료.

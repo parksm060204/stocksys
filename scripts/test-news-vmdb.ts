@@ -1,4 +1,4 @@
-import { createClient } from '@supabase/supabase-js';
+import { createClient } from '../lib/db/client';
 
 async function testNewsVmDb() {
   console.log('================================================================');
@@ -46,7 +46,7 @@ async function testNewsVmDb() {
   const supabase = createClient(url, key, {
     auth: { persistSession: false },
     global: {
-      fetch: (input, init) => {
+      fetch: (input: any, init?: any) => {
         const c = new AbortController();
         setTimeout(() => c.abort(), 2000);
         return fetch(input, { ...init, signal: c.signal }).catch((e) => {

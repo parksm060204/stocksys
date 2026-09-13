@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import type { Stock } from "@/lib/types";
 import { calcYTM, calcMaturityProfit, fmtYTM, RISK_CATEGORY_KO } from "@/lib/bond-utils";
-import { createClient } from "@/lib/supabase/client";
+import { createClient } from "@/lib/db/client";
 
 /**
  * 채권 상세 정보 패널

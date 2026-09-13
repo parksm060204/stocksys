@@ -1,4 +1,4 @@
-import { SupabaseClient } from '@supabase/supabase-js';
+export type DbClient = any;
 import { validateOrderCapacity, OpenOrderForRisk } from '@/lib/engine/orderRisk';
 import { SettlementTrade, calculateTradeFees, executeSettlement } from '@/lib/engine/settlement';
 
@@ -27,7 +27,7 @@ export interface MatchOrderResult {
  * 4. Shared Settlement Layer(bulk_settle_trades RPC)로 원자적 자산 정산 위임
  */
 export async function submitAndMatchOrder(
-  supabase: SupabaseClient,
+  supabase: DbClient,
   input: OrderInput
 ): Promise<MatchOrderResult> {
   const { stock_id, user_id, side, price: incomingPrice, size: incomingSize } = input || {};
@@ -186,7 +186,7 @@ export async function submitAndMatchOrder(
           .from('orders')
           .update({ filled: o.filled, status: o.status })
           .eq('id', o.id)
-          .then((res) => res)
+          .then((res: any) => res)
       );
     }
 
@@ -215,7 +215,7 @@ export async function submitAndMatchOrder(
               volume: newVol,
             })
             .eq('id', stock_id)
-            .then((res) => res)
+            .then((res: any) => res)
         );
       }
     }
@@ -237,7 +237,7 @@ export async function submitAndMatchOrder(
           status: initialStatus,
           is_lp: false,
         })
-        .then((res) => res)
+        .then((res: any) => res)
     );
 
     await Promise.all(writePromises);

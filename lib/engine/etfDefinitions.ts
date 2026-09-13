@@ -1,4 +1,4 @@
-import { createClient } from '@/lib/supabase/client';
+import { createClient } from '@/lib/db/client';
 import { ETFDefinition } from './etfTypes';
 
 export interface ExtendedETFDefinition extends ETFDefinition {

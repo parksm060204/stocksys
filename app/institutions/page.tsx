@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { createClient } from "@/lib/supabase/client";
+import { createClient } from "@/lib/db/client";
 import { CrossAssetLinkageWidget } from "@/app/components/CrossAssetLinkageWidget";
 import { InstitutionalSectorPortfolioWidget } from "@/app/components/InstitutionalSectorPortfolioWidget";
 import { MacroRegimeRebalanceWidget } from "@/app/components/MacroRegimeRebalanceWidget";

@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { scenarioManager } from '@/lib/scenario/ScenarioManager';
 import { commodityEngineInstance } from '@/app/api/commodities/route';
-import { createClient } from '@/lib/supabase/server';
+import { createClient } from '@/lib/db/server';
 
 export async function GET() {
   const activeScenarios = scenarioManager.getActiveScenarios();

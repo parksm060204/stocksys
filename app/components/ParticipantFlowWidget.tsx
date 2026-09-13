@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import StrictWidget from "./StrictWidget";
-import { createClient } from "@/lib/supabase/client";
+import { createClient } from "@/lib/db/client";
 
 interface FlowData {
   type: string;

@@ -221,169 +221,40 @@ player_events
 
 ---
 
-## Liquidity Provider
-
-Local Market Engine은 정기적으로 양방향 호가를 공급합니다.
-
-```text
-        ASK
-         │
-         │
-────── Market Price ──────
-         │
-         │
-        BID
-```
-
-LP 주문은 실제 `orders` state에 등록되며,
-Local Mode에서는 브라우저가 임의로 생성한 synthetic depth가 아니라
-시장 엔진의 실제 주문잔량을 표시합니다.
-
 ---
 
-## Trading Agents
+## System Architecture
 
-시장에는 다양한 투자자 행동을 표현하는 알고리즘 에이전트가 존재합니다.
-
-Production MarketEngine에는 다음과 같은 전략 계열이 포함되어 있습니다.
+STOCKSYS는 외부 DB나 호스팅 서버 없이 Next.js 단일 프로세스 내부에서 동작하는 완전 독립형 아키텍처를 가집니다.
 
 ```text
-Retail Swarm
-Hedge Fund
-Quant
-Statistical Arbitrage
-Prop Desk
-Pension Fund
-Commercial Bank
-Commercial Hedger
-CTA
-Market Maker
-Options Market Maker
-Adversarial Agent
-Wall Breaker
-```
-
-각 Agent는 가격, 펀더멘털, 뉴스, 시장 이벤트 및 포트폴리오 상태를 기반으로
-주문을 생성합니다.
-
----
-
-## Price Dynamics
-
-시장 가격은 단순 random walk만으로 생성되지 않습니다.
-
-MarketEngine에는 확률적 가격 변동과 주문 흐름을 표현하기 위한
-여러 모델이 포함되어 있습니다.
-
-### Merton-style Jump Diffusion
-
-일반적인 시장 변동 외에 드물게 큰 가격 충격이 발생하도록 구성합니다.
-
-```text
-dS
-=
-drift
-++
-diffusion
-++
-jump
-```
-
-### Hawkes-style Order Flow
-
-주문이 증가하면 단기적으로 추가 주문이 발생할 확률이 높아지는
-self-exciting order flow를 모사합니다.
-
-이를 통해 평상시 시장과 높은 거래 집중 구간을 구분할 수 있습니다.
-
----
-
-## Supported Markets
-
-현재 프로젝트에는 다음 자산군의 데이터 구조와 UI가 포함되어 있습니다.
-
-```text
-Korean Equities
-US Equities
-European Equities
-ETFs
-Bonds
-Commodities
-Options
-FX
-```
-
-Standalone Mode는 테스트 및 UI 개발을 위한 seed dataset을 포함합니다.
-
----
-
-## Portfolio & Account
-
-사용자는 `/mypage`에서 다음 정보를 확인할 수 있습니다.
-
-```text
-Cash
-Holdings
-Average Purchase Price
-Current Market Value
-Portfolio P/L
-Foreign Currency Wallet
-```
-
-거래 체결 시 cash와 holdings가 settlement layer를 통해 갱신됩니다.
-
----
-
-## Data Retention
-
-시장 엔진이 장시간 실행될 경우 거래 데이터가 무한히 증가하지 않도록
-Sliding Window 정책을 사용합니다.
-
-기본값:
-
-```text
-Trades                Latest 5,000
-Stock Price History   Latest 3,000
-```
-
-Local Memory Mode와 Production Database 모두 동일한 목적의
-trimming 메커니즘을 갖습니다.
-
----
-
-## Security Model & Transaction Safety
-
-Production 환경과 Local Standalone 환경은 명확하게 분리됩니다.
-
-```text
-NODE_ENV=development
-+ no external database
-        │
-        ▼
-Local Standalone Mode (In-Memory Simulation)
-
-
-NODE_ENV=production
-        │
-        ▼
-External Database Required (PostgreSQL / Supabase)
+                     Browser (NextAuth / Guest Session)
+                                 │
+                    ┌────────────┴────────────┐
+                    │                         │
+                    ▼                         ▼
+            /api/orders (주문 API)      /api/local-db (데이터 API)
+                    │                         │
+                    └────────────┬────────────┘
+                                 ▼
+                     Local Standalone Engine
+               (Price-Time CDA Matching & Settlement)
+                                 │
+                    ┌────────────┴────────────┐
+                    │                         │
+                    ▼                         ▼
+              LocalMemoryStore        LocalMarketEngine
+              (In-Memory DB)        (LP / 봇 시뮬레이션)
 ```
 
 ### 핵심 보안 및 트랜잭션 원칙:
 
-1. **브라우저는 절대로 Service Role Key를 사용하지 않음**:
-   - 브라우저 클라이언트는 오직 공개 anon key 또는 NextAuth 세션 쿠키만 사용합니다.
-   - `ENGINE_DB_SERVICE_ROLE_KEY` / `SUPABASE_SERVICE_ROLE_KEY`는 오직 서버 환경에서만 접근 가능합니다.
+1. **외부 DB 및 서드파티 호스팅 의존성 0%**:
+   - Supabase, PostgreSQL, Render, Docker 등의 외부 인프라가 필요하지 않습니다.
+   - `npm install && npm run dev`만으로 프론트엔드와 시장 시뮬레이션이 즉시 실행됩니다.
 
 2. **사용자 식별은 서버 세션에서만 결정 (Request Body user_id 신뢰 금지)**:
    - `/api/orders`는 클라이언트가 요청 body로 보내는 `user_id`를 완전히 무시합니다.
-   - 서버 사이드 NextAuth 세션(`getServerSession(authOptions)`)의 `session.user.id`만을 사용자의 신원으로 강제 바인딩합니다.
-   - Production 환경에서 유효한 세션이 없으면 `401 Unauthorized`로 차단됩니다.
-   - Local Mode에서는 개발 편의를 위해 `GUEST_USER_ID`(`서학개미`)로 자동 매핑됩니다.
-
-3. **단일 원자적 DB 트랜잭션 (`submit_and_match_order`)**:
-   - Production 주문 lifecycle 전체(프로필 락 → 자산 예약 검증 → 매칭 → Maker/Taker 수수료 정산 → 주문/체결/주식 통계 갱신)는 PostgreSQL RPC `submit_and_match_order` 내부에서 `FOR UPDATE` 행 잠금과 함께 단일 트랜잭션으로 처리됩니다.
-   - 중간에 어떠한 에러(잔고 부족, 수량 부족, DB 오류)가 발생하더라도 전체가 `ROLLBACK`되어 부분 실패나 자산 불일치가 원천 방지됩니다.
 
 4. **Anon Key Fallback 금지**:
    - 서버 주문 API는 Service Role Key가 누락되었을 때 anon key로 fallback하지 않고 즉시 에러를 반환합니다.
@@ -498,23 +369,17 @@ trade.size > 0
 
 ## Development Principles
 
-STOCKSYS는 Local Mode와 Production Mode에서 서로 완전히 다른 시장을
-두 번 구현하는 것을 지양합니다.
-
-핵심 방향은 다음과 같습니다.
+STOCKSYS는 외부 DB 서버 의존성 없이 프론트엔드와 시장 시뮬레이션을 단일 Next.js 개발 런타임에서 완전히 재현하도록 설계되었습니다.
 
 ```text
-             Shared Market Logic
-                     │
-          ┌──────────┴───────────┐
-          │                      │
-   Local Memory Adapter    Production DB Adapter
-          │                      │
- Local Standalone          PostgreSQL / Supabase
+         Shared Market Logic (CDA Matching & Settlement)
+                               │
+                 Local Standalone Architecture
+                               │
+             In-Memory Store & Embedded Simulation
 ```
 
-가능한 한 Matching, Settlement, Risk Control 및 Market Logic을 공유하고,
-저장소 및 실행 환경만 교체하는 구조를 지향합니다.
+모든 주문 매칭, 체결, 호가 공급 및 자산 관리는 메모리 상에서 원자적으로 처리되어 즉각적인 피드백과 신속한 로컬 개발 경험을 제공합니다.
 
 ---
 

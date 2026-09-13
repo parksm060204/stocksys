@@ -3,7 +3,7 @@
 import { useState, useEffect, useMemo } from "react";
 import type { Stock } from "@/lib/types";
 import { fmtPrice } from "@/lib/format";
-import { createClient } from "@/lib/supabase/client";
+import { createClient } from "@/lib/db/client";
 
 interface Candle {
   time: string;

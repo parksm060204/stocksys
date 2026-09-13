@@ -1,6 +1,6 @@
 import * as crypto from 'crypto';
-import { createClient as createSupabaseClient } from '@supabase/supabase-js';
 import { createMockSupabaseClient } from '../../lib/memoryDb/mockSupabaseClient';
+const createSupabaseClient: any = (..._args: any[]) => createMockSupabaseClient();
 import { memoryDb, OrderRecord, TradeRecord } from '../../lib/memoryDb/memoryStore';
 import { ResourceSampler } from './ResourceSampler';
 
@@ -63,7 +63,7 @@ async function runConcurrentTradingLoadTest() {
     supabase = createSupabaseClient(rawUrl, rawKey, {
       auth: { persistSession: false },
       global: {
-        fetch: (input, init) => {
+        fetch: (input: any, init?: any) => {
           const controller = new AbortController();
           const timeout = setTimeout(() => controller.abort(), 5000);
           return fetch(input, { ...init, signal: controller.signal })

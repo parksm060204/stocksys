@@ -8,7 +8,7 @@ import { getKOSPIIndex, getSP50Index, getEuroStoxx50Index } from "@/lib/index";
 import type { MarketIndex } from "@/lib/index";
 import type { MarketId, Stock } from "@/lib/types";
 import StockTable from "@/app/components/StockTable";
-import { createClient } from "@/lib/supabase/client";
+import { createClient } from "@/lib/db/client";
 
 type RegionTab = "kospi" | "sp50" | "eurostoxx50";
 

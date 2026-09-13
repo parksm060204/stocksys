@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import { fmtCap } from "@/lib/format";
-import { createClient } from "@/lib/supabase/server";
+import { createClient } from "@/lib/db/server";
 import type { Stock } from "@/lib/types";
 import StockDetailV2Client from "./StockDetailV2Client";
 

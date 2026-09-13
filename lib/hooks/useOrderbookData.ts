@@ -7,7 +7,7 @@ import {
   type SimTrade,
 } from './useStockBotSimulation';
 
-import { createClient } from '@/lib/supabase/client';
+import { createClient } from '@/lib/db/client';
 import { isLocalStandaloneMode } from '@/lib/engine/localDevMode';
 
 // ─── DB 행 타입 ──────────────────────────────────────────────────────────────

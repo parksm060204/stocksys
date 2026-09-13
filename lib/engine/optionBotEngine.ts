@@ -1,4 +1,4 @@
-import { createClient } from '@/lib/supabase/client';
+import { createClient } from '@/lib/db/client';
 import { OptionsEngine } from './OptionsEngine';
 import { globalRealtimeGateway } from './RealtimeGateway';
 import { Order } from './types';

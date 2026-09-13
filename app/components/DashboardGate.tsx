@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from "react";
-import { createClient } from "@/lib/supabase/client";
+import { createClient } from "@/lib/db/client";
 import Link from "next/link";
 import { change, fmtSigned } from "@/lib/format";
 import { getKOSPIIndex, getSP50Index, getEuroStoxx50Index, type MarketIndex } from "@/lib/index";

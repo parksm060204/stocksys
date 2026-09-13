@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { createClient } from "@/lib/supabase/client";
+import { createClient } from "@/lib/db/client";
 import { useAuth } from "@/lib/auth/useAuth";
 import { ThemeToggle } from "./ThemeToggle";
 

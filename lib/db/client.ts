@@ -1,10 +1,8 @@
-import { createBrowserClient } from "@supabase/ssr";
-import { isLocalStandaloneMode } from "../engine/localDevMode";
 import { GUEST_USER_ID } from "../memoryDb/memoryStore";
 
 let browserClient: any = null;
 
-class HttpQueryBuilder {
+export class HttpQueryBuilder {
   private tableName: string;
   private filters: { col: string; op: string; val: any }[] = [];
   private orderCol?: string;
@@ -84,6 +82,10 @@ class HttpQueryBuilder {
     return this;
   }
 
+  public or(_expr: string): this {
+    return this;
+  }
+
   public order(col: string, options?: { ascending?: boolean }): this {
     this.orderCol = col;
     this.orderAsc = options?.ascending ?? true;
@@ -143,7 +145,7 @@ class HttpQueryBuilder {
   }
 }
 
-class HttpMemoryClient {
+export class HttpMemoryClient {
   public from(tableName: string): HttpQueryBuilder {
     return new HttpQueryBuilder(tableName);
   }
@@ -197,35 +199,11 @@ class HttpMemoryClient {
     };
   }
 
-  public removeChannel(): void {}
+  public removeChannel(_channel?: any): void {}
 }
 
-export function createClient() {
+export function createClient(..._args: any[]): HttpMemoryClient {
   if (browserClient) return browserClient;
-
-  if (isLocalStandaloneMode()) {
-    browserClient = new HttpMemoryClient();
-    return browserClient;
-  }
-
-  const url = process.env.NEXT_PUBLIC_ENGINE_DB_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.NEXT_PUBLIC_ENGINE_DB_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-
-  if (!url || !key) {
-    if (process.env.NODE_ENV === 'production') {
-      throw new Error("❌ [Supabase] Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY in production!");
-    }
-    // 개발 모드인데 외부 DB 키가 없으면 로컬 모드 활성화
-    browserClient = new HttpMemoryClient();
-    return browserClient;
-  }
-
-  browserClient = createBrowserClient(url, key, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-      detectSessionInUrl: false,
-    },
-  });
+  browserClient = new HttpMemoryClient();
   return browserClient;
 }

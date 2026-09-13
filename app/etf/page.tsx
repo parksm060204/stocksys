@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { createClient } from '@/lib/supabase/client';
+import { createClient } from '@/lib/db/client';
 import { ETF_CATALOG, seedETFStocksToDatabase } from '@/lib/engine/etfDefinitions';
 import { ETFPortfolio } from '@/lib/engine/etfTypes';
 import { iNAVEngine } from '@/lib/engine/iNAVEngine';

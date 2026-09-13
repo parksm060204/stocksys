@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { createClient } from "@/lib/supabase/client";
+import { createClient } from "@/lib/db/client";
 import { change, fmtPrice, fmtSigned } from "@/lib/format";
 import type { Stock } from "@/lib/types";
 

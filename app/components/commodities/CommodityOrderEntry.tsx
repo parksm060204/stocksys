@@ -4,7 +4,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { CommodityDefinition } from '@/lib/commodities/types';
 import { fmtPrice } from '@/lib/format';
 import { useAuth } from '@/lib/auth/useAuth';
-import { createClient } from '@/lib/supabase/client';
+import { createClient } from '@/lib/db/client';
 import { useToast } from '@/app/components/ToastProvider';
 
 interface CommodityOrderEntryProps {

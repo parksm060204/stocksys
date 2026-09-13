@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
-import { createClient as createSupabaseJsClient } from '@supabase/supabase-js';
+
 import { authOptions } from '@/app/api/auth/[...nextauth]/route';
 import { isLocalStandaloneMode } from '@/lib/engine/localDevMode';
 import { getLocalStandaloneClient, ensureLocalStandaloneEngine } from '@/lib/engine/localStandaloneServer';
@@ -27,24 +27,8 @@ function checkRateLimit(userId: string): boolean {
 }
 
 function getOrderServiceClient() {
-  if (isLocalStandaloneMode()) {
-    ensureLocalStandaloneEngine();
-    return getLocalStandaloneClient();
-  }
-
-  const url = process.env.NEXT_PUBLIC_ENGINE_DB_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
-  // 보안 강화: anon key fallback 완전 제거 및 ENGINE_DB_SERVICE_ROLE_KEY 명칭 통일
-  const serviceKey =
-    process.env.ENGINE_DB_SERVICE_ROLE_KEY ||
-    process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-  if (!url || !serviceKey) {
-    throw new Error('❌ [Order API] Missing ENGINE_DB_SERVICE_ROLE_KEY (or SUPABASE_SERVICE_ROLE_KEY) or DB URL.');
-  }
-
-  return createSupabaseJsClient(url, serviceKey, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
+  ensureLocalStandaloneEngine();
+  return getLocalStandaloneClient();
 }
 
 export async function POST(request: Request) {

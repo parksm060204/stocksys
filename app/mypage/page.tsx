@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { fmtPrice } from "@/lib/format";
-import { createClient } from "@/lib/supabase/server";
+import { createClient } from "@/lib/db/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import { isLocalStandaloneMode } from "@/lib/engine/localDevMode";

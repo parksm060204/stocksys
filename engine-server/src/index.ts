@@ -30,7 +30,7 @@ async function main() {
   engine.start();
   eventDirector.start();
 
-  // Render/VPS Web Service용 Dummy HTTP Server (무료 티어/헬스체크 우회용)
+  // Optional HTTP Healthcheck Server
   const port = process.env.PORT || 10000;
   const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });

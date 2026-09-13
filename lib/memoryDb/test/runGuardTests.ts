@@ -1,4 +1,4 @@
-import { createClient } from '../../supabase/client';
+import { createClient } from '../../db/client';
 
 async function runGuardTestSuite() {
   console.log('================================================================');

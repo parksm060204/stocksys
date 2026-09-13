@@ -4,7 +4,7 @@ import { MARKETS } from "@/lib/constants";
 import { change, fmtSigned } from "@/lib/format";
 import StockTable from "@/app/components/StockTable";
 import type { MarketId, Stock } from "@/lib/types";
-import { createClient } from "@/lib/supabase/server";
+import { createClient } from "@/lib/db/server";
 
 const VALID = new Set(MARKETS.map((m) => m.id));
 

@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useState, useCallback } from 'react';
-import { createClient } from '@/lib/supabase/client';
+import { createClient } from '@/lib/db/client';
 import { useAuth } from '@/lib/auth/useAuth';
 import { useToast } from './ToastProvider';
 import { fmtKSTTime } from '@/lib/format';

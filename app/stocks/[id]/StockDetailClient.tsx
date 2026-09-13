@@ -189,7 +189,7 @@ export default function StockDetailClient({
   return (
     <div className="flex flex-col flex-1 min-h-0 animate-fade-in-up">
       {/* 탭 바 + PRO 토글 */}
-      <div className="flex items-center border-b border-[#1e2230] bg-[#090B0F] px-4 shrink-0 gap-2 justify-between font-sans">
+      <div className="flex items-center border-b border-border bg-panel px-4 shrink-0 gap-2 justify-between font-sans">
         <div className="flex items-center gap-1 overflow-x-auto no-scrollbar">
           {tabs.map((tab) => (
             <button
@@ -198,7 +198,7 @@ export default function StockDetailClient({
               className={`px-4 py-3 text-[13px] font-bold border-b-2 transition-all cursor-pointer whitespace-nowrap ${
                 activeTab === tab.id
                   ? "border-[#F04452] text-up bg-up/5"
-                  : "border-transparent text-[#8E939D] hover:text-white"
+                  : "border-transparent text-muted hover:text-tx"
               }`}
             >
               {tab.label}
@@ -217,22 +217,22 @@ export default function StockDetailClient({
       </div>
 
       {/* 탭 컨텐츠 */}
-      <div className="flex-1 p-2 md:p-3 relative bg-black pb-12">
+      <div className="flex-1 p-2 md:p-3 relative bg-bg pb-12">
         {activeTab === "chart" && (
           <div className="grid grid-cols-12 gap-3">
             {/* 좌측 (7) — 10분봉 캔들스틱 틱 차트 + 체결 피드 */}
             <div className="col-span-12 lg:col-span-7 flex flex-col gap-3">
-              <div className="h-[440px] md:h-[480px] border border-[#1e2230] bg-panel rounded-2xl shadow-xl overflow-hidden">
+              <div className="h-[440px] md:h-[480px] border border-border bg-panel rounded-2xl shadow-xl overflow-hidden">
                 <TickChart ticker={stock.ticker} currentPrice={stock.currentPrice} />
               </div>
-              <div className="h-[280px] md:h-[320px] border border-[#1e2230] bg-panel rounded-2xl shadow-xl overflow-hidden">
+              <div className="h-[280px] md:h-[320px] border border-border bg-panel rounded-2xl shadow-xl overflow-hidden">
                 <TradeFeed stock={stock} />
               </div>
             </div>
 
             {/* 우측 (5) — 10단계 실시간 호가창 + 주문 입력창 */}
             <div className="col-span-12 lg:col-span-5 flex flex-col gap-3">
-              <div className="h-[440px] md:h-[480px] border border-[#1e2230] bg-panel rounded-2xl shadow-xl overflow-hidden">
+              <div className="h-[440px] md:h-[480px] border border-border bg-panel rounded-2xl shadow-xl overflow-hidden">
                 <Orderbook
                   ticker={stock.ticker}
                   currentPrice={stock.currentPrice}
@@ -240,7 +240,7 @@ export default function StockDetailClient({
                   openPrice={stock.openPrice || (stock as any).open_price || stock.previousClose}
                 />
               </div>
-              <div className="border border-[#1e2230] bg-panel rounded-2xl shadow-xl p-4">
+              <div className="border border-border bg-panel rounded-2xl shadow-xl p-4">
                 <OrderEntry stock={stock} />
               </div>
             </div>
@@ -250,7 +250,7 @@ export default function StockDetailClient({
         {activeTab === "orderbook" && (
           <div className="grid grid-cols-12 gap-3">
             {/* 좌측 (5) — 호가창 */}
-            <div className="col-span-12 lg:col-span-5 h-[520px] border border-[#1e2230] bg-panel rounded-2xl shadow-xl overflow-hidden">
+            <div className="col-span-12 lg:col-span-5 h-[520px] border border-border bg-panel rounded-2xl shadow-xl overflow-hidden">
               <Orderbook
                 ticker={stock.ticker}
                 currentPrice={stock.currentPrice}
@@ -260,10 +260,10 @@ export default function StockDetailClient({
             </div>
             {/* 우측 (7) — 체결창 + 주문창 */}
             <div className="col-span-12 lg:col-span-7 flex flex-col gap-3">
-              <div className="h-[300px] border border-[#1e2230] bg-panel rounded-2xl shadow-xl overflow-hidden">
+              <div className="h-[300px] border border-border bg-panel rounded-2xl shadow-xl overflow-hidden">
                 <TradeFeed stock={stock} />
               </div>
-              <div className="border border-[#1e2230] bg-panel rounded-2xl shadow-xl p-4">
+              <div className="border border-border bg-panel rounded-2xl shadow-xl p-4">
                 <OrderEntry stock={stock} />
               </div>
             </div>
@@ -271,40 +271,40 @@ export default function StockDetailClient({
         )}
 
         {activeTab === "orders" && (
-          <div className="min-h-[400px] flex flex-col border border-[#1e2230] bg-panel rounded-2xl shadow-xl overflow-hidden">
+          <div className="min-h-[400px] flex flex-col border border-border bg-panel rounded-2xl shadow-xl overflow-hidden">
             <ActiveOrdersPanel currentStockId={stock.id} />
           </div>
         )}
 
         {activeTab === "history" && (
-          <div className="h-full overflow-hidden flex flex-col border border-[#1e2230] bg-panel rounded-2xl shadow-xl">
-            <div className="border-b border-[#1e2230] px-5 py-4 bg-black font-mono font-black text-white text-[13.5px]">
+          <div className="h-full overflow-hidden flex flex-col border border-border bg-panel rounded-2xl shadow-xl">
+            <div className="border-b border-border px-5 py-4 bg-panel font-mono font-black text-tx text-[13.5px]">
               과거 주가 변동 기록 (TIME SERIES)
             </div>
             {priceHistory.length === 0 ? (
-              <div className="p-12 text-center text-white/30 text-[13px] font-mono">
+              <div className="p-12 text-center text-muted text-[13px] font-mono">
                 저장된 과거 주가 이력이 없습니다. 엔터프라이즈 엔진 가동 시 자동으로 기록됩니다.
               </div>
             ) : (
               <div className="flex-1 overflow-y-auto no-scrollbar">
                 <table className="w-full text-left border-collapse text-[12.5px] font-mono">
                   <thead>
-                    <tr className="border-b border-[#1e2230] bg-black text-white/30 uppercase text-xs font-extrabold">
+                    <tr className="border-b border-border bg-panel2 text-muted uppercase text-xs font-extrabold">
                       <th className="py-3 px-5 border-none">기록 시각</th>
                       <th className="py-3 px-5 text-right border-none">주가 (Price)</th>
                       <th className="py-3 px-5 text-right border-none">거래량 (Volume)</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-[#1e2230]">
+                  <tbody className="divide-y divide-border">
                     {priceHistory.map((item) => (
-                      <tr key={item.id} className="hover:bg-[#0f1117] transition-colors">
-                        <td className="py-3 px-5 text-white/35 font-medium border-none">
+                      <tr key={item.id} className="hover:bg-hover transition-colors">
+                        <td className="py-3 px-5 text-muted font-medium border-none">
                           {new Date(item.created_at).toLocaleString("ko-KR")}
                         </td>
-                        <td className="py-3 px-5 text-right font-black text-white border-none tabular-nums">
+                        <td className="py-3 px-5 text-right font-black text-tx border-none tabular-nums">
                           {fmtPrice(Number(item.price), stock.market)}
                         </td>
-                        <td className="py-3 px-5 text-right text-white/35 font-bold border-none tabular-nums">
+                        <td className="py-3 px-5 text-right text-muted font-bold border-none tabular-nums">
                           {fmtVolume(Number(item.volume || 0))}
                         </td>
                       </tr>
@@ -319,8 +319,8 @@ export default function StockDetailClient({
         {activeTab === "info" && (
           <div className="grid grid-cols-12 gap-3 h-full overflow-y-auto no-scrollbar pb-10">
             <div className="col-span-6 flex flex-col gap-3">
-              <div className="border border-[#1e2230] bg-panel rounded-2xl overflow-hidden shadow-xl p-5 font-mono space-y-3">
-                <h3 className="text-[14px] font-black text-white border-b border-[#1e2230] pb-2">기업 분석 및 스펙</h3>
+              <div className="border border-border bg-panel rounded-2xl overflow-hidden shadow-xl p-5 font-mono space-y-3">
+                <h3 className="text-[14px] font-black text-tx border-b border-border pb-2">기업 분석 및 스펙</h3>
                 <div className="grid grid-cols-2 gap-3">
                   <Info label="섹터" value={stock.sector} />
                   <Info label="시가총액" value={fmtCap(stock.marketCap)} />
@@ -346,19 +346,19 @@ export default function StockDetailClient({
 
         {activeTab === "news" && (
           <div className="grid grid-cols-12 gap-3 h-full overflow-hidden">
-            <div className="col-span-6 h-full overflow-hidden flex flex-col border border-[#1e2230] bg-panel rounded-2xl shadow-xl">
-              <div className="border-b border-[#1e2230] px-5 py-4 bg-black font-mono font-black text-white text-[13.5px]">
+            <div className="col-span-6 h-full overflow-hidden flex flex-col border border-border bg-panel rounded-2xl shadow-xl">
+              <div className="border-b border-border px-5 py-4 bg-panel font-mono font-black text-tx text-[13.5px]">
                 관련 뉴스 · 공시
               </div>
               <div className="flex-1 overflow-y-auto no-scrollbar p-2">
                 {relatedNews.length === 0 ? (
-                  <p className="px-4 py-8 text-center text-[12px] text-white/30 font-mono">관련 뉴스가 없습니다</p>
+                  <p className="px-4 py-8 text-center text-[12px] text-muted font-mono">관련 뉴스가 없습니다</p>
                 ) : (
-                  <div className="divide-y divide-[#1e2230]">
+                  <div className="divide-y divide-border">
                     {relatedNews.map((n) => (
                       <div key={n.id} className="px-4 py-3.5 font-mono">
                         <div className="flex items-center gap-2">
-                          <span className="rounded-full bg-panel2 border border-[#1e2230] px-2.5 py-0.5 text-[10px] font-bold text-white/35">
+                          <span className="rounded-full bg-panel2 border border-border px-2.5 py-0.5 text-[10px] font-bold text-muted">
                             {n.publisher || "언론사"}
                           </span>
                           <span className={`text-[10.5px] font-black rounded-full px-2 py-0.5 border ${
@@ -366,20 +366,20 @@ export default function StockDetailClient({
                               ? "bg-up/10 border-[#F04452]/30 text-up"
                               : n.sentiment === "negative"
                               ? "bg-down/10 border-[#3182F6]/30 text-down"
-                              : "bg-panel2 border-[#1e2230] text-white/30"
+                              : "bg-panel2 border-border text-muted"
                           }`}>
                             {n.sentiment === "positive" ? "호재" : n.sentiment === "negative" ? "악재" : "중립"}
                           </span>
                         </div>
-                        <p className="mt-1.5 text-[13px] font-bold text-white font-sans">{n.headline}</p>
-                        <p className="mt-1 line-clamp-2 text-[11.5px] text-white/35 font-sans font-medium">{n.content}</p>
+                        <p className="mt-1.5 text-[13px] font-bold text-tx font-sans">{n.headline}</p>
+                        <p className="mt-1 line-clamp-2 text-[11.5px] text-muted font-sans font-medium">{n.content}</p>
                       </div>
                     ))}
                   </div>
                 )}
               </div>
             </div>
-            <div className="col-span-6 h-full overflow-hidden flex flex-col border border-[#1e2230] bg-panel rounded-2xl shadow-xl">
+            <div className="col-span-6 h-full overflow-hidden flex flex-col border border-border bg-panel rounded-2xl shadow-xl">
               <ChatPanel stockId={stock.id} initial={messages} />
             </div>
           </div>
@@ -392,20 +392,20 @@ export default function StockDetailClient({
 // ─────────────────────────────────────────────────────────────
 // 보조 컴포넌트
 // ─────────────────────────────────────────────────────────────
-function MiniStat({ label, value, color = "text-white" }: { label: string; value: string; color?: string }) {
+function MiniStat({ label, value, color = "text-tx" }: { label: string; value: string; color?: string }) {
   return (
-    <div className="bg-panel border border-[#1e2230] rounded-xl px-4 py-3 text-center">
-      <div className="text-[9.5px] uppercase font-bold tracking-widest text-white/25 font-mono mb-1">{label}</div>
+    <div className="bg-panel border border-border rounded-xl px-4 py-3 text-center">
+      <div className="text-[9.5px] uppercase font-bold tracking-widest text-muted font-mono mb-1">{label}</div>
       <div className={`font-mono text-[13px] font-black tabular-nums ${color}`}>{value}</div>
     </div>
   );
 }
 
 function Cell({ label, value, tone }: { label: string; value: string; tone?: "up" | "down" }) {
-  const color = tone === "up" ? "text-up" : tone === "down" ? "text-down" : "text-white";
+  const color = tone === "up" ? "text-up" : tone === "down" ? "text-down" : "text-tx";
   return (
     <div className="bg-transparent px-3 py-3 font-mono">
-      <div className="text-[10px] uppercase font-bold tracking-wider text-white/30">{label}</div>
+      <div className="text-[10px] uppercase font-bold tracking-wider text-muted">{label}</div>
       <div className={`mt-0.5 font-mono text-[12.5px] font-black tabular-nums ${color}`}>{value}</div>
     </div>
   );
@@ -413,9 +413,9 @@ function Cell({ label, value, tone }: { label: string; value: string; tone?: "up
 
 function Info({ label, value }: { label: string; value: string }) {
   return (
-    <div className="bg-black border border-[#1e2230] rounded-xl px-4 py-3 font-mono">
-      <div className="text-[10px] uppercase tracking-wider text-white/25 font-bold">{label}</div>
-      <div className="mt-1 font-mono text-[13.5px] font-black tabular-nums text-white">{value}</div>
+    <div className="bg-panel2 border border-border rounded-xl px-4 py-3 font-mono">
+      <div className="text-[10px] uppercase tracking-wider text-muted font-bold">{label}</div>
+      <div className="mt-1 font-mono text-[13.5px] font-black tabular-nums text-tx">{value}</div>
     </div>
   );
 }

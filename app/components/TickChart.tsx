@@ -18,6 +18,7 @@ import {
   calculateBollingerBands,
   calculateRSI,
 } from '@/lib/indicators';
+import { useTheme } from './ThemeProvider';
 
 type TimeUnit = '10m' | '1h' | '1d' | '1M';
 
@@ -141,6 +142,9 @@ export default function TickChart({
   const [settings, setSettings] = useState<IndicatorSettings>(DEFAULT_SETTINGS);
   const [showSettingsModal, setShowSettingsModal] = useState<boolean>(false);
 
+  const { resolvedTheme } = useTheme();
+  const isDark = resolvedTheme !== 'light';
+
   const supabase = createClient();
 
   // 1. 로컬스토리지에서 지표 설정 로드
@@ -168,6 +172,30 @@ export default function TickChart({
     });
   }, []);
 
+  // 테마 변경 시 lightweight-charts 인스턴스 옵션 동적 동기화
+  useEffect(() => {
+    const isDarkNow = resolvedTheme !== 'light';
+    const themeOpts = {
+      layout: {
+        background: { type: ColorType.Solid, color: isDarkNow ? '#0C0E12' : '#FFFFFF' },
+        textColor: isDarkNow ? '#8E939D' : '#475569',
+      },
+      grid: {
+        vertLines: { color: isDarkNow ? 'rgba(255, 255, 255, 0.03)' : 'rgba(0, 0, 0, 0.06)' },
+        horzLines: { color: isDarkNow ? 'rgba(255, 255, 255, 0.03)' : 'rgba(0, 0, 0, 0.06)' },
+      },
+      timeScale: {
+        borderColor: isDarkNow ? '#1e2230' : '#E2E8F0',
+      },
+      rightPriceScale: {
+        borderColor: isDarkNow ? '#1e2230' : '#E2E8F0',
+      },
+    };
+
+    mainChartRef.current?.applyOptions(themeOpts);
+    rsiChartRef.current?.applyOptions(themeOpts);
+  }, [resolvedTheme]);
+
   // 3. 종목 ID 조회
   useEffect(() => {
     const client = createClient();
@@ -190,28 +218,29 @@ export default function TickChart({
 
     const tickSize = getStockTickSize(currentPrice, ticker);
     const isUS = tickSize === 0.01;
+    const isDarkInit = resolvedTheme !== 'light';
 
     const chart = createChart(el, {
       layout: {
-        background: { type: ColorType.Solid, color: '#090B0F' },
-        textColor: '#8E939D',
+        background: { type: ColorType.Solid, color: isDarkInit ? '#0C0E12' : '#FFFFFF' },
+        textColor: isDarkInit ? '#8E939D' : '#475569',
       },
       grid: {
-        vertLines: { color: 'rgba(255, 255, 255, 0.03)' },
-        horzLines: { color: 'rgba(255, 255, 255, 0.03)' },
+        vertLines: { color: isDarkInit ? 'rgba(255, 255, 255, 0.03)' : 'rgba(0, 0, 0, 0.06)' },
+        horzLines: { color: isDarkInit ? 'rgba(255, 255, 255, 0.03)' : 'rgba(0, 0, 0, 0.06)' },
       },
       width: el.clientWidth || 600,
       height: el.clientHeight || 320,
       timeScale: {
         timeVisible: true,
         secondsVisible: false,
-        borderColor: '#1e2230',
+        borderColor: isDarkInit ? '#1e2230' : '#E2E8F0',
         barSpacing: 12,
         minBarSpacing: 4,
         rightOffset: 6,
       },
       rightPriceScale: {
-        borderColor: '#1e2230',
+        borderColor: isDarkInit ? '#1e2230' : '#E2E8F0',
         scaleMargins: { top: 0.1, bottom: 0.08 },
         autoScale: true,
       },
@@ -340,19 +369,20 @@ export default function TickChart({
     }
 
     const rsiEl = rsiChartContainerRef.current;
+    const isDarkRsi = resolvedTheme !== 'light';
     const rsiChart = createChart(rsiEl, {
       layout: {
-        background: { type: ColorType.Solid, color: '#05070A' },
-        textColor: '#8E939D',
+        background: { type: ColorType.Solid, color: isDarkRsi ? '#05070A' : '#F8FAFC' },
+        textColor: isDarkRsi ? '#8E939D' : '#475569',
       },
       grid: {
-        vertLines: { color: 'rgba(255, 255, 255, 0.03)' },
-        horzLines: { color: 'rgba(255, 255, 255, 0.03)' },
+        vertLines: { color: isDarkRsi ? 'rgba(255, 255, 255, 0.03)' : 'rgba(0, 0, 0, 0.06)' },
+        horzLines: { color: isDarkRsi ? 'rgba(255, 255, 255, 0.03)' : 'rgba(0, 0, 0, 0.06)' },
       },
       width: rsiEl.clientWidth || 600,
       height: 90,
-      timeScale: { timeVisible: true, secondsVisible: false, borderColor: '#1e2230' },
-      rightPriceScale: { borderColor: '#1e2230', scaleMargins: { top: 0.1, bottom: 0.1 } },
+      timeScale: { timeVisible: true, secondsVisible: false, borderColor: isDarkRsi ? '#1e2230' : '#E2E8F0' },
+      rightPriceScale: { borderColor: isDarkRsi ? '#1e2230' : '#E2E8F0', scaleMargins: { top: 0.1, bottom: 0.1 } },
     });
 
     const rsiSeries = rsiChart.addSeries(LineSeries, {
@@ -658,19 +688,19 @@ export default function TickChart({
   return (
     <StrictWidget className="h-full flex flex-col relative" overflowClass="overflow-hidden">
       {/* ── 1. 차트 상단 헤더 (토스 스타일 깔끔한 단일 행) ── */}
-      <div className="bg-[#090B0F] py-2.5 px-4 border-b border-[#1e2230] flex items-center justify-between gap-3 select-none shrink-0 font-sans">
+      <div className="bg-panel py-2.5 px-4 border-b border-border flex items-center justify-between gap-3 select-none shrink-0 font-sans">
         <div className="flex items-center gap-3 overflow-x-auto no-scrollbar">
           <div className="flex items-center gap-2">
-            <span className="text-[13px] font-black text-white font-mono tracking-tight">{ticker}</span>
-            <span className="text-xs font-bold text-[#8E939D] bg-white/[0.06] px-2 py-0.5 rounded-full font-mono">
+            <span className="text-[13px] font-black text-tx font-mono tracking-tight">{ticker}</span>
+            <span className="text-xs font-bold text-muted bg-panel2 px-2 py-0.5 rounded-full font-mono border border-border">
               {TIME_UNIT_LABEL[timeUnit]}
             </span>
           </div>
 
           {/* OHLC 실시간 칩 */}
           {ohlcInfo && (
-            <div className="flex items-center gap-2 text-xs font-mono text-[#8E939D] pl-2 border-l border-[#1e2230]">
-              <span>시 <span className="text-white font-bold tabular-nums">{ohlcInfo.open.toLocaleString()}</span></span>
+            <div className="flex items-center gap-2 text-xs font-mono text-muted pl-2 border-l border-border">
+              <span>시 <span className="text-tx font-bold tabular-nums">{ohlcInfo.open.toLocaleString()}</span></span>
               <span>고 <span className="text-up font-bold tabular-nums">{ohlcInfo.high.toLocaleString()}</span></span>
               <span>저 <span className="text-down font-bold tabular-nums">{ohlcInfo.low.toLocaleString()}</span></span>
               <span>종 <span className={`font-bold tabular-nums ${ohlcInfo.close >= ohlcInfo.open ? 'text-up' : 'text-down'}`}>{ohlcInfo.close.toLocaleString()}</span></span>
@@ -688,25 +718,25 @@ export default function TickChart({
       </div>
 
       {/* ── 2. 메인 차트 캔버스 영역 ── */}
-      <div className="relative flex-1 w-full overflow-hidden bg-[#090B0F]">
+      <div className="relative flex-1 w-full overflow-hidden bg-panel">
         <div ref={mainChartContainerRef} className="w-full h-full" />
       </div>
 
       {/* ── 3. RSI 서브 패널 (토글 활성화 시) ── */}
       {settings.showRSI && (
-        <div className="border-t border-[#1e2230] bg-[#05070A] p-1 flex flex-col shrink-0">
+        <div className="border-t border-border bg-bg p-1 flex flex-col shrink-0">
           <div className="px-3 py-1 text-[10.5px] font-bold text-[#EC4899] flex items-center justify-between font-mono">
             <span>RSI ({settings.rsiPeriod})</span>
-            <span className="text-[#565A63]">과매수(70) / 과매도(30)</span>
+            <span className="text-dim">과매수(70) / 과매도(30)</span>
           </div>
           <div ref={rsiChartContainerRef} className="w-full h-20" />
         </div>
       )}
 
       {/* ── 4. 차트 하단 바 (좌: 타임프레임 | 우: 지표 & 도구 슬라이드바) ── */}
-      <div className="bg-[#090B0F] py-2 px-3 sm:px-4 border-t border-[#1e2230] flex items-center justify-between gap-2 shrink-0 font-sans select-none">
+      <div className="bg-panel py-2 px-3 sm:px-4 border-t border-border flex items-center justify-between gap-2 shrink-0 font-sans select-none">
         {/* 좌측: 타임프레임 선택 탭 */}
-        <div className="flex items-center gap-1 bg-[#141721] p-1 rounded-xl border border-border">
+        <div className="flex items-center gap-1 bg-panel2 p-1 rounded-xl border border-border">
           {(['10m', '1h', '1d', '1M'] as TimeUnit[]).map((u) => (
             <button
               key={u}
@@ -714,7 +744,7 @@ export default function TickChart({
               className={`rounded-lg px-3 py-1 text-[11.5px] font-bold transition-all cursor-pointer font-sans ${
                 timeUnit === u
                   ? 'bg-up text-white shadow-[0_0_10px_rgba(240,68,82,0.4)]'
-                  : 'text-[#8E939D] hover:text-white hover:bg-white/[0.04]'
+                  : 'text-muted hover:text-tx hover:bg-hover'
               }`}
             >
               {TIME_UNIT_LABEL[u]}
@@ -725,11 +755,11 @@ export default function TickChart({
         {/* 우측: 지표 & 도구 슬라이드바 (문구 삭제 및 도구 배치) */}
         <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
           {showToolsDrawer && (
-            <div className="flex items-center gap-1 bg-[#141721] p-1 rounded-xl border border-border animate-fade-in-up font-mono">
+            <div className="flex items-center gap-1 bg-panel2 p-1 rounded-xl border border-border animate-fade-in-up font-mono">
               <button
                 onClick={() => updateSettings({ showMA5: !settings.showMA5 })}
                 className={`px-2 py-0.5 rounded-lg text-[10.5px] font-bold transition-all cursor-pointer ${
-                  settings.showMA5 ? 'bg-[#F59E0B] text-black font-black shadow-[0_0_6px_#F59E0B]' : 'text-[#8E939D] hover:text-white'
+                  settings.showMA5 ? 'bg-[#F59E0B] text-black font-black shadow-[0_0_6px_#F59E0B]' : 'text-muted hover:text-tx'
                 }`}
               >
                 MA5
@@ -737,7 +767,7 @@ export default function TickChart({
               <button
                 onClick={() => updateSettings({ showMA20: !settings.showMA20 })}
                 className={`px-2 py-0.5 rounded-lg text-[10.5px] font-bold transition-all cursor-pointer ${
-                  settings.showMA20 ? 'bg-[#F97316] text-black font-black shadow-[0_0_6px_#F97316]' : 'text-[#8E939D] hover:text-white'
+                  settings.showMA20 ? 'bg-[#F97316] text-black font-black shadow-[0_0_6px_#F97316]' : 'text-muted hover:text-tx'
                 }`}
               >
                 MA20
@@ -745,7 +775,7 @@ export default function TickChart({
               <button
                 onClick={() => updateSettings({ showMA60: !settings.showMA60 })}
                 className={`px-2 py-0.5 rounded-lg text-[10.5px] font-bold transition-all cursor-pointer ${
-                  settings.showMA60 ? 'bg-[#A855F7] text-white font-black shadow-[0_0_6px_#A855F7]' : 'text-[#8E939D] hover:text-white'
+                  settings.showMA60 ? 'bg-[#A855F7] text-white font-black shadow-[0_0_6px_#A855F7]' : 'text-muted hover:text-tx'
                 }`}
               >
                 MA60
@@ -753,16 +783,16 @@ export default function TickChart({
               <button
                 onClick={() => updateSettings({ showMA120: !settings.showMA120 })}
                 className={`px-2 py-0.5 rounded-lg text-[10.5px] font-bold transition-all cursor-pointer ${
-                  settings.showMA120 ? 'bg-[#06B6D4] text-black font-black shadow-[0_0_6px_#06B6D4]' : 'text-[#8E939D] hover:text-white'
+                  settings.showMA120 ? 'bg-[#06B6D4] text-black font-black shadow-[0_0_6px_#06B6D4]' : 'text-muted hover:text-tx'
                 }`}
               >
                 MA120
               </button>
-              <div className="h-3 w-px bg-[#212631] mx-0.5" />
+              <div className="h-3 w-px bg-border mx-0.5" />
               <button
                 onClick={() => updateSettings({ showBB: !settings.showBB })}
                 className={`px-2 py-0.5 rounded-lg text-[10.5px] font-bold transition-all cursor-pointer ${
-                  settings.showBB ? 'bg-[#3B82F6] text-white font-black shadow-[0_0_6px_#3B82F6]' : 'text-[#8E939D] hover:text-white'
+                  settings.showBB ? 'bg-[#3B82F6] text-white font-black shadow-[0_0_6px_#3B82F6]' : 'text-muted hover:text-tx'
                 }`}
               >
                 BB
@@ -770,14 +800,14 @@ export default function TickChart({
               <button
                 onClick={() => updateSettings({ showRSI: !settings.showRSI })}
                 className={`px-2 py-0.5 rounded-lg text-[10.5px] font-bold transition-all cursor-pointer ${
-                  settings.showRSI ? 'bg-[#EC4899] text-white font-black shadow-[0_0_6px_#EC4899]' : 'text-[#8E939D] hover:text-white'
+                  settings.showRSI ? 'bg-[#EC4899] text-white font-black shadow-[0_0_6px_#EC4899]' : 'text-muted hover:text-tx'
                 }`}
               >
                 RSI
               </button>
               <button
                 onClick={() => setShowSettingsModal(!showSettingsModal)}
-                className="px-1.5 py-0.5 rounded-lg text-[10.5px] text-[#8E939D] hover:text-white transition-colors cursor-pointer"
+                className="px-1.5 py-0.5 rounded-lg text-[10.5px] text-muted hover:text-tx transition-colors cursor-pointer"
                 title="지표 설정"
               >
                 ⚙️
@@ -791,7 +821,7 @@ export default function TickChart({
             className={`flex items-center gap-1.5 px-3 py-1 rounded-xl border transition-all text-[11.5px] font-bold cursor-pointer font-sans shrink-0 ${
               showToolsDrawer
                 ? 'bg-down border-[#3182F6] text-white shadow-[0_0_10px_rgba(49,130,246,0.4)]'
-                : 'bg-[#141721] border-border text-[#8E939D] hover:text-white hover:border-white/20'
+                : 'bg-panel2 border-border text-muted hover:text-tx hover:border-border'
             }`}
           >
             <span>🛠️</span>

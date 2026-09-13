@@ -32,14 +32,19 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
       let active: "light" | "dark";
       if (currentTheme === "system") {
         active = mediaQuery.matches ? "dark" : "light";
-        document.documentElement.setAttribute("data-theme", "system");
       } else if (currentTheme === "light") {
         active = "light";
-        document.documentElement.setAttribute("data-theme", "light");
       } else {
         active = "dark";
-        document.documentElement.setAttribute("data-theme", "dark");
       }
+
+      // Always set data-theme to the effective active theme ("light" or "dark")
+      document.documentElement.setAttribute("data-theme", active);
+      document.documentElement.setAttribute("data-theme-mode", currentTheme);
+      document.documentElement.classList.remove("light", "dark");
+      document.documentElement.classList.add(active);
+      document.documentElement.style.colorScheme = active;
+
       setResolvedTheme(active);
     };
 

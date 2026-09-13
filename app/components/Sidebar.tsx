@@ -147,7 +147,7 @@ export default function Sidebar() {
   const hasEcoCalendar = unlockedFeatures.includes("eco_calendar") || isAdmin;
 
   return (
-    <aside className="flex w-56 shrink-0 flex-col border-r border-border bg-[#090B0F]">
+    <aside className="flex w-56 shrink-0 flex-col border-r border-border bg-panel">
       {/* Robinhood Style Brand Header + Theme Toggle */}
       <div className="flex items-center justify-between border-b border-border px-4 py-3.5 gap-2">
         <Link href="/" className="flex items-center gap-2.5 group min-w-0 flex-1">
@@ -157,19 +157,18 @@ export default function Sidebar() {
             </svg>
           </div>
           <div className="leading-tight truncate">
-            <div className="text-[13.5px] font-extrabold tracking-tight text-white group-hover:text-up transition-colors truncate">무명증권</div>
-            <div className="text-[9.5px] text-[#8E939D] font-medium tracking-wide">ROBINHOOD SIM</div>
+            <div className="text-[13.5px] font-extrabold tracking-tight text-tx group-hover:text-up transition-colors truncate">무명증권</div>
+            <div className="text-[9.5px] text-muted font-medium tracking-wide">ROBINHOOD SIM</div>
           </div>
         </Link>
         <ThemeToggle className="shrink-0" />
       </div>
 
-
       {/* Navigation */}
       <nav className="flex-1 overflow-y-auto px-3 py-4 flex flex-col gap-1">
         <NavItem href="/" label="메인홈" icon="home" active={isActive("/")} />
         
-        <div className="mt-5 mb-1 px-3 text-[10px] font-bold uppercase tracking-wider text-[#565A63]">
+        <div className="mt-5 mb-1 px-3 text-[10px] font-bold uppercase tracking-wider text-dim">
           MARKETS
         </div>
         <NavItem href="/stocks" label="주식" icon="stocks" active={pathname === "/stocks" || STOCK_MARKET_IDS.some((id) => pathname.startsWith(`/markets/${id}`))} />
@@ -188,7 +187,7 @@ export default function Sidebar() {
           );
         })}
 
-        <div className="mt-5 mb-1 px-3 text-[10px] font-bold uppercase tracking-wider text-[#565A63]">
+        <div className="mt-5 mb-1 px-3 text-[10px] font-bold uppercase tracking-wider text-dim">
           SERVICES
         </div>
         {EXTRA.map((e) => (
@@ -211,11 +210,11 @@ export default function Sidebar() {
       </nav>
 
       {/* Footer */}
-      <div className="border-t border-border px-4 py-3 text-xs text-[#565A63] flex flex-col gap-1.5">
-        <div className="text-[10px] font-mono tracking-tight text-[#8E939D]">정규 장 18:00 – 22:30</div>
+      <div className="border-t border-border px-4 py-3 text-xs text-dim flex flex-col gap-1.5">
+        <div className="text-[10px] font-mono tracking-tight text-muted">정규 장 18:00 – 22:30</div>
         <div
           onClick={handleAdminClick}
-          className="cursor-pointer rounded py-1 text-[10px] text-[#8E939D]/70 hover:text-white hover:bg-[#161B22] transition-all select-none text-center font-bold"
+          className="cursor-pointer rounded py-1 text-[10px] text-muted hover:text-tx hover:bg-hover transition-all select-none text-center font-bold"
         >
           {isAdmin ? "👑 슈퍼 관리자 모드" : "관리자 센터"}
         </div>
@@ -240,11 +239,11 @@ function NavItem({
       href={href}
       className={`flex items-center gap-3 rounded-xl px-3 py-2 text-[13px] font-medium transition-all ${
         active
-          ? "bg-[#161B22] text-white font-bold border border-white/10 shadow-sm"
-          : "text-[#8E939D] hover:bg-[#12161F] hover:text-white"
+          ? "bg-panel2 text-tx font-bold border border-border shadow-sm"
+          : "text-muted hover:bg-hover hover:text-tx"
       }`}
     >
-      <span className={`transition-colors ${active ? "text-up" : "text-[#8E939D]"}`}>
+      <span className={`transition-colors ${active ? "text-up" : "text-muted"}`}>
         <SidebarIcon name={icon} />
       </span>
       <span>{label}</span>

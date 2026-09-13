@@ -131,20 +131,20 @@ export default async function StockDetail({
   const marketLink = marketMap[stock.market] || { href: `/markets/${stock.market}`, label: stock.market };
 
   return (
-    <div className="min-h-screen w-full bg-black text-[#e6edf6] flex flex-col p-2 md:p-3 overflow-y-auto font-sans">
-      <nav className="mb-2 flex items-center gap-2 text-[12px] text-gray-500 shrink-0 px-2">
-        <Link href="/" className="hover:text-white">메인홈</Link>
+    <div className="min-h-screen w-full bg-bg text-tx flex flex-col p-2 md:p-3 overflow-y-auto font-sans">
+      <nav className="mb-2 flex items-center gap-2 text-[12px] text-muted shrink-0 px-2">
+        <Link href="/" className="hover:text-tx">메인홈</Link>
         <span>/</span>
-        <Link href={marketLink.href} className="hover:text-white">{marketLink.label}</Link>
+        <Link href={marketLink.href} className="hover:text-tx">{marketLink.label}</Link>
         <span>/</span>
-        <span className="text-gray-400">{stock.name}</span>
+        <span className="text-tx font-medium">{stock.name}</span>
       </nav>
 
-      <div className="mb-3 flex flex-wrap items-end justify-between gap-4 border-b border-[#222] pb-2 px-2 shrink-0">
+      <div className="mb-3 flex flex-wrap items-end justify-between gap-4 border-b border-border pb-2 px-2 shrink-0">
         <div>
           <div className="flex items-center gap-2.5">
-            <h1 className="text-2xl font-bold text-white">{stock.name}</h1>
-            <span className="rounded bg-[#111] px-2 py-0.5 font-mono text-[12px] text-gray-400">
+            <h1 className="text-2xl font-bold text-tx">{stock.name}</h1>
+            <span className="rounded bg-panel2 border border-border px-2 py-0.5 font-mono text-[12px] text-muted">
               {stock.ticker}
             </span>
             {stock.isCore && (
@@ -153,7 +153,7 @@ export default async function StockDetail({
               </span>
             )}
           </div>
-          <p className="mt-1 max-w-2xl text-[13px] text-gray-500">{stock.description}</p>
+          <p className="mt-1 max-w-2xl text-[13px] text-muted">{stock.description}</p>
         </div>
         <RealtimePriceHeader stock={stock} />
       </div>

@@ -111,7 +111,7 @@ const AskRow = memo(({
       </div>
 
       {/* 매수측 빈칸 */}
-      <div className="h-full bg-[#05070A]" />
+      <div className="h-full bg-bg" />
     </div>
   );
 });
@@ -142,19 +142,19 @@ const BidRow = memo(({
 
   // 시작가(보합)는 라이트모드 검정, 다크모드 하양 / 상승은 빨강 / 하락은 파랑
   const priceColorClass = isZero
-    ? 'text-black dark:text-white'
+    ? 'text-tx'
     : isUp
     ? 'text-up'
     : 'text-down';
 
   const rateColorClass = isZero
-    ? 'text-neutral-700 dark:text-neutral-300'
+    ? 'text-muted'
     : isUp
     ? 'text-up/85'
     : 'text-down/85';
 
   const borderBoxClass = isZero
-    ? 'border-2 border-neutral-900 dark:border-white bg-neutral-900/10 dark:bg-white/10 z-10 shadow-sm'
+    ? 'border-2 border-border bg-panel z-10 shadow-sm'
     : isUp
     ? 'border-2 border-[#F04452] bg-up/10 z-10 shadow-sm'
     : 'border-2 border-[#3182F6] bg-down/10 z-10 shadow-sm';
@@ -171,9 +171,9 @@ const BidRow = memo(({
   }, [bid.totalSize]);
 
   return (
-    <div className="grid grid-cols-[1.1fr_108px_1.1fr] w-full h-full items-center border-b border-[#1e2230]/40 transition-colors font-mono select-none hover:bg-up/10">
+    <div className="grid grid-cols-[1.1fr_108px_1.1fr] w-full h-full items-center border-b border-border/40 transition-colors font-mono select-none hover:bg-up/10">
       {/* 매도측 빈칸 */}
-      <div className="h-full bg-[#05070A]" />
+      <div className="h-full bg-bg" />
 
       {/* 호가 가격 열 (시작가 흑백 / 체결가 사각 테두리 박스) */}
       <div
@@ -255,39 +255,39 @@ export default function Orderbook({
   return (
     <StrictWidget className="h-full flex flex-col font-sans" overflowClass="overflow-hidden">
       {/* 헤더 (실시간 현재가 외부 표기 연동) */}
-      <div className="flex items-center justify-between px-3 py-2 bg-[#090B0F] border-b border-[#1e2230] shrink-0">
+      <div className="flex items-center justify-between px-3 py-2 bg-panel border-b border-border shrink-0">
         <div className="flex items-center gap-2">
-          <span className="text-[12px] font-black text-white tracking-tight flex items-center gap-1.5 font-sans">
+          <span className="text-[12px] font-black text-tx tracking-tight flex items-center gap-1.5 font-sans">
             <span>호가창</span>
-            <span className="text-[9.5px] font-mono text-[#8E939D] font-normal uppercase">10 Depths</span>
+            <span className="text-[9.5px] font-mono text-muted font-normal uppercase">10 Depths</span>
             <span className="w-2 h-2 rounded-full bg-up animate-pulse shadow-[0_0_8px_#F04452]" />
           </span>
 
           {/* 현재가 실시간 외부 뱃지 */}
-          <div className="flex items-center gap-1 bg-[#141822] border border-[#2a324b] px-2 py-0.5 rounded-md shadow-inner font-mono">
-            <span className="text-[10px] text-[#8E939D] uppercase tracking-wider">현재가</span>
-            <span className="text-[11.5px] font-black text-amber-300 tabular-nums">
-              {liveCurrentPrice.toLocaleString()} <span className="text-[10px] text-white/50 font-normal">KRW</span>
+          <div className="flex items-center gap-1 bg-panel2 border border-border px-2 py-0.5 rounded-md shadow-inner font-mono">
+            <span className="text-[10px] text-muted uppercase tracking-wider">현재가</span>
+            <span className="text-[11.5px] font-black text-amber-500 tabular-nums">
+              {liveCurrentPrice.toLocaleString()} <span className="text-[10px] text-muted font-normal">KRW</span>
             </span>
           </div>
         </div>
 
-        <span className={`text-[9.5px] font-mono font-bold px-2 py-0.5 rounded-full border ${source === 'db' ? 'text-up bg-up/10 border-[#F04452]/30' : 'text-emerald-400 bg-emerald-400/10 border-emerald-400/30'}`}>
+        <span className={`text-[9.5px] font-mono font-bold px-2 py-0.5 rounded-full border ${source === 'db' ? 'text-up bg-up/10 border-[#F04452]/30' : 'text-emerald-500 bg-emerald-500/10 border-emerald-500/30'}`}>
           {source === 'db' ? 'LIVE DB' : 'LIVE FEED'}
         </span>
       </div>
 
       {/* 컬럼 헤더 */}
-      <div className="grid grid-cols-[1.1fr_108px_1.1fr] w-full border-b border-[#1e2230] bg-[#0E1117] py-1 font-sans shrink-0">
+      <div className="grid grid-cols-[1.1fr_108px_1.1fr] w-full border-b border-border bg-panel2 py-1 font-sans shrink-0 text-muted">
         <span className="text-center text-[10.5px] text-down font-bold">매도잔량</span>
-        <span className="text-center text-[10.5px] text-white/80 font-bold">호가 (KRW)</span>
+        <span className="text-center text-[10.5px] text-muted font-bold">호가 (KRW)</span>
         <span className="text-center text-[10.5px] text-up font-bold">매수잔량</span>
       </div>
 
       {/* 호가 20단계 리스트 (스크롤 없이 완벽히 핏되는 10x2 그리드) */}
-      <div className="flex flex-col flex-1 overflow-hidden bg-[#05070A]">
+      <div className="flex flex-col flex-1 overflow-hidden bg-panel">
         {/* 매도 10호가 */}
-        <div className="flex-1 grid grid-rows-10 overflow-hidden border-b border-[#1e2230]/30">
+        <div className="flex-1 grid grid-rows-10 overflow-hidden border-b border-border/40">
           {asks.slice(0, 10).reverse().map((ask) => (
             <AskRow
               key={`ask-${ask.price}`}
@@ -316,9 +316,9 @@ export default function Orderbook({
       </div>
 
       {/* 푸터 (총 잔량) */}
-      <div className="grid grid-cols-[1.1fr_108px_1.1fr] w-full bg-[#0E1117] border-t border-[#1e2230] py-1.5 font-mono tabular-nums text-[10.5px] shrink-0">
+      <div className="grid grid-cols-[1.1fr_108px_1.1fr] w-full bg-panel2 border-t border-border py-1.5 font-mono tabular-nums text-[10.5px] shrink-0">
         <span className="text-center text-down font-black">{totalAskSize.toLocaleString()}</span>
-        <span className="text-center text-[#8E939D] font-bold text-[9.5px]">총 {totalSum.toLocaleString()}</span>
+        <span className="text-center text-muted font-bold text-[9.5px]">총 {totalSum.toLocaleString()}</span>
         <span className="text-center text-up font-black">{totalBidSize.toLocaleString()}</span>
       </div>
     </StrictWidget>

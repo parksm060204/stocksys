@@ -3328,4 +3328,19 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 - `README.md`: 신규 개발자를 위한 `npm install && npm run dev. That's it.` 원클릭 가이드 갱신.
 - `tsc --noEmit`, `npm run build`, 멀티 클라이언트 체결 일관성 검증 및 브라우저 E2E 검증 통과.
 
+---
+## 2026-09-13 22:40
+
+**요청 요약:** 라이트 모드 미작동 및 텍스트 시인성/차트·호가창 테마 파편화 버그 수정
+
+**수행 결과:**
+- `app/components/ThemeProvider.tsx`: system 테마 시 `data-theme="system"`이 설정되어 `[data-theme="light"]` CSS 선택자가 매칭되지 않던 버그 수정. 항상 실제 활성 테마(`light` 또는 `dark`)를 `data-theme` 속성에 설정하고 `document.documentElement`의 `.light`/`.dark` 클래스 및 `colorScheme` 동기화 적용.
+- `app/globals.css`: `html[data-theme="light"]`, `html.light`, `html:not([data-theme="dark"])`에 대해 `.bg-black`, `.bg-[#000000]`, `.bg-[#090B0F]`, `.bg-[#0E1117]`, `.bg-[#161B22]`, `.border-[#1e2230]`, `.border-[#222]` 등 다크 전용 클래스를 완벽히 시맨틱 라이트 토큰으로 리매핑 보강.
+- `app/stocks/[id]/page.tsx` & `loading.tsx`: 검정 배경 위에 검정 글씨가 묻히던 하드코딩 `bg-black`, `border-[#222]`, `text-white`를 `bg-bg`, `border-border`, `text-tx`, `text-muted`로 교체하여 종목명 및 상단 네비게이션 가독성 100% 확보.
+- `app/stocks/[id]/StockDetailClient.tsx`: 탭 바, 컨텐츠 래퍼, 세부 탭(호가, 미체결, 과거기록, 기업분석, 뉴스)의 하드코딩 다크 스타일을 `bg-panel`, `bg-bg`, `border-border`, `text-tx`로 전면 일원화.
+- `app/components/TickChart.tsx`: `useTheme` 훅의 `resolvedTheme`을 구독하여 메인 캔들스틱 차트 및 RSI 차트의 배경(`#FFFFFF`), 그리드, 축 테두리, 텍스트 색상을 라이트/다크 모드에 맞춰 동적 전환(`applyOptions`).
+- `app/components/TopBar.tsx` & `ThemeToggle.tsx`: 상단바 우측에 `ThemeToggle` 컴포넌트를 배치하여 언제든 간편하게 테마를 전환할 수 있도록 개선하고, 드롭다운 팝오버를 라이트/다크 양방향 시맨틱 스타일로 개선.
+- `app/components/Orderbook.tsx`, `TradeFeed.tsx`, `OrderEntry.tsx`, `PriceTag.tsx`: 빈칸 배경, 헤더, 테이블 행 호버, 보합가 텍스트(`text-tx`) 등 잔존 다크 스타일을 시맨틱 클래스로 정리.
+- 브라우저 서브에이전트를 통한 실제 라이트 모드/다크 모드 E2E 시각적 검증 완료.
+
 

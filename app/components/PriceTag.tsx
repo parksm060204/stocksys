@@ -33,7 +33,7 @@ export function PriceTag({
   size?: "sm" | "md" | "lg";
 }) {
   const { dir } = change(current, prev);
-  const color = dir === "up" ? "text-up" : dir === "down" ? "text-down" : "text-white";
+  const color = dir === "up" ? "text-up" : dir === "down" ? "text-down" : "text-tx";
   const cls = size === "lg" ? "text-3xl font-black" : size === "sm" ? "text-[13px] font-bold" : "text-base font-extrabold";
   return <span className={`font-mono tabular-nums ${color} ${cls}`}>{fmtPrice(current, market)}</span>;
 }

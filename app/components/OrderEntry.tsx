@@ -130,25 +130,25 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
 
 
   return (
-    <div className="w-full flex flex-col h-full bg-[#090B0F] border border-[#1e2230] rounded-2xl overflow-hidden shadow-2xl font-sans">
+    <div className="w-full flex flex-col h-full bg-panel border border-border rounded-2xl overflow-hidden shadow-2xl font-sans">
       {/* Tab Switcher */}
-      <div className="grid grid-cols-2 border-b border-[#1e2230] bg-[#05070A]">
+      <div className="grid grid-cols-2 border-b border-border bg-panel2">
         <button
           onClick={() => setSide("buy")}
           className={`py-3 text-[13px] font-bold transition-all cursor-pointer font-sans ${
             side === "buy" 
               ? "bg-up/15 text-up border-b-2 border-[#F04452]" 
-              : "text-[#8E939D] hover:text-white"
+              : "text-muted hover:text-tx"
           }`}
         >
           매수 (BUY)
         </button>
         <button
           onClick={() => setSide("sell")}
-          className={`py-3 text-[13px] font-bold transition-all border-l border-[#1e2230] cursor-pointer font-sans ${
+          className={`py-3 text-[13px] font-bold transition-all border-l border-border cursor-pointer font-sans ${
             side === "sell" 
               ? "bg-down/15 text-down border-b-2 border-[#3182F6]" 
-              : "text-[#8E939D] hover:text-white"
+              : "text-muted hover:text-tx"
           }`}
         >
           매도 (SELL)
@@ -162,13 +162,13 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
               <input
                 value={price}
                 onChange={(e) => setPrice(e.target.value)}
-                className={`w-full rounded-xl border border-[#1e2230] bg-[#05070A] px-3.5 py-2.5 text-right font-mono text-[13.5px] text-white font-black outline-none transition-colors ${
+                className={`w-full rounded-xl border border-border bg-panel2 px-3.5 py-2.5 text-right font-mono text-[13.5px] text-tx font-black outline-none transition-colors ${
                   side === "buy" ? "focus:border-[#F04452]" : "focus:border-[#3182F6]"
                 }`}
               />
               <button 
                 onClick={() => setPrice(String(stock.currentPrice))}
-                className="absolute left-2.5 top-2 text-[10.5px] text-[#8E939D] hover:text-white bg-[#141721] border border-[#1e2230] px-2 py-0.5 rounded-md font-bold cursor-pointer font-sans"
+                className="absolute left-2.5 top-2 text-[10.5px] text-muted hover:text-tx bg-panel border border-border px-2 py-0.5 rounded-md font-bold cursor-pointer font-sans"
               >
                 현재가
               </button>
@@ -179,7 +179,7 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
             <input
               value={qty}
               onChange={(e) => setQty(e.target.value)}
-              className={`w-full rounded-xl border border-[#1e2230] bg-[#05070A] px-3.5 py-2.5 text-right font-mono text-[13.5px] text-white font-black outline-none transition-colors ${
+              className={`w-full rounded-xl border border-border bg-panel2 px-3.5 py-2.5 text-right font-mono text-[13.5px] text-tx font-black outline-none transition-colors ${
                 side === "buy" ? "focus:border-[#F04452]" : "focus:border-[#3182F6]"
               }`}
             />
@@ -191,7 +191,7 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
               <button
                 key={q}
                 onClick={() => setQty(q)}
-                className="flex-1 rounded-lg border border-[#1e2230] bg-[#141721] py-1 text-xs font-bold text-[#8E939D] hover:bg-white/10 hover:text-white transition-all cursor-pointer font-mono"
+                className="flex-1 rounded-lg border border-border bg-panel py-1 text-xs font-bold text-muted hover:bg-hover hover:text-tx transition-all cursor-pointer font-mono"
               >
                 {q}주
               </button>
@@ -199,8 +199,8 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
           </div>
 
           {/* 초고속 매매 패널 */}
-          <div className="pt-3 border-t border-[#1e2230] font-sans">
-            <span className="text-[10px] uppercase font-bold tracking-wider text-[#8E939D] block mb-2 font-mono">
+          <div className="pt-3 border-t border-border font-sans">
+            <span className="text-[10px] uppercase font-bold tracking-wider text-muted block mb-2 font-mono">
               QUICK ORDER SCALPING
             </span>
             <div className="grid grid-cols-2 gap-2 font-sans">
@@ -234,9 +234,9 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
 
         <div className="font-sans">
           {/* 예상 금액 요약 */}
-          <div className="flex items-center justify-between bg-[#141721] px-3.5 py-2.5 mb-3 border border-[#1e2230] rounded-xl">
-            <span className="text-[11.5px] text-[#8E939D] font-medium font-sans">총 주문 예상금액</span>
-            <span className="font-mono text-[14.5px] font-black tabular-nums text-white">
+          <div className="flex items-center justify-between bg-panel2 px-3.5 py-2.5 mb-3 border border-border rounded-xl">
+            <span className="text-[11.5px] text-muted font-medium font-sans">총 주문 예상금액</span>
+            <span className="font-mono text-[14.5px] font-black tabular-nums text-tx">
               {fmtPrice(total, stock.market)}
             </span>
           </div>
@@ -258,11 +258,10 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
   );
 }
 
-
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label className="block">
-      <span className="mb-1 block text-xs text-[#8E939D] font-bold">{label}</span>
+      <span className="mb-1 block text-xs text-muted font-bold">{label}</span>
       {children}
     </label>
   );

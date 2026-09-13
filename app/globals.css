@@ -217,6 +217,7 @@ code, kbd, samp, pre, .font-mono {
    Adaptive Classes for Light Mode Transition
    ========================================================================== */
 
+/* Match explicit data-theme="light", class="light", or system light preference */
 @media (prefers-color-scheme: light) {
   html:not([data-theme="dark"]) .bg-\[\#05070A\],
   html:not([data-theme="dark"]) .bg-\[\#090B0F\],
@@ -229,23 +230,29 @@ code, kbd, samp, pre, .font-mono {
     background-color: var(--bg-panel) !important;
   }
   html:not([data-theme="dark"]) .bg-\[\#161B22\],
-  html:not([data-theme="dark"]) .bg-\[\#111318\] {
-    background-color: var(--bg-panel-2) !important;
-  }
+  html:not([data-theme="dark"]) .bg-\[\#111318\],
+  html:not([data-theme="dark"]) .bg-\[\#141721\],
+  html:not([data-theme="dark"]) .bg-\[\#141822\],
   html:not([data-theme="dark"]) .bg-\[\#12161F\],
   html:not([data-theme="dark"]) .bg-\[\#151821\],
-  html:not([data-theme="dark"]) .bg-\[\#13161d\] {
-    background-color: var(--card-bg-hover) !important;
+  html:not([data-theme="dark"]) .bg-\[\#13161d\],
+  html:not([data-theme="dark"]) .bg-\[\#111\] {
+    background-color: var(--bg-panel-2) !important;
   }
   html:not([data-theme="dark"]) .border-\[\#212631\],
   html:not([data-theme="dark"]) .border-\[\#222736\],
-  html:not([data-theme="dark"]) .border-\[\#1e2230\] {
+  html:not([data-theme="dark"]) .border-\[\#1e2230\],
+  html:not([data-theme="dark"]) .border-\[\#222\],
+  html:not([data-theme="dark"]) .border-\[\#2a324b\],
+  html:not([data-theme="dark"]) .border-white\/10,
+  html:not([data-theme="dark"]) .border-white\/\[0\.1\] {
     border-color: var(--border) !important;
   }
   html:not([data-theme="dark"]) .text-white {
     color: var(--text-main) !important;
   }
-  html:not([data-theme="dark"]) .text-\[\#F4F5F6\] {
+  html:not([data-theme="dark"]) .text-\[\#F4F5F6\],
+  html:not([data-theme="dark"]) .text-\[\#e6edf6\] {
     color: var(--text) !important;
   }
   html:not([data-theme="dark"]) .text-\[\#8E939D\] {
@@ -254,41 +261,106 @@ code, kbd, samp, pre, .font-mono {
   html:not([data-theme="dark"]) .text-\[\#C1C7D0\] {
     color: var(--text-sub) !important;
   }
-  html:not([data-theme="dark"]) .text-\[\#565A63\] {
+  html:not([data-theme="dark"]) .text-\[\#565A63\],
+  html:not([data-theme="dark"]) .text-\[\#4d5162\] {
     color: var(--text-dim) !important;
+  }
+  html:not([data-theme="dark"]) .bg-white\/\[0\.04\],
+  html:not([data-theme="dark"]) .bg-white\/\[0\.06\],
+  html:not([data-theme="dark"]) .bg-white\/\[0\.08\] {
+    background-color: rgba(0, 0, 0, 0.04) !important;
   }
 }
 
 html[data-theme="light"] .bg-\[\#05070A\],
-html[data-theme="light"] .bg-\[\#090B0F\] {
+html[data-theme="light"] .bg-\[\#090B0F\],
+html[data-theme="light"] .bg-\[\#000000\],
+html[data-theme="light"] .bg-black,
+html.light .bg-\[\#05070A\],
+html.light .bg-\[\#090B0F\],
+html.light .bg-\[\#000000\],
+html.light .bg-black {
   background-color: var(--bg-base) !important;
 }
-html[data-theme="light"] .bg-\[\#0E1117\] {
+
+html[data-theme="light"] .bg-\[\#0E1117\],
+html[data-theme="light"] .bg-\[\#0C0E12\],
+html.light .bg-\[\#0E1117\],
+html.light .bg-\[\#0C0E12\] {
   background-color: var(--bg-panel) !important;
 }
-html[data-theme="light"] .bg-\[\#161B22\] {
+
+html[data-theme="light"] .bg-\[\#161B22\],
+html[data-theme="light"] .bg-\[\#111318\],
+html[data-theme="light"] .bg-\[\#141721\],
+html[data-theme="light"] .bg-\[\#141822\],
+html[data-theme="light"] .bg-\[\#12161F\],
+html[data-theme="light"] .bg-\[\#151821\],
+html[data-theme="light"] .bg-\[\#13161d\],
+html[data-theme="light"] .bg-\[\#111\],
+html.light .bg-\[\#161B22\],
+html.light .bg-\[\#111318\],
+html.light .bg-\[\#141721\],
+html.light .bg-\[\#141822\],
+html.light .bg-\[\#12161F\],
+html.light .bg-\[\#151821\],
+html.light .bg-\[\#13161d\],
+html.light .bg-\[\#111\] {
   background-color: var(--bg-panel-2) !important;
 }
-html[data-theme="light"] .bg-\[\#12161F\],
-html[data-theme="light"] .bg-\[\#151821\] {
-  background-color: var(--card-bg-hover) !important;
-}
+
 html[data-theme="light"] .border-\[\#212631\],
-html[data-theme="light"] .border-\[\#222736\] {
+html[data-theme="light"] .border-\[\#222736\],
+html[data-theme="light"] .border-\[\#1e2230\],
+html[data-theme="light"] .border-\[\#222\],
+html[data-theme="light"] .border-\[\#2a324b\],
+html[data-theme="light"] .border-white\/10,
+html[data-theme="light"] .border-white\/\[0\.1\],
+html.light .border-\[\#212631\],
+html.light .border-\[\#222736\],
+html.light .border-\[\#1e2230\],
+html.light .border-\[\#222\],
+html.light .border-\[\#2a324b\],
+html.light .border-white\/10,
+html.light .border-white\/\[0\.1\] {
   border-color: var(--border) !important;
 }
-html[data-theme="light"] .text-white {
+
+html[data-theme="light"] .text-white,
+html.light .text-white {
   color: var(--text-main) !important;
 }
-html[data-theme="light"] .text-\[\#F4F5F6\] {
+
+html[data-theme="light"] .text-\[\#F4F5F6\],
+html[data-theme="light"] .text-\[\#e6edf6\],
+html.light .text-\[\#F4F5F6\],
+html.light .text-\[\#e6edf6\] {
   color: var(--text) !important;
 }
-html[data-theme="light"] .text-\[\#8E939D\] {
+
+html[data-theme="light"] .text-\[\#8E939D\],
+html.light .text-\[\#8E939D\] {
   color: var(--text-muted) !important;
 }
-html[data-theme="light"] .text-\[\#C1C7D0\] {
+
+html[data-theme="light"] .text-\[\#C1C7D0\],
+html.light .text-\[\#C1C7D0\] {
   color: var(--text-sub) !important;
 }
-html[data-theme="light"] .text-\[\#565A63\] {
+
+html[data-theme="light"] .text-\[\#565A63\],
+html[data-theme="light"] .text-\[\#4d5162\],
+html.light .text-\[\#565A63\],
+html.light .text-\[\#4d5162\] {
   color: var(--text-dim) !important;
 }
+
+html[data-theme="light"] .bg-white\/\[0\.04\],
+html[data-theme="light"] .bg-white\/\[0\.06\],
+html[data-theme="light"] .bg-white\/\[0\.08\],
+html.light .bg-white\/\[0\.04\],
+html.light .bg-white\/\[0\.06\],
+html.light .bg-white\/\[0\.08\] {
+  background-color: rgba(0, 0, 0, 0.04) !important;
+}
+

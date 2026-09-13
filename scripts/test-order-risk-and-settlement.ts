@@ -478,8 +478,68 @@ async function runAllTests() {
   assert(ohlcStock.low > 0 && ohlcStock.low <= 9_800, `low must be <= 9,800 (actual: ${ohlcStock.low})`);
   assert(ohlcStock.volume >= 15, `volume must be >= 15 (actual: ${ohlcStock.volume})`);
 
+  // ----------------------------------------------------
+  // TEST N: Seller Profile Missing — Settlement Rejected, No State Mutation
+  // ----------------------------------------------------
+  console.log('\n[TEST N] Seller Profile Missing — Settlement Rejection');
+  const validBuyerId = 'valid_buyer_test_n';
+  const missingSellerId = 'missing_seller_user_uuid';
+  const testNStockId = '00000000-0000-4000-8000-000000000999';
+
+  memoryDb.stocks.set(testNStockId, {
+    id: testNStockId, ticker: 'TN99', name: 'Test N Stock', market: 'KRX',
+    current_price: 10_000, previous_close: 10_000, open_price: 10_000,
+    high: 10_000, low: 10_000, volume: 0, change_rate: 0, market_cap: 1_000_000_000, pe_ratio: 10, dividend_yield: 0, sector: 'IT',
+  });
+
+  // Buyer profile exists with cash
+  memoryDb.profiles.set(validBuyerId, {
+    id: validBuyerId, user_id: validBuyerId, username: 'buyerN', nickname: 'BuyerN',
+    cash: 1_000_000, net_worth: 1_000_000, rank_tier: 'Bronze', created_at: new Date().toISOString()
+  });
+
+  // Seller does NOT have a profile in memoryDb.profiles (make sure it's deleted)
+  memoryDb.profiles.delete(missingSellerId);
+
+  // Seller has holding in memoryDb.holdings
+  const sellerHoldingKey = `${missingSellerId}_${testNStockId}`;
+  memoryDb.holdings.set(sellerHoldingKey, {
+    id: sellerHoldingKey, user_id: missingSellerId, stock_id: testNStockId,
+    quantity: 10, avg_price: 10_000, created_at: new Date().toISOString()
+  });
+
+  const tradesBeforeN = memoryDb.trades.length;
+  const buyerCashBeforeN = memoryDb.profiles.get(validBuyerId)!.cash;
+  const sellerQtyBeforeN = memoryDb.holdings.get(sellerHoldingKey)!.quantity;
+
+  const testNTrades: SettlementTrade[] = [
+    {
+      stock_id: testNStockId,
+      buyer_id: validBuyerId,
+      seller_id: missingSellerId,
+      buyer_is_bot: false,
+      seller_is_bot: false,
+      price: 10_000,
+      size: 10,
+      buyer_fee: 0.0025,
+      seller_fee: 0.0025,
+    }
+  ];
+
+  const testNResult = await executeSettlement(client, testNTrades);
+  assert(testNResult.success === false, 'Settlement must fail when seller profile is missing');
+  assert(
+    Boolean(testNResult.error?.message?.includes('Seller profile not found')),
+    `Error message must indicate missing seller profile (actual: ${testNResult.error?.message})`
+  );
+
+  // Verify all state is untouched
+  assert(memoryDb.profiles.get(validBuyerId)!.cash === buyerCashBeforeN, 'Buyer cash must remain unchanged');
+  assert(memoryDb.holdings.get(sellerHoldingKey)!.quantity === sellerQtyBeforeN, 'Seller holding must remain unchanged');
+  assert(memoryDb.trades.length === tradesBeforeN, 'No trades must be appended');
+
   console.log('\n==================================================');
-  console.log('🎉 ALL TESTS PASSED SUCCESSFULLY! (TEST A ~ TEST M)');
+  console.log('🎉 ALL TESTS PASSED SUCCESSFULLY! (TEST A ~ TEST N)');
   console.log('==================================================\n');
 }
 

@@ -3456,3 +3456,18 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 - `scripts/test-order-security-and-atomic.ts`: TEST 9(자기 매매), TEST 10(동시 double-consume) 추가 — 10개 통과.
 - `scripts/test-order-risk-and-settlement.ts`: TEST I~M 추가(누적 검증, OHLC) — 13개 통과.
 - npx tsc --noEmit 오류 0건. npm run build 23개 라우트 정상 빌드.
+
+---
+## 2026-09-14 02:35
+
+**요청 요약:** STOCKSYS 주문 처리 단일 직렬화 경로 확보 및 로컬 트랜잭션 원자성(Atomic Snapshot/Rollback) 강화
+
+**수행 결과:**
+- `lib/memoryDb/memoryTransaction.ts` [NEW]: 트레이딩 관련 6대 상태(profiles, holdings, orders, trades, stocks) 및 4대 인덱스(holdingUserIndex, orderStockIndex, orderUserIndex, tradeStockIndex)를 커버하는 초경량 동기 스냅샷/롤백(`snapshotTradingState`, `rollbackTradingState`) 모듈 신규 구현.
+- `lib/engine/dbMatching.ts`: 주문 생성 시 `orderId`를 사전 채번하여 체결/미체결/부분체결 모든 성공 경로에서 반환하도록 개선. 정산 및 상태 갱신 전 트랜잭션 스냅샷을 획득하고 내부 실패 시 모든 자산/호가/인덱스를 원상 복구하는 자동 롤백 메커니즘 적용. 테스트 전용 실패 주입 훅(`__setTestFailureHook`) 제공.
+- `lib/memoryDb/memoryDbClient.ts`: `submit_and_match_order` RPC 핸들러가 내부 매칭 함수를 직접 호출하여 per-stock mutex를 우회하던 취약점을 제거하고, `LocalMarketService.submitOrder()`를 동적 import로 경유하도록 직렬화 경로 일원화. `bulk_settle_trades` Step 1 사전 검증 단계에 매도자 프로필 존재 확인(`Seller profile not found`)을 추가하여 누락 시 자산 차감 없이 원자적 거절 보장. `p_` 접두사 유무와 무관하게 파라미터 매핑 지원.
+- `app/api/local-db/route.ts`: `submit_and_match_order` RPC 요청 시 `LocalMarketService.submitOrder()`로 선제 라우팅하여 HTTP API 계층에서도 뮤텍스 우회를 원천 차단.
+- `scripts/test-order-risk-and-settlement.ts`: TEST N (매도자 프로필 누락 시 정산 즉시 거절 및 자산 불변성 검증) 추가 — TEST A~N 14개 테스트 100% 통과.
+- `scripts/test-order-security-and-atomic.ts`: TEST 11 (RPC 경로 뮤텍스 직렬화 및 동시성 보호), TEST 12 (정산 후 강제 예외 주입 시 완벽한 원자적 롤백 검증), TEST 13 (`orderId` 반환 및 memoryDb 일치 검증), TEST 14 (`open`, `partial`, `filled` 모든 주문 상태별 유효 `orderId` 반환 검증) 추가 — TEST 1~14 전체 14개 테스트 100% 통과.
+- `npx tsc --noEmit` 전체 타입 검사 통과 (오류 0건).
+- `npm run build` Turbopack 23개 라우트 빌드 통과.

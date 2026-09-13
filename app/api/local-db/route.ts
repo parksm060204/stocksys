@@ -3,6 +3,7 @@ import { memoryDb } from '@/lib/memoryDb/memoryStore';
 import { createMemoryDbClient } from '@/lib/memoryDb/memoryDbClient';
 import { ensureLocalStandaloneEngine } from '@/lib/engine/localStandaloneServer';
 import { isLocalStandaloneMode } from '@/lib/engine/localDevMode';
+import { LocalMarketService } from '@/lib/engine/marketService';
 
 export async function POST(request: Request) {
   // Production 또는 외부 DB 환경에서는 로컬 개발 API 접근을 원천 차단 (404 Not Found)
@@ -16,6 +17,39 @@ export async function POST(request: Request) {
 
     const body = await request.json();
     const { action, tableName, query, fnName, params } = body;
+
+    // [Serialization Safety] submit_and_match_order는 반드시 LocalMarketService를 통해야 한다.
+    // generic mockClient.rpc()로 직접 라우팅하면 per-stock mutex가 우회되어 race condition 발생 가능.
+    if (action === 'rpc' && fnName === 'submit_and_match_order') {
+      const userId = params?.p_user_id || params?.user_id;
+      const stockId = params?.p_stock_id || params?.stock_id;
+      const side = params?.p_side || params?.side;
+      const price = Number(params?.p_price ?? params?.price);
+      const size = Number(params?.p_size ?? params?.size);
+
+      const res = await LocalMarketService.submitOrder({
+        userId,
+        stockId,
+        side,
+        price,
+        size,
+      });
+
+      return NextResponse.json({
+        data: {
+          success: res.success,
+          order_id: res.orderId,
+          orderId: res.orderId,
+          filled_qty: res.filledQty,
+          filledQty: res.filledQty,
+          exec_price: res.execPrice,
+          execPrice: res.execPrice,
+          status: res.status,
+          message: res.message,
+        },
+        error: res.success ? null : { message: res.message },
+      });
+    }
 
     const mockClient = createMemoryDbClient();
 

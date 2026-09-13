@@ -9,7 +9,7 @@ import {
   StockPriceHistoryRecord,
   GUEST_USER_ID,
 } from './memoryStore';
-import { submitAndMatchOrder } from '../engine/dbMatching';
+
 
 type FilterOp = {
   col: string;
@@ -464,6 +464,15 @@ export class MemoryDbClient {
             return { data: null, error: { message: `Buyer profile not found for user ${t.buyer_id}` } };
           }
         }
+        // [Seller Profile Validation] 매도자 프로필 존재 여부 검증
+        // 프로필 없이 보유 수량만 있는 경우, settlement이 진행되면 holding은 감소하되
+        // 매도 수익은 누구에게도 지급되지 않는 자산 소멸이 발생한다. 사전 차단 필수.
+        if (!t.seller_is_bot && t.seller_id) {
+          const seller = db.profiles.get(t.seller_id);
+          if (!seller) {
+            return { data: null, error: { message: `Seller profile not found for user ${t.seller_id}` } };
+          }
+        }
       }
 
       // ── Step 2: 누적 사전 검증 (Cumulative Pre-Validation) ──
@@ -615,28 +624,37 @@ export class MemoryDbClient {
     }
 
     if (fnName === 'submit_and_match_order') {
-      const res = await submitAndMatchOrder(this as any, {
-        user_id: params?.p_user_id,
-        stock_id: params?.p_stock_id,
-        side: params?.p_side,
-        price: Number(params?.p_price),
-        size: Number(params?.p_size),
-      });
+      // [Serialization Safety] 직접 submitAndMatchOrder() 호출 시 per-stock mutex 우회 문제.
+      // LocalMarketService.submitOrder()를 통해야만 뮤텍스가 보장된다.
+      // 동적 import를 사용하여 순환 의존성(memoryDbClient → marketService → memoryDbClient)을 방지.
+      const { LocalMarketService } = await import('../engine/marketService');
+      const userId = params?.p_user_id || params?.user_id;
+      const stockId = params?.p_stock_id || params?.stock_id;
+      const side = params?.p_side || params?.side;
+      const price = Number(params?.p_price ?? params?.price);
+      const size = Number(params?.p_size ?? params?.size);
 
-      if (!res.success) {
-        return { data: null, error: { message: res.message } };
-      }
+      const res = await LocalMarketService.submitOrder({
+        userId,
+        stockId,
+        side,
+        price,
+        size,
+      });
 
       return {
         data: {
-          success: true,
+          success: res.success,
           order_id: res.orderId,
+          orderId: res.orderId,
           filled_qty: res.filledQty,
+          filledQty: res.filledQty,
           exec_price: res.execPrice,
+          execPrice: res.execPrice,
           status: res.status,
           message: res.message,
         },
-        error: null,
+        error: res.success ? null : { message: res.message },
       };
     }
 

@@ -5,7 +5,7 @@
 
 import { createMemoryDbClient } from '../lib/memoryDb/memoryDbClient';
 import { memoryDb, GUEST_USER_ID } from '../lib/memoryDb/memoryStore';
-import { submitAndMatchOrder } from '../lib/engine/dbMatching';
+import { submitAndMatchOrder, __setTestFailureHook } from '../lib/engine/dbMatching';
 
 function assert(condition: boolean, message: string) {
   if (!condition) {
@@ -493,8 +493,257 @@ async function runSecurityAndSafetyTests() {
   const makerSize = makerOrders.reduce((sum, o) => sum + Number(o.size || 0), 0);
   assert(makerFilled <= makerSize, `Maker filled (${makerFilled}) must not exceed size (${makerSize})`);
 
+  // ----------------------------------------------------
+  // TEST 11: RPC Compatibility Path Serializes via Mutex
+  // client.rpc('submit_and_match_order') must route through per-stock mutex
+  // Concurrent taker calls via RPC must not double-consume maker orders
+  // ----------------------------------------------------
+  console.log('\n[TEST 11] RPC Path Serializes via Mutex (No Double-Consume)');
+  const rpcStockId = '00000000-0000-4000-8000-000000000889';
+  memoryDb.stocks.set(rpcStockId, {
+    id: rpcStockId,
+    ticker: 'RPC889',
+    name: 'RPC Concurrency Test Stock',
+    market: 'KRX',
+    current_price: 50_000,
+    previous_close: 50_000,
+    open_price: 50_000,
+    high: 50_000,
+    low: 50_000,
+    volume: 0,
+    change_rate: 0,
+    market_cap: 1_000_000_000,
+    pe_ratio: 10,
+    dividend_yield: 0,
+    sector: 'FIN',
+  });
+
+  const rpcMaker = 'rpc_maker_user';
+  const rpcTaker1 = 'rpc_taker_user_1';
+  const rpcTaker2 = 'rpc_taker_user_2';
+
+  memoryDb.profiles.set(rpcMaker, { id: rpcMaker, user_id: rpcMaker, username: 'rpc_maker', nickname: 'RPCMaker', cash: 0, net_worth: 1_000_000, rank_tier: 'Gold', created_at: new Date().toISOString() });
+  memoryDb.profiles.set(rpcTaker1, { id: rpcTaker1, user_id: rpcTaker1, username: 'rpc_taker1', nickname: 'RPCTaker1', cash: 3_000_000, net_worth: 3_000_000, rank_tier: 'Silver', created_at: new Date().toISOString() });
+  memoryDb.profiles.set(rpcTaker2, { id: rpcTaker2, user_id: rpcTaker2, username: 'rpc_taker2', nickname: 'RPCTaker2', cash: 3_000_000, net_worth: 3_000_000, rank_tier: 'Silver', created_at: new Date().toISOString() });
+
+  // Maker has 10 shares SELL @ 50,000
+  memoryDb.holdings.set(`${rpcMaker}_${rpcStockId}`, { id: `${rpcMaker}_${rpcStockId}`, user_id: rpcMaker, stock_id: rpcStockId, quantity: 10, avg_price: 40_000, created_at: new Date().toISOString() });
+  memoryDb.addHoldingToIndex({ id: `${rpcMaker}_${rpcStockId}`, user_id: rpcMaker, stock_id: rpcStockId, quantity: 10, avg_price: 40_000, created_at: new Date().toISOString() });
+
+  const rpcMakerRes = await client.rpc('submit_and_match_order', {
+    stock_id: rpcStockId,
+    user_id: rpcMaker,
+    side: 'sell',
+    price: 50_000,
+    size: 10,
+  });
+  assert(rpcMakerRes.data?.success === true, 'Maker SELL order via RPC must be placed');
+  assert(rpcMakerRes.data?.filledQty === 0, 'Maker must not fill immediately');
+
+  // Both takers call RPC concurrently (each requests 10 shares, total 20 requested)
+  const [rpcT1Res, rpcT2Res] = await Promise.all([
+    client.rpc('submit_and_match_order', { stock_id: rpcStockId, user_id: rpcTaker1, side: 'buy', price: 50_000, size: 10 }),
+    client.rpc('submit_and_match_order', { stock_id: rpcStockId, user_id: rpcTaker2, side: 'buy', price: 50_000, size: 10 }),
+  ]);
+
+  const rpcT1Filled = Number(rpcT1Res.data?.filledQty || 0);
+  const rpcT2Filled = Number(rpcT2Res.data?.filledQty || 0);
+  const rpcTotalFilled = rpcT1Filled + rpcT2Filled;
+  console.log(`  -> RPC Taker1 filled: ${rpcT1Filled}, RPC Taker2 filled: ${rpcT2Filled}, Total: ${rpcTotalFilled}`);
+
+  assert(rpcTotalFilled <= 10, `Total filled via RPC must not exceed maker's 10 shares (actual: ${rpcTotalFilled})`);
+
+  const rpcMakerOrders = Array.from(memoryDb.orders.values()).filter(
+    (o) => o.user_id === rpcMaker && o.stock_id === rpcStockId && o.side === 'sell'
+  );
+  const rpcMakerFilled = rpcMakerOrders.reduce((sum, o) => sum + Number(o.filled || 0), 0);
+  const rpcMakerSize = rpcMakerOrders.reduce((sum, o) => sum + Number(o.size || 0), 0);
+  assert(rpcMakerFilled <= rpcMakerSize, `RPC Maker filled (${rpcMakerFilled}) must not exceed size (${rpcMakerSize})`);
+
+  // ----------------------------------------------------
+  // TEST 12: Forced Post-Settlement Failure & Exact Atomic Rollback
+  // When an internal error occurs after settlement asset mutations,
+  // the entire state (cash, holdings, orders, trades) must roll back.
+  // ----------------------------------------------------
+  console.log('\n[TEST 12] Forced Post-Settlement Failure & Exact Rollback');
+  const failStockId = '00000000-0000-4000-8000-000000000890';
+  memoryDb.stocks.set(failStockId, {
+    id: failStockId, ticker: 'FAIL890', name: 'Fail Rollback Test', market: 'KRX',
+    current_price: 20_000, previous_close: 20_000, open_price: 20_000,
+    high: 20_000, low: 20_000, volume: 0, change_rate: 0, market_cap: 1_000_000_000, pe_ratio: 10, dividend_yield: 0, sector: 'IT',
+  });
+
+  const failBuyerId = 'fail_tx_buyer';
+  const failSellerId = 'fail_tx_seller';
+
+  memoryDb.profiles.set(failBuyerId, { id: failBuyerId, user_id: failBuyerId, username: 'fail_buyer', nickname: 'FailBuyer', cash: 1_000_000, net_worth: 1_000_000, rank_tier: 'Silver', created_at: new Date().toISOString() });
+  memoryDb.profiles.set(failSellerId, { id: failSellerId, user_id: failSellerId, username: 'fail_seller', nickname: 'FailSeller', cash: 500_000, net_worth: 1_000_000, rank_tier: 'Bronze', created_at: new Date().toISOString() });
+
+  const failSellerHoldingKey = `${failSellerId}_${failStockId}`;
+  memoryDb.holdings.set(failSellerHoldingKey, { id: failSellerHoldingKey, user_id: failSellerId, stock_id: failStockId, quantity: 10, avg_price: 20_000, created_at: new Date().toISOString() });
+  memoryDb.addHoldingToIndex({ id: failSellerHoldingKey, user_id: failSellerId, stock_id: failStockId, quantity: 10, avg_price: 20_000, created_at: new Date().toISOString() });
+
+  // Place resting SELL order 10 @ 20,000
+  const restingSellRes = await submitAndMatchOrder(client as any, {
+    stock_id: failStockId,
+    user_id: failSellerId,
+    side: 'sell',
+    price: 20_000,
+    size: 10,
+  });
+  assert(restingSellRes.success === true, 'Resting SELL order must be accepted');
+
+  // Record baseline state right before failure injection
+  const buyerCashBeforeFail = memoryDb.profiles.get(failBuyerId)!.cash;
+  const sellerCashBeforeFail = memoryDb.profiles.get(failSellerId)!.cash;
+  const sellerHoldingBeforeFail = memoryDb.holdings.get(failSellerHoldingKey)!.quantity;
+  const tradesBeforeFail = memoryDb.trades.length;
+  const ordersBeforeFail = memoryDb.orders.size;
+
+  // Inject failure after settlement
+  __setTestFailureHook(() => {
+    throw new Error('SIMULATED_POST_SETTLEMENT_CRASH');
+  });
+
+  try {
+    const matchedWithFailure = await submitAndMatchOrder(client as any, {
+      stock_id: failStockId,
+      user_id: failBuyerId,
+      side: 'buy',
+      price: 20_000,
+      size: 10,
+    });
+    assert(matchedWithFailure.success === false, 'Order must fail when failure hook throws');
+  } finally {
+    __setTestFailureHook(null); // always restore hook
+  }
+
+  // Verify full atomic rollback of trading state
+  assert(memoryDb.profiles.get(failBuyerId)!.cash === buyerCashBeforeFail, `Buyer cash must roll back to ${buyerCashBeforeFail} (actual: ${memoryDb.profiles.get(failBuyerId)!.cash})`);
+  assert(memoryDb.profiles.get(failSellerId)!.cash === sellerCashBeforeFail, `Seller cash must roll back to ${sellerCashBeforeFail} (actual: ${memoryDb.profiles.get(failSellerId)!.cash})`);
+  assert(memoryDb.holdings.get(failSellerHoldingKey)!.quantity === sellerHoldingBeforeFail, `Seller holdings must roll back to ${sellerHoldingBeforeFail}`);
+  assert(memoryDb.trades.length === tradesBeforeFail, `Trades count must roll back to ${tradesBeforeFail} (actual: ${memoryDb.trades.length})`);
+  assert(memoryDb.orders.size === ordersBeforeFail, `Orders map count must roll back to ${ordersBeforeFail} (actual: ${memoryDb.orders.size})`);
+
+  // Maker order status must still be 'open' with filled = 0
+  const restoredMakerOrder = memoryDb.orders.get(restingSellRes.orderId!);
+  assert(restoredMakerOrder !== undefined, 'Resting maker order must exist');
+  assert(restoredMakerOrder!.status === 'open', `Resting maker order status must be 'open' (actual: ${restoredMakerOrder!.status})`);
+  assert(restoredMakerOrder!.filled === 0, `Resting maker order filled must be 0 (actual: ${restoredMakerOrder!.filled})`);
+
+  // ----------------------------------------------------
+  // TEST 13: orderId Returned and Matches Stored Order
+  // ----------------------------------------------------
+  console.log('\n[TEST 13] orderId Returned & Verifiable in MemoryDb');
+  const idStockId = '00000000-0000-4000-8000-000000000891';
+  memoryDb.stocks.set(idStockId, {
+    id: idStockId, ticker: 'ID891', name: 'Order ID Test', market: 'KRX',
+    current_price: 30_000, previous_close: 30_000, open_price: 30_000,
+    high: 30_000, low: 30_000, volume: 0, change_rate: 0, market_cap: 1_000_000_000, pe_ratio: 10, dividend_yield: 0, sector: 'IT',
+  });
+  const idUser = 'order_id_user_test';
+  memoryDb.profiles.set(idUser, { id: idUser, user_id: idUser, username: 'id_user', nickname: 'IdUser', cash: 2_000_000, net_worth: 2_000_000, rank_tier: 'Bronze', created_at: new Date().toISOString() });
+
+  const idOrderRes = await submitAndMatchOrder(client as any, {
+    stock_id: idStockId,
+    user_id: idUser,
+    side: 'buy',
+    price: 30_000,
+    size: 5,
+  });
+
+  assert(idOrderRes.success === true, 'Order must succeed');
+  assert(typeof idOrderRes.orderId === 'string' && idOrderRes.orderId.length > 0, `orderId must be a non-empty string (actual: ${idOrderRes.orderId})`);
+  const storedOrder = memoryDb.orders.get(idOrderRes.orderId!);
+  assert(storedOrder !== undefined, `Order with id ${idOrderRes.orderId} must exist in memoryDb.orders`);
+  assert(storedOrder!.user_id === idUser, 'Stored order user_id must match');
+  assert(storedOrder!.stock_id === idStockId, 'Stored order stock_id must match');
+  assert(storedOrder!.price === 30_000, 'Stored order price must match');
+  assert(storedOrder!.size === 5, 'Stored order size must match');
+
+  // ----------------------------------------------------
+  // TEST 14: open / partial / filled All Return Valid orderId
+  // ----------------------------------------------------
+  console.log('\n[TEST 14] open / partial / filled Return Valid orderId');
+  const statusStockId = '00000000-0000-4000-8000-000000000892';
+  memoryDb.stocks.set(statusStockId, {
+    id: statusStockId, ticker: 'STAT892', name: 'Status OrderId Test', market: 'KRX',
+    current_price: 10_000, previous_close: 10_000, open_price: 10_000,
+    high: 10_000, low: 10_000, volume: 0, change_rate: 0, market_cap: 1_000_000_000, pe_ratio: 10, dividend_yield: 0, sector: 'IT',
+  });
+
+  const statusBuyer = 'status_buyer_user';
+  const statusSeller = 'status_seller_user';
+
+  memoryDb.profiles.set(statusBuyer, { id: statusBuyer, user_id: statusBuyer, username: 'sb', nickname: 'SB', cash: 5_000_000, net_worth: 5_000_000, rank_tier: 'Gold', created_at: new Date().toISOString() });
+  memoryDb.profiles.set(statusSeller, { id: statusSeller, user_id: statusSeller, username: 'ss', nickname: 'SS', cash: 1_000_000, net_worth: 1_000_000, rank_tier: 'Gold', created_at: new Date().toISOString() });
+
+  // 1. OPEN status: BUY @ 5,000 with no matching sell order
+  const openRes = await submitAndMatchOrder(client as any, {
+    stock_id: statusStockId,
+    user_id: statusBuyer,
+    side: 'buy',
+    price: 5_000,
+    size: 10,
+  });
+  assert(openRes.success === true, 'Open order must succeed');
+  assert(openRes.status === 'open', `Status must be 'open' (actual: ${openRes.status})`);
+  assert(typeof openRes.orderId === 'string' && openRes.orderId.length > 0, 'Open order must return orderId');
+  assert(memoryDb.orders.get(openRes.orderId!)?.status === 'open', 'Stored order status must be open');
+
+  // Place resting SELL order: 5 shares @ 10,000 for partial/fill tests
+  memoryDb.holdings.set(`${statusSeller}_${statusStockId}`, { id: `${statusSeller}_${statusStockId}`, user_id: statusSeller, stock_id: statusStockId, quantity: 20, avg_price: 8_000, created_at: new Date().toISOString() });
+  memoryDb.addHoldingToIndex({ id: `${statusSeller}_${statusStockId}`, user_id: statusSeller, stock_id: statusStockId, quantity: 20, avg_price: 8_000, created_at: new Date().toISOString() });
+
+  await submitAndMatchOrder(client as any, {
+    stock_id: statusStockId,
+    user_id: statusSeller,
+    side: 'sell',
+    price: 10_000,
+    size: 5,
+  });
+
+  // 2. PARTIAL status: Incoming BUY 10 @ 10,000 -> matches 5 shares, 5 shares remain open
+  const partialRes = await submitAndMatchOrder(client as any, {
+    stock_id: statusStockId,
+    user_id: statusBuyer,
+    side: 'buy',
+    price: 10_000,
+    size: 10,
+  });
+  assert(partialRes.success === true, 'Partial order must succeed');
+  assert(partialRes.status === 'partial', `Status must be 'partial' (actual: ${partialRes.status})`);
+  assert(partialRes.filledQty === 5, `Filled qty must be 5 (actual: ${partialRes.filledQty})`);
+  assert(typeof partialRes.orderId === 'string' && partialRes.orderId.length > 0, 'Partial order must return orderId');
+  assert(memoryDb.orders.get(partialRes.orderId!)?.status === 'partial', 'Stored order status must be partial');
+  assert(memoryDb.orders.get(partialRes.orderId!)?.filled === 5, 'Stored order filled must be 5');
+
+  // Place another resting SELL: 5 shares @ 12,000
+  await submitAndMatchOrder(client as any, {
+    stock_id: statusStockId,
+    user_id: statusSeller,
+    side: 'sell',
+    price: 12_000,
+    size: 5,
+  });
+
+  // 3. FILLED status: Incoming BUY 5 @ 12,000 -> immediately completely filled
+  const filledRes = await submitAndMatchOrder(client as any, {
+    stock_id: statusStockId,
+    user_id: statusBuyer,
+    side: 'buy',
+    price: 12_000,
+    size: 5,
+  });
+  assert(filledRes.success === true, 'Filled order must succeed');
+  assert(filledRes.status === 'filled', `Status must be 'filled' (actual: ${filledRes.status})`);
+  assert(filledRes.filledQty === 5, `Filled qty must be 5 (actual: ${filledRes.filledQty})`);
+  assert(typeof filledRes.orderId === 'string' && filledRes.orderId.length > 0, 'Filled order must return orderId');
+  assert(memoryDb.orders.get(filledRes.orderId!)?.status === 'filled', 'Stored order status must be filled');
+  assert(memoryDb.orders.get(filledRes.orderId!)?.filled === 5, 'Stored order filled must be 5');
+
   console.log('\n==================================================');
-  console.log('🎉 ALL SECURITY & ATOMIC TX TESTS PASSED! (TEST 1 ~ TEST 10)');
+  console.log('🎉 ALL SECURITY & ATOMIC TX TESTS PASSED! (TEST 1 ~ TEST 14)');
   console.log('==================================================\n');
 }
 

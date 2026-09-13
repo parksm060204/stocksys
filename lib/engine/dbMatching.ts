@@ -1,6 +1,8 @@
 export type DbClient = any;
 import { validateOrderCapacity, OpenOrderForRisk } from '@/lib/engine/orderRisk';
 import { SettlementTrade, calculateTradeFees, executeSettlement } from '@/lib/engine/settlement';
+import { memoryDb, OrderRecord } from '@/lib/memoryDb/memoryStore';
+import { snapshotTradingState, rollbackTradingState, TradingSnapshot } from '@/lib/memoryDb/memoryTransaction';
 
 export interface OrderInput {
   stock_id: string;
@@ -19,16 +21,39 @@ export interface MatchOrderResult {
   status?: string;
 }
 
+// ── Test-only failure hook ──
+// Set to a non-null function to force a failure at a specific internal step.
+// MUST NOT be set in production code paths. Tests reset it after use.
+type FailureHook = () => void;
+let _testFailureHook: FailureHook | null = null;
+
+/** @internal Test-only: inject a failure that fires after settlement, before final order insert. */
+export function __setTestFailureHook(hook: FailureHook | null): void {
+  _testFailureHook = hook;
+}
+
 /**
  * 연속 쌍방 경매(Continuous Double Auction) 주문 검증, 즉시 대조 매칭 및 정산
- * 1. orderRisk를 통한 미체결 주문 예약금/수량 감안 엄격 사전 검증
- * 2. resting maker price 기반 Price-Time Priority 매칭
- * 3. Maker Rebate / Taker Fee 일원화 적용
- * 4. Shared Settlement Layer(bulk_settle_trades RPC)로 원자적 자산 정산 위임
+ *
+ * Architecture:
+ *   1. Order capacity pre-validation (reserves cash/holdings)
+ *   2. Price-Time Priority matching (finds counterparty resting orders)
+ *   3. Settlement via bulk_settle_trades (cumulative validation + asset mutation)
+ *   4. Maker order status updates (direct memoryDb write)
+ *   5. Stock OHLC / volume update (direct memoryDb write)
+ *   6. Incoming order insert (direct memoryDb write — orderId captured here)
+ *
+ * ALL writes in steps 3–6 are covered by a snapshot/rollback transaction.
+ * If any write throws, the snapshot is restored atomically.
  *
  * [Self-Trade Prevention]
- * 동일 user_id의 resting 주문을 DB 쿼리 레벨(.neq)과 루프 내부 guard 이중으로 배제한다.
- * 자신의 resting 주문은 체결되지 않으며 호가창에 그대로 유지된다.
+ * Opposite-order query excludes .neq('user_id', user_id) at DB layer
+ * + defensive loop guard inside the fill loop.
+ *
+ * [Mutex]
+ * This function is called exclusively through LocalMarketService.submitOrder()
+ * which holds the per-stock lock for the entire duration.
+ * Direct calls from outside the serialized path are intentionally unsupported.
  */
 export async function submitAndMatchOrder(
   supabase: DbClient,
@@ -45,9 +70,9 @@ export async function submitAndMatchOrder(
   }
 
   try {
-    // 0. 초기 잔고 / 보유 수량 및 미체결 주문 예약금 엄격 사전 검증 (user_id 필수)
+    // ── 0. Order Capacity Pre-Validation ──
+    // Reads open/partial orders, current cash, current holding — pure reads, no mutation.
     {
-      // 유저의 모든 open/partial 주문 조회 (동적 예약금/예약수량 계산용)
       const { data: userOpenOrders, error: ordersErr } = await supabase
         .from('orders')
         .select('id, user_id, stock_id, side, price, size, filled, status')
@@ -56,7 +81,6 @@ export async function submitAndMatchOrder(
 
       if (ordersErr) throw ordersErr;
 
-      // 현금 조회
       const { data: profile } = await supabase
         .from('profiles')
         .select('cash')
@@ -64,7 +88,6 @@ export async function submitAndMatchOrder(
         .single();
       const currentCash = Number(profile?.cash || 0);
 
-      // 보유 주식 조회
       const { data: holding } = await supabase
         .from('holdings')
         .select('quantity')
@@ -73,7 +96,6 @@ export async function submitAndMatchOrder(
         .maybeSingle();
       const currentHoldingQty = Number(holding?.quantity || 0);
 
-      // Order Capacity 검증 (이중 주문 차단)
       const capacityCheck = validateOrderCapacity({
         userId: user_id,
         stockId: stock_id,
@@ -94,16 +116,17 @@ export async function submitAndMatchOrder(
       }
     }
 
+    // ── 1. Price-Time Priority Matching ──
+    // Reads opposite resting orders. Pure reads, no mutation yet.
     let remainingQty = incomingSize;
     let totalFilledQty = 0;
     let lastExecPrice = incomingPrice;
 
-    // [Multi-Fill OHLC] 이번 주문에서 발생한 모든 체결의 고가/저가를 추적
+    // [Multi-Fill OHLC] track high/low across all fills in this order
     let executionHigh = -Infinity;
     let executionLow = Infinity;
 
-    // 1. 반대 방향 미체결 주문 검색
-    // [Self-Trade Prevention] .neq('user_id', user_id)로 자신의 주문을 DB 조회 단계에서 배제
+    // [Self-Trade Prevention] .neq('user_id', user_id) at DB query level
     const oppSide = side === 'buy' ? 'sell' : 'buy';
     let query = supabase
       .from('orders')
@@ -111,16 +134,14 @@ export async function submitAndMatchOrder(
       .eq('stock_id', stock_id)
       .eq('side', oppSide)
       .in('status', ['open', 'partial'])
-      .neq('user_id', user_id); // Self-trade prevention: 자신의 resting 주문 제외
+      .neq('user_id', user_id);
 
     if (side === 'buy') {
-      // 매수 주문: 같거나 저렴한 매도호가 체결 (가격 오름차순, 접수시각 오름차순)
       query = query
         .lte('price', incomingPrice)
         .order('price', { ascending: true })
         .order('created_at', { ascending: true });
     } else {
-      // 매도 주문: 같거나 비싼 매수호가 체결 (가격 내림차순, 접수시각 오름차순)
       query = query
         .gte('price', incomingPrice)
         .order('price', { ascending: false })
@@ -132,25 +153,23 @@ export async function submitAndMatchOrder(
 
     const tradesToSettle: SettlementTrade[] = [];
     const oppOrdersToUpdate: { id: string; filled: number; status: string }[] = [];
+    const involvedUserIds = new Set<string>([user_id]);
 
     if (oppOrders && oppOrders.length > 0) {
       for (const opp of oppOrders) {
         if (remainingQty <= 0) break;
 
-        // [Self-Trade Prevention] defensive loop guard (belt-and-suspenders)
+        // [Self-Trade Prevention] defensive loop guard
         if (opp.user_id === user_id) continue;
 
         const oppRemaining = Math.max(0, Number(opp.size) - Number(opp.filled || 0));
         if (oppRemaining <= 0) continue;
 
-        // 체결 가격은 Price-Time Priority에 따라 먼저 대기 중이던 Maker(Resting Order)의 지정가 우선
         const execPrice = Number(opp.price);
         const matchQty = Math.min(remainingQty, oppRemaining);
         if (matchQty <= 0) continue;
 
         lastExecPrice = execPrice;
-
-        // [Multi-Fill OHLC] 개별 체결 가격으로 고가/저가 추적
         executionHigh = Math.max(executionHigh, execPrice);
         executionLow = Math.min(executionLow, execPrice);
 
@@ -159,7 +178,7 @@ export async function submitAndMatchOrder(
         const buyerIsBot = side === 'buy' ? false : !opp.user_id;
         const sellerIsBot = side === 'sell' ? false : !opp.user_id;
 
-        // Maker-Taker 판별: opp는 호가창에 미리 등록되어 대기하던 주문이므로 Maker, 신규 들어온 input은 Taker
+        // Maker-Taker: opp is the resting maker, incoming is taker
         const buyerIsMaker = side === 'sell';
         const sellerIsMaker = side === 'buy';
         const { buyer_fee, seller_fee } = calculateTradeFees(buyerIsMaker, sellerIsMaker);
@@ -177,105 +196,111 @@ export async function submitAndMatchOrder(
           created_at: new Date().toISOString(),
         });
 
-        // 상대 주문 진행도 갱신
         const newOppFilled = Number(opp.filled || 0) + matchQty;
         const newOppStatus = newOppFilled >= Number(opp.size) ? 'filled' : 'partial';
         oppOrdersToUpdate.push({ id: opp.id, filled: newOppFilled, status: newOppStatus });
+
+        // Track all users involved for snapshot coverage
+        if (buyerId) involvedUserIds.add(buyerId);
+        if (sellerId) involvedUserIds.add(sellerId);
 
         remainingQty -= matchQty;
         totalFilledQty += matchQty;
       }
     }
 
-    // 2. Shared Settlement Layer를 통한 일괄 원자적 정산 실행
-    if (tradesToSettle.length > 0) {
-      const settleResult = await executeSettlement(supabase, tradesToSettle);
-      if (!settleResult.success) {
-        throw new Error(settleResult.error?.message || '체결 정산 트랜잭션 실패');
+    // ── 2. Generate orderId before any mutation ──
+    const orderId = `ord_${user_id.slice(0, 8)}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+
+    // ── 3. Take snapshot of all trading-relevant state ──
+    const snap: TradingSnapshot = snapshotTradingState(stock_id, Array.from(involvedUserIds));
+    snap.insertedOrderId = orderId; // track the incoming order so rollback can remove it
+
+    try {
+      // ── 4. Settlement (cumulative validation + asset mutation) ──
+      if (tradesToSettle.length > 0) {
+        const settleResult = await executeSettlement(supabase, tradesToSettle);
+        if (!settleResult.success) {
+          throw new Error(settleResult.error?.message || '체결 정산 트랜잭션 실패');
+        }
       }
-    }
 
-    // 3. 반대 주문 상태 배치 업데이트
-    const writePromises: PromiseLike<any>[] = [];
-    for (const o of oppOrdersToUpdate) {
-      writePromises.push(
-        supabase
-          .from('orders')
-          .update({ filled: o.filled, status: o.status })
-          .eq('id', o.id)
-          .then((res: any) => res)
-      );
-    }
-
-    // 4. 주식 통계(현재가, high, low, volume) 업데이트 (Canonical 스키마: high, low)
-    // [Multi-Fill OHLC] executionHigh/executionLow를 사용하여 모든 체결 가격을 반영
-    if (totalFilledQty > 0) {
-      const { data: stockData } = await supabase
-        .from('stocks')
-        .select('high, low, volume')
-        .eq('id', stock_id)
-        .single();
-
-      if (stockData) {
-        const curHigh = Number(stockData.high || 0);
-        const curLow = Number(stockData.low || 0);
-        // executionHigh/Low: 이번 주문의 전체 체결 범위
-        const newHigh = Math.max(curHigh, executionHigh);
-        const newLow = curLow === 0 ? executionLow : Math.min(curLow, executionLow);
-        const newVol = Number(stockData.volume || 0) + totalFilledQty;
-
-        writePromises.push(
-          supabase
-            .from('stocks')
-            .update({
-              current_price: lastExecPrice,
-              high: newHigh,
-              low: newLow,
-              volume: newVol,
-            })
-            .eq('id', stock_id)
-            .then((res: any) => res)
-        );
+      // ── Test-only failure hook ──
+      // Fires AFTER settlement assets are mutated, BEFORE subsequent writes.
+      // Allows tests to verify full rollback of settlement mutations.
+      if (_testFailureHook) {
+        _testFailureHook();
+        // If hook doesn't throw, throw ourselves so rollback is triggered
+        throw new Error('[TEST] Injected failure after settlement');
       }
-    }
 
-    // 5. 유저 신규 주문 등록 (전액 체결이 아닌 경우 호가창에 잔량 등재)
-    const initialStatus =
-      totalFilledQty === 0 ? 'open' : remainingQty === 0 ? 'filled' : 'partial';
+      // ── 5. Maker order status updates (direct memoryDb write) ──
+      for (const o of oppOrdersToUpdate) {
+        const order = memoryDb.orders.get(o.id);
+        if (order) {
+          order.filled = o.filled;
+          order.status = o.status as OrderRecord['status'];
+        }
+      }
 
-    writePromises.push(
-      supabase
-        .from('orders')
-        .insert({
-          stock_id,
-          user_id,
-          side,
-          price: incomingPrice,
-          size: incomingSize,
-          filled: totalFilledQty,
+      // ── 6. Stock OHLC / volume update (direct memoryDb write) ──
+      if (totalFilledQty > 0) {
+        const stock = memoryDb.stocks.get(stock_id);
+        if (stock) {
+          const curHigh = Number(stock.high || 0);
+          const curLow = Number(stock.low || 0);
+          const newHigh = Math.max(curHigh, executionHigh);
+          const newLow = curLow === 0 ? executionLow : Math.min(curLow, executionLow);
+          const newVol = Number(stock.volume || 0) + totalFilledQty;
+          stock.current_price = lastExecPrice;
+          stock.high = newHigh;
+          stock.low = newLow;
+          stock.volume = newVol;
+        }
+      }
+
+      // ── 7. Incoming order insert (direct memoryDb write — orderId captured above) ──
+      const initialStatus: OrderRecord['status'] =
+        totalFilledQty === 0 ? 'open' : remainingQty === 0 ? 'filled' : 'partial';
+
+      const newOrder: OrderRecord = {
+        id: orderId,
+        stock_id,
+        user_id,
+        side,
+        price: incomingPrice,
+        size: incomingSize,
+        filled: totalFilledQty,
+        status: initialStatus,
+        is_lp: false,
+        created_at: new Date().toISOString(),
+      };
+      memoryDb.orders.set(orderId, newOrder);
+      memoryDb.addOrderToIndex(newOrder);
+
+      // ── 8. Return result ──
+      if (totalFilledQty > 0) {
+        return {
+          success: true,
+          filledQty: totalFilledQty,
+          execPrice: lastExecPrice,
           status: initialStatus,
-          is_lp: false,
-        })
-        .then((res: any) => res)
-    );
-
-    await Promise.all(writePromises);
-
-    if (totalFilledQty > 0) {
-      return {
-        success: true,
-        filledQty: totalFilledQty,
-        execPrice: lastExecPrice,
-        status: initialStatus,
-        message: `🎉 ${totalFilledQty.toLocaleString()}주가 체결되었습니다! (체결가: ₩${lastExecPrice.toLocaleString()})`,
-      };
-    } else {
-      return {
-        success: true,
-        filledQty: 0,
-        status: initialStatus,
-        message: `주문이 호가창에 정상 접수되었습니다! (${incomingPrice.toLocaleString()}원 ${incomingSize}주)`,
-      };
+          orderId,
+          message: `🎉 ${totalFilledQty.toLocaleString()}주가 체결되었습니다! (체결가: ₩${lastExecPrice.toLocaleString()})`,
+        };
+      } else {
+        return {
+          success: true,
+          filledQty: 0,
+          status: initialStatus,
+          orderId,
+          message: `주문이 호가창에 정상 접수되었습니다! (${incomingPrice.toLocaleString()}원 ${incomingSize}주)`,
+        };
+      }
+    } catch (txErr: any) {
+      // ── Full rollback — restore all state to pre-tx snapshot ──
+      rollbackTradingState(snap);
+      throw txErr; // re-throw so outer catch returns failure
     }
   } catch (err: any) {
     console.error('[dbMatching Error]', err);

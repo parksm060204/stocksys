@@ -84,9 +84,12 @@ CREATE TABLE IF NOT EXISTS public.profiles (
   created_at          timestamptz NOT NULL DEFAULT now()
 );
 
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.profiles TO anon, authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.profiles TO anon, authenticated, service_role;
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "passthrough profiles" ON public.profiles FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+CREATE POLICY "Profiles viewable by all" ON public.profiles FOR SELECT TO anon, authenticated USING (true);
+CREATE POLICY "Profiles insertable by owner" ON public.profiles FOR INSERT TO authenticated WITH CHECK (auth.uid() = id);
+CREATE POLICY "Profiles updatable by owner" ON public.profiles FOR UPDATE TO authenticated USING (auth.uid() = id) WITH CHECK (auth.uid() = id);
+CREATE POLICY "Profiles deletable by owner" ON public.profiles FOR DELETE TO authenticated USING (auth.uid() = id);
 
 -- =====================================================================
 -- 3) public.stocks
@@ -115,9 +118,10 @@ CREATE TABLE IF NOT EXISTS public.stocks (
 CREATE INDEX IF NOT EXISTS idx_stocks_market ON public.stocks(market);
 CREATE INDEX IF NOT EXISTS idx_stocks_sector ON public.stocks(sector);
 CREATE INDEX IF NOT EXISTS idx_stocks_ticker ON public.stocks(ticker);
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.stocks TO anon, authenticated;
+GRANT SELECT ON TABLE public.stocks TO anon, authenticated;
+GRANT ALL ON TABLE public.stocks TO service_role;
 ALTER TABLE public.stocks ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "passthrough stocks" ON public.stocks FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+CREATE POLICY "Public read-only stocks" ON public.stocks FOR SELECT TO anon, authenticated USING (true);
 
 -- =====================================================================
 -- 4) public.bonds
@@ -138,9 +142,10 @@ CREATE TABLE IF NOT EXISTS public.bonds (
   volume          bigint NOT NULL DEFAULT 0,
   created_at      timestamptz NOT NULL DEFAULT now()
 );
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.bonds TO anon, authenticated;
+GRANT SELECT ON TABLE public.bonds TO anon, authenticated;
+GRANT ALL ON TABLE public.bonds TO service_role;
 ALTER TABLE public.bonds ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "passthrough bonds" ON public.bonds FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+CREATE POLICY "Public read-only bonds" ON public.bonds FOR SELECT TO anon, authenticated USING (true);
 
 -- =====================================================================
 -- 5) public.commodities
@@ -157,9 +162,10 @@ CREATE TABLE IF NOT EXISTS public.commodities (
   volume          bigint NOT NULL DEFAULT 0,
   created_at      timestamptz NOT NULL DEFAULT now()
 );
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.commodities TO anon, authenticated;
+GRANT SELECT ON TABLE public.commodities TO anon, authenticated;
+GRANT ALL ON TABLE public.commodities TO service_role;
 ALTER TABLE public.commodities ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "passthrough commodities" ON public.commodities FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+CREATE POLICY "Public read-only commodities" ON public.commodities FOR SELECT TO anon, authenticated USING (true);
 
 -- =====================================================================
 -- 6) public.exchange_rates
@@ -170,9 +176,10 @@ CREATE TABLE IF NOT EXISTS public.exchange_rates (
   rate_to_krw    numeric(12,4) NOT NULL,
   updated_at     timestamptz NOT NULL DEFAULT now()
 );
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.exchange_rates TO anon, authenticated;
+GRANT SELECT ON TABLE public.exchange_rates TO anon, authenticated;
+GRANT ALL ON TABLE public.exchange_rates TO service_role;
 ALTER TABLE public.exchange_rates ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "passthrough rates" ON public.exchange_rates FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+CREATE POLICY "Public read-only exchange_rates" ON public.exchange_rates FOR SELECT TO anon, authenticated USING (true);
 
 -- =====================================================================
 -- 7) public.admin_settings (단일 행)
@@ -184,9 +191,10 @@ CREATE TABLE IF NOT EXISTS public.admin_settings (
   updated_at         timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT admin_singleton CHECK (id = 1)
 );
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.admin_settings TO anon, authenticated;
+GRANT SELECT ON TABLE public.admin_settings TO anon, authenticated;
+GRANT ALL ON TABLE public.admin_settings TO service_role;
 ALTER TABLE public.admin_settings ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "passthrough admin" ON public.admin_settings FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+CREATE POLICY "Public read-only admin_settings" ON public.admin_settings FOR SELECT TO anon, authenticated USING (true);
 
 -- =====================================================================
 -- 8) public.orders + public.trades
@@ -207,9 +215,12 @@ CREATE INDEX IF NOT EXISTS idx_orders_stock_status ON public.orders(stock_id, st
 CREATE INDEX IF NOT EXISTS idx_orders_is_lp ON public.orders(is_lp) WHERE is_lp = true;
 CREATE INDEX IF NOT EXISTS idx_orders_user ON public.orders(user_id) WHERE user_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_orders_created_at ON public.orders(created_at DESC);
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.orders TO anon, authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.orders TO anon, authenticated, service_role;
 ALTER TABLE public.orders ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "passthrough orders" ON public.orders FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+CREATE POLICY "Orders viewable by all" ON public.orders FOR SELECT TO anon, authenticated USING (true);
+CREATE POLICY "Orders insertable by owner" ON public.orders FOR INSERT TO authenticated WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Orders updatable by owner" ON public.orders FOR UPDATE TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Orders deletable by owner" ON public.orders FOR DELETE TO authenticated USING (auth.uid() = user_id);
 
 CREATE TABLE IF NOT EXISTS public.trades (
   id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -224,9 +235,10 @@ CREATE TABLE IF NOT EXISTS public.trades (
 );
 CREATE INDEX IF NOT EXISTS idx_trades_stock_created ON public.trades(stock_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_trades_created_at ON public.trades(created_at DESC);
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.trades TO anon, authenticated;
+GRANT SELECT ON TABLE public.trades TO anon, authenticated;
+GRANT ALL ON TABLE public.trades TO service_role;
 ALTER TABLE public.trades ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "passthrough trades" ON public.trades FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+CREATE POLICY "Public read-only trades" ON public.trades FOR SELECT TO anon, authenticated USING (true);
 
 -- =====================================================================
 -- 9) public.holdings
@@ -240,9 +252,12 @@ CREATE TABLE IF NOT EXISTS public.holdings (
   created_at  timestamptz NOT NULL DEFAULT now(),
   UNIQUE (user_id, stock_id)
 );
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.holdings TO anon, authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.holdings TO anon, authenticated, service_role;
 ALTER TABLE public.holdings ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "passthrough holdings" ON public.holdings FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+CREATE POLICY "Holdings viewable by all" ON public.holdings FOR SELECT TO anon, authenticated USING (true);
+CREATE POLICY "Holdings insertable by owner" ON public.holdings FOR INSERT TO authenticated WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Holdings updatable by owner" ON public.holdings FOR UPDATE TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Holdings deletable by owner" ON public.holdings FOR DELETE TO authenticated USING (auth.uid() = user_id);
 
 -- =====================================================================
 -- 10) public.options_contracts
@@ -266,9 +281,10 @@ CREATE TABLE IF NOT EXISTS public.options_contracts (
   implied_volatility    numeric(10,4) NOT NULL DEFAULT 0.20,
   created_at            timestamptz NOT NULL DEFAULT now()
 );
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.options_contracts TO anon, authenticated;
+GRANT SELECT ON TABLE public.options_contracts TO anon, authenticated;
+GRANT ALL ON TABLE public.options_contracts TO service_role;
 ALTER TABLE public.options_contracts ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "passthrough options" ON public.options_contracts FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+CREATE POLICY "Public read-only options_contracts" ON public.options_contracts FOR SELECT TO anon, authenticated USING (true);
 
 -- =====================================================================
 -- 11) public.bots_config (50개 기관 봇 마스터)
@@ -283,31 +299,33 @@ CREATE TABLE IF NOT EXISTS public.bots_config (
   is_real_user      boolean NOT NULL DEFAULT false,
   created_at        timestamptz NOT NULL DEFAULT now()
 );
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.bots_config TO anon, authenticated;
+GRANT SELECT ON TABLE public.bots_config TO anon, authenticated;
+GRANT ALL ON TABLE public.bots_config TO service_role;
 ALTER TABLE public.bots_config ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "passthrough bots_config" ON public.bots_config FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+CREATE POLICY "Public read-only bots_config" ON public.bots_config FOR SELECT TO anon, authenticated USING (true);
 
 -- =====================================================================
 -- 12) public.institutional_portfolios (대시보드)
 -- =====================================================================
 CREATE TABLE IF NOT EXISTS public.institutional_portfolios (
-  bot_id                uuid PRIMARY KEY,
+  bot_id                text PRIMARY KEY,
   name                  text NOT NULL,
-  total_capital         bigint NOT NULL,
-  current_cash          bigint NOT NULL DEFAULT 0,
-  current_stock         bigint NOT NULL DEFAULT 0,
-  current_kr_equity     bigint NOT NULL DEFAULT 0,
-  current_us_equity     bigint NOT NULL DEFAULT 0,
-  current_eu_equity     bigint NOT NULL DEFAULT 0,
-  current_bond          bigint NOT NULL DEFAULT 0,
-  current_commodity     bigint NOT NULL DEFAULT 0,
-  current_derivatives   bigint NOT NULL DEFAULT 0,
+  total_capital         numeric NOT NULL,
+  current_cash          numeric NOT NULL DEFAULT 0,
+  current_stock         numeric NOT NULL DEFAULT 0,
+  current_kr_equity     numeric NOT NULL DEFAULT 0,
+  current_us_equity     numeric NOT NULL DEFAULT 0,
+  current_eu_equity     numeric NOT NULL DEFAULT 0,
+  current_bond          numeric NOT NULL DEFAULT 0,
+  current_commodity     numeric NOT NULL DEFAULT 0,
+  current_derivatives   numeric NOT NULL DEFAULT 0,
   target_weights        jsonb NOT NULL DEFAULT '{}'::jsonb,
   updated_at            timestamptz NOT NULL DEFAULT now()
 );
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.institutional_portfolios TO anon, authenticated;
+GRANT SELECT ON TABLE public.institutional_portfolios TO anon, authenticated;
+GRANT ALL ON TABLE public.institutional_portfolios TO service_role;
 ALTER TABLE public.institutional_portfolios ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "passthrough portfolios" ON public.institutional_portfolios FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+CREATE POLICY "Public read-only institutional_portfolios" ON public.institutional_portfolios FOR SELECT TO anon, authenticated USING (true);
 
 -- =====================================================================
 -- 13) 뉴스 / 채팅 / 노벨이벤트 / 재무제표 / 서플라이체인
@@ -332,9 +350,10 @@ CREATE TABLE IF NOT EXISTS public.market_news (
   is_published      boolean NOT NULL DEFAULT true,
   created_at        timestamptz NOT NULL DEFAULT now()
 );
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.market_news TO anon, authenticated;
+GRANT SELECT ON TABLE public.market_news TO anon, authenticated;
+GRANT ALL ON TABLE public.market_news TO service_role;
 ALTER TABLE public.market_news ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "passthrough mn" ON public.market_news FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+CREATE POLICY "Public read-only market_news" ON public.market_news FOR SELECT TO anon, authenticated USING (true);
 
 CREATE TABLE IF NOT EXISTS public.premium_news (
   id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -349,9 +368,10 @@ CREATE TABLE IF NOT EXISTS public.premium_news (
   is_correction boolean NOT NULL DEFAULT false,
   created_at    timestamptz NOT NULL DEFAULT now()
 );
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.premium_news TO anon, authenticated;
+GRANT SELECT ON TABLE public.premium_news TO anon, authenticated;
+GRANT ALL ON TABLE public.premium_news TO service_role;
 ALTER TABLE public.premium_news ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "passthrough pn" ON public.premium_news FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+CREATE POLICY "Public read-only premium_news" ON public.premium_news FOR SELECT TO anon, authenticated USING (true);
 
 CREATE TABLE IF NOT EXISTS public.chat_messages (
   id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -363,9 +383,10 @@ CREATE TABLE IF NOT EXISTS public.chat_messages (
   created_at    timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_chat_stock_created ON public.chat_messages(stock_id, created_at DESC);
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.chat_messages TO anon, authenticated;
+GRANT SELECT, INSERT ON TABLE public.chat_messages TO anon, authenticated, service_role;
 ALTER TABLE public.chat_messages ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "passthrough chat" ON public.chat_messages FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+CREATE POLICY "Chat viewable by all" ON public.chat_messages FOR SELECT TO anon, authenticated USING (true);
+CREATE POLICY "Chat insertable by authenticated" ON public.chat_messages FOR INSERT TO anon, authenticated WITH CHECK (auth.uid() = user_id OR user_id IS NULL);
 
 CREATE TABLE IF NOT EXISTS public.financials (
   id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -379,9 +400,10 @@ CREATE TABLE IF NOT EXISTS public.financials (
   created_at        timestamptz NOT NULL DEFAULT now(),
   UNIQUE (stock_id, quarter)
 );
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.financials TO anon, authenticated;
+GRANT SELECT ON TABLE public.financials TO anon, authenticated;
+GRANT ALL ON TABLE public.financials TO service_role;
 ALTER TABLE public.financials ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "passthrough fin" ON public.financials FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+CREATE POLICY "Public read-only financials" ON public.financials FOR SELECT TO anon, authenticated USING (true);
 
 CREATE TABLE IF NOT EXISTS public.novel_events (
   id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -391,9 +413,10 @@ CREATE TABLE IF NOT EXISTS public.novel_events (
   sector_impacts  jsonb NOT NULL DEFAULT '[]'::jsonb,
   created_at      timestamptz NOT NULL DEFAULT now()
 );
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.novel_events TO anon, authenticated;
+GRANT SELECT ON TABLE public.novel_events TO anon, authenticated;
+GRANT ALL ON TABLE public.novel_events TO service_role;
 ALTER TABLE public.novel_events ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "passthrough ne" ON public.novel_events FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+CREATE POLICY "Public read-only novel_events" ON public.novel_events FOR SELECT TO anon, authenticated USING (true);
 
 CREATE TABLE IF NOT EXISTS public.sector_relations (
   id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -402,9 +425,10 @@ CREATE TABLE IF NOT EXISTS public.sector_relations (
   relation_type     text NOT NULL DEFAULT 'supplier', -- supplier | rival | customer
   weight            numeric(4,2) NOT NULL DEFAULT 1.00
 );
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.sector_relations TO anon, authenticated;
+GRANT SELECT ON TABLE public.sector_relations TO anon, authenticated;
+GRANT ALL ON TABLE public.sector_relations TO service_role;
 ALTER TABLE public.sector_relations ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "passthrough sector_relations" ON public.sector_relations FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+CREATE POLICY "Public read-only sector_relations" ON public.sector_relations FOR SELECT TO anon, authenticated USING (true);
 
 -- =====================================================================
 -- 14) 기타 부가 테이블 (shop / events / manipulations / macro_calendar)
@@ -419,9 +443,10 @@ CREATE TABLE IF NOT EXISTS public.shop_items (
   is_available boolean NOT NULL DEFAULT true,
   created_at   timestamptz NOT NULL DEFAULT now()
 );
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.shop_items TO anon, authenticated;
+GRANT SELECT ON TABLE public.shop_items TO anon, authenticated;
+GRANT ALL ON TABLE public.shop_items TO service_role;
 ALTER TABLE public.shop_items ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "passthrough shop" ON public.shop_items FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+CREATE POLICY "Public read-only shop_items" ON public.shop_items FOR SELECT TO anon, authenticated USING (true);
 
 CREATE TABLE IF NOT EXISTS public.player_events (
   id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -432,9 +457,10 @@ CREATE TABLE IF NOT EXISTS public.player_events (
   choice_b    jsonb,
   created_at  timestamptz NOT NULL DEFAULT now()
 );
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.player_events TO anon, authenticated;
+GRANT SELECT ON TABLE public.player_events TO anon, authenticated;
+GRANT ALL ON TABLE public.player_events TO service_role;
 ALTER TABLE public.player_events ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "passthrough pe" ON public.player_events FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+CREATE POLICY "Public read-only player_events" ON public.player_events FOR SELECT TO anon, authenticated USING (true);
 
 CREATE TABLE IF NOT EXISTS public.active_player_events (
   id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -443,9 +469,10 @@ CREATE TABLE IF NOT EXISTS public.active_player_events (
   status     text NOT NULL DEFAULT 'pending',
   created_at timestamptz NOT NULL DEFAULT now()
 );
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.active_player_events TO anon, authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.active_player_events TO anon, authenticated, service_role;
 ALTER TABLE public.active_player_events ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "passthrough ape" ON public.active_player_events FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+CREATE POLICY "Active player events viewable by all" ON public.active_player_events FOR SELECT TO anon, authenticated USING (true);
+CREATE POLICY "Active player events manageable by owner" ON public.active_player_events FOR ALL TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
 
 CREATE TABLE IF NOT EXISTS public.active_manipulations (
   id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -454,9 +481,10 @@ CREATE TABLE IF NOT EXISTS public.active_manipulations (
   status     text NOT NULL DEFAULT 'PENDING',
   created_at timestamptz NOT NULL DEFAULT now()
 );
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.active_manipulations TO anon, authenticated;
+GRANT SELECT ON TABLE public.active_manipulations TO anon, authenticated;
+GRANT ALL ON TABLE public.active_manipulations TO service_role;
 ALTER TABLE public.active_manipulations ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "passthrough am" ON public.active_manipulations FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+CREATE POLICY "Public read-only active_manipulations" ON public.active_manipulations FOR SELECT TO anon, authenticated USING (true);
 
 CREATE TABLE IF NOT EXISTS public.macro_calendar (
   id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -469,9 +497,10 @@ CREATE TABLE IF NOT EXISTS public.macro_calendar (
   status        text NOT NULL DEFAULT 'scheduled',
   created_at    timestamptz NOT NULL DEFAULT now()
 );
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.macro_calendar TO anon, authenticated;
+GRANT SELECT ON TABLE public.macro_calendar TO anon, authenticated;
+GRANT ALL ON TABLE public.macro_calendar TO service_role;
 ALTER TABLE public.macro_calendar ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "passthrough mc" ON public.macro_calendar FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+CREATE POLICY "Public read-only macro_calendar" ON public.macro_calendar FOR SELECT TO anon, authenticated USING (true);
 
 -- =====================================================================
 -- 15) 심볼/인덱스
@@ -484,9 +513,10 @@ CREATE TABLE IF NOT EXISTS public.market_indices (
   previous_close numeric(18,2) NOT NULL DEFAULT 0,
   updated_at   timestamptz NOT NULL DEFAULT now()
 );
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.market_indices TO anon, authenticated;
+GRANT SELECT ON TABLE public.market_indices TO anon, authenticated;
+GRANT ALL ON TABLE public.market_indices TO service_role;
 ALTER TABLE public.market_indices ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "passthrough mi" ON public.market_indices FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+CREATE POLICY "Public read-only market_indices" ON public.market_indices FOR SELECT TO anon, authenticated USING (true);
 
 -- =====================================================================
 -- 16) 트리거: 신규 auth.users INSERT 시 profile 자동 생성 (GoTrue 대용)
@@ -657,35 +687,66 @@ CREATE TABLE IF NOT EXISTS public.stock_price_history (
 CREATE INDEX IF NOT EXISTS idx_price_history_stock_time 
   ON public.stock_price_history(stock_id, created_at DESC);
 
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.stock_price_history TO anon, authenticated, service_role;
+GRANT SELECT ON TABLE public.stock_price_history TO anon, authenticated;
+GRANT ALL ON TABLE public.stock_price_history TO service_role;
 ALTER TABLE public.stock_price_history ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "passthrough price_history" ON public.stock_price_history FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
-
--- =====================================================================
--- 21) 기관 봇 영구 포트폴리오 자산 장부 (institutional_portfolios)
--- =====================================================================
-CREATE TABLE IF NOT EXISTS public.institutional_portfolios (
-    bot_id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    total_capital NUMERIC NOT NULL,
-    current_cash NUMERIC NOT NULL,
-    current_stock NUMERIC NOT NULL,
-    current_kr_equity NUMERIC NOT NULL DEFAULT 0,
-    current_us_equity NUMERIC NOT NULL DEFAULT 0,
-    current_eu_equity NUMERIC NOT NULL DEFAULT 0,
-    current_bond NUMERIC NOT NULL DEFAULT 0,
-    current_commodity NUMERIC NOT NULL DEFAULT 0,
-    current_derivatives NUMERIC NOT NULL DEFAULT 0,
-    target_weights JSONB NOT NULL DEFAULT '{}'::jsonb,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
+CREATE POLICY "Public read-only price_history" ON public.stock_price_history FOR SELECT TO anon, authenticated USING (true);
 
 CREATE INDEX IF NOT EXISTS idx_trades_created_at ON public.trades(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_trades_stock_created ON public.trades(stock_id, created_at DESC);
 
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.institutional_portfolios TO anon, authenticated, service_role;
-ALTER TABLE public.institutional_portfolios ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "passthrough institutional_portfolios" ON public.institutional_portfolios FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+-- =====================================================================
+-- 21) 슬라이딩 윈도우 트리밍 RPC (trades 5,000건 / price_history 3,000건 유지)
+-- =====================================================================
+CREATE OR REPLACE FUNCTION public.trim_old_market_data(
+  p_max_trades INT DEFAULT 5000,
+  p_max_history INT DEFAULT 3000
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_deleted_trades INT := 0;
+  v_deleted_history INT := 0;
+BEGIN
+  -- 1. trades 테이블 최신 5,000건 초과분 삭제
+  WITH to_delete AS (
+    SELECT id
+    FROM public.trades
+    ORDER BY created_at DESC
+    OFFSET p_max_trades
+  ),
+  del_t AS (
+    DELETE FROM public.trades
+    WHERE id IN (SELECT id FROM to_delete)
+    RETURNING id
+  )
+  SELECT COUNT(*) INTO v_deleted_trades FROM del_t;
+
+  -- 2. stock_price_history 테이블 최신 3,000건 초과분 삭제
+  WITH to_delete_hist AS (
+    SELECT id
+    FROM public.stock_price_history
+    ORDER BY created_at DESC
+    OFFSET p_max_history
+  ),
+  del_h AS (
+    DELETE FROM public.stock_price_history
+    WHERE id IN (SELECT id FROM to_delete_hist)
+    RETURNING id
+  )
+  SELECT COUNT(*) INTO v_deleted_history FROM del_h;
+
+  RETURN jsonb_build_object(
+    'success', true,
+    'deleted_trades', v_deleted_trades,
+    'deleted_history', v_deleted_history
+  );
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.trim_old_market_data(INT, INT) TO anon, authenticated, service_role;
 
 -- 완료
 DO $$ BEGIN RAISE NOTICE 'VM DB 스키마 초기화 완료'; END $$;

@@ -5,11 +5,11 @@ import * as path from 'path';
 // .env.local 로드
 dotenv.config({ path: path.resolve(__dirname, '../../.env.local') });
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const supabaseUrl = process.env.NEXT_PUBLIC_ENGINE_DB_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
+const supabaseKey = process.env.ENGINE_DB_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 if (!supabaseUrl || !supabaseKey) {
-  console.error('Missing Supabase URL or Service Role Key');
+  console.error('Missing Supabase URL or ENGINE_DB_SERVICE_ROLE_KEY (or SUPABASE_SERVICE_ROLE_KEY)');
   process.exit(1);
 }
 

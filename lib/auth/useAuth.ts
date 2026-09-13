@@ -1,18 +1,13 @@
 /**
  * useAuth — NextAuth 세션을 기존 supabase.auth.getSession() 패턴과 호환되게 래핑
- * 
- * 기존 코드:
- *   const { data: { session } } = await supabase.auth.getSession();
- *   session?.user?.id
- *
- * 변경 후:
- *   const { session } = useAuth();
- *   session?.user?.id
+ * Local Standalone Mode에서는 구글 로그인 없이도 즉시 테스트할 수 있도록 guest_user 자동 인증 제공
  */
 "use client";
 
 import { useSession, signIn, signOut } from "next-auth/react";
 import type { Session } from "next-auth";
+import { isLocalStandaloneMode } from "@/lib/engine/localDevMode";
+import { GUEST_USER_ID } from "@/lib/memoryDb/memoryStore";
 
 // next-auth의 Session.user에 id 필드를 추가하는 확장
 declare module "next-auth" {
@@ -38,7 +33,7 @@ export interface AuthSession {
 export function useAuth() {
   const { data: session, status } = useSession();
 
-  const authSession: AuthSession | null = (session as Session | null)?.user?.id
+  let authSession: AuthSession | null = (session as Session | null)?.user?.id
     ? {
         user: {
           id: (session as Session).user.id,
@@ -49,11 +44,23 @@ export function useAuth() {
       }
     : null;
 
+  // 로컬 독립형 개발 모드이고 OAuth 세션이 없는 경우 자동 게스트 로그인 제공
+  if (!authSession && isLocalStandaloneMode()) {
+    authSession = {
+      user: {
+        id: GUEST_USER_ID,
+        email: "guest@stocksys.local",
+        name: "서학개미 (로컬 테스트)",
+        image: null,
+      },
+    };
+  }
+
   return {
     session: authSession,
     user: authSession?.user ?? null,
     userId: authSession?.user?.id ?? null,
-    loading: status === "loading",
+    loading: status === "loading" && !authSession,
     isLoggedIn: !!authSession,
     signIn: () => signIn("google"),
     signOut: () => signOut(),
@@ -65,4 +72,3 @@ export function useAuth() {
  */
 export { getServerSession } from "next-auth";
 export { authOptions } from "@/app/api/auth/[...nextauth]/route";
-

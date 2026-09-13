@@ -148,16 +148,27 @@ export class BaseAgent {
       }
     }
 
+    // 주식 비중 일원화: 지역별 비중(kr+us+eu)이 존재하면 우선 합산하고, stock과의 이중 계산을 차단
+    const regionalEquities = (target.kr_equity || 0) + (target.us_equity || 0) + (target.eu_equity || 0);
+    if (regionalEquities > 0) {
+      target.stock = regionalEquities;
+    } else if ((target.stock || 0) > 0) {
+      // 레거시 stock 단일 비중만 존재할 경우 5:3:2 비율로 기본 분배
+      target.kr_equity = (target.stock || 0) * 0.5;
+      target.us_equity = (target.stock || 0) * 0.3;
+      target.eu_equity = (target.stock || 0) * 0.2;
+    }
+
     // 리스크 선호도에 따른 미세 조정
     if (this.agentConfig.riskTolerance > 1.0) {
       // 위험 자산 비중 확대
       const boost = (this.agentConfig.riskTolerance - 1.0) * 0.1;
-      const totalEquities = (target.stock || 0) + (target.kr_equity || 0) + (target.us_equity || 0) + (target.eu_equity || 0);
+      const totalEquities = (target.kr_equity || 0) + (target.us_equity || 0) + (target.eu_equity || 0);
       if (totalEquities > 0) {
-        if (target.stock > 0) target.stock += boost;
-        if (target.kr_equity > 0) target.kr_equity += boost * (target.kr_equity / totalEquities);
-        if (target.us_equity > 0) target.us_equity += boost * (target.us_equity / totalEquities);
-        if (target.eu_equity > 0) target.eu_equity += boost * (target.eu_equity / totalEquities);
+        if (target.kr_equity) target.kr_equity += boost * (target.kr_equity / totalEquities);
+        if (target.us_equity) target.us_equity += boost * (target.us_equity / totalEquities);
+        if (target.eu_equity) target.eu_equity += boost * (target.eu_equity / totalEquities);
+        target.stock = (target.kr_equity || 0) + (target.us_equity || 0) + (target.eu_equity || 0);
       }
       if (target.commodity > 0) target.commodity += boost;
       target.bond -= boost;
@@ -167,27 +178,27 @@ export class BaseAgent {
       const boost = (1.0 - this.agentConfig.riskTolerance) * 0.1;
       target.bond += boost;
       target.cash += boost;
-      const totalEquities = (target.stock || 0) + (target.kr_equity || 0) + (target.us_equity || 0) + (target.eu_equity || 0);
+      const totalEquities = (target.kr_equity || 0) + (target.us_equity || 0) + (target.eu_equity || 0);
       if (totalEquities > 0) {
-        if (target.stock > 0) target.stock -= boost;
-        if (target.kr_equity > 0) target.kr_equity -= boost * (target.kr_equity / totalEquities);
-        if (target.us_equity > 0) target.us_equity -= boost * (target.us_equity / totalEquities);
-        if (target.eu_equity > 0) target.eu_equity -= boost * (target.eu_equity / totalEquities);
+        if (target.kr_equity) target.kr_equity = Math.max(0, target.kr_equity - boost * (target.kr_equity / totalEquities));
+        if (target.us_equity) target.us_equity = Math.max(0, target.us_equity - boost * (target.us_equity / totalEquities));
+        if (target.eu_equity) target.eu_equity = Math.max(0, target.eu_equity - boost * (target.eu_equity / totalEquities));
+        target.stock = (target.kr_equity || 0) + (target.us_equity || 0) + (target.eu_equity || 0);
       }
-      if (target.commodity > 0) target.commodity -= boost;
+      if (target.commodity > 0) target.commodity = Math.max(0, target.commodity - boost);
     }
 
-    // Normalize
-    const totalEquities = (target.stock || 0) + (target.kr_equity || 0) + (target.us_equity || 0) + (target.eu_equity || 0);
+    // Normalize (전체 합계 = 1.0 보장, 주식 이중합산 방지)
+    const totalEquities = (target.kr_equity || 0) + (target.us_equity || 0) + (target.eu_equity || 0);
     const total = totalEquities + target.bond + target.commodity + target.cash;
     if (total > 0) {
-      target.stock = totalEquities / total;
       target.bond /= total;
       target.commodity /= total;
       target.cash /= total;
       if (target.kr_equity) target.kr_equity /= total;
       if (target.us_equity) target.us_equity /= total;
       if (target.eu_equity) target.eu_equity /= total;
+      target.stock = (target.kr_equity || 0) + (target.us_equity || 0) + (target.eu_equity || 0);
     }
 
     return target;

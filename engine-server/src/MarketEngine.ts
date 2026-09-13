@@ -28,7 +28,11 @@ import { createMockSupabaseClient } from '../../lib/memoryDb/mockSupabaseClient'
 
 const useInMemory = process.env.NEXT_PUBLIC_USE_IN_MEMORY === 'true';
 const supabaseUrl = process.env.NEXT_PUBLIC_ENGINE_DB_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+const supabaseKey =
+  process.env.ENGINE_DB_SERVICE_ROLE_KEY ||
+  process.env.SUPABASE_SERVICE_ROLE_KEY ||
+  process.env.NEXT_PUBLIC_ENGINE_DB_ANON_KEY ||
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
 let supabase: any;
 
@@ -38,7 +42,10 @@ if (useInMemory) {
 } else {
   if (!supabaseUrl || !supabaseKey) {
     console.error("❌ [MarketEngine] Critical Error: Missing Supabase credentials in environment variables.");
-    throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL (or NEXT_PUBLIC_ENGINE_DB_URL) or SUPABASE_SERVICE_ROLE_KEY");
+    throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL (or NEXT_PUBLIC_ENGINE_DB_URL) or ENGINE_DB_SERVICE_ROLE_KEY");
+  }
+  if (!process.env.ENGINE_DB_SERVICE_ROLE_KEY && !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    console.warn("⚠️ [MarketEngine] Running with ANON key! Server database operations may be blocked by RLS.");
   }
   supabase = createClient(supabaseUrl, supabaseKey);
 }
@@ -598,8 +605,32 @@ export class MarketEngine {
       if (Math.random() < 0.01) {
         await this.triggerRandomEvents();
       }
+
+      // trades(최신 5,000건) & stock_price_history(최신 3,000건) 슬라이딩 윈도우 트리밍 (매 20틱)
+      if (this.tickCount % 20 === 0) {
+        this.trimOldTrades();
+      }
     } catch (error) {
       console.error("Engine Tick Error:", error);
+    }
+  }
+
+  /**
+   * PostgreSQL WAL 및 디스크 100% 포화 방지를 위한 슬라이딩 윈도우 롤링 트리밍
+   */
+  private async trimOldTrades(): Promise<void> {
+    try {
+      const { data, error } = await supabase.rpc('trim_old_market_data', {
+        p_max_trades: 5000,
+        p_max_history: 3000
+      });
+      if (error) {
+        console.warn('⚠️ [Engine] trim_old_market_data RPC failed or not installed:', error.message);
+      } else if (data && (data.deleted_trades > 0 || data.deleted_history > 0)) {
+        console.log(`🧹 [Engine] Trimmed old market data: ${data.deleted_trades} trades, ${data.deleted_history} price history rows removed.`);
+      }
+    } catch (e: any) {
+      console.error('❌ [Engine] Error in trimOldTrades:', e.message);
     }
   }
 
@@ -704,8 +735,6 @@ export class MarketEngine {
     const updatedStocks: Record<string, number> = {}; // stock_id -> new price
     const lpOrdersToInsert: any[] = [];
     const userOrdersToUpdate: any[] = [];
-    const cashChanges: Record<string, number> = {}; // user_id -> net cash change
-    const holdingsChanges: Record<string, Record<string, number>> = {}; // user_id -> { stock_id -> qty delta (+buy / -sell) }
 
     // 3. 종목별 매칭 엔진 로직 (In-memory Matching)
     for (const stockId of Object.keys(orderBookByStock)) {
@@ -734,6 +763,18 @@ export class MarketEngine {
           const tradePrice = this.alignToTickSize(lowestAsk.price);
           latestTradePrice = tradePrice;
 
+          // Maker-Taker 판별 (더 일찍 생성된 주문이 Maker)
+          const bidTime = new Date(highestBid.created_at || 0).getTime();
+          const askTime = new Date(lowestAsk.created_at || 0).getTime();
+          const isBidMaker = bidTime <= askTime;
+          
+          // Maker Rebate (-0.1%), Taker Fee (+0.25%)
+          const makerRebateRate = -0.001; 
+          const takerFeeRate = 0.0025;
+          
+          const bidFeeRate = isBidMaker ? makerRebateRate : takerFeeRate;
+          const askFeeRate = isBidMaker ? takerFeeRate : makerRebateRate;
+
           tradesToInsert.push({
             stock_id: stockId,
             price: tradePrice,
@@ -742,6 +783,8 @@ export class MarketEngine {
             seller_id: lowestAsk.user_id || null,
             buyer_is_bot: highestBid.is_lp || false,
             seller_is_bot: lowestAsk.is_lp || false,
+            buyer_fee: bidFeeRate,
+            seller_fee: askFeeRate,
             created_at: new Date().toISOString()
           });
 
@@ -770,35 +813,6 @@ export class MarketEngine {
             if (bot && typeof bot.confirmExecution === 'function') {
               bot.confirmExecution(askAssetClass, 'sell', tradeSize, tradePrice, lowestAsk.stock_id);
             }
-          }
-
-          // Maker-Taker 판별 (더 일찍 생성된 주문이 Maker)
-          const bidTime = new Date(highestBid.created_at || 0).getTime();
-          const askTime = new Date(lowestAsk.created_at || 0).getTime();
-          const isBidMaker = bidTime <= askTime;
-          
-          // Maker Rebate (-0.1%), Taker Fee (+0.25%)
-          const makerRebateRate = -0.001; 
-          const takerFeeRate = 0.0025;
-          
-          const bidFeeRate = isBidMaker ? makerRebateRate : takerFeeRate;
-          const askFeeRate = isBidMaker ? takerFeeRate : makerRebateRate;
-
-          if (highestBid.user_id && highestBid.is_lp === false) {
-            // 매수자는 체결 대금 + 수수료 지불
-            const bidUid = highestBid.user_id;
-            cashChanges[bidUid] = (cashChanges[bidUid] || 0) - (tradePrice * tradeSize * (1 + bidFeeRate));
-            // 매수자 보유 주식 증가
-            if (!holdingsChanges[bidUid]) holdingsChanges[bidUid] = {};
-            holdingsChanges[bidUid]![stockId] = (holdingsChanges[bidUid]![stockId] || 0) + tradeSize;
-          }
-          if (lowestAsk.user_id && lowestAsk.is_lp === false) {
-            // 매도자는 체결 대금 획득 - 수수료 차감
-            const askUid = lowestAsk.user_id;
-            cashChanges[askUid] = (cashChanges[askUid] || 0) + (tradePrice * tradeSize * (1 - askFeeRate));
-            // 매도자 보유 주식 감소
-            if (!holdingsChanges[askUid]) holdingsChanges[askUid] = {};
-            holdingsChanges[askUid]![stockId] = (holdingsChanges[askUid]![stockId] || 0) - tradeSize;
           }
 
 

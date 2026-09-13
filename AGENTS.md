@@ -7,7 +7,7 @@ This version has breaking changes — APIs, conventions, and file structure may 
 <!-- BEGIN:prompt-logging -->
 # 작업 이력 로깅 (프롬프트 로깅)
 
-사용자가 요청한 내용을 바탕으로 AI(LLM)가 실제로 수행하고 구현한 결과물을 요약하여 프로젝트 루트의 `README.md` 파일 하단에 추가해야 한다.
+사용자가 요청한 내용을 바탕으로 AI(LLM)가 실제로 수행하고 구현한 결과물을 요약하여 프로젝트 루트의 `HISTORY.md` 파일 하단에 추가해야 한다.
 - 사용자의 프롬프트를 그대로 복붙하는 것이 아니라, 해당 요청을 통해 "어떤 사항이 변경되고 구현되었는지"를 간략하게 요약하여 기록한다.
 - 각 기록은 구분선(`---`)과 함께 타임스탬프를 포함하여 기록한다.
 - 포맷:
@@ -20,7 +20,7 @@ This version has breaking changes — APIs, conventions, and file structure may 
   - [실제로 수정한 파일이나 구현된 내용 간략 요약 1]
   - [실제로 수정한 파일이나 구현된 내용 간략 요약 2]
   ```
-- README.md가 없으면 생성한다.
+- HISTORY.md가 없으면 생성한다.
 - 기록은 파일 끝에 계속해서 append한다.
 - 단, `.opencode/` 관련 설정 변경, AGENTS.md 자체 수정, 또는 프롬프트 로깅 규칙 자체에 대한 논의는 기록하지 않는다.
 <!-- END:prompt-logging -->

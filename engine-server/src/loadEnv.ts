@@ -3,24 +3,30 @@ import * as path from 'path';
 import * as fs from 'fs';
 
 export function loadEnv() {
-  const candidatePaths = [
-    path.resolve(process.cwd(), '.env'),
-    path.resolve(process.cwd(), 'engine-server/.env'),
-    path.resolve(process.cwd(), '.env.local'),
-    path.resolve(process.cwd(), '../.env.local'),
-  ];
-
+  const candidateDirs = [process.cwd()];
   let curr = __dirname;
   for (let i = 0; i < 5; i++) {
-    candidatePaths.push(path.resolve(curr, '.env'));
-    candidatePaths.push(path.resolve(curr, '.env.local'));
-    candidatePaths.push(path.resolve(curr, 'engine-server/.env'));
+    candidateDirs.push(curr);
     curr = path.dirname(curr);
   }
 
-  for (const envPath of candidatePaths) {
-    if (fs.existsSync(envPath)) {
-      dotenv.config({ path: envPath });
+  // 우선순위: .env.local (최우선) -> engine-server/.env.local -> engine-server/.env -> .env (기본 fallback)
+  const envFilePatterns = [
+    '.env.local',
+    'engine-server/.env.local',
+    'engine-server/.env',
+    '.env'
+  ];
+
+  const loadedFiles = new Set<string>();
+
+  for (const pattern of envFilePatterns) {
+    for (const dir of candidateDirs) {
+      const fullPath = path.resolve(dir, pattern);
+      if (!loadedFiles.has(fullPath) && fs.existsSync(fullPath)) {
+        dotenv.config({ path: fullPath });
+        loadedFiles.add(fullPath);
+      }
     }
   }
 }

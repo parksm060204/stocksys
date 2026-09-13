@@ -6,6 +6,8 @@ import {
   OrderRecord,
   TradeRecord,
   ProfileRecord,
+  StockPriceHistoryRecord,
+  GUEST_USER_ID,
 } from './memoryStore';
 
 type FilterOp = {
@@ -14,7 +16,7 @@ type FilterOp = {
   val: any;
 };
 
-class MemoryQueryBuilder {
+export class MemoryQueryBuilder {
   private tableName: string;
   private filters: FilterOp[] = [];
   private orderCol?: string;
@@ -123,14 +125,18 @@ class MemoryQueryBuilder {
       let targetList: any[] = [];
       const db = memoryDb;
 
-      // ── 1. 인덱스 기반 고속 스캔 (Index Scan Optimization) ──
+      // ── 1. 인덱스 기반 고속 스캔 ──
       const eqTicker = this.filters.find((f) => f.col === 'ticker' && f.op === 'eq')?.val;
       const eqUserId = this.filters.find((f) => (f.col === 'user_id' || f.col === 'userId') && f.op === 'eq')?.val;
       const eqStockId = this.filters.find((f) => (f.col === 'stock_id' || f.col === 'stockId') && f.op === 'eq')?.val;
+      const eqId = this.filters.find((f) => f.col === 'id' && f.op === 'eq')?.val;
 
       if (this.tableName === 'stocks' && eqTicker) {
         const stockId = db.tickerIndex.get(String(eqTicker).toUpperCase());
         const stock = stockId ? db.stocks.get(stockId) : undefined;
+        targetList = stock ? [stock] : [];
+      } else if (this.tableName === 'stocks' && eqId) {
+        const stock = db.stocks.get(String(eqId));
         targetList = stock ? [stock] : [];
       } else if (this.tableName === 'commodities' && eqTicker) {
         const commId = db.commodityTickerIndex.get(String(eqTicker).toUpperCase());
@@ -144,15 +150,19 @@ class MemoryQueryBuilder {
         targetList = orderIds ? Array.from(orderIds).map((id) => db.orders.get(id)).filter(Boolean) : [];
       } else if (this.tableName === 'trades' && eqStockId) {
         targetList = db.tradeStockIndex.get(String(eqStockId)) || [];
-      } else if (this.tableName === 'profiles' && eqUserId) {
-        const profId = db.profileUserIdIndex.get(String(eqUserId)) || String(eqUserId);
-        const profile = db.profiles.get(profId);
+      } else if (this.tableName === 'profiles' && (eqUserId || eqId)) {
+        const uid = String(eqUserId || eqId);
+        const profId = db.profileUserIdIndex.get(uid) || uid;
+        const profile = db.profiles.get(profId) || db.profiles.get(GUEST_USER_ID);
         targetList = profile ? [profile] : [];
       } else {
         // 인덱스가 없는 경우 기본 전체 테이블 스캔
         switch (this.tableName) {
           case 'stocks':
             targetList = Array.from(db.stocks.values());
+            break;
+          case 'stock_price_history':
+            targetList = [...db.stockPriceHistory];
             break;
           case 'commodities':
             targetList = Array.from(db.commodities.values());
@@ -175,6 +185,27 @@ class MemoryQueryBuilder {
           case 'bonds':
             targetList = Array.from(db.bonds.values());
             break;
+          case 'exchange_rates':
+            targetList = [...db.exchangeRates];
+            break;
+          case 'admin_settings':
+            targetList = Array.from(db.adminSettings.values());
+            break;
+          case 'institutional_portfolios':
+            targetList = Array.from(db.institutionalPortfolios.values());
+            break;
+          case 'player_events':
+            targetList = [...db.playerEvents];
+            break;
+          case 'active_player_events':
+            targetList = [...db.activePlayerEvents];
+            break;
+          case 'active_manipulations':
+            targetList = [...db.activeManipulations];
+            break;
+          case 'bots_config':
+            targetList = [...db.botsConfig];
+            break;
           case 'market_news':
           case 'news':
           case 'news_v2':
@@ -191,7 +222,7 @@ class MemoryQueryBuilder {
         }
       }
 
-      // ── 2. DML 연산 처리 (인덱스 동기화 포함) ──
+      // ── 2. DML 연산 처리 ──
       if (this.action === 'insert') {
         const items = Array.isArray(this.payloadData) ? this.payloadData : [this.payloadData];
         const insertedItems: any[] = [];
@@ -209,10 +240,12 @@ class MemoryQueryBuilder {
           } else if (this.tableName === 'holdings') {
             db.holdings.set(id, record as HoldingRecord);
             db.addHoldingToIndex(record as HoldingRecord);
-          } else if (this.tableName === 'option_settlements') {
-            db.optionSettlements.push(record);
-          } else if (this.tableName === 'bond_coupon_payments') {
-            db.bondCouponPayments.push(record);
+          } else if (this.tableName === 'stock_price_history') {
+            db.stockPriceHistory.push(record as StockPriceHistoryRecord);
+          } else if (this.tableName === 'active_player_events') {
+            db.activePlayerEvents.push(record);
+          } else if (this.tableName === 'active_manipulations') {
+            db.activeManipulations.push(record);
           } else if (this.tableName === 'market_news' || this.tableName === 'news' || this.tableName === 'news_v2') {
             db.marketNews.push(record);
           }
@@ -230,7 +263,7 @@ class MemoryQueryBuilder {
 
         for (const item of items) {
           if (this.tableName === 'stocks') {
-            const key = item.id || `stock_${item.ticker}`;
+            const key = item.id || db.tickerIndex.get(item.ticker?.toUpperCase()) || `stock_${item.ticker}`;
             const existing = db.stocks.get(key) || ({} as StockRecord);
             const merged = { ...existing, ...item, id: key } as StockRecord;
             db.stocks.set(key, merged);
@@ -246,113 +279,149 @@ class MemoryQueryBuilder {
             const rec = { ...item, id: key } as HoldingRecord;
             db.holdings.set(key, rec);
             db.addHoldingToIndex(rec);
+          } else if (this.tableName === 'institutional_portfolios') {
+            const key = item.bot_id || item.id;
+            db.institutionalPortfolios.set(key, item);
           }
         }
-        return { data: this.payloadData, error: null };
+        return { data: items, error: null };
       }
 
       if (this.action === 'update') {
-        targetList.forEach((item) => {
-          if (this.matchesFilters(item)) {
-            Object.assign(item, this.payloadData);
-          }
-        });
-        return { data: this.payloadData, error: null };
+        // 필터 조건에 매칭되는 레코드 수정
+        let matched = this.applyFilters(targetList);
+        for (const item of matched) {
+          Object.assign(item, this.payloadData);
+          db.publish(`${this.tableName}_changes`, { eventType: 'UPDATE', new: item });
+        }
+        return { data: matched, error: null };
       }
 
       if (this.action === 'delete') {
-        if (this.tableName === 'holdings') {
-          for (const [key, val] of db.holdings.entries()) {
-            if (this.matchesFilters(val)) {
-              db.removeHoldingFromIndex(val);
-              db.holdings.delete(key);
-            }
+        let matched = this.applyFilters(targetList);
+        for (const item of matched) {
+          if (this.tableName === 'orders') {
+            db.orders.delete(item.id);
+            db.removeOrderFromIndex(item as OrderRecord);
+          } else if (this.tableName === 'holdings') {
+            db.holdings.delete(item.id);
+            db.removeHoldingFromIndex(item as HoldingRecord);
           }
-        } else if (this.tableName === 'orders') {
-          for (const [key, val] of db.orders.entries()) {
-            if (this.matchesFilters(val)) {
-              db.removeOrderFromIndex(val);
-              db.orders.delete(key);
-            }
-          }
+          db.publish(`${this.tableName}_changes`, { eventType: 'DELETE', old: item });
         }
-        return { data: null, error: null };
+        return { data: matched, error: null };
       }
 
-      // ── 3. SELECT 필터링 ──
-      let filtered = targetList.filter((item) => this.matchesFilters(item));
+      // ── 3. SELECT 쿼리 필터링 & 정렬 ──
+      let result = this.applyFilters(targetList);
 
-      // ── 4. 정렬 ──
       if (this.orderCol) {
         const col = this.orderCol;
         const asc = this.orderAsc;
-        filtered.sort((a, b) => {
-          const va = a[col];
-          const vb = b[col];
-          if (va < vb) return asc ? -1 : 1;
-          if (va > vb) return asc ? 1 : -1;
-          return 0;
+        result.sort((a, b) => {
+          const valA = a[col];
+          const valB = b[col];
+          if (valA === valB) return 0;
+          if (valA === undefined || valA === null) return 1;
+          if (valB === undefined || valB === null) return -1;
+          if (typeof valA === 'number' && typeof valB === 'number') {
+            return asc ? valA - valB : valB - valA;
+          }
+          return asc ? String(valA).localeCompare(String(valB)) : String(valB).localeCompare(String(valA));
         });
       }
 
-      // ── 5. Limit 제한 ──
-      if (this.limitCount !== undefined) {
-        filtered = filtered.slice(0, this.limitCount);
+      if (this.limitCount !== undefined && this.limitCount >= 0) {
+        result = result.slice(0, this.limitCount);
       }
 
-      // ── 6. Single / MaybeSingle 반환 ──
+      // holdings 테이블의 경우 관계형 stocks 데이터 주입 지원
+      if (this.tableName === 'holdings') {
+        result = result.map((h) => {
+          const s = db.stocks.get(h.stock_id);
+          return {
+            ...h,
+            stocks: s ? { id: s.id, ticker: s.ticker, name: s.name, market: s.market, current_price: s.current_price } : null,
+          };
+        });
+      }
+
       if (this.isSingle) {
-        return { data: filtered[0] ?? null, error: filtered[0] ? null : { message: 'Row not found' } };
+        if (result.length === 0) {
+          if (this.tableName === 'profiles') {
+            const fallbackGuest = db.profiles.get(GUEST_USER_ID);
+            if (fallbackGuest) return { data: fallbackGuest, error: null };
+          }
+          return { data: null, error: { message: 'Row not found (PGRST116)' } };
+        }
+        return { data: result[0], error: null };
       }
+
       if (this.isMaybeSingle) {
-        return { data: filtered[0] ?? null, error: null };
+        if (result.length === 0 && this.tableName === 'profiles') {
+          return { data: db.profiles.get(GUEST_USER_ID) || null, error: null };
+        }
+        return { data: result.length > 0 ? result[0] : null, error: null };
       }
 
-      return { data: filtered, error: null };
-    } catch (e: any) {
-      return { data: null, error: { message: e?.message || 'In-memory error' } };
+      return { data: result, error: null };
+    } catch (err: any) {
+      console.error(`[MemoryQueryBuilder] Query error on ${this.tableName}:`, err);
+      return { data: null, error: { message: err?.message || String(err) } };
     }
   }
 
-  private matchesFilters(item: any): boolean {
-    for (const f of this.filters) {
-      const v = item[f.col];
-      if (f.op === 'eq' && v !== f.val) return false;
-      if (f.op === 'neq' && v === f.val) return false;
-      if (f.op === 'gt' && !(v > f.val)) return false;
-      if (f.op === 'gte' && !(v >= f.val)) return false;
-      if (f.op === 'lt' && !(v < f.val)) return false;
-      if (f.op === 'lte' && !(v <= f.val)) return false;
-      if (f.op === 'in' && Array.isArray(f.val) && !f.val.includes(v)) return false;
-    }
-    return true;
+  private applyFilters(list: any[]): any[] {
+    return list.filter((item) => {
+      for (const f of this.filters) {
+        const itemVal = item[f.col];
+        switch (f.op) {
+          case 'eq':
+            if (itemVal != f.val) return false;
+            break;
+          case 'neq':
+            if (itemVal == f.val) return false;
+            break;
+          case 'gt':
+            if (!(itemVal > f.val)) return false;
+            break;
+          case 'gte':
+            if (!(itemVal >= f.val)) return false;
+            break;
+          case 'lt':
+            if (!(itemVal < f.val)) return false;
+            break;
+          case 'lte':
+            if (!(itemVal <= f.val)) return false;
+            break;
+          case 'in':
+            if (!Array.isArray(f.val) || !f.val.includes(itemVal)) return false;
+            break;
+        }
+      }
+      return true;
+    });
   }
 
-  public then<TResult1 = any, TResult2 = never>(
-    onfulfilled?: ((value: { data: any; error: any }) => TResult1 | PromiseLike<TResult1>) | null,
-    onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | null
-  ): Promise<TResult1 | TResult2> {
+  public then(onfulfilled?: (value: any) => any, onrejected?: (reason: any) => any): Promise<any> {
     return this.execute().then(onfulfilled, onrejected);
   }
 }
 
 export class MockSupabaseClient {
-  public from(tableName: string): any {
+  public from(tableName: string): MemoryQueryBuilder {
     return new MemoryQueryBuilder(tableName);
   }
 
-  /**
-   * RPC 함수 실행 (updateAtomic 원자적 트랜잭션 보장)
-   */
-  public async rpc(fnName: string, params: any): Promise<{ data: any; error: any }> {
+  public async rpc(fnName: string, params?: any): Promise<{ data: any; error: any }> {
     const db = memoryDb;
-    if (fnName === 'increment_user_cash') {
-      const userId = params?.p_user_id || params?.user_id || 'guest_user';
+
+    if (fnName === 'update_cash_balance') {
+      const userId = params?.p_user_id || params?.user_id || GUEST_USER_ID;
       const delta = Number(params?.p_delta || params?.amount || 0);
 
-      // 원자적 잔고 업데이트 실행 (Race Condition 차단)
       const updatedProfile = await db.updateAtomic<ProfileRecord>(`profile:${userId}`, (prev) => {
-        const user = prev || db.profiles.get(userId) || db.profiles.get('guest_user');
+        const user = prev || db.profiles.get(userId) || db.profiles.get(GUEST_USER_ID);
         if (!user) {
           const newUser: ProfileRecord = {
             id: userId,
@@ -384,12 +453,14 @@ export class MockSupabaseClient {
         const buyerId = t.buyer_id;
         const sellerId = t.seller_id;
         const tradeAmount = Number(t.price) * Number(t.size);
+        const buyerFee = Number(t.buyer_fee ?? 0);
+        const sellerFee = Number(t.seller_fee ?? 0);
 
         if (!t.buyer_is_bot && buyerId) {
           const buyer = db.profiles.get(buyerId);
           if (buyer) {
-            buyer.cash -= tradeAmount;
-            buyer.net_worth -= tradeAmount;
+            buyer.cash -= tradeAmount * (1 + buyerFee);
+            buyer.net_worth -= tradeAmount * (1 + buyerFee);
           }
           const holdingId = `${buyerId}_${t.stock_id}`;
           let h = db.holdings.get(holdingId);
@@ -407,8 +478,8 @@ export class MockSupabaseClient {
         if (!t.seller_is_bot && sellerId) {
           const seller = db.profiles.get(sellerId);
           if (seller) {
-            seller.cash += tradeAmount;
-            seller.net_worth += tradeAmount;
+            seller.cash += tradeAmount * (1 - sellerFee);
+            seller.net_worth += tradeAmount * (1 - sellerFee);
           }
           const holdingId = `${sellerId}_${t.stock_id}`;
           let h = db.holdings.get(holdingId);
@@ -432,6 +503,8 @@ export class MockSupabaseClient {
           seller_is_bot: !!t.seller_is_bot,
           price: Number(t.price),
           size: Number(t.size),
+          buyer_fee: buyerFee,
+          seller_fee: sellerFee,
           created_at: t.created_at || new Date().toISOString(),
         });
         settledCount++;
@@ -440,13 +513,31 @@ export class MockSupabaseClient {
       return { data: { success: true, settled_count: settledCount }, error: null };
     }
 
+    if (fnName === 'trim_old_market_data') {
+      const maxTrades = Number(params?.p_max_trades || 5000);
+      const maxHistory = Number(params?.p_max_history || 3000);
+      let deletedTrades = 0;
+      let deletedHistory = 0;
+
+      if (db.trades.length > maxTrades) {
+        deletedTrades = db.trades.length - maxTrades;
+        db.trades = db.trades.slice(-maxTrades);
+      }
+      if (db.stockPriceHistory.length > maxHistory) {
+        deletedHistory = db.stockPriceHistory.length - maxHistory;
+        db.stockPriceHistory = db.stockPriceHistory.slice(-maxHistory);
+      }
+
+      return { data: { deleted_trades: deletedTrades, deleted_history: deletedHistory }, error: null };
+    }
+
     return { data: null, error: null };
   }
 
   public get auth(): any {
     return {
       getUser: async () => {
-        const user = memoryDb.profiles.get('guest_user');
+        const user = memoryDb.profiles.get(GUEST_USER_ID);
         return {
           data: {
             user: user
@@ -461,13 +552,13 @@ export class MockSupabaseClient {
           data: {
             session: {
               access_token: 'mock_token',
-              user: { id: 'guest_user', email: 'guest@stocksys.local' },
+              user: { id: GUEST_USER_ID, email: 'guest@stocksys.local' },
             },
           },
           error: null,
         };
       },
-      signInWithPassword: async () => ({ data: { user: { id: 'guest_user' } }, error: null }),
+      signInWithPassword: async () => ({ data: { user: { id: GUEST_USER_ID } }, error: null }),
       signOut: async () => ({ error: null }),
     };
   }

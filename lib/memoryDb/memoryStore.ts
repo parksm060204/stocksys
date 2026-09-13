@@ -1,5 +1,37 @@
 import { COMMODITY_DEFINITIONS } from '../commodities/definitions';
 
+// ── 고정 UUID 규격 (Production 스키마 완벽 호환) ──
+export const GUEST_USER_ID = '00000000-0000-4000-8000-000000000001';
+
+export const STOCK_UUID_MAP: Record<string, string> = {
+  '0010': '00000000-0000-4000-8000-000000000101', // 오성전자
+  '0015': '00000000-0000-4000-8000-000000000102', // 미래자동차
+  '0020': '00000000-0000-4000-8000-000000000103', // 에코에너지
+  '0025': '00000000-0000-4000-8000-000000000104', // NVC
+  '0030': '00000000-0000-4000-8000-000000000105', // KKA
+  '000660': '00000000-0000-4000-8000-000000000106', // SK하이닉스
+  '035420': '00000000-0000-4000-8000-000000000107', // NAVER
+  '035720': '00000000-0000-4000-8000-000000000108', // 카카오
+  '105560': '00000000-0000-4000-8000-000000000109', // KB금융
+  '068270': '00000000-0000-4000-8000-000000000110', // 셀트리온
+  '017670': '00000000-0000-4000-8000-000000000111', // SK텔레콤
+  '005930': '00000000-0000-4000-8000-000000000112', // 삼성전자
+  '005380': '00000000-0000-4000-8000-000000000113', // 현대차
+  'AAPL': '00000000-0000-4000-8000-000000000201', // 파인애플
+  'MSFT': '00000000-0000-4000-8000-000000000202', // 매크로소프트
+  'NVDA': '00000000-0000-4000-8000-000000000203', // 엔비디아스
+  'TSLA': '00000000-0000-4000-8000-000000000204', // 와트 모빌리티
+  'GOOGL': '00000000-0000-4000-8000-000000000205', // 구골
+  'ASML': '00000000-0000-4000-8000-000000000301', // ADML
+  'SAP': '00000000-0000-4000-8000-000000000302', // SAP 넥스트
+  'KODEX200': '00000000-0000-4000-8000-000000000401',
+  'KODEXLEV': '00000000-0000-4000-8000-000000000402',
+  'KODEXINV': '00000000-0000-4000-8000-000000000403',
+  'SPY': '00000000-0000-4000-8000-000000000404',
+  'QQQ': '00000000-0000-4000-8000-000000000405',
+  'TQQQ': '00000000-0000-4000-8000-000000000406',
+};
+
 export interface StockRecord {
   id: string;
   ticker: string;
@@ -16,6 +48,14 @@ export interface StockRecord {
   pe_ratio: number;
   dividend_yield: number;
   sector: string;
+  is_core?: boolean;
+}
+
+export interface StockPriceHistoryRecord {
+  id: string;
+  stock_id: string;
+  price: number;
+  recorded_at: string;
 }
 
 export interface CommodityRecord {
@@ -42,6 +82,13 @@ export interface ProfileRecord {
   cash: number;
   net_worth: number;
   rank_tier: string;
+  usd_balance?: number;
+  eur_balance?: number;
+  jpy_balance?: number;
+  cny_balance?: number;
+  gbp_balance?: number;
+  is_admin?: boolean;
+  unlocked_features?: string[];
   created_at: string;
 }
 
@@ -76,6 +123,8 @@ export interface TradeRecord {
   seller_is_bot: boolean;
   price: number;
   size: number;
+  buyer_fee?: number;
+  seller_fee?: number;
   created_at: string;
 }
 
@@ -130,6 +179,7 @@ export interface MarketNewsRecord {
 export class MemoryDatabase {
   // ── 1. 기본 엔티티 스토어 (Primary Maps) ──
   public stocks: Map<string, StockRecord> = new Map();
+  public stockPriceHistory: StockPriceHistoryRecord[] = [];
   public commodities: Map<string, CommodityRecord> = new Map();
   public profiles: Map<string, ProfileRecord> = new Map();
   public holdings: Map<string, HoldingRecord> = new Map();
@@ -139,6 +189,12 @@ export class MemoryDatabase {
   public bonds: Map<string, BondRecord> = new Map();
   public marketNews: MarketNewsRecord[] = [];
   public adminSettings: Map<string, any> = new Map();
+  public exchangeRates: any[] = [];
+  public institutionalPortfolios: Map<string, any> = new Map();
+  public playerEvents: any[] = [];
+  public activePlayerEvents: any[] = [];
+  public activeManipulations: any[] = [];
+  public botsConfig: any[] = [];
   public optionSettlements: any[] = [];
   public bondCouponPayments: any[] = [];
 
@@ -284,54 +340,85 @@ export class MemoryDatabase {
   }
 
   /**
-   * 기본 시드 데이터 로드
+   * 기본 시드 데이터 로드 (고정 UUID 규격 적용)
    */
   public seedDefaultData(): void {
-    const stockList: Partial<StockRecord>[] = [
-      { ticker: '005930', name: '삼성전자', market: 'KR', current_price: 74200, previous_close: 73500, sector: '반도체' },
-      { ticker: '000660', name: 'SK하이닉스', market: 'KR', current_price: 188500, previous_close: 185000, sector: '반도체' },
-      { ticker: '035420', name: 'NAVER', market: 'KR', current_price: 192000, previous_close: 194000, sector: '플랫폼' },
-      { ticker: '035720', name: '카카오', market: 'KR', current_price: 43500, previous_close: 43000, sector: '플랫폼' },
-      { ticker: '005380', name: '현대차', market: 'KR', current_price: 245000, previous_close: 242000, sector: '자동차' },
-      { ticker: '000270', name: '기아', market: 'KR', current_price: 118000, previous_close: 117500, sector: '자동차' },
-      { ticker: '051910', name: 'LG화학', market: 'KR', current_price: 360000, previous_close: 365000, sector: '화학/배터리' },
-      { ticker: '006400', name: '삼성SDI', market: 'KR', current_price: 380000, previous_close: 378000, sector: '2차전지' },
-      { ticker: '373220', name: 'LG에너지솔루션', market: 'KR', current_price: 395000, previous_close: 392000, sector: '2차전지' },
-      { ticker: '005490', name: 'POSCO홀딩스', market: 'KR', current_price: 375000, previous_close: 380000, sector: '철강/소재' },
-      { ticker: 'AAPL', name: 'Apple Inc.', market: 'US', current_price: 224.5, previous_close: 220.0, sector: '빅테크' },
-      { ticker: 'MSFT', name: 'Microsoft Corp.', market: 'US', current_price: 448.2, previous_close: 445.0, sector: '빅테크' },
-      { ticker: 'NVDA', name: 'NVIDIA Corp.', market: 'US', current_price: 128.5, previous_close: 125.0, sector: 'AI 반도체' },
-      { ticker: 'TSLA', name: 'Tesla Inc.', market: 'US', current_price: 215.8, previous_close: 210.0, sector: '전기차' },
-      { ticker: 'GOOGL', name: 'Alphabet Inc.', market: 'US', current_price: 182.4, previous_close: 180.0, sector: '빅테크' },
-      { ticker: 'AMZN', name: 'Amazon.com Inc.', market: 'US', current_price: 186.9, previous_close: 184.5, sector: '이커머스/클라우드' },
+    const stockList: { ticker: string; name: string; market: string; current_price: number; previous_close: number; sector: string; is_core?: boolean }[] = [
+      // 국내 주요 종목 (사용자 지정 종목 포함)
+      { ticker: '0010', name: '오성전자', market: 'domestic', current_price: 72000, previous_close: 71500, sector: '반도체', is_core: true },
+      { ticker: '0015', name: '미래자동차', market: 'domestic', current_price: 210000, previous_close: 209000, sector: '자동차', is_core: true },
+      { ticker: '0020', name: '에코에너지', market: 'domestic', current_price: 45000, previous_close: 44800, sector: '에너지', is_core: false },
+      { ticker: '0025', name: 'NVC', market: 'domestic', current_price: 185000, previous_close: 184500, sector: 'IT', is_core: false },
+      { ticker: '0030', name: 'KKA', market: 'domestic', current_price: 52000, previous_close: 51800, sector: '통신', is_core: false },
+      { ticker: '000660', name: 'SK하이닉스', market: 'domestic', current_price: 188500, previous_close: 185000, sector: '반도체', is_core: true },
+      { ticker: '035420', name: 'NAVER', market: 'domestic', current_price: 192000, previous_close: 194000, sector: '플랫폼', is_core: true },
+      { ticker: '035720', name: '카카오', market: 'domestic', current_price: 43500, previous_close: 43000, sector: '플랫폼', is_core: false },
+      { ticker: '105560', name: 'KB금융', market: 'domestic', current_price: 78000, previous_close: 77500, sector: '금융', is_core: true },
+      { ticker: '068270', name: '셀트리온', market: 'domestic', current_price: 182000, previous_close: 181000, sector: '바이오', is_core: true },
+      { ticker: '017670', name: 'SK텔레콤', market: 'domestic', current_price: 53000, previous_close: 52800, sector: '통신', is_core: false },
+      { ticker: '005930', name: '삼성전자', market: 'domestic', current_price: 74200, previous_close: 73500, sector: '반도체', is_core: true },
+      { ticker: '005380', name: '현대차', market: 'domestic', current_price: 245000, previous_close: 242000, sector: '자동차', is_core: true },
+      // 해외 종목 (미국)
+      { ticker: 'AAPL', name: '파인애플', market: 'overseas', current_price: 185.5, previous_close: 185.2, sector: 'IT', is_core: true },
+      { ticker: 'MSFT', name: '매크로소프트', market: 'overseas', current_price: 425.3, previous_close: 424.0, sector: '소프트웨어', is_core: true },
+      { ticker: 'NVDA', name: '엔비디아스', market: 'overseas', current_price: 875.2, previous_close: 870.5, sector: '반도체', is_core: true },
+      { ticker: 'TSLA', name: '와트 모빌리티', market: 'overseas', current_price: 248.5, previous_close: 247.8, sector: '자동차', is_core: false },
+      { ticker: 'GOOGL', name: '구골', market: 'overseas', current_price: 141.2, previous_close: 140.9, sector: 'IT', is_core: false },
+      // 유럽 종목
+      { ticker: 'ASML', name: 'ADML', market: 'europe', current_price: 705.4, previous_close: 703.2, sector: '반도체', is_core: true },
+      { ticker: 'SAP', name: 'SAP 넥스트', market: 'europe', current_price: 175.3, previous_close: 174.8, sector: '소프트웨어', is_core: false },
+      // ETF
+      { ticker: 'KODEX200', name: 'KODEX 200', market: 'etf', current_price: 35000, previous_close: 35000, sector: 'Index ETF', is_core: false },
+      { ticker: 'KODEXLEV', name: 'KODEX 레버리지', market: 'etf', current_price: 17000, previous_close: 17000, sector: 'Leverage ETF', is_core: false },
+      { ticker: 'KODEXINV', name: 'KODEX 인버스', market: 'etf', current_price: 4500, previous_close: 4500, sector: 'Inverse ETF', is_core: false },
+      { ticker: 'SPY', name: 'SPDR S&P 500', market: 'etf', current_price: 500.0, previous_close: 500.0, sector: 'Index ETF', is_core: false },
+      { ticker: 'QQQ', name: 'Invesco QQQ', market: 'etf', current_price: 430.0, previous_close: 430.0, sector: 'Index ETF', is_core: false },
+      { ticker: 'TQQQ', name: 'ProShares UltraPro QQQ', market: 'etf', current_price: 60.0, previous_close: 60.0, sector: 'Leverage ETF', is_core: false },
     ];
 
+    const now = Date.now();
+
     stockList.forEach((s, idx) => {
-      const id = `stock_${s.ticker}`;
-      const cp = s.current_price || 10000;
-      const pc = s.previous_close || cp;
+      // 고정 UUID 사용 (매핑 없으면 결정론적 UUID 생성)
+      const id = STOCK_UUID_MAP[s.ticker] || `00000000-0000-4000-8000-${(1000 + idx).toString().padStart(12, '0')}`;
+      const cp = s.current_price;
+      const pc = s.previous_close;
       const cr = parseFloat((((cp - pc) / pc) * 100).toFixed(2));
       const record: StockRecord = {
         id,
-        ticker: s.ticker || `TICK${idx}`,
-        name: s.name || `종목${idx}`,
-        market: s.market || 'KR',
+        ticker: s.ticker,
+        name: s.name,
+        market: s.market,
         current_price: cp,
         previous_close: pc,
         open_price: pc,
-        high_price: Math.max(cp, pc) * 1.02,
-        low_price: Math.min(cp, pc) * 0.98,
+        high_price: Math.max(cp, pc) * 1.015,
+        low_price: Math.min(cp, pc) * 0.985,
         volume: 154000 + idx * 12000,
         change_rate: cr,
-        market_cap: cp * 10000000,
+        market_cap: cp * (s.market === 'overseas' || s.market === 'europe' ? 2500000000 : 400000000),
         pe_ratio: 15.4,
         dividend_yield: 2.1,
-        sector: s.sector || '기타',
+        sector: s.sector,
+        is_core: s.is_core ?? false,
       };
       this.stocks.set(id, record);
       this.addStockToIndex(record);
+
+      // 초기 가격 이력 20건 생성
+      for (let h = 20; h >= 0; h--) {
+        const randJitter = (Math.sin(h * 0.5 + idx) * 0.008);
+        const p = Math.round(cp * (1 + randJitter));
+        this.stockPriceHistory.push({
+          id: `hist_${id}_${h}`,
+          stock_id: id,
+          price: p,
+          recorded_at: new Date(now - h * 60000).toISOString(),
+        });
+      }
     });
 
+    // ── 원자재 시드 ──
     COMMODITY_DEFINITIONS.forEach((c) => {
       const record: CommodityRecord = {
         id: c.id,
@@ -352,380 +439,227 @@ export class MemoryDatabase {
       this.addCommodityToIndex(record);
     });
 
+    // ── 채권 시드 ──
     const bondList: BondRecord[] = [
-      { id: 'bond_kr_3y', ticker: 'KR3Y', name: '국고채 3년물', bond_type: 'govt', maturity: '3Y', coupon_rate: 3.25, face_value: 10000, current_price: 10020, ytm: 3.2, duration: 2.8, volume: 15000 },
-      { id: 'bond_kr_10y', ticker: 'KR10Y', name: '국고채 10년물', bond_type: 'govt', maturity: '10Y', coupon_rate: 3.50, face_value: 10000, current_price: 9980, ytm: 3.52, duration: 8.5, volume: 8000 },
-      { id: 'bond_us_10y', ticker: 'US10Y', name: '미국채 10년물', bond_type: 'govt', maturity: '10Y', coupon_rate: 4.25, face_value: 10000, current_price: 10000, ytm: 4.25, duration: 8.2, volume: 24000 },
-      { id: 'bond_corp_aa', ticker: 'CORP_AA', name: '회사채 AA- 3년', bond_type: 'corp', maturity: '3Y', coupon_rate: 4.80, face_value: 10000, current_price: 10050, ytm: 4.75, duration: 2.7, volume: 5000 },
+      { id: 'bond_kr_2y', ticker: 'KR_GVT_2Y', name: '한국 국고채 2년', bond_type: 'govt', maturity: '2Y', coupon_rate: 3.25, face_value: 10000, current_price: 99.80, ytm: 3.35, duration: 1.92, volume: 15000 },
+      { id: 'bond_kr_5y', ticker: 'KR_GVT_5Y', name: '한국 국고채 5년', bond_type: 'govt', maturity: '5Y', coupon_rate: 3.50, face_value: 10000, current_price: 98.50, ytm: 3.75, duration: 4.55, volume: 12000 },
+      { id: 'bond_kr_10y', ticker: 'KR_GVT_10Y', name: '한국 국고채 10년', bond_type: 'govt', maturity: '10Y', coupon_rate: 3.75, face_value: 10000, current_price: 97.20, ytm: 4.05, duration: 8.40, volume: 8000 },
+      { id: 'bond_us_2y', ticker: 'US_GVT_2Y', name: '미국 국고채 2년', bond_type: 'govt', maturity: '2Y', coupon_rate: 4.75, face_value: 10000, current_price: 99.50, ytm: 4.80, duration: 1.94, volume: 24000 },
+      { id: 'bond_us_10y', ticker: 'US_GVT_10Y', name: '미국 국고채 10년', bond_type: 'govt', maturity: '10Y', coupon_rate: 4.25, face_value: 10000, current_price: 97.80, ytm: 4.35, duration: 8.25, volume: 28000 },
+      { id: 'bond_corp_ig', ticker: 'KR_CORP_IG', name: '한국 우량 회사채', bond_type: 'corp_ig', maturity: '3Y', coupon_rate: 4.10, face_value: 10000, current_price: 98.80, ytm: 4.35, duration: 2.78, volume: 5000 },
+      { id: 'bond_corp_hy', ticker: 'KR_CORP_HY', name: '한국 투기 회사채', bond_type: 'corp_hy', maturity: '3Y', coupon_rate: 7.25, face_value: 10000, current_price: 95.20, ytm: 7.85, duration: 2.62, volume: 3000 },
     ];
     bondList.forEach((b) => this.bonds.set(b.id, b));
 
+    // ── 옵션 계약 시드 ──
     const expDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
+    const osId = STOCK_UUID_MAP['0010'] || '00000000-0000-4000-8000-000000000101';
     const optList: OptionContractRecord[] = [
-      { id: 'opt_c_360', underlying_stock_id: 'stock_005930', ticker: 'C360', asset_class: 'STK', type: 'CALL', option_type: 'CALL', strike_price: 360, current_price: 12.5, expiry_date: expDate, open_interest: 450, volume: 120, delta: 0.65, gamma: 0.04, theta: -0.15, implied_volatility: 0.22, created_at: new Date().toISOString() },
-      { id: 'opt_p_360', underlying_stock_id: 'stock_005930', ticker: 'P360', asset_class: 'STK', type: 'PUT', option_type: 'PUT', strike_price: 360, current_price: 8.2, expiry_date: expDate, open_interest: 380, volume: 95, delta: -0.35, gamma: 0.04, theta: -0.12, implied_volatility: 0.21, created_at: new Date().toISOString() },
+      { id: 'opt_c_720', underlying_stock_id: osId, ticker: 'IDX-K200-2608-C260.0', asset_class: 'STK', type: 'CALL', option_type: 'CALL', strike_price: 72000, current_price: 2.15, expiry_date: expDate, open_interest: 450, volume: 120, delta: 0.65, gamma: 0.04, theta: -0.15, implied_volatility: 0.22, created_at: new Date().toISOString() },
+      { id: 'opt_p_720', underlying_stock_id: osId, ticker: 'IDX-K200-2608-P260.0', asset_class: 'STK', type: 'PUT', option_type: 'PUT', strike_price: 72000, current_price: 1.85, expiry_date: expDate, open_interest: 380, volume: 95, delta: -0.35, gamma: 0.04, theta: -0.12, implied_volatility: 0.21, created_at: new Date().toISOString() },
     ];
     optList.forEach((o) => this.optionsContracts.set(o.id, o));
 
+    // ── 환율 시드 ──
+    this.exchangeRates = [
+      { currency_code: 'KRW', currency_name: '대한민국 원', rate_to_krw: 1.0, updated_at: new Date().toISOString() },
+      { currency_code: 'USD', currency_name: '미국 달러', rate_to_krw: 1380.0, updated_at: new Date().toISOString() },
+      { currency_code: 'EUR', currency_name: '유로', rate_to_krw: 1500.0, updated_at: new Date().toISOString() },
+      { currency_code: 'JPY', currency_name: '일본 엔', rate_to_krw: 9.2, updated_at: new Date().toISOString() },
+      { currency_code: 'CNY', currency_name: '위안', rate_to_krw: 190.0, updated_at: new Date().toISOString() },
+      { currency_code: 'GBP', currency_name: '영국 파운드', rate_to_krw: 1750.0, updated_at: new Date().toISOString() },
+    ];
+
+    // ── 테스트 사용자 (고정 UUID 적용) ──
     const guestUser: ProfileRecord = {
-      id: 'guest_user',
-      user_id: 'guest_user',
+      id: GUEST_USER_ID,
+      user_id: GUEST_USER_ID,
       username: '서학개미',
       nickname: '서학개미',
-      cash: 100000000,
+      cash: 100000000, // 1억 원
       net_worth: 100000000,
       rank_tier: 'Diamond',
+      usd_balance: 50000,
+      eur_balance: 10000,
+      jpy_balance: 200000,
+      cny_balance: 0,
+      gbp_balance: 0,
+      is_admin: true,
+      unlocked_features: ['custom_dashboard', 'advanced_charts'],
       created_at: new Date().toISOString(),
     };
     this.profiles.set(guestUser.id, guestUser);
     this.addProfileToIndex(guestUser);
 
-    this.marketNews = [
-      {
-        id: 'news_1',
-        type: 'MACRO',
-        category: 'OFFICIAL',
-        publisher: '한국은행',
-        title: '기준금리 3.50% 동결 결정',
-        content: '금융통화위원회가 만장일치로 기준금리를 현행 3.50%로 유지하기로 결정했습니다.',
-        target_sector: 'ALL',
-        impact_score: 0.2,
-        is_fake: false,
-        created_at: new Date().toISOString(),
-      },
+    // ── 테스트 사용자의 초기 보유 주식 (Holdings) ──
+    const initialHoldings = [
+      { stockTicker: '0010', qty: 100, avgPrice: 70000 },
+      { stockTicker: '000660', qty: 50, avgPrice: 180000 },
+      { stockTicker: '035420', qty: 30, avgPrice: 190000 },
+      { stockTicker: 'AAPL', qty: 20, avgPrice: 180 },
     ];
 
-    this.adminSettings.set('macro_regime', {
-      regime: 'Normal',
-      interestRate: 3.5,
-      inflationRate: 2.4,
-      vix: 14.2,
-      updated_at: new Date().toISOString(),
+    let totalStockEval = 0;
+    initialHoldings.forEach((ih) => {
+      const sId = STOCK_UUID_MAP[ih.stockTicker];
+      if (sId) {
+        const hId = `${GUEST_USER_ID}_${sId}`;
+        const hRec: HoldingRecord = {
+          id: hId,
+          user_id: GUEST_USER_ID,
+          stock_id: sId,
+          quantity: ih.qty,
+          avg_price: ih.avgPrice,
+          created_at: new Date().toISOString(),
+        };
+        this.holdings.set(hId, hRec);
+        this.addHoldingToIndex(hRec);
+        totalStockEval += ih.qty * ih.avgPrice;
+      }
+    });
+    guestUser.net_worth = guestUser.cash + totalStockEval;
+
+    // ── 관리자 설정 ──
+    this.adminSettings.set('1', {
+      id: 1,
+      base_rate: 0.025,
+      market_sentiment: 'NEUTRAL',
     });
 
-    // ── 50개 기관 봇 LP 호가 및 실제 체결 시드 적재 ──
-    const bots = [
-      { id: 'bot_citadel', name: 'Citadel Quant' },
-      { id: 'bot_jane_street', name: 'Jane Street Desk' },
-      { id: 'bot_bridgewater', name: 'Bridgewater Hedge' },
-      { id: 'bot_nps', name: '국민연금기금' },
-      { id: 'bot_retail_swarm', name: 'Retail Swarm' },
-    ];
-
+    // ── 50개 기관 봇 LP 호가 및 초기 체결 적재 ──
     Array.from(this.stocks.values()).forEach((stk) => {
       const cp = stk.current_price;
       const tick = cp < 2000 ? 1 : cp < 5000 ? 5 : cp < 20000 ? 10 : cp < 50000 ? 50 : cp < 200000 ? 100 : 500;
-      
-      // 시총 및 주가 기반 현실적인 호가당 기본 물량 스케일 (삼성전자 등 대형주는 호가당 수만 주)
-      const baseVolMultiplier = cp >= 50000 ? 25000 : cp >= 10000 ? 8000 : 1500;
+      const baseVol = cp >= 50000 ? 2500 : cp >= 10000 ? 800 : 200;
 
-      // 매도 10호가 주문 적재 (벽 세우기 물량 포함)
-      for (let i = 1; i <= 10; i++) {
-        const orderId = `order_${stk.ticker}_ask_${i}_${Date.now()}`;
-        // 3, 5, 10호가 등에 대량의 기관 매도벽(Wall) 형성
-        const wallFactor = (i === 3 || i === 5 || i === 10) ? 2.4 : 1.0;
-        const depthQty = Math.floor((baseVolMultiplier * (0.8 + (i % 3) * 0.3) * wallFactor) + Math.floor(Math.random() * 800));
+      // 매수 호가 10단계 (가격 내림차순)
+      for (let level = 1; level <= 10; level++) {
+        const bidPrice = cp - level * tick;
+        if (bidPrice > 0) {
+          const oId = `lp_bid_${stk.id}_${level}_${now}`;
+          const ord: OrderRecord = {
+            id: oId,
+            stock_id: stk.id,
+            user_id: null,
+            side: 'buy',
+            price: bidPrice,
+            size: Math.round(baseVol * (1 + (10 - level) * 0.2)),
+            filled: 0,
+            status: 'open',
+            is_lp: true,
+            created_at: new Date(now - (11 - level) * 1000).toISOString(),
+          };
+          this.orders.set(oId, ord);
+          this.addOrderToIndex(ord);
+        }
+      }
 
-        const askOrder: OrderRecord = {
-          id: orderId,
+      // 매도 호가 10단계 (가격 오름차순)
+      for (let level = 1; level <= 10; level++) {
+        const askPrice = cp + level * tick;
+        const oId = `lp_ask_${stk.id}_${level}_${now}`;
+        const ord: OrderRecord = {
+          id: oId,
           stock_id: stk.id,
-          user_id: bots[i % bots.length]?.id ?? 'bot_lp',
+          user_id: null,
           side: 'sell',
-          price: cp + i * tick,
-          size: depthQty,
+          price: askPrice,
+          size: Math.round(baseVol * (1 + (10 - level) * 0.2)),
           filled: 0,
           status: 'open',
           is_lp: true,
-          created_at: new Date(Date.now() - (10 - i) * 60000).toISOString(),
+          created_at: new Date(now - (11 - level) * 1000).toISOString(),
         };
-        this.orders.set(orderId, askOrder);
-        this.addOrderToIndex(askOrder);
+        this.orders.set(oId, ord);
+        this.addOrderToIndex(ord);
       }
 
-      // 매수 10호가 주문 적재 (단단한 지지선 예약 매수벽 형성)
-      for (let i = 0; i < 10; i++) {
-        const orderId = `order_${stk.ticker}_bid_${i}_${Date.now()}`;
-        const wallFactor = (i === 2 || i === 4 || i === 9) ? 2.8 : 1.0;
-        const depthQty = Math.floor((baseVolMultiplier * (0.85 + (i % 3) * 0.35) * wallFactor) + Math.floor(Math.random() * 800));
-
-        const bidOrder: OrderRecord = {
-          id: orderId,
+      // 초기 체결 기록 5건
+      for (let t = 5; t >= 1; t--) {
+        const trId = `trade_${stk.id}_init_${t}`;
+        const trPrice = cp + (t % 2 === 0 ? tick : -tick);
+        const trSize = Math.round(baseVol * 0.2);
+        const tr: TradeRecord = {
+          id: trId,
           stock_id: stk.id,
-          user_id: bots[i % bots.length]?.id ?? 'bot_lp',
-          side: 'buy',
-          price: Math.max(tick, cp - i * tick),
-          size: depthQty,
-          filled: 0,
-          status: 'open',
-          is_lp: true,
-          created_at: new Date(Date.now() - (10 - i) * 60000).toISOString(),
-        };
-        this.orders.set(orderId, bidOrder);
-        this.addOrderToIndex(bidOrder);
-      }
-
-      // 과거 체결 내역 20건 적재
-      for (let i = 20; i >= 1; i--) {
-        const isBuy = Math.random() > 0.48;
-        const tPrice = cp + (isBuy ? (i % 2) * tick : -(i % 2) * tick);
-        const tradeRecord: TradeRecord = {
-          id: `trade_${stk.ticker}_${Date.now() - i * 4000}`,
-          stock_id: stk.id,
-          buyer_id: isBuy ? 'bot_citadel' : 'bot_retail_swarm',
-          seller_id: isBuy ? 'bot_jane_street' : 'bot_bridgewater',
+          buyer_id: null,
+          seller_id: null,
           buyer_is_bot: true,
           seller_is_bot: true,
-          price: tPrice,
-          size: Math.floor(50 + Math.random() * 450),
-          created_at: new Date(Date.now() - i * 4000).toISOString(),
+          price: trPrice,
+          size: trSize,
+          buyer_fee: 0.0025,
+          seller_fee: 0.0025,
+          created_at: new Date(now - t * 3000).toISOString(),
         };
-        this.trades.push(tradeRecord);
-        this.addTradeToIndex(tradeRecord);
+        this.trades.push(tr);
+        this.addTradeToIndex(tr);
       }
     });
-
-    // 백그라운드 봇 매칭 엔진 루프 시작
-    this.startContinuousMarketMatchingLoop();
   }
 
   /**
-   * 실시간 기관 봇 체결 및 오더북 매칭 루프 (3대 HFT 마이크로스트럭처 탑재)
+   * 개발자용 시장 리셋 (초기 시드 상태로 완전 복원)
    */
-  private startContinuousMarketMatchingLoop(): void {
-    if ((globalThis as any).__MEM_MATCHING_LOOP_STARTED__) return;
-    (globalThis as any).__MEM_MATCHING_LOOP_STARTED__ = true;
+  public resetToSeedData(): void {
+    this.stocks.clear();
+    this.stockPriceHistory = [];
+    this.commodities.clear();
+    this.profiles.clear();
+    this.holdings.clear();
+    this.orders.clear();
+    this.trades = [];
+    this.optionsContracts.clear();
+    this.bonds.clear();
+    this.marketNews = [];
+    this.adminSettings.clear();
+    this.exchangeRates = [];
+    this.institutionalPortfolios.clear();
 
-    // HFT 상태 추적 맵
-    const icebergState = new Map<string, { totalReserve: number; refillsCount: number }>();
-    const spoofOrders = new Map<string, { orderId: string; stockId: string; tickBorn: number }>();
-    let globalTick = 0;
-
-    setInterval(() => {
-      try {
-        globalTick += 1;
-        const stockList = Array.from(this.stocks.values());
-
-        // 🧠 Strategy 2-B: 만료된 허수 스푸핑 주문 0.1초 만에 전량 취소(Cancellation)
-        for (const [key, spoof] of Array.from(spoofOrders.entries())) {
-          if (globalTick - spoof.tickBorn >= 1) {
-            this.orders.delete(spoof.orderId);
-            spoofOrders.delete(key);
-          }
-        }
-
-        for (const stk of stockList) {
-          const cp = stk.current_price;
-          const tick = cp < 2000 ? 1 : cp < 5000 ? 5 : cp < 20000 ? 10 : cp < 50000 ? 50 : cp < 200000 ? 100 : 500;
-          const baseVolMultiplier = cp >= 50000 ? 25000 : cp >= 10000 ? 8000 : 1500;
-
-          // 🧠 Strategy 1: 빙산 주문(Iceberg Order) 교착 상태 관리
-          const icebergKey = `${stk.id}_iceberg`;
-          if (!icebergState.has(icebergKey)) {
-            icebergState.set(icebergKey, { totalReserve: baseVolMultiplier * 6, refillsCount: 0 });
-          }
-          const ibState = icebergState.get(icebergKey)!;
-
-          // 🧠 Strategy 3: 돌파(Breakout) 및 진공 스윕(Market Sweep) 여부 판별
-          const isBreakoutMoment = ibState.refillsCount >= 4 && Math.random() < 0.35;
-          let isBuy = Math.random() > 0.48;
-          let tradeQty = Math.floor(60 + Math.random() * 450);
-          let execPrice = cp;
-
-          if (isBreakoutMoment) {
-            // 🔥 돌파 발생! 매도벽이 뚫리며 텅 빈 호가창을 모멘텀 봇이 2~3틱 시장가로 쓸어버림 (Flash Spike)
-            isBuy = true;
-            execPrice = cp + tick * (Math.random() > 0.5 ? 2 : 1);
-            tradeQty = Math.floor(baseVolMultiplier * 0.4 + Math.random() * 3000);
-            ibState.refillsCount = 0;
-            ibState.totalReserve = baseVolMultiplier * 6;
-          } else {
-            // 일반 교착 틱 체결
-            execPrice = isBuy ? cp + (Math.random() > 0.8 ? tick : 0) : cp - (Math.random() > 0.8 ? tick : 0);
-          }
-
-          const trade: TradeRecord = {
-            id: `trade_${stk.ticker}_${Date.now()}`,
-            stock_id: stk.id,
-            buyer_id: isBuy ? (isBreakoutMoment ? 'bot_momentum_cta' : 'bot_citadel') : 'bot_retail',
-            seller_id: isBuy ? 'bot_jane_street' : 'bot_nps',
-            buyer_is_bot: true,
-            seller_is_bot: true,
-            price: execPrice,
-            size: tradeQty,
-            created_at: new Date().toISOString(),
-          };
-
-          this.trades.unshift(trade);
-          if (this.trades.length > 5000) this.trades.pop();
-          this.addTradeToIndex(trade);
-
-          // 2. 주식 현재가 & 거래량 업데이트
-          stk.current_price = execPrice;
-          stk.volume += tradeQty;
-          if (execPrice > stk.high_price) stk.high_price = execPrice;
-          if (execPrice < stk.low_price) stk.low_price = execPrice;
-
-          // 🧠 Strategy 2-A: 스푸핑 & 레이어링 (Spoofing Wall 설치)
-          if (Math.random() < 0.3) {
-            const isBullishSpoof = Math.random() > 0.5;
-            const spoofPrice = isBullishSpoof ? execPrice - 2 * tick : execPrice + 2 * tick;
-            const spoofOrderId = `order_spoof_${stk.ticker}_${Date.now()}`;
-            const spoofQty = Math.floor(baseVolMultiplier * 3.5 + Math.random() * 5000);
-
-            const spoofOrder: OrderRecord = {
-              id: spoofOrderId,
-              stock_id: stk.id,
-              user_id: 'bot_prop_desk',
-              side: isBullishSpoof ? 'buy' : 'sell',
-              price: spoofPrice,
-              size: spoofQty,
-              filled: 0,
-              status: 'open',
-              is_lp: true,
-              created_at: new Date().toISOString(),
-            };
-            this.orders.set(spoofOrderId, spoofOrder);
-            spoofOrders.set(spoofOrderId, { orderId: spoofOrderId, stockId: stk.id, tickBorn: globalTick });
-          }
-
-          // 3. 10단계 호가창 업데이트 (1자리수 현실 난수 유동성 & 1호가 Iceberg 리필 & 2~10호가 벽 고정)
-          for (let i = 1; i <= 10; i++) {
-            const askPrice = execPrice + i * tick;
-            const askOrderId = `order_${stk.ticker}_ask_${i}`;
-            let askOrder = this.orders.get(askOrderId);
-            const wallFactor = (i === 3 || i === 5 || i === 10) ? 2.4 : 1.0;
-            const seedOffset = ((askPrice * 9301 + 49297) % 873) + 127;
-            const targetQty = Math.floor(baseVolMultiplier * (0.8 + (i % 3) * 0.3) * wallFactor) + seedOffset;
-
-            if (!askOrder) {
-              askOrder = {
-                id: askOrderId,
-                stock_id: stk.id,
-                side: 'sell',
-                price: askPrice,
-                size: targetQty,
-                filled: 0,
-                status: 'open',
-                is_lp: true,
-                created_at: new Date().toISOString(),
-              };
-              this.orders.set(askOrderId, askOrder);
-              this.addOrderToIndex(askOrder);
-            } else {
-              askOrder.price = askPrice;
-              // 1호가: 체결 시 잔량 차감 및 Iceberg 무한 리필 (교착 상태)
-              if (isBuy && i === 1) {
-                askOrder.size = Math.max(10, askOrder.size - tradeQty);
-                if (askOrder.size < 1500 && ibState.totalReserve > 0) {
-                  // 연기금의 5,000주 단위 아이스버그 무한 리필 발동!
-                  const refillSlice = Math.min(ibState.totalReserve, Math.floor(targetQty * 0.8));
-                  askOrder.size += refillSlice;
-                  ibState.totalReserve -= refillSlice;
-                  ibState.refillsCount += 1;
-                }
-              }
-            }
-
-            const bidPrice = Math.max(tick, execPrice - (i - 1) * tick);
-            const bidOrderId = `order_${stk.ticker}_bid_${i}`;
-            let bidOrder = this.orders.get(bidOrderId);
-            const bidWallFactor = (i === 2 || i === 4 || i === 9) ? 2.8 : 1.0;
-            const bidSeedOffset = ((bidPrice * 7919 + 65537) % 891) + 109;
-            const bidTargetQty = Math.floor(baseVolMultiplier * (0.85 + (i % 3) * 0.35) * bidWallFactor) + bidSeedOffset;
-
-            if (!bidOrder) {
-              bidOrder = {
-                id: bidOrderId,
-                stock_id: stk.id,
-                side: 'buy',
-                price: bidPrice,
-                size: bidTargetQty,
-                filled: 0,
-                status: 'open',
-                is_lp: true,
-                created_at: new Date().toISOString(),
-              };
-              this.orders.set(bidOrderId, bidOrder);
-              this.addOrderToIndex(bidOrder);
-            } else {
-              bidOrder.price = bidPrice;
-              if (!isBuy && i === 1) {
-                bidOrder.size = Math.max(10, bidOrder.size - tradeQty);
-                if (bidOrder.size < 1500 && ibState.totalReserve > 0) {
-                  const refillSlice = Math.min(ibState.totalReserve, Math.floor(bidTargetQty * 0.8));
-                  bidOrder.size += refillSlice;
-                  ibState.totalReserve -= refillSlice;
-                  ibState.refillsCount += 1;
-                }
-              }
-            }
-          }
-        }
-      } catch {}
-    }, 1500);
+    this.seedDefaultData();
+    this.rebuildIndexes();
+    console.log('🔄 [MemoryDB] Market state successfully reset to initial seed data.');
+    this.publish('market_reset', { timestamp: Date.now() });
   }
 
-  // ── 5. 스냅샷 내보내기 & 불러오기 ──
-  public exportSnapshot(): Record<string, any> {
+  public exportSnapshot(): any {
     return {
-      stocks: Array.from(this.stocks.values()),
-      commodities: Array.from(this.commodities.values()),
-      profiles: Array.from(this.profiles.values()),
-      holdings: Array.from(this.holdings.values()),
-      orders: Array.from(this.orders.values()),
+      stocks: Array.from(this.stocks.entries()),
+      stockPriceHistory: [...this.stockPriceHistory],
+      commodities: Array.from(this.commodities.entries()),
+      profiles: Array.from(this.profiles.entries()),
+      holdings: Array.from(this.holdings.entries()),
+      orders: Array.from(this.orders.entries()),
       trades: [...this.trades],
-      optionsContracts: Array.from(this.optionsContracts.values()),
-      bonds: Array.from(this.bonds.values()),
+      optionsContracts: Array.from(this.optionsContracts.entries()),
+      bonds: Array.from(this.bonds.entries()),
       marketNews: [...this.marketNews],
       adminSettings: Array.from(this.adminSettings.entries()),
-      optionSettlements: [...this.optionSettlements],
-      bondCouponPayments: [...this.bondCouponPayments],
+      exchangeRates: [...this.exchangeRates],
+      institutionalPortfolios: Array.from(this.institutionalPortfolios.entries()),
       timestamp: Date.now(),
     };
   }
 
-  public importSnapshot(data: Record<string, any>): void {
+  public importSnapshot(data: any): void {
     if (!data) return;
-
-    if (Array.isArray(data.stocks)) {
-      this.stocks.clear();
-      data.stocks.forEach((s: StockRecord) => this.stocks.set(s.id, s));
-    }
-    if (Array.isArray(data.commodities)) {
-      this.commodities.clear();
-      data.commodities.forEach((c: CommodityRecord) => this.commodities.set(c.id, c));
-    }
-    if (Array.isArray(data.profiles)) {
-      this.profiles.clear();
-      data.profiles.forEach((p: ProfileRecord) => this.profiles.set(p.id, p));
-    }
-    if (Array.isArray(data.holdings)) {
-      this.holdings.clear();
-      data.holdings.forEach((h: HoldingRecord) => this.holdings.set(h.id, h));
-    }
-    if (Array.isArray(data.orders)) {
-      this.orders.clear();
-      data.orders.forEach((o: OrderRecord) => this.orders.set(o.id, o));
-    }
-    if (Array.isArray(data.trades)) {
-      this.trades = [...data.trades];
-    }
-    if (Array.isArray(data.bonds)) {
-      this.bonds.clear();
-      data.bonds.forEach((b: BondRecord) => this.bonds.set(b.id, b));
-    }
-    if (Array.isArray(data.optionsContracts)) {
-      this.optionsContracts.clear();
-      data.optionsContracts.forEach((o: OptionContractRecord) => this.optionsContracts.set(o.id, o));
-    }
-    if (Array.isArray(data.marketNews)) {
-      this.marketNews = [...data.marketNews];
-    }
-
+    if (Array.isArray(data.stocks)) this.stocks = new Map(data.stocks);
+    if (Array.isArray(data.stockPriceHistory)) this.stockPriceHistory = [...data.stockPriceHistory];
+    if (Array.isArray(data.commodities)) this.commodities = new Map(data.commodities);
+    if (Array.isArray(data.profiles)) this.profiles = new Map(data.profiles);
+    if (Array.isArray(data.holdings)) this.holdings = new Map(data.holdings);
+    if (Array.isArray(data.orders)) this.orders = new Map(data.orders);
+    if (Array.isArray(data.trades)) this.trades = [...data.trades];
+    if (Array.isArray(data.optionsContracts)) this.optionsContracts = new Map(data.optionsContracts);
+    if (Array.isArray(data.bonds)) this.bonds = new Map(data.bonds);
+    if (Array.isArray(data.marketNews)) this.marketNews = [...data.marketNews];
+    if (Array.isArray(data.adminSettings)) this.adminSettings = new Map(data.adminSettings);
+    if (Array.isArray(data.exchangeRates)) this.exchangeRates = [...data.exchangeRates];
+    if (Array.isArray(data.institutionalPortfolios)) this.institutionalPortfolios = new Map(data.institutionalPortfolios);
     this.rebuildIndexes();
   }
 
-  // ── 6. Pub/Sub 리스너 ──
+  // ── Pub/Sub 리스너 ──
   public subscribe(channel: string, callback: (payload: any) => void): () => void {
     if (!this.listeners.has(channel)) {
       this.listeners.set(channel, new Set());
@@ -766,4 +700,14 @@ export class MemoryDatabase {
   }
 }
 
-export const memoryDb = new MemoryDatabase();
+// ── Node.js globalThis 싱글톤 보장 (Next.js HMR 중복 인스턴스화 차단) ──
+const globalForMemoryDb = globalThis as unknown as {
+  __STOCKSYS_MEMORY_DB__?: MemoryDatabase;
+};
+
+export const memoryDb: MemoryDatabase =
+  globalForMemoryDb.__STOCKSYS_MEMORY_DB__ ?? new MemoryDatabase();
+
+if (process.env.NODE_ENV !== 'production') {
+  globalForMemoryDb.__STOCKSYS_MEMORY_DB__ = memoryDb;
+}

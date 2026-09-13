@@ -25,6 +25,7 @@ export const metadata: Metadata = {
 
 import { ToastProvider } from "./components/ToastProvider";
 import TradeNotifier from "./components/TradeNotifier";
+import LocalDevBanner from "./components/LocalDevBanner";
 
 export default function RootLayout({
   children,
@@ -44,6 +45,7 @@ export default function RootLayout({
               <AppShell>{children}</AppShell>
               <TradeNotifier />
               <RandomEventModal />
+              <LocalDevBanner />
             </ToastProvider>
           </AuthProvider>
         </ThemeProvider>

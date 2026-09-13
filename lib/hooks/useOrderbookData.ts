@@ -8,6 +8,7 @@ import {
 } from './useStockBotSimulation';
 
 import { createClient } from '@/lib/supabase/client';
+import { isLocalStandaloneMode } from '@/lib/engine/localDevMode';
 
 // ─── DB 행 타입 ──────────────────────────────────────────────────────────────
 interface DBOrder {
@@ -35,6 +36,8 @@ interface DBTrade {
 export interface OrderbookLevel {
   price: number;
   totalSize: number;
+  isSynthetic?: boolean;
+  actualDbSize?: number;
 }
 
 export interface TradeRecord {
@@ -51,7 +54,7 @@ interface UseOrderbookDataResult {
   asks: OrderbookLevel[];
   trades: TradeRecord[];
   price: number;
-  source: 'db' | 'simulation';
+  source: 'db' | 'hybrid' | 'simulation';
 }
 
 // ─── 틱 사이즈 (중복 정의 방지용 re-export) ─────────────────────────────────
@@ -218,6 +221,8 @@ export function useOrderbookData(
         }
       }
 
+      const isLocal = isLocalStandaloneMode();
+
       // 매도 10호가
       const newAsks: OrderbookLevel[] = [];
       for (let i = 1; i <= 10; i++) {
@@ -225,7 +230,7 @@ export function useOrderbookData(
         const dbVol = askMap.get(p) ?? 0;
 
         let size = dbVol;
-        if (size <= 0) {
+        if (size <= 0 && !isLocal) {
           if (!wallCache.has(p)) {
             const wallFactor = (i === 3 || i === 5 || i === 10) ? 2.4 : 1.0;
             const seedOffset = Math.floor(((p * 9301 + 49297) % 233280) / 233280 * 873) + 127;
@@ -233,14 +238,16 @@ export function useOrderbookData(
             wallCache.set(p, generated);
           }
           size = wallCache.get(p)!;
-        } else {
+        } else if (size > 0) {
           // DB 실제 주문이 있으면 캐시도 업데이트
           wallCache.set(p, size);
         }
 
         newAsks.push({
           price: p,
-          totalSize: Math.max(10, Math.round(size)),
+          totalSize: Math.max(0, Math.round(size)),
+          isSynthetic: !isLocal && dbVol <= 0,
+          actualDbSize: dbVol,
         });
       }
       newAsks.sort((a, b) => a.price - b.price);
@@ -252,7 +259,7 @@ export function useOrderbookData(
         const dbVol = bidMap.get(p) ?? 0;
 
         let size = dbVol;
-        if (size <= 0) {
+        if (size <= 0 && !isLocal) {
           if (!wallCache.has(p)) {
             const bidWallFactor = (i === 2 || i === 4 || i === 9) ? 2.8 : 1.0;
             const seedOffset = Math.floor(((p * 7919 + 65537) % 233280) / 233280 * 891) + 109;
@@ -260,13 +267,15 @@ export function useOrderbookData(
             wallCache.set(p, generated);
           }
           size = wallCache.get(p)!;
-        } else {
+        } else if (size > 0) {
           wallCache.set(p, size);
         }
 
         newBids.push({
           price: p,
-          totalSize: Math.max(10, Math.round(size)),
+          totalSize: Math.max(0, Math.round(size)),
+          isSynthetic: !isLocal && dbVol <= 0,
+          actualDbSize: dbVol,
         });
       }
       newBids.sort((a, b) => b.price - a.price);
@@ -319,8 +328,19 @@ export function useOrderbookData(
     return () => clearInterval(id);
   }, [fetchFromDB, intervalMs, stockId]);
 
-  // 100% DB 데이터 반환 (가상 시뮬레이션 데이터 차단)
-  return { bids, asks, trades, price, source: 'db' };
+  // 실제 DB 호가와 합성(Synthetic) 호가 비중에 따른 투명한 source 산출
+  const totalLevels = bids.length + asks.length;
+  const syntheticCount = [...bids, ...asks].filter((l) => l.isSynthetic).length;
+  const source: 'db' | 'hybrid' | 'simulation' =
+    totalLevels === 0
+      ? 'db'
+      : syntheticCount === 0
+      ? 'db'
+      : syntheticCount === totalLevels
+      ? 'simulation'
+      : 'hybrid';
+
+  return { bids, asks, trades, price, source };
 }
 
 // ─── 시뮬레이션 시뮬레이션 결과를 SimOrderbookLevel 호환성 유지 ──────────────────

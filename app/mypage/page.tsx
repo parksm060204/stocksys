@@ -3,14 +3,21 @@ import { fmtPrice } from "@/lib/format";
 import { createClient } from "@/lib/supabase/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
+import { isLocalStandaloneMode } from "@/lib/engine/localDevMode";
+import { GUEST_USER_ID } from "@/lib/memoryDb/memoryStore";
 
 export const revalidate = 0; // Disable static caching to fetch live user data
 
 export default async function MyPage() {
   const session = await getServerSession(authOptions);
 
-  // 1. 비로그인 상태일 경우: 마이페이지 데이터 렌더링을 완전 차단하고 로그인 안내 표시
-  if (!session?.user) {
+  let userId = session?.user?.id;
+  if (!userId && isLocalStandaloneMode()) {
+    userId = GUEST_USER_ID;
+  }
+
+  // 1. 비로그인 상태일 경우 (로컬 모드가 아닐 때): 마이페이지 데이터 렌더링을 차단하고 로그인 안내 표시
+  if (!userId) {
     return (
       <div className="mx-auto max-w-2xl px-6 py-20 text-center font-sans">
         <div className="rounded-2xl border border-border bg-[#141721] p-10 space-y-4 shadow-xl">
@@ -32,8 +39,7 @@ export default async function MyPage() {
     );
   }
 
-  // 2. 로그인된 상태: 해당 사용자의 실제 DB 프로필 및 보유 자산 조회
-  const userId = session.user.id;
+  // 2. 로그인 또는 로컬 게스트 상태: 해당 사용자의 실제 DB 프로필 및 보유 자산 조회
   const supabase = await createClient();
 
   const [{ data: profile }, { data: holdingsData }, { data: ratesData }] = await Promise.all([
@@ -113,7 +119,7 @@ export default async function MyPage() {
             마이페이지 & 포트폴리오
           </h1>
           <p className="text-[12.5px] text-[#8E939D] mt-1 font-medium">
-            {session.user.name || session.user.email} 님의 실시간 자산 및 보유 외화 지갑 현황입니다.
+            {(session?.user?.name || session?.user?.email || '서학개미')} 님의 실시간 자산 및 보유 외화 지갑 현황입니다.
           </p>
         </div>
       </div>

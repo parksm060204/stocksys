@@ -3,6 +3,7 @@ import { scenarioManager } from '@/lib/scenario/ScenarioManager';
 import { commodityEngineInstance } from '@/app/api/commodities/route';
 import { createMemoryDbClient } from '@/lib/memoryDb/memoryDbClient';
 import { verifyAdminSession } from '@/lib/auth/adminAuth';
+import { getLocalStandaloneEngine } from '@/lib/engine/localStandaloneServer';
 
 export async function GET(req: Request) {
   const auth = await verifyAdminSession(req);
@@ -13,6 +14,8 @@ export async function GET(req: Request) {
   const activeScenarios = scenarioManager.getActiveScenarios();
   const activeMacroShocks = scenarioManager.getActiveMacroShocks();
   const logs = scenarioManager.getActionLogs();
+  const engine = getLocalStandaloneEngine();
+  const diagnostics = engine ? engine.agentManager.diagnostics.generateSummaryReport() : null;
 
   return NextResponse.json({
     success: true,
@@ -20,6 +23,7 @@ export async function GET(req: Request) {
     activeScenarios,
     activeMacroShocks,
     logs,
+    diagnostics,
   });
 }
 
@@ -101,6 +105,17 @@ export async function POST(req: Request) {
     if (action === 'emergency_halt') {
       const result = scenarioManager.emergencyHaltAll(adminUser);
       return NextResponse.json({ success: true, result });
+    }
+
+    // 5. 구조화된 시장 뉴스 이벤트 주입
+    if (action === 'inject_news_event') {
+      const { event } = body;
+      const engine = getLocalStandaloneEngine();
+      if (!engine) {
+        return NextResponse.json({ success: false, message: '엔진이 기동되지 않았습니다.' }, { status: 503 });
+      }
+      const accepted = engine.agentManager.publishEvent(event);
+      return NextResponse.json({ success: accepted, eventId: event?.eventId });
     }
 
     return NextResponse.json({ success: false, message: '유효하지 않은 액션입니다.' }, { status: 400 });

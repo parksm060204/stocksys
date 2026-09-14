@@ -33,8 +33,15 @@ export function evaluateTrendStrategy(
 
   const rollingReturn = (currentPrice - pastPrice) / pastPrice;
 
-  // 3. Normalize trend signal using tanh
-  const normTrend = Math.tanh(rollingReturn / config.trendScale);
+  // 3. Incorporate price return + taker signed order flow into trend signal
+  let flowSignal = 0;
+  if (obs.windowStats && obs.windowStats.volume > 0) {
+    flowSignal = Math.tanh(obs.windowStats.signedFlow / Math.max(10, obs.windowStats.volume * 0.5));
+  }
+
+  // Combined momentum: 70% price return + 30% signed taker order flow
+  const rawSignal = 0.70 * Math.tanh(rollingReturn / config.trendScale) + 0.30 * flowSignal;
+  const normTrend = Math.tanh(rawSignal);
 
   // 4. Threshold check
   if (Math.abs(normTrend) < Math.min(Math.abs(config.buyThreshold), Math.abs(config.sellThreshold))) {

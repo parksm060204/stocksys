@@ -49,6 +49,16 @@ export interface StockRecord {
   dividend_yield: number;
   sector: string;
   is_core?: boolean;
+  // 구조적 유동성 & 메타데이터 (하위 호환 및 fallback 지원)
+  shares_outstanding?: number;     // 총 발행주식 수
+  floating_shares?: number;        // 유통주식 수
+  sector_id?: string;              // 정규화된 섹터 ID ('semiconductor' | 'auto' | 'energy' | 'it' | 'telecom' | 'finance' | 'bio' | 'index')
+  theme_ids?: string[];            // 테마 태그 목록 (예: ['ai', 'tech'])
+  base_liquidity?: number;         // 평상시 유동성 등급 (0.0 ~ 1.0)
+  base_spread_bps?: number;        // 평상시 기준 스프레드 (basis points, e.g. 10 = 0.10%)
+  base_depth_shares?: number;      // 평상시 레벨당 기본 호가 깊이 (shares)
+  institutional_fit?: number;      // 기관 투자 적합도 (0.0 ~ 1.0)
+  macro_exposure?: Record<string, number>; // 거시 변수 노출도 (e.g. { interest_rate: -0.3, growth: 1.0 })
   // 하위 호환용 optional alias
   high_price?: number;
   low_price?: number;
@@ -356,37 +366,55 @@ export class MemoryDatabase {
    * 기본 시드 데이터 로드 (고정 UUID 규격 적용)
    */
   public seedDefaultData(): void {
-    const stockList: { ticker: string; name: string; market: string; current_price: number; previous_close: number; sector: string; is_core?: boolean }[] = [
-      // 국내 주요 종목 (사용자 지정 종목 포함)
-      { ticker: '0010', name: '오성전자', market: 'domestic', current_price: 72000, previous_close: 71500, sector: '반도체', is_core: true },
-      { ticker: '0015', name: '미래자동차', market: 'domestic', current_price: 210000, previous_close: 209000, sector: '자동차', is_core: true },
-      { ticker: '0020', name: '에코에너지', market: 'domestic', current_price: 45000, previous_close: 44800, sector: '에너지', is_core: false },
-      { ticker: '0025', name: 'NVC', market: 'domestic', current_price: 185000, previous_close: 184500, sector: 'IT', is_core: false },
-      { ticker: '0030', name: 'KKA', market: 'domestic', current_price: 52000, previous_close: 51800, sector: '통신', is_core: false },
-      { ticker: '000660', name: 'SK하이닉스', market: 'domestic', current_price: 188500, previous_close: 185000, sector: '반도체', is_core: true },
-      { ticker: '035420', name: 'NAVER', market: 'domestic', current_price: 192000, previous_close: 194000, sector: '플랫폼', is_core: true },
-      { ticker: '035720', name: '카카오', market: 'domestic', current_price: 43500, previous_close: 43000, sector: '플랫폼', is_core: false },
-      { ticker: '105560', name: 'KB금융', market: 'domestic', current_price: 78000, previous_close: 77500, sector: '금융', is_core: true },
-      { ticker: '068270', name: '셀트리온', market: 'domestic', current_price: 182000, previous_close: 181000, sector: '바이오', is_core: true },
-      { ticker: '017670', name: 'SK텔레콤', market: 'domestic', current_price: 53000, previous_close: 52800, sector: '통신', is_core: false },
-      { ticker: '005930', name: '삼성전자', market: 'domestic', current_price: 74200, previous_close: 73500, sector: '반도체', is_core: true },
-      { ticker: '005380', name: '현대차', market: 'domestic', current_price: 245000, previous_close: 242000, sector: '자동차', is_core: true },
+    // 가상 금융 시장 시뮬레이션 종목 메타데이터 (단일 권위: market_cap = current_price * shares_outstanding)
+    const stockList: {
+      ticker: string;
+      name: string;
+      market: string;
+      current_price: number;
+      previous_close: number;
+      sector: string;
+      sector_id: string;
+      theme_ids: string[];
+      is_core?: boolean;
+      shares_outstanding: number;
+      floating_shares: number;
+      base_liquidity: number;
+      base_spread_bps: number;
+      base_depth_shares: number;
+      institutional_fit: number;
+      macro_exposure: Record<string, number>;
+    }[] = [
+      // 국내 주요 종목
+      { ticker: '0010', name: '오성전자', market: 'domestic', current_price: 72000, previous_close: 71500, sector: '반도체', sector_id: 'semiconductor', theme_ids: ['tech', 'ai', 'hardware'], is_core: true, shares_outstanding: 5969000000, floating_shares: 4500000000, base_liquidity: 0.95, base_spread_bps: 10, base_depth_shares: 1000, institutional_fit: 0.95, macro_exposure: { interest_rate: -0.3, growth: 1.2 } },
+      { ticker: '0015', name: '미래자동차', market: 'domestic', current_price: 210000, previous_close: 209000, sector: '자동차', sector_id: 'auto', theme_ids: ['mobility', 'ev'], is_core: true, shares_outstanding: 213000000, floating_shares: 150000000, base_liquidity: 0.85, base_spread_bps: 15, base_depth_shares: 400, institutional_fit: 0.85, macro_exposure: { interest_rate: -0.5, growth: 0.9 } },
+      { ticker: '0020', name: '에코에너지', market: 'domestic', current_price: 45000, previous_close: 44800, sector: '에너지', sector_id: 'energy', theme_ids: ['renewables', 'green'], is_core: false, shares_outstanding: 50000000, floating_shares: 25000000, base_liquidity: 0.30, base_spread_bps: 50, base_depth_shares: 100, institutional_fit: 0.30, macro_exposure: { oil_price: 1.2, interest_rate: -0.8 } },
+      { ticker: '0025', name: 'NVC', market: 'domestic', current_price: 185000, previous_close: 184500, sector: 'IT', sector_id: 'it', theme_ids: ['cloud', 'software'], is_core: false, shares_outstanding: 80000000, floating_shares: 50000000, base_liquidity: 0.50, base_spread_bps: 35, base_depth_shares: 150, institutional_fit: 0.50, macro_exposure: { interest_rate: -0.6, growth: 1.1 } },
+      { ticker: '0030', name: 'KKA', market: 'domestic', current_price: 52000, previous_close: 51800, sector: '통신', sector_id: 'telecom', theme_ids: ['telecom', 'infrastructure'], is_core: false, shares_outstanding: 120000000, floating_shares: 80000000, base_liquidity: 0.60, base_spread_bps: 25, base_depth_shares: 300, institutional_fit: 0.65, macro_exposure: { interest_rate: -0.2, defensive: 1.0 } },
+      { ticker: '000660', name: 'SK하이닉스', market: 'domestic', current_price: 188500, previous_close: 185000, sector: '반도체', sector_id: 'semiconductor', theme_ids: ['tech', 'ai', 'semiconductor'], is_core: true, shares_outstanding: 728000000, floating_shares: 550000000, base_liquidity: 0.90, base_spread_bps: 12, base_depth_shares: 800, institutional_fit: 0.90, macro_exposure: { interest_rate: -0.3, tech_cycle: 1.3 } },
+      { ticker: '035420', name: 'NAVER', market: 'domestic', current_price: 192000, previous_close: 194000, sector: '플랫폼', sector_id: 'it', theme_ids: ['platform', 'ai'], is_core: true, shares_outstanding: 164000000, floating_shares: 120000000, base_liquidity: 0.80, base_spread_bps: 18, base_depth_shares: 350, institutional_fit: 0.85, macro_exposure: { interest_rate: -0.5, growth: 1.0 } },
+      { ticker: '035720', name: '카카오', market: 'domestic', current_price: 43500, previous_close: 43000, sector: '플랫폼', sector_id: 'it', theme_ids: ['platform', 'fintech'], is_core: false, shares_outstanding: 445000000, floating_shares: 300000000, base_liquidity: 0.70, base_spread_bps: 22, base_depth_shares: 400, institutional_fit: 0.70, macro_exposure: { interest_rate: -0.7, growth: 0.9 } },
+      { ticker: '105560', name: 'KB금융', market: 'domestic', current_price: 78000, previous_close: 77500, sector: '금융', sector_id: 'finance', theme_ids: ['banking', 'dividend'], is_core: true, shares_outstanding: 403000000, floating_shares: 320000000, base_liquidity: 0.85, base_spread_bps: 15, base_depth_shares: 600, institutional_fit: 0.90, macro_exposure: { interest_rate: 0.8, defensive: 0.7 } },
+      { ticker: '068270', name: '셀트리온', market: 'domestic', current_price: 182000, previous_close: 181000, sector: '바이오', sector_id: 'bio', theme_ids: ['healthcare', 'biosimilar'], is_core: true, shares_outstanding: 216000000, floating_shares: 160000000, base_liquidity: 0.75, base_spread_bps: 20, base_depth_shares: 300, institutional_fit: 0.75, macro_exposure: { interest_rate: -0.6, growth: 1.2 } },
+      { ticker: '017670', name: 'SK텔레콤', market: 'domestic', current_price: 53000, previous_close: 52800, sector: '통신', sector_id: 'telecom', theme_ids: ['telecom', 'dividend'], is_core: false, shares_outstanding: 218000000, floating_shares: 150000000, base_liquidity: 0.65, base_spread_bps: 20, base_depth_shares: 450, institutional_fit: 0.75, macro_exposure: { interest_rate: -0.1, defensive: 1.1 } },
+      { ticker: '005930', name: '삼성전자', market: 'domestic', current_price: 74200, previous_close: 73500, sector: '반도체', sector_id: 'semiconductor', theme_ids: ['tech', 'ai', 'hardware'], is_core: true, shares_outstanding: 5969000000, floating_shares: 4500000000, base_liquidity: 0.95, base_spread_bps: 10, base_depth_shares: 1000, institutional_fit: 0.95, macro_exposure: { interest_rate: -0.3, growth: 1.2 } },
+      { ticker: '005380', name: '현대차', market: 'domestic', current_price: 245000, previous_close: 242000, sector: '자동차', sector_id: 'auto', theme_ids: ['mobility', 'ev'], is_core: true, shares_outstanding: 213000000, floating_shares: 150000000, base_liquidity: 0.85, base_spread_bps: 15, base_depth_shares: 400, institutional_fit: 0.85, macro_exposure: { interest_rate: -0.5, growth: 0.9 } },
       // 해외 종목 (미국)
-      { ticker: 'AAPL', name: '파인애플', market: 'overseas', current_price: 185.5, previous_close: 185.2, sector: 'IT', is_core: true },
-      { ticker: 'MSFT', name: '매크로소프트', market: 'overseas', current_price: 425.3, previous_close: 424.0, sector: '소프트웨어', is_core: true },
-      { ticker: 'NVDA', name: '엔비디아스', market: 'overseas', current_price: 875.2, previous_close: 870.5, sector: '반도체', is_core: true },
-      { ticker: 'TSLA', name: '와트 모빌리티', market: 'overseas', current_price: 248.5, previous_close: 247.8, sector: '자동차', is_core: false },
-      { ticker: 'GOOGL', name: '구골', market: 'overseas', current_price: 141.2, previous_close: 140.9, sector: 'IT', is_core: false },
+      { ticker: 'AAPL', name: '파인애플', market: 'overseas', current_price: 185.5, previous_close: 185.2, sector: 'IT', sector_id: 'it', theme_ids: ['consumer_tech', 'hardware'], is_core: true, shares_outstanding: 15400000000, floating_shares: 15000000000, base_liquidity: 0.98, base_spread_bps: 5, base_depth_shares: 2000, institutional_fit: 0.99, macro_exposure: { interest_rate: -0.3, growth: 1.1 } },
+      { ticker: 'MSFT', name: '매크로소프트', market: 'overseas', current_price: 425.3, previous_close: 424.0, sector: '소프트웨어', sector_id: 'it', theme_ids: ['cloud', 'ai', 'software'], is_core: true, shares_outstanding: 7430000000, floating_shares: 7200000000, base_liquidity: 0.97, base_spread_bps: 6, base_depth_shares: 1800, institutional_fit: 0.98, macro_exposure: { interest_rate: -0.4, growth: 1.3 } },
+      { ticker: 'NVDA', name: '엔비디아스', market: 'overseas', current_price: 875.2, previous_close: 870.5, sector: '반도체', sector_id: 'semiconductor', theme_ids: ['ai', 'gpu', 'semiconductor'], is_core: true, shares_outstanding: 2460000000, floating_shares: 2300000000, base_liquidity: 0.99, base_spread_bps: 5, base_depth_shares: 2500, institutional_fit: 0.99, macro_exposure: { interest_rate: -0.5, growth: 1.8 } },
+      { ticker: 'TSLA', name: '와트 모빌리티', market: 'overseas', current_price: 248.5, previous_close: 247.8, sector: '자동차', sector_id: 'auto', theme_ids: ['ev', 'autonomy'], is_core: false, shares_outstanding: 3180000000, floating_shares: 2800000000, base_liquidity: 0.95, base_spread_bps: 8, base_depth_shares: 1500, institutional_fit: 0.90, macro_exposure: { interest_rate: -0.9, growth: 1.5 } },
+      { ticker: 'GOOGL', name: '구골', market: 'overseas', current_price: 141.2, previous_close: 140.9, sector: 'IT', sector_id: 'it', theme_ids: ['search', 'ai', 'cloud'], is_core: false, shares_outstanding: 12300000000, floating_shares: 11000000000, base_liquidity: 0.96, base_spread_bps: 6, base_depth_shares: 1800, institutional_fit: 0.97, macro_exposure: { interest_rate: -0.4, growth: 1.2 } },
       // 유럽 종목
-      { ticker: 'ASML', name: 'ADML', market: 'europe', current_price: 705.4, previous_close: 703.2, sector: '반도체', is_core: true },
-      { ticker: 'SAP', name: 'SAP 넥스트', market: 'europe', current_price: 175.3, previous_close: 174.8, sector: '소프트웨어', is_core: false },
+      { ticker: 'ASML', name: 'ADML', market: 'europe', current_price: 705.4, previous_close: 703.2, sector: '반도체', sector_id: 'semiconductor', theme_ids: ['lithography', 'semiconductor'], is_core: true, shares_outstanding: 393000000, floating_shares: 380000000, base_liquidity: 0.88, base_spread_bps: 12, base_depth_shares: 500, institutional_fit: 0.95, macro_exposure: { interest_rate: -0.4, growth: 1.3 } },
+      { ticker: 'SAP', name: 'SAP 넥스트', market: 'europe', current_price: 175.3, previous_close: 174.8, sector: '소프트웨어', sector_id: 'it', theme_ids: ['erp', 'enterprise'], is_core: false, shares_outstanding: 1230000000, floating_shares: 1100000000, base_liquidity: 0.80, base_spread_bps: 15, base_depth_shares: 600, institutional_fit: 0.90, macro_exposure: { interest_rate: -0.3, growth: 1.0 } },
       // ETF
-      { ticker: 'KODEX200', name: 'KODEX 200', market: 'etf', current_price: 35000, previous_close: 35000, sector: 'Index ETF', is_core: false },
-      { ticker: 'KODEXLEV', name: 'KODEX 레버리지', market: 'etf', current_price: 17000, previous_close: 17000, sector: 'Leverage ETF', is_core: false },
-      { ticker: 'KODEXINV', name: 'KODEX 인버스', market: 'etf', current_price: 4500, previous_close: 4500, sector: 'Inverse ETF', is_core: false },
-      { ticker: 'SPY', name: 'SPDR S&P 500', market: 'etf', current_price: 500.0, previous_close: 500.0, sector: 'Index ETF', is_core: false },
-      { ticker: 'QQQ', name: 'Invesco QQQ', market: 'etf', current_price: 430.0, previous_close: 430.0, sector: 'Index ETF', is_core: false },
-      { ticker: 'TQQQ', name: 'ProShares UltraPro QQQ', market: 'etf', current_price: 60.0, previous_close: 60.0, sector: 'Leverage ETF', is_core: false },
+      { ticker: 'KODEX200', name: 'KODEX 200', market: 'etf', current_price: 35000, previous_close: 35000, sector: 'Index ETF', sector_id: 'index', theme_ids: ['korea', 'index'], is_core: false, shares_outstanding: 250000000, floating_shares: 250000000, base_liquidity: 0.95, base_spread_bps: 8, base_depth_shares: 1500, institutional_fit: 0.95, macro_exposure: { market_beta: 1.0 } },
+      { ticker: 'KODEXLEV', name: 'KODEX 레버리지', market: 'etf', current_price: 17000, previous_close: 17000, sector: 'Leverage ETF', sector_id: 'index', theme_ids: ['korea', 'leverage'], is_core: false, shares_outstanding: 300000000, floating_shares: 300000000, base_liquidity: 0.92, base_spread_bps: 10, base_depth_shares: 1200, institutional_fit: 0.70, macro_exposure: { market_beta: 2.0 } },
+      { ticker: 'KODEXINV', name: 'KODEX 인버스', market: 'etf', current_price: 4500, previous_close: 4500, sector: 'Inverse ETF', sector_id: 'index', theme_ids: ['korea', 'inverse'], is_core: false, shares_outstanding: 400000000, floating_shares: 400000000, base_liquidity: 0.90, base_spread_bps: 10, base_depth_shares: 1500, institutional_fit: 0.70, macro_exposure: { market_beta: -1.0 } },
+      { ticker: 'SPY', name: 'SPDR S&P 500', market: 'etf', current_price: 500.0, previous_close: 500.0, sector: 'Index ETF', sector_id: 'index', theme_ids: ['us', 'index'], is_core: false, shares_outstanding: 900000000, floating_shares: 900000000, base_liquidity: 0.99, base_spread_bps: 2, base_depth_shares: 5000, institutional_fit: 0.99, macro_exposure: { market_beta: 1.0 } },
+      { ticker: 'QQQ', name: 'Invesco QQQ', market: 'etf', current_price: 430.0, previous_close: 430.0, sector: 'Index ETF', sector_id: 'index', theme_ids: ['us', 'tech_index'], is_core: false, shares_outstanding: 600000000, floating_shares: 600000000, base_liquidity: 0.99, base_spread_bps: 3, base_depth_shares: 4000, institutional_fit: 0.99, macro_exposure: { market_beta: 1.2 } },
+      { ticker: 'TQQQ', name: 'ProShares UltraPro QQQ', market: 'etf', current_price: 60.0, previous_close: 60.0, sector: 'Leverage ETF', sector_id: 'index', theme_ids: ['us', 'leverage'], is_core: false, shares_outstanding: 500000000, floating_shares: 500000000, base_liquidity: 0.96, base_spread_bps: 5, base_depth_shares: 3000, institutional_fit: 0.60, macro_exposure: { market_beta: 3.0 } },
     ];
 
     const now = Date.now();
@@ -411,11 +439,20 @@ export class MemoryDatabase {
         low_price: Math.min(cp, pc) * 0.985,
         volume: 154000 + idx * 12000,
         change_rate: cr,
-        market_cap: cp * (s.market === 'overseas' || s.market === 'europe' ? 2500000000 : 400000000),
+        market_cap: Math.round(cp * s.shares_outstanding),
         pe_ratio: 15.4,
         dividend_yield: 2.1,
         sector: s.sector,
+        sector_id: s.sector_id,
+        theme_ids: s.theme_ids,
         is_core: s.is_core ?? false,
+        shares_outstanding: s.shares_outstanding,
+        floating_shares: s.floating_shares,
+        base_liquidity: s.base_liquidity,
+        base_spread_bps: s.base_spread_bps,
+        base_depth_shares: s.base_depth_shares,
+        institutional_fit: s.institutional_fit,
+        macro_exposure: s.macro_exposure,
       };
       this.stocks.set(id, record);
       this.addStockToIndex(record);

@@ -19,9 +19,33 @@ export function evaluateValueStrategy(
   trueFundamental: number,
   prng: SimPrng
 ): AgentOrderIntent {
-  // 1. Latent fundamental observation with agent-specific estimation error
+  // 1. Latent fundamental observation with agent-specific estimation error & observable news signals
+  let newsValuationDelta = 0;
+  if (obs.recentEvents && obs.recentEvents.length > 0) {
+    // Build the set of rumor eventIds this agent has already seen corrected (via its visible CORRECTION events)
+    const agentCorrectedIds = new Set<string>();
+    for (const ev of obs.recentEvents) {
+      if (ev.eventType === 'CORRECTION' && ev.originalEventId) {
+        agentCorrectedIds.add(ev.originalEventId);
+      }
+    }
+
+    for (const ev of obs.recentEvents) {
+      if (ev.targetStockIds.includes(obs.stockId)) {
+        // If this agent has already received a CORRECTION that nullifies this rumor, treat confidence as 0
+        const effectiveConfidence = agentCorrectedIds.has(ev.eventId) ? 0 : ev.confidence;
+        const elapsed = Math.max(0, obs.simulationTime - ev.publishedAt);
+        const decay = Math.pow(2, -elapsed / Math.max(1, ev.halfLife));
+        newsValuationDelta += ev.valuationSignal * effectiveConfidence * decay;
+      }
+    }
+  }
+
+  // Cap combined news shock to reasonable range (-50% ~ +50%)
+  const clampedShock = Math.max(-0.5, Math.min(0.5, newsValuationDelta));
+  const baseF = trueFundamental * (1.0 + clampedShock);
   const noise = prng.nextNormal(0, config.noiseStdDev);
-  const estimatedValue = trueFundamental * (1.0 + noise);
+  const estimatedValue = baseF * (1.0 + noise);
 
   // 2. Valuation gap relative to current mid price
   const midPrice = obs.midPrice;

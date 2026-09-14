@@ -34,22 +34,30 @@ export function evaluateLpStrategy(
   const currentInv = obs.account.holdingQty;
   const q = currentInv - targetInv; // positive = excess inventory, negative = shortage
 
-  // 2. Quote center with inventory skew
+  // 2. Quote center with inventory skew (Avellaneda-Stoikov heuristic)
   // When q > 0 (excess inventory), quote center shifts downward to attract buyers and discourage sellers
   const skewTicks = (q / 100) * config.inventorySkewKappa;
   const inventorySkew = skewTicks * tickSize;
   const rawCenter = midPrice - inventorySkew;
   const quoteCenter = Math.max(tickSize * 2, rawCenter);
 
-  // 3. Dynamic spread calculation
-  // Base spread + volatility premium + inventory risk premium
-  const baseSpread = midPrice * (config.baseSpreadBps / 10000);
+  // 3. Dynamic spread & depth calculation using stock structural profile & uncertainty shock
+  const baseSpreadBps = obs.structural?.baseSpreadBps ?? config.baseSpreadBps;
+  const baseDepthShares = obs.structural?.baseDepthShares ?? config.baseLevelSize;
+  const uncertainty = Math.max(0, Math.min(1.0, obs.uncertaintyScore ?? 0));
+
+  // Base spread scales with stock profile, volatility, and uncertainty shock
+  const baseSpread = midPrice * (baseSpreadBps / 10000);
+  const uncertaintySpreadMultiplier = 1.0 + uncertainty * 2.5; // Uncertainty significantly widens spread
   const volPremium = midPrice * (obs.volatility * config.volatilityAlpha);
   const invRiskRatio = Math.min(1.0, Math.abs(q) / config.inventoryLimit);
   const invRiskPremium = midPrice * (invRiskRatio * config.inventoryRiskBeta);
 
-  const totalSpread = Math.max(tickSize * 2, baseSpread + volPremium + invRiskPremium);
+  const totalSpread = Math.max(tickSize * 2, (baseSpread * uncertaintySpreadMultiplier) + volPremium + invRiskPremium);
   const halfSpread = totalSpread / 2;
+
+  // Uncertainty contracts quote depth to protect LP from adverse selection
+  const depthScale = Math.max(0.2, 1.0 - uncertainty * 0.7);
 
   // 4. Determine desired quote levels
   const desiredBids: { price: number; size: number }[] = [];
@@ -63,77 +71,82 @@ export function evaluateLpStrategy(
     const alignedAsk = Math.ceil(rawAsk / tickSize) * tickSize;
 
     if (alignedBid > 0 && alignedBid < alignedAsk) {
-      // Slightly scale size for deeper levels
-      const levelSize = Math.round(config.baseLevelSize * (1 + (level - 1) * 0.2));
+      // Scale size with level and uncertainty depth scale
+      const levelSize = Math.max(1, Math.round(baseDepthShares * depthScale * (1 + (level - 1) * 0.15)));
       desiredBids.push({ price: alignedBid, size: levelSize });
       desiredAsks.push({ price: alignedAsk, size: levelSize });
     }
   }
 
   // 5. Strict Multi-Level Aggregate Asset Budget Constraint
-  // Filter and scale bids so total cash committed <= availableCash
-  // Note: To accurately compute available budget, we add back cash/shares currently reserved by orders we intend to cancel
-  let budgetCash = obs.account.availableCash;
-  let budgetHolding = obs.account.availableHolding;
-
-  // Active LP orders on this stock
+  // Crucial bugfix:
+  // - obs.account.availableCash already subtracts reserved cash from ALL active orders (including resting LP orders).
+  // - Retained resting orders are ALREADY funded in reservedCash and must NOT be subtracted again.
+  // - Partial fills use remaining shares: (size - filled).
+  // - New orders must collectively fit within the stock's allocated available cash.
   const existingLpOrders = obs.activeOrders.filter((o) => o.is_lp || o.user_id === agent.accountId);
   const existingBids = existingLpOrders.filter((o) => o.side === 'buy');
   const existingAsks = existingLpOrders.filter((o) => o.side === 'sell');
 
-  // Identify orders to keep vs cancel
   const retainedOrderIds = new Set<string>();
 
   // Process Bids:
-  let cumulativeBidCost = 0;
+  // Budget for NEW orders is capped by availableCash
+  let remainingNewOrderCash = obs.account.availableCash;
+
   for (const des of desiredBids) {
+    // Check if an existing open order already sits at this price level
     const matchingResting = existingBids.find(
       (o) => !retainedOrderIds.has(o.id) && o.price === des.price && (o.status === 'open' || o.status === 'partial')
     );
 
+    if (matchingResting) {
+      // Retain existing resting order (preserves time-priority, already reserved in DB)
+      retainedOrderIds.add(matchingResting.id);
+      continue;
+    }
+
+    // New order: verify against remaining new order cash budget
     const costPerShare = des.price * 1.0025;
-    const maxAffordable = Math.floor((budgetCash - cumulativeBidCost) / costPerShare);
+    const maxAffordable = Math.floor(remainingNewOrderCash / costPerShare);
 
     if (maxAffordable <= 0) {
-      // No more cash budget for this and deeper levels
+      // No more cash budget for deeper levels
       break;
     }
 
     const actualSize = Math.min(des.size, maxAffordable);
-
-    if (matchingResting) {
-      retainedOrderIds.add(matchingResting.id);
-      cumulativeBidCost += matchingResting.size * costPerShare;
-    } else {
+    if (actualSize > 0) {
       newOrders.push({ side: 'buy', price: des.price, size: actualSize });
-      cumulativeBidCost += actualSize * costPerShare;
+      remainingNewOrderCash -= actualSize * costPerShare;
     }
   }
 
   // Process Asks:
-  let cumulativeAskQty = 0;
+  // Budget for NEW orders is capped by availableHolding
+  let remainingNewOrderHolding = obs.account.availableHolding;
+
   for (const des of desiredAsks) {
     const matchingResting = existingAsks.find(
       (o) => !retainedOrderIds.has(o.id) && o.price === des.price && (o.status === 'open' || o.status === 'partial')
     );
 
-    const maxSellable = budgetHolding - cumulativeAskQty;
+    if (matchingResting) {
+      // Retain existing resting order (already reserved in holding)
+      retainedOrderIds.add(matchingResting.id);
+      continue;
+    }
+
+    const maxSellable = Math.min(des.size, remainingNewOrderHolding);
     if (maxSellable <= 0) {
       break;
     }
 
-    const actualSize = Math.min(des.size, maxSellable);
-
-    if (matchingResting) {
-      retainedOrderIds.add(matchingResting.id);
-      cumulativeAskQty += matchingResting.size;
-    } else {
-      newOrders.push({ side: 'sell', price: des.price, size: actualSize });
-      cumulativeAskQty += actualSize;
-    }
+    newOrders.push({ side: 'sell', price: des.price, size: maxSellable });
+    remainingNewOrderHolding -= maxSellable;
   }
 
-  // Any existing LP order not retained is scheduled for cancellation
+  // 6. Schedule cancellation for any active LP order not retained
   for (const ord of existingLpOrders) {
     if (!retainedOrderIds.has(ord.id) && (ord.status === 'open' || ord.status === 'partial')) {
       cancels.push(ord);

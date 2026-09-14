@@ -391,19 +391,48 @@ trade.size > 0
 
 ---
 
-## Development Principles
+## Causal Market Flow Architecture
 
-STOCKSYS는 외부 DB 서버 의존성 없이 프론트엔드와 시장 시뮬레이션을 단일 Next.js 개발 런타임에서 완전히 재현하도록 설계되었습니다.
+STOCKSYS의 주식 시장은 가격과 거래량을 임의로 조작하지 않고, 구조화된 경제 이벤트와 봇의 인과적 의사결정 및 실제 주문 매칭을 통해서만 시장 가격과 주도주가 형성되는 단일 인과 구조(Causal Market Flow)를 갖추고 있습니다.
 
 ```text
-         Shared Market Logic (CDA Matching & Settlement)
-                               │
-                 Local Standalone Architecture
-                               │
-             In-Memory Store & Embedded Simulation
+구조화된 경제 이벤트 (MarketEvent)
+         │  (단일 eventId, 멱등성 보장, UI 뉴스 피드 동기화)
+         ▼
+종목·산업별 관심도(Attention) & 불확실성(Uncertainty) 충격
+         │  (반감기 지수 감쇠, 종목별 노출 계수 차등)
+         ▼
+에이전트별 관측 (MarketObservation)
+         │  (가치봇: 지연 Latency 반영 / 추세봇: Taker Flow 모멘텀 / LP: 재고·스프레드 방어)
+         ▼
+유한 예산 기반 종목 선택 & 목표 비중 결정
+         │  (가중 룰렛휠 샘플링 + ε-탐색, 자산 한도 내 정규화)
+         ▼
+LP 호가 공급 & 봇 주문 제출
+         │  (LP 2단계 라이프사이클: 취소 확정 후 신규 주문, 잔여 수량 size-filled 계산)
+         ▼
+연속 이중 경매(CDA) 매칭 및 즉시 정산
+         │  (가격 우선·시간 우선, 자산 보존 불변식 검증)
+         ▼
+구간 통계(Window Statistics) & 결과 기반 주도주(Leader Score) 형성
+         │  (시뮬레이션 시간 비중복 윈도우, 점수 평활화 및 히스테리시스)
+         ▼
+관심 감소(Decay) 및 자금 순환(Capital Rotation)
 ```
 
-모든 주문 매칭, 체결, 호가 공급 및 자산 관리는 메모리 상에서 원자적으로 처리되어 즉각적인 피드백과 신속한 로컬 개발 경험을 제공합니다.
+### 1. 종목별 구조적 유동성 (Structural Liquidity)
+- **단일 권위 시총 계산**: `market_cap = current_price * shares_outstanding`으로 일관되게 산출.
+- **메타데이터**: 유통주식수(`floating_shares`), 섹터/테마 ID, 기본 유동성 점수(`base_liquidity`), 평상시 스프레드·깊이 프로필, 기관 투자 적합도, 뉴스/매크로 노출 계수.
+- **대형주 vs 소형주 차이**: 대형주는 깊은 호가와 좁은 스프레드를 형성하여 대규모 IOC 주문에도 낮은 슬리피지를 보이며, 소형주는 얕은 호가와 넓은 스프레드로 인해 충격 비용이 자연스럽게 발생합니다.
+
+### 2. 단일 뉴스 원천 (Single Source of News Event)
+- 경제적 이벤트(`MarketEvent`)와 UI 뉴스 문자열을 동일한 `eventId`로 연결하여 멱등성 보장.
+- 루머(`RUMOR`)의 진실 여부는 시뮬레이션 내부 상태로만 보존되며 봇 관측 시 비공개 처리.
+- 정정 공시(`CORRECTION`)는 원본 루머의 신뢰도를 무효화하고 자연스러운 체결 조정을 유도(인위적 가격 원위치 조작 금지).
+
+### 3. LP 주문 예산 및 2단계 라이프사이클
+- LP의 유지 주문은 이미 예약된 잔량(`size - filled`)으로 정밀 계산되어 이중 차감이 방지됩니다.
+- 취소 예정 주문은 실제 취소 성공이 확정된 후 신규 호가를 제출하여 예약 자산 한도를 초과하지 않습니다.
 
 ---
 

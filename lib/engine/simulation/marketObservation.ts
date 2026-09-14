@@ -8,10 +8,24 @@
 
 import { memoryDb, OrderRecord, TradeRecord } from '../../memoryDb/memoryStore';
 import { calculateReservedCash, calculateReservedQty, OpenOrderForRisk } from '../orderRisk';
+import { MarketEvent } from './marketEventTypes';
+import { WindowStatistics } from './marketDiagnostics';
 
 export interface BookLevel {
   price: number;
   size: number;
+}
+
+export interface StructuralLiquidity {
+  sharesOutstanding: number;
+  floatingShares: number;
+  sectorId: string;
+  themeIds: string[];
+  baseLiquidity: number;
+  baseSpreadBps: number;
+  baseDepthShares: number;
+  institutionalFit: number;
+  macroExposure: Record<string, number>;
 }
 
 export interface MarketObservation {
@@ -32,6 +46,13 @@ export interface MarketObservation {
   volatility: number;          // Standard deviation of returns
   isWarmup: boolean;
   simulationTime: number;
+  // 구조적 유동성 메타데이터 (하위 호환 및 fallback 지원)
+  structural?: StructuralLiquidity;
+  // 뉴스 및 동적 시장 상태
+  attentionScore?: number;      // 0.0 ~ 1.0 (Bounded attention)
+  uncertaintyScore?: number;    // 0.0 ~ 1.0 (Uncertainty shock)
+  recentEvents?: MarketEvent[]; // Visible events for this agent
+  windowStats?: WindowStatistics;
   // Single-authority account state
   account: {
     cash: number;
@@ -49,7 +70,11 @@ export function buildMarketObservation(
   stockId: string,
   accountId: string,
   simulationTime: number,
-  lookbackWindow: number = 20
+  lookbackWindow: number = 20,
+  attentionMap?: Map<string, number>,
+  uncertaintyMap?: Map<string, number>,
+  visibleEvents?: MarketEvent[],
+  windowStats?: WindowStatistics
 ): MarketObservation | null {
   const stock = memoryDb.stocks.get(stockId);
   if (!stock) return null;
@@ -181,6 +206,21 @@ export function buildMarketObservation(
     volatility,
     isWarmup,
     simulationTime,
+    structural: {
+      sharesOutstanding: stock.shares_outstanding || 100000000,
+      floatingShares: stock.floating_shares || 50000000,
+      sectorId: stock.sector_id || 'general',
+      themeIds: stock.theme_ids || [],
+      baseLiquidity: stock.base_liquidity ?? 0.5,
+      baseSpreadBps: stock.base_spread_bps ?? 20,
+      baseDepthShares: stock.base_depth_shares ?? 200,
+      institutionalFit: stock.institutional_fit ?? 0.5,
+      macroExposure: stock.macro_exposure || {},
+    },
+    attentionScore: attentionMap?.get(stockId) ?? (stock.base_liquidity ?? 0.5),
+    uncertaintyScore: uncertaintyMap?.get(stockId) ?? 0.1,
+    recentEvents: visibleEvents || [],
+    windowStats,
     account: {
       cash: rawCash,
       holdingQty: rawHolding,

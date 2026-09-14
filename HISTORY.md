@@ -3617,3 +3617,74 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 - [실행하지 못한 검증]
   - 대규모 장기(수만 스텝) 시뮬레이션 하에서의 에르고딕성 및 점근적 분포 분석.
   - 기관 포트폴리오 리밸런싱, 개인 투자자 군집 행동, 레버리지 및 공매도 (이번 범위에서 제외 및 인터페이스만 구비).
+
+---
+## 2026-09-15 00:05
+
+**요청 요약:** STOCKSYS 종목별 구조적 유동성, 단일 뉴스 이벤트 원천, 에이전트 인과 의사결정, LP 예산 중복 차감 방지 및 2단계 라이프사이클, 구간 통계 및 결과 기반 주도주 산출을 단일 인과 구조로 통합 구현 및 다각도 회귀 검증
+
+**과거 문제점 및 개선 배경:**
+- 모든 종목에 동일한 LP 기본 설정 적용 및 대형주/소형주 간 구조적 유동성 차이 부재.
+- 뉴스가 경제적 이벤트와 분리되어 화면의 뉴스가 봇의 행동과 연결되지 않고, 봇이 전 종목을 고정 순서로 순차 평가하여 자금을 독점.
+- 가치 전략의 delaySteps가 실제 관측 지연으로 연결되지 못하고 주석/설정만 존재.
+- LP의 유지 주문이 신규 주문 예산 계산 시 예약 잔량을 반영하지 못해 이중 차감 및 예산 계산 왜곡 가능성.
+- 최근 N건 단순 합계로 구간 거래량을 왜곡하거나, 뉴스 점수로 가격을 직접 조작하는 비인과적 구조 차단 필요.
+
+**수행 결과:**
+- `lib/memoryDb/memoryStore.ts`:
+  - `StockRecord`에 구조적 유동성 9대 메타데이터(`shares_outstanding`, `floating_shares`, `sector_id`, `theme_ids`, `base_liquidity`, `expected_turnover`, `normal_spread_bps`, `normal_depth_shares`, `institutional_fit`, `macro_exposure`) 추가.
+  - `seedDefaultData()`에서 단일 권위 시가총액 계산(`market_cap = Math.round(current_price * shares_outstanding)`) 적용 및 대형주/소형주 시드 구성.
+- `lib/engine/simulation/marketEventTypes.ts` [NEW]:
+  - 구조화된 경제 이벤트(`MarketEvent`, `EventType`, `EventScope`), 멱등성 보장 트래커(`EventIdempotencyTracker`), Canonical 매핑 및 비주식 티커 격리, 결정론적 뉴스 템플릿 풀 구현.
+- `lib/engine/simulation/marketDiagnostics.ts`:
+  - 시뮬레이션 시간($t \sim t + \Delta t$) 기반 비중복 윈도우 구간 통계(`computeWindowStatistics`, 거래대금, 회전율, 상대수익률, Taker 방향 순매수 Flow) 구현.
+  - 결과 기반 주도주 랭킹(`updateLeaderBoard`, 지수 평활화 및 히스테리시스 적용, 초기 시뮬레이션 가중치 파라미터 명시) 및 인과 추적 로그(`recordCausalTrace`) 구현.
+- `lib/engine/simulation/marketObservation.ts`:
+  - `structural`, `attentionScore`, `uncertaintyScore`, `recentEvents`, `windowStats`를 `MarketObservation`에 통합.
+  - 봇 관측 빌더(`buildMarketObservation`)에서 봇별 지연 시간(latency) 이전 뉴스만 필터링하여 지연 관측 제공.
+- `lib/engine/simulation/strategies/lpStrategy.ts`:
+  - 종목별 스프레드 및 깊이 프로필 차등화, 악재/불확실성 충격 시 스프레드 확대 및 호가 깊이 축소(역선택 방어).
+  - 유지 주문의 예약 잔량(`size - filled`) 기준 예산 반영으로 이중 차감 원천 방지, 총 매수 호가 예산이 가용 현금을 초과하지 않도록 엄격 검증.
+- `lib/engine/simulation/strategies/valueStrategy.ts`:
+  - 지연 공개된 유효 뉴스 가치 신호(`valuationSignal * confidence * decay`)를 봇의 잠재 가치 추정에 인과적으로 반영.
+- `lib/engine/simulation/strategies/trendStrategy.ts`:
+  - 과거 가격 수익률과 최근 윈도우 Taker Signed Flow를 결합한 모멘텀 신호 산출.
+- `lib/engine/simulation/agentManager.ts`:
+  - 단일 뉴스 이벤트 발행(`publishEvent`) 및 `memoryDb.marketNews` UI 피드 실시간 동기화.
+  - 전 종목 순차 평가 폐기 -> 관심도 기반 룰렛휠 가중 샘플링 + $\epsilon$-탐색(15%) 종목 후보군 선택.
+  - 봇 관측 제공 시 `isRumorFake` 필드를 엄격히 비공개 마스킹하여 정정 공시 전 치팅 방지 (엔진 내부에만 보존).
+  - 2단계 LP 라이프사이클: 취소 주문 완료 확정 후 최신 관측 기반 신규 주문 제출로 예약 자산 한도 초과 및 경합 차단.
+- `app/api/admin/scenarios/route.ts`:
+  - GET 응답에 실시간 주도주/거래대금/유동성 진단 리포트(`diagnostics`) 추가, POST 핸들러에 `inject_news_event` 액션 추가.
+- `scripts/test-causal-market-flow.ts` [NEW]:
+  - 시나리오 A~H (대형주/소형주 유동성 차이, 기업 호재 및 지연, 기업 악재/불확실성, 섹터 뉴스 차등 전파, 소문/정정 및 멱등성, 관심도 반감기 감쇠/자금순환, LP 예산 정밀성, 결정론적 재현 및 리셋) 전원 통과.
+- `README.md`: Causal Market Flow Architecture, 구조적 유동성, 뉴스 원천 및 LP 라이프사이클 문서화.
+
+**검증 수행 내역:**
+- [실행한 검증]
+  - `scripts/test-causal-market-flow.ts`: 시나리오 A~H 100% 통과 (exit code 0).
+  - `scripts/test-agent-based-market.ts`: ABM 13개 핵심 회귀 테스트 100% 통과 (exit code 0).
+  - `scripts/test-concurrency-and-stale-ref.ts`: 5대 경합 및 오래된 참조 테스트 전원 통과 (exit code 0).
+  - `scripts/test-comprehensive-audit-fixes.ts`: 종합 감사 테스트 통과 (exit code 0).
+  - `scripts/test-order-security-and-atomic.ts`: TEST 1~14 주문 보안 및 원자성 테스트 통과 (exit code 0).
+  - `scripts/test-transaction-isolation.ts`: 트랜잭션 격리 및 초과지출 차단 테스트 통과 (exit code 0).
+  - `scripts/test-order-risk-and-settlement.ts`: TEST A~N 리스크/정산 테스트 통과 (exit code 0).
+  - `npx tsc --noEmit`: TypeScript 컴파일 에러 0건 통과 (exit code 0).
+  - `npm run build`: Next.js Turbopack 23개 라우트 프로덕션 빌드 성공 (exit code 0).
+- [실행하지 못한 검증]
+  - 대규모 클라이언트 브라우저 동시 접속 시 웹소켓 지연 및 렌더링 프레임 드랍 검증 (Local Standalone 환경 내 단일 브라우저 E2E 중심 검증 유지).
+
+---
+## 2026-09-15 00:26
+
+**��û ���:** ���� ���� ���� �ݸ� ���� ����, ���ߺ� ������ ��� ��� ����, ���� �帧 �ó����� ��� ���� ��ũ��Ʈ �ۼ� �� ����
+
+**���� ���:**
+- `lib/engine/simulation/agentManager.ts`: CORRECTION �̺�Ʈ ���� �� ���� ����� confidence�� ���� ��� 0���� �����ϴ� ���� ����. ��� `correctedAt` Ÿ�ӽ������� �����Ͽ� �� ���� �ڽ��� infoLatency ��� visibleEvents������ ������ Ȯ���ϵ��� �ݸ�.
+- `lib/engine/simulation/strategies/valueStrategy.ts`: ���� visibleEvents���� CORRECTION�� ������ ��쿡�� �ش� ���� �信�� ���� ��� confidence�� 0���� ó���ϴ� `agentCorrectedIds` ���� ��Ʈ ��� ���� �ݸ� ���� �߰�.
+- `lib/engine/simulation/marketDiagnostics.ts`: `computeWindowStatistics`�� �ֱ� ������ ���͸� `>=` �� `>` (strict open-left)�� �����Ͽ� ��谪 ü���� �ֱ� ������ ���ؼ� ������ �ߺ� ����Ǵ� ���� ����.
+- `scripts/test-market-flow-verification.ts` (�ű�): ���� ���� �ó����� ��� ���� �帧 ���� ��ũ��Ʈ. 3�� �ó����� �� 2�� �õ� = 6ȸ ����. �� ���� ���: �ŷ����, ��������, ȣ�� ����, ���ɵ�, �ֵ��� ����, ���� ����.
+  - Scenario 1: ���á�ݵ�ü ȣ������ ���ߡ���� ȣ����ֵ��� �̵�
+  - Scenario 2: ������ ��ӡ���� ����������(���� ����)�溿�� ���� ���� (����/���� �� ���� �ݸ� ����)
+  - Scenario 3: �������� ����(����⼺) + LP �������� Ȯ�� + ȣ�� ���� ����(������ ���)
+- ���� ȸ�� �׽�Ʈ `scripts/settlement/run_settlement_verification.ts` ���� ���, `npx tsc --noEmit` ������ ���� 0��.

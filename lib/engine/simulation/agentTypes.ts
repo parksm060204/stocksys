@@ -28,6 +28,9 @@ export interface AgentAccount {
   riskTolerance: number;      // 0.0 ~ 1.0 (higher = more willing to absorb risk)
   urgency: number;            // 0.0 ~ 1.0 (higher = more likely to take liquidity / IOC)
   activityRate: number;       // Poisson arrival parameter lambda (actions per second)
+  infoLatency?: number;       // Information observation latency in simulation seconds (e.g. 2.0s)
+  evaluationsPerStep?: number; // Max number of candidate stocks to evaluate when activated (e.g. 2~3)
+  sectorPreferences?: Record<string, number>; // Sector preference weight multipliers (e.g. { semiconductor: 1.2 })
   nextDecisionTime: number;   // Simulation time for next action check
   stats: AgentStats;
 }

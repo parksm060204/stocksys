@@ -1,15 +1,18 @@
 /**
- * STOCKSYS Agent Manager & Market Simulation Orchestrator
+ * STOCKSYS Agent Manager & Causal Market Simulation Orchestrator
  *
  * Coordinates:
  * - Deterministic simulation clock & decoupled PRNG streams
- * - Merton Jump-Diffusion (MJD) latent fundamental value generation scaled by dt
- * - Independent bot & LP accounts with strictly enforced balance constraints
- * - Unified execution via LocalMarketService.submitOrder and cancelOrder
- * - Detailed diagnostic metrics collection
+ * - Single source of truth structured market events & idempotency tracking
+ * - Bounded attention & uncertainty dynamics with half-life decay
+ * - Weighted stock candidate selection with exploration (eliminates fixed-order full evaluation)
+ * - Information latency buffer per agent
+ * - Two-phase LP quoting with strict non-duplicative budget management
+ * - Continuous window statistics, leader ranking, and causal trace logs
+ * - Unified execution via LocalMarketService.submitOrder & cancelOrder
  */
 
-import { memoryDb, StockRecord } from '../../memoryDb/memoryStore';
+import { memoryDb, StockRecord, MarketNewsRecord } from '../../memoryDb/memoryStore';
 import { LocalMarketService } from '../marketService';
 import { SimulationClock, SimPrng } from './simClock';
 import {
@@ -23,7 +26,13 @@ import { buildMarketObservation } from './marketObservation';
 import { evaluateValueStrategy } from './strategies/valueStrategy';
 import { evaluateTrendStrategy } from './strategies/trendStrategy';
 import { evaluateLpStrategy } from './strategies/lpStrategy';
-import { MarketDiagnostics } from './marketDiagnostics';
+import { MarketDiagnostics, WindowStatistics } from './marketDiagnostics';
+import {
+  MarketEvent,
+  EventIdempotencyTracker,
+  SEED_EVENT_TEMPLATES,
+  resolveTargetStockIds,
+} from './marketEventTypes';
 
 export class AgentManager {
   public clock: SimulationClock;
@@ -34,6 +43,12 @@ export class AgentManager {
   public agents: Map<string, AgentAccount> = new Map();
   public fundamentals: Map<string, number> = new Map();
   public diagnostics: MarketDiagnostics = new MarketDiagnostics();
+
+  // ── Single-Source Event & Attention State ──
+  public events: MarketEvent[] = [];
+  public idempotencyTracker: EventIdempotencyTracker = new EventIdempotencyTracker();
+  public attentionMap: Map<string, number> = new Map();     // stockId -> attentionScore [0, 1]
+  public uncertaintyMap: Map<string, number> = new Map();   // stockId -> uncertaintyScore [0, 1]
 
   // MJD SDE parameters (per-second units)
   public readonly mjd_mu: number = 0.00005;     // Drift per second
@@ -83,6 +98,7 @@ export class AgentManager {
 
     this.registerDefaultAgents();
     this.initFundamentals();
+    this.initAttentionAndUncertainty();
   }
 
   public registerDefaultAgents(): void {
@@ -98,7 +114,10 @@ export class AgentManager {
       maxPosition: 30000,
       riskTolerance: 0.5,
       urgency: 0.1,
-      activityRate: 1.0, // Every step evaluates quotes
+      activityRate: 1.0, // Quotes checked every step
+      infoLatency: 0,    // LP observes order book directly in real time
+      evaluationsPerStep: 20,
+      sectorPreferences: {},
       nextDecisionTime: 0,
       stats: { ordersSubmitted: 0, ordersCancelled: 0, fillsCount: 0, volumeTraded: 0, feesPaid: 0, realizedPnl: 0 },
     });
@@ -115,7 +134,10 @@ export class AgentManager {
       maxPosition: 10000,
       riskTolerance: 0.6,
       urgency: 0.2,
-      activityRate: 0.5, // ~50% Poisson arrival per sec
+      activityRate: 0.5,
+      infoLatency: 2.0,  // 2.0 seconds information latency
+      evaluationsPerStep: 3,
+      sectorPreferences: { semiconductor: 1.3, it: 1.1 },
       nextDecisionTime: 0,
       stats: { ordersSubmitted: 0, ordersCancelled: 0, fillsCount: 0, volumeTraded: 0, feesPaid: 0, realizedPnl: 0 },
     });
@@ -132,6 +154,9 @@ export class AgentManager {
       riskTolerance: 0.4,
       urgency: 0.1,
       activityRate: 0.35,
+      infoLatency: 4.0,  // 4.0 seconds latency (slower observer)
+      evaluationsPerStep: 2,
+      sectorPreferences: { auto: 1.2, energy: 1.1 },
       nextDecisionTime: 0,
       stats: { ordersSubmitted: 0, ordersCancelled: 0, fillsCount: 0, volumeTraded: 0, feesPaid: 0, realizedPnl: 0 },
     });
@@ -149,6 +174,9 @@ export class AgentManager {
       riskTolerance: 0.7,
       urgency: 0.7, // High urgency -> IOC orders
       activityRate: 0.6,
+      infoLatency: 1.0,
+      evaluationsPerStep: 3,
+      sectorPreferences: { semiconductor: 1.2, it: 1.2, auto: 1.0 },
       nextDecisionTime: 0,
       stats: { ordersSubmitted: 0, ordersCancelled: 0, fillsCount: 0, volumeTraded: 0, feesPaid: 0, realizedPnl: 0 },
     });
@@ -165,6 +193,9 @@ export class AgentManager {
       riskTolerance: 0.5,
       urgency: 0.4,
       activityRate: 0.4,
+      infoLatency: 2.0,
+      evaluationsPerStep: 2,
+      sectorPreferences: { energy: 1.3, bio: 1.2 },
       nextDecisionTime: 0,
       stats: { ordersSubmitted: 0, ordersCancelled: 0, fillsCount: 0, volumeTraded: 0, feesPaid: 0, realizedPnl: 0 },
     });
@@ -184,13 +215,90 @@ export class AgentManager {
     }
   }
 
+  public initAttentionAndUncertainty(): void {
+    for (const stock of memoryDb.stocks.values()) {
+      const baseLiq = stock.base_liquidity ?? 0.5;
+      this.attentionMap.set(stock.id, baseLiq);
+      this.uncertaintyMap.set(stock.id, 0.05);
+    }
+  }
+
+  /**
+   * Publishes a structured market event into the simulation engine.
+   * Guarantees idempotency and syncs directly to memoryDb.marketNews for terminal UI rendering.
+   */
+  public publishEvent(event: MarketEvent): boolean {
+    if (!this.idempotencyTracker.record(event.eventId)) {
+      return false; // Duplicate event rejected
+    }
+
+    this.events.push(event);
+
+    // If this is a CORRECTION, stamp the original rumor with correctedAt time.
+    // Do NOT globally zero the confidence — bots who haven't received the CORRECTION
+    // yet (due to infoLatency) should still see the original confidence intact.
+    // The value strategy discounts corrected events by checking visibleEvents for
+    // a matching CORRECTION event and zeroing confidence only in that agent's view.
+    if (event.eventType === 'CORRECTION' && event.originalEventId) {
+      const orig = this.events.find((e) => e.eventId === event.originalEventId);
+      if (orig) {
+        // Only tag with correctedAt — do not mutate global confidence
+        (orig as any).correctedAt = event.publishedAt;
+      }
+    }
+
+    // Apply immediate attention & uncertainty shocks to target stocks
+    for (const sId of event.targetStockIds) {
+      const curAtt = this.attentionMap.get(sId) || 0.5;
+      const curUnc = this.uncertaintyMap.get(sId) || 0.05;
+
+      // Attention increases non-directionally (bad news also increases attention)
+      const newAtt = Math.min(1.0, curAtt + event.attentionShock);
+      const newUnc = Math.min(1.0, curUnc + event.uncertaintyShock);
+
+      this.attentionMap.set(sId, newAtt);
+      this.uncertaintyMap.set(sId, newUnc);
+    }
+
+    // Synchronize to memoryDb.marketNews for UI display (without triggering artificial price changes)
+    const newsRecord: MarketNewsRecord = {
+      id: event.eventId,
+      type: event.scope.toUpperCase(),
+      category: event.eventType,
+      publisher: event.publisher,
+      title: event.title,
+      content: event.content,
+      target_sector: event.sectorId || null,
+      target_ticker: event.targetStockIds.length === 1 ? memoryDb.stocks.get(event.targetStockIds[0])?.ticker || null : null,
+      impact_score: parseFloat((event.valuationSignal * 10).toFixed(1)),
+      is_fake: Boolean(event.isRumorFake),
+      created_at: new Date(this.clock.simulationTime).toISOString(),
+    };
+    memoryDb.marketNews.unshift(newsRecord);
+    if (memoryDb.marketNews.length > 200) {
+      memoryDb.marketNews.pop();
+    }
+
+    // Record causal trace
+    this.diagnostics.recordCausalTrace({
+      timestamp: event.publishedAt,
+      eventId: event.eventId,
+      eventType: event.eventType,
+      stage: 'NEWS_RECEIVED',
+      details: `[${event.eventType}] ${event.title} (ValSignal: ${event.valuationSignal}, AttShock: ${event.attentionShock})`,
+    });
+
+    return true;
+  }
+
   /**
    * Advances the simulation by dt seconds and executes the full agent lifecycle:
    * 1. Advance simulation clock
    * 2. Merton Jump-Diffusion SDE update with dt scaling
-   * 3. LP quote differential update (skewed, multi-level, budget constrained)
-   * 4. Bot Poisson arrivals & strategy evaluations (Value & Trend)
-   * 5. Monotonic sequence tagging and immediate unified matching
+   * 3. Decay attention & uncertainty over simulation time
+   * 4. Update rolling window statistics and leader stock rankings
+   * 5. Two-phase LP quoting (Cancels first, then budget-safe new orders)
+   * 6. Bot decision making via weighted candidate sampling & latency buffer
    */
   public async step(dt: number = 1.0): Promise<void> {
     const { time: simTime } = this.clock.advance(dt);
@@ -211,28 +319,57 @@ export class AgentManager {
       this.fundamentals.set(stock.id, newF);
     }
 
-    // ── 2. Market Maker (LP) Quote Lifecycle ──
+    // ── 2. Attention & Uncertainty Exponential Decay ──
+    for (const stock of memoryDb.stocks.values()) {
+      const curAtt = this.attentionMap.get(stock.id) ?? 0.5;
+      const baseLiq = stock.base_liquidity ?? 0.5;
+      // Decay towards baseline liquidity (half-life ~20s)
+      const decayedAtt = baseLiq + (curAtt - baseLiq) * Math.exp(-0.035 * dt);
+      this.attentionMap.set(stock.id, Math.max(0.1, Math.min(1.0, decayedAtt)));
+
+      const curUnc = this.uncertaintyMap.get(stock.id) ?? 0.05;
+      // Uncertainty decays towards minimal 0.05 (half-life ~15s)
+      const decayedUnc = 0.05 + (curUnc - 0.05) * Math.exp(-0.05 * dt);
+      this.uncertaintyMap.set(stock.id, Math.max(0.01, Math.min(1.0, decayedUnc)));
+    }
+
+    // ── 3. Rolling Window Statistics & Leader Ranking ──
+    const windowStatsMap = this.diagnostics.computeWindowStatistics(simTime, 10, 50);
+    this.diagnostics.updateLeaderBoard(simTime, this.attentionMap);
+
+    // ── 4. Two-Phase LP (Market Maker) Quoting Lifecycle ──
     const lpAgent = this.agents.get('acc_lp_main');
     if (lpAgent) {
       for (const stock of memoryDb.stocks.values()) {
-        const obs = buildMarketObservation(stock.id, lpAgent.accountId, simTime);
+        const obs = buildMarketObservation(
+          stock.id,
+          lpAgent.accountId,
+          simTime,
+          20,
+          this.attentionMap,
+          this.uncertaintyMap,
+          this.events,
+          windowStatsMap.get(stock.id)
+        );
         if (!obs) continue;
 
         this.diagnostics.recordMarketQuality(stock.id, obs.spread, obs.hasTwoSidedBook);
 
         const plan = evaluateLpStrategy(obs, lpAgent, this.lpConfig);
 
-        // Cancel out-of-band quotes
+        // Phase 1: Execute cancellations first to safely release reserved cash & shares
         for (const toCancel of plan.cancels) {
-          await LocalMarketService.cancelOrder({
+          const cancelRes = await LocalMarketService.cancelOrder({
             orderId: toCancel.id,
             userId: lpAgent.accountId,
           });
-          this.diagnostics.recordOrderCancel('market_maker');
-          lpAgent.stats.ordersCancelled++;
+          if (cancelRes.success) {
+            this.diagnostics.recordOrderCancel('market_maker');
+            lpAgent.stats.ordersCancelled++;
+          }
         }
 
-        // Submit new quote levels with strict sequence & arrival timestamp
+        // Phase 2: Submit new quote levels within strictly re-verified available budget
         for (const nOrd of plan.newOrders) {
           const seq = this.clock.nextSequence();
           const matchRes = await LocalMarketService.submitOrder({
@@ -262,7 +399,7 @@ export class AgentManager {
       }
     }
 
-    // ── 3. Bot Trading Strategy Lifecycle (Value & Trend) ──
+    // ── 5. Bot Trading Strategy Lifecycle (Weighted Selection & Latency) ──
     const stockList = Array.from(memoryDb.stocks.values());
 
     for (const [accountId, agent] of this.agents.entries()) {
@@ -271,14 +408,34 @@ export class AgentManager {
       const agentPrng = this.agentPrngs.get(accountId) || this.prng;
       const arrivalProb = 1 - Math.exp(-agent.activityRate * dt);
 
-      // Check Poisson arrival
+      // Poisson arrival check
       if (agentPrng.next() >= arrivalProb) {
         continue;
       }
 
-      // Pick target stock (can evaluate all or sample)
-      for (const stock of stockList) {
-        const obs = buildMarketObservation(stock.id, accountId, simTime);
+      // Filter events visible to this agent based on information latency
+      // Internal truth (isRumorFake) is strictly redacted from bot observations
+      const visibleEvents = this.events
+        .filter((e) => e.publishedAt <= simTime - (agent.infoLatency ?? 0))
+        .map((e) => {
+          const { isRumorFake, ...sanitized } = e;
+          return sanitized as MarketEvent;
+        });
+
+      // Select candidate stocks to evaluate (eliminates fixed-order full evaluation)
+      const candidateStocks = this.selectCandidateStocks(agent, stockList, agentPrng);
+
+      for (const stock of candidateStocks) {
+        const obs = buildMarketObservation(
+          stock.id,
+          accountId,
+          simTime,
+          20,
+          this.attentionMap,
+          this.uncertaintyMap,
+          visibleEvents,
+          windowStatsMap.get(stock.id)
+        );
         if (!obs) continue;
 
         let intent: AgentOrderIntent = { action: 'hold', stockId: stock.id };
@@ -326,12 +483,28 @@ export class AgentManager {
           this.diagnostics.recordOrderSubmit(agent.strategyType);
           agent.stats.ordersSubmitted++;
 
+          this.diagnostics.recordCausalTrace({
+            timestamp: simTime,
+            stockId: stock.id,
+            agentId: agent.agentId,
+            stage: 'ORDER_SUBMIT',
+            details: `[${agent.strategyType}] ${intent.action.toUpperCase()} ${intent.size}sh @ ${intent.price} (reason: ${intent.reason})`,
+          });
+
           if (matchRes.success) {
             if (matchRes.filledQty > 0) {
               const isTaker = intent.orderType === 'ioc';
               this.diagnostics.recordOrderFill(agent.strategyType, matchRes.filledQty, !isTaker);
               agent.stats.fillsCount++;
               agent.stats.volumeTraded += matchRes.filledQty;
+
+              this.diagnostics.recordCausalTrace({
+                timestamp: simTime,
+                stockId: stock.id,
+                agentId: agent.agentId,
+                stage: 'ORDER_FILL',
+                details: `Filled ${matchRes.filledQty}sh @ avg ${intent.price}`,
+              });
             }
           } else {
             this.diagnostics.recordRejection(accountId, stock.id, matchRes.message || 'order_rejected', simTime);
@@ -339,6 +512,58 @@ export class AgentManager {
         }
       }
     }
+  }
+
+  /**
+   * Selects candidate stocks for an agent to evaluate using weighted sampling & exploration.
+   * Prevents first-index starvation and ensures capital rotates dynamically.
+   */
+  private selectCandidateStocks(agent: AgentAccount, stocks: StockRecord[], prng: SimPrng): StockRecord[] {
+    const numToPick = Math.min(stocks.length, agent.evaluationsPerStep || 2);
+    if (stocks.length <= numToPick) return [...stocks];
+
+    const selected: StockRecord[] = [];
+    const pool = [...stocks];
+
+    // 15% exploration probability to pick a completely random stock
+    const EXPLORATION_RATE = 0.15;
+
+    while (selected.length < numToPick && pool.length > 0) {
+      if (prng.next() < EXPLORATION_RATE) {
+        // Random exploration
+        const randIdx = Math.floor(prng.next() * pool.length);
+        selected.push(pool.splice(randIdx, 1)[0]);
+        continue;
+      }
+
+      // Weighted roulette selection based on attention and sector preferences
+      let totalWeight = 0;
+      const weights: number[] = [];
+
+      for (const s of pool) {
+        const att = this.attentionMap.get(s.id) || s.base_liquidity || 0.5;
+        const secPref = (s.sector_id && agent.sectorPreferences?.[s.sector_id]) || 1.0;
+        // Weight combines base liquidity, dynamic attention, and agent sector affinity
+        const baseLiq = s.base_liquidity ?? 0.5;
+        const w = (baseLiq * 0.3 + att * 0.7) * secPref;
+        weights.push(w);
+        totalWeight += w;
+      }
+
+      let r = prng.next() * totalWeight;
+      let pickedIdx = 0;
+      for (let i = 0; i < weights.length; i++) {
+        r -= weights[i];
+        if (r <= 0) {
+          pickedIdx = i;
+          break;
+        }
+      }
+
+      selected.push(pool.splice(pickedIdx, 1)[0]);
+    }
+
+    return selected;
   }
 
   public reset(seed: number = 42): void {
@@ -349,7 +574,13 @@ export class AgentManager {
     this.agents.clear();
     this.agentPrngs.clear();
     this.fundamentals.clear();
+    this.events = [];
+    this.idempotencyTracker.reset();
+    this.attentionMap.clear();
+    this.uncertaintyMap.clear();
+
     this.registerDefaultAgents();
     this.initFundamentals();
+    this.initAttentionAndUncertainty();
   }
 }

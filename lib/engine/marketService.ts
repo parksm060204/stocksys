@@ -1,6 +1,7 @@
 import { ensureLocalStandaloneEngine } from './localStandaloneServer';
 import { createMemoryDbClient } from '../memoryDb/memoryDbClient';
 import { submitAndMatchOrder, MatchOrderResult } from './dbMatching';
+import { memoryDb, OrderRecord } from '../memoryDb/memoryStore';
 
 export interface SubmitOrderParams {
   userId: string;
@@ -8,6 +9,18 @@ export interface SubmitOrderParams {
   side: 'buy' | 'sell';
   price: number;
   size: number;
+}
+
+export interface CancelOrderParams {
+  orderId: string;
+  userId: string;
+}
+
+export interface CancelOrderResult {
+  success: boolean;
+  statusCode: number;
+  message?: string;
+  order?: OrderRecord;
 }
 
 /**
@@ -87,6 +100,65 @@ export class LocalMarketService {
         price: params.price,
         size: params.size,
       });
+    });
+  }
+
+  /**
+   * 주문 취소 처리 (원자적 종목 락 내부에서 최신 DB 주문 상태 재조회 및 검증).
+   *
+   * [Stale Object Prevention]
+   * 락 밖에서 조회한 객체로 덮어쓰지 않고, 락 획득 후 memoryDb.orders를 다시 확인하여
+   * 대기 중 롤백·체결·삭제·교체된 상태를 감지하고 안전하게 취소 처리한다.
+   */
+  public static async cancelOrder(params: CancelOrderParams): Promise<CancelOrderResult> {
+    ensureLocalStandaloneEngine();
+
+    const { orderId, userId } = params;
+    if (!orderId || !userId) {
+      return { success: false, statusCode: 400, message: '주문 식별자와 사용자 정보가 필요합니다.' };
+    }
+
+    // 1. 락 획득에 필요한 최소한의 종목 식별자만 파악
+    const preliminaryOrder = memoryDb.orders.get(orderId);
+    if (!preliminaryOrder) {
+      return { success: false, statusCode: 404, message: '주문을 찾을 수 없습니다.' };
+    }
+
+    const stockId = preliminaryOrder.stock_id;
+
+    // 2. 종목 락 내부에서 최신 주문 객체를 다시 조회하여 안전하게 취소 처리
+    return await withStockLock(stockId, async () => {
+      const currentOrder = memoryDb.orders.get(orderId);
+      if (!currentOrder) {
+        return { success: false, statusCode: 404, message: '주문을 찾을 수 없습니다.' };
+      }
+
+      if (currentOrder.user_id !== userId) {
+        return { success: false, statusCode: 403, message: '본인의 주문만 취소할 수 있습니다.' };
+      }
+
+      if (currentOrder.stock_id !== stockId) {
+        return { success: false, statusCode: 400, message: '주문의 종목 정보가 일치하지 않습니다.' };
+      }
+
+      if (currentOrder.status !== 'open' && currentOrder.status !== 'partial') {
+        return {
+          success: false,
+          statusCode: 400,
+          message: `이미 ${currentOrder.status} 상태인 주문은 취소할 수 없습니다.`,
+        };
+      }
+
+      // 현재 시점의 주문 상태를 cancelled로 변경
+      currentOrder.status = 'cancelled';
+      memoryDb.publish('orders_changes', { eventType: 'UPDATE', new: currentOrder });
+
+      return {
+        success: true,
+        statusCode: 200,
+        message: '주문이 정상적으로 취소되었습니다.',
+        order: currentOrder,
+      };
     });
   }
 }

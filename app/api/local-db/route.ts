@@ -307,29 +307,19 @@ export async function POST(request: Request) {
             return NextResponse.json({ data: null, error: { message: '주문 ID가 필요합니다.' } }, { status: 400 });
           }
 
-          const order = memoryDb.orders.get(String(targetOrderId));
-          if (!order) {
-            return NextResponse.json({ data: null, error: { message: '주문을 찾을 수 없습니다.' } }, { status: 404 });
-          }
+          const cancelRes = await LocalMarketService.cancelOrder({
+            orderId: String(targetOrderId),
+            userId: authenticatedUserId,
+          });
 
-          // 타인 주문 취소 시도 차단
-          if (order.user_id !== authenticatedUserId) {
+          if (!cancelRes.success) {
             return NextResponse.json(
-              { data: null, error: { message: '본인의 주문만 취소할 수 있습니다.' } },
-              { status: 403 }
+              { data: null, error: { message: cancelRes.message } },
+              { status: cancelRes.statusCode }
             );
           }
 
-          // 종목 락 하에서 안전하게 취소 처리 (진행 중인 매칭과 충돌 방지)
-          await withStockLock(order.stock_id, async () => {
-            if (order.status === 'open' || order.status === 'partial') {
-              order.status = 'cancelled';
-              memoryDb.orders.set(order.id, order);
-              memoryDb.publish('orders_changes', { eventType: 'UPDATE', new: order });
-            }
-          });
-
-          return NextResponse.json({ data: [order], error: null });
+          return NextResponse.json({ data: [cancelRes.order], error: null });
         }
 
         // orders에 대한 직접 insert / upsert / delete는 원천 차단

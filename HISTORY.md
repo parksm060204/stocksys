@@ -3522,3 +3522,40 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 - [실행하지 못한 검증]
   - 실제 멀티 노드 분산 배포 환경에서의 네트워크 파티션 테스트 (현재 Local Standalone 단일 프로세스 전제).
   - 수천 명의 동시 실사용자 브라우저 세션을 모사하는 대규모 실 브라우저 E2E 부하 테스트.
+
+---
+## 2026-09-14 22:45
+
+**요청 요약:** STOCKSYS 주문 취소 및 자동 엔진의 오래된 객체 참조 결함 수정, 비동기 경합 회귀 테스트 추가, 종합 검증 범위 보강 및 기능 개발 재개 검증
+
+**수행 결과:**
+- `lib/engine/marketService.ts`: `LocalMarketService.cancelOrder()` 구현. 락 획득 전에는 최소 식별자(`stockId`)만 추출하고, `withStockLock` 내부에서 `memoryDb.orders.get(orderId)`를 재조회하여 소유권, 종목 일치, open/partial 상태를 원자적으로 검증하도록 하여 락 대기 중 롤백·교체·체결된 오래된 주문 객체로 인한 장부 덮어쓰기 방지.
+- `app/api/orders/route.ts`: DELETE 주문 취소 경로가 `LocalMarketService.cancelOrder()`를 호출하도록 통일.
+- `app/api/local-db/route.ts`: `orders` 테이블의 status 'cancelled' update 경로가 `LocalMarketService.cancelOrder()`를 호출하도록 통합하여 두 취소 경로의 처리 로직 일원화.
+- `lib/engine/localStandaloneServer.ts`:
+  - `refreshLpOrders()`: 락 외부의 `StockRecord` 순회를 `stockIds` 순회로 변경하고, `withStockLock` 내부에서 `memoryDb.stocks.get(stockId)`를 재조회하여 롤백·시장 리셋 후 제거되거나 교체된 구 객체에 호가가 설정되지 않도록 수정.
+  - `processMatching()`: `withStockLock` 진입 후 `memoryDb.stocks.get(stockId)`를 조회하고, 매칭 완료 후 체결가/거래량/호가 반영 시에도 최신 종목 객체를 재확인하도록 수정. 자동 엔진 정산 후 실패 주입 훅(`__setStandaloneFailureHook`) 추가.
+- `scripts/test-concurrency-and-stale-ref.ts` [NEW]: 임의 sleep 없이 Promise 제어 및 실패 주입 기반 5대 동시성 회귀 테스트 작성 및 통과:
+  1. 종목 락 대기 중 트랜잭션 롤백으로 주문 객체가 교체되었을 때 최신 객체에 정확한 취소 반영 및 구 객체 불변 확인.
+  2. 주문 취소 대기 중 시장 리셋/주문 삭제 시 404 반환 및 삭제된 주문의 언데드 부활 방지 확인.
+  3. LP 갱신 대기 중 종목 객체가 교체되었을 때 현재 DB 객체에만 신규 호가 반영 확인.
+  4. 취소 대기 중 주문이 체결 완료(filled)되었을 때 취소 요청 거절(400) 및 체결 상태 보존 확인.
+  5. 계정 현금, 보유량, 주문 상태, 종목 통계 및 4대 보조 인덱스(orderStockIndex, orderUserIndex, tradeStockIndex, holdingUserIndex) 전수 일치 확인.
+- `scripts/test-comprehensive-audit-fixes.ts` [ENHANCED]:
+  - 교차 종목 보존: 사전 거절뿐 아니라 A 종목 실제 정산 후 실패 주입 시 A 종목 롤백 및 B 종목 거래·자산·통계·인덱스 완전 보존 검증으로 고도화.
+  - LP 보존 한도: 종료 주문 45개 생성 후 `refreshLpOrders()` 실행을 통해 초과 15개 제거, 30개 한도 유지, `memoryDb.orders`와 `orderStockIndex` 보조 인덱스 완전 일치 검증.
+  - 자동 엔진 테스트: 사전 정산 거절(잔고 부족)과 사후 정산 실패(주입 실패)를 [TEST 3-A], [TEST 3-B]로 명확히 분리.
+  - 테스트 완료 및 예외 발생 시 `stopLocalStandaloneEngine()` 호출을 `finally`로 보장하여 백그라운드 타이머 안전 종료.
+  - 직접 라우트 핸들러 호출 검증(Direct Handler Call)을 외부 HTTP 요청과 구분하여 표기.
+
+**검증 수행 내역:**
+- [실행한 검증]
+  - `scripts/test-concurrency-and-stale-ref.ts`: 5대 경합 및 오래된 참조 테스트 전원 통과 (exit code 0).
+  - `scripts/test-comprehensive-audit-fixes.ts`: 가격-시간 우선순위, 자가매매 방지, 사전/사후 실패 분리, 교차 종목 보존, 라우트 핸들러 인가, LP 45->30 캡 및 인덱스 일치 테스트 통과 (exit code 0).
+  - `scripts/test-order-security-and-atomic.ts`: TEST 1~14 전체 통과 (exit code 0).
+  - `scripts/test-transaction-isolation.ts`: 교차 종목 트랜잭션 격리 및 초과지출 차단 통과 (exit code 0).
+  - `scripts/test-order-risk-and-settlement.ts`: TEST A~N 자산 예약/수수료/정산 테스트 통과 (exit code 0).
+  - `npx tsc --noEmit`: TypeScript 컴파일 에러 0건 통과 (exit code 0).
+  - `npm run build`: Next.js Turbopack 23개 라우트 프로덕션 빌드 성공 (exit code 0).
+- [실행하지 못한 검증]
+  - 분산 노드 환경 배포 검증 및 수천 동시 유저 부하 테스트 (현재 단일 프로세스 Local Standalone 스펙 준수).

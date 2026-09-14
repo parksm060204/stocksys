@@ -12,6 +12,14 @@ interface GlobalWithEngine {
   __STOCKSYS_ENGINE_INITIALIZING__?: boolean;
 }
 
+type StandaloneFailureHook = (context: { stockId: string }) => void | boolean | Promise<void | boolean>;
+let _standaloneTestFailureHook: StandaloneFailureHook | null = null;
+
+/** @internal Test-only: inject a failure in processMatching after settlement, before state updates. */
+export function __setStandaloneFailureHook(hook: StandaloneFailureHook | null): void {
+  _standaloneTestFailureHook = hook;
+}
+
 const globalObj = globalThis as unknown as GlobalWithEngine;
 
 class LocalMarketEngineInstance {
@@ -161,16 +169,20 @@ class LocalMarketEngineInstance {
    */
   public async refreshLpOrders(): Promise<void> {
     const now = Date.now();
-    const stocks = Array.from(memoryDb.stocks.values());
+    const stockIds = Array.from(memoryDb.stocks.keys());
 
-    for (const stk of stocks) {
-      await withStockLock(stk.id, async () => {
+    for (const stockId of stockIds) {
+      await withStockLock(stockId, async () => {
+        // 락 내부에서 현재 DB에 존재하는 최신 종목 객체 조회 (대기 중 교체/삭제 방어)
+        const stk = memoryDb.stocks.get(stockId);
+        if (!stk) return;
+
         const cp = stk.current_price;
         const tick = this.getTickSize(cp);
         const baseVol = cp >= 50000 ? 2500 : cp >= 10000 ? 800 : 200;
 
         // 종목별 종료된 LP 주문 보존 한도(cap) 적용
-        const existingStockOrderIds = memoryDb.orderStockIndex.get(stk.id);
+        const existingStockOrderIds = memoryDb.orderStockIndex.get(stockId);
         if (existingStockOrderIds) {
           const finishedLpOrders: OrderRecord[] = [];
           for (const oId of existingStockOrderIds) {
@@ -278,11 +290,12 @@ class LocalMarketEngineInstance {
     }
 
     for (const stockId of targetStockIds) {
-      const stock = memoryDb.stocks.get(stockId);
-      if (!stock) continue;
-
       // 종목 락으로 사용자 주문과의 동시성 완전 직렬화
       await withStockLock(stockId, async () => {
+        // 락 획득 후 현재 DB에 존재하는 최신 종목 객체 조회 (대기 중 교체/삭제 방어)
+        const stock = memoryDb.stocks.get(stockId);
+        if (!stock) return;
+
         // 2. 해당 종목의 봇 주문 등록
         const pendingBots = botOrdersByStock.get(stockId) || [];
         for (const b of pendingBots) {
@@ -424,6 +437,14 @@ class LocalMarketEngineInstance {
               snap.createdTradeIds.add(tradeId);
             }
 
+            // ── Test-only failure hook after settlement ──
+            if (_standaloneTestFailureHook) {
+              const hookResult = await _standaloneTestFailureHook({ stockId });
+              if (hookResult !== false) {
+                throw new Error('[TEST] Injected standalone post-settlement failure');
+              }
+            }
+
             // 정산 성공 확정 후 주문 상태 실제 갱신
             for (const update of orderUpdates) {
               const liveOrder = memoryDb.orders.get(update.orderId);
@@ -435,18 +456,21 @@ class LocalMarketEngineInstance {
 
             // 종목 현재가, 최고가, 최저가, 거래량 확정 반영
             if (lastExecPrice !== null && lastExecPrice > 0) {
-              const curHigh = Number(stock.high || 0);
-              const curLow = Number(stock.low || 0);
+              const liveStock = memoryDb.stocks.get(stockId);
+              if (!liveStock) return;
+
+              const curHigh = Number(liveStock.high || 0);
+              const curLow = Number(liveStock.low || 0);
               const newHigh = Math.max(curHigh, executionHigh);
               const newLow = curLow === 0 ? executionLow : Math.min(curLow, executionLow);
 
-              stock.current_price = lastExecPrice;
-              stock.high = newHigh;
-              stock.low = newLow;
-              stock.high_price = newHigh;
-              stock.low_price = newLow;
-              stock.volume = Number(stock.volume || 0) + matchedVol;
-              stock.change_rate = parseFloat((((lastExecPrice - stock.previous_close) / stock.previous_close) * 100).toFixed(2));
+              liveStock.current_price = lastExecPrice;
+              liveStock.high = newHigh;
+              liveStock.low = newLow;
+              liveStock.high_price = newHigh;
+              liveStock.low_price = newLow;
+              liveStock.volume = Number(liveStock.volume || 0) + matchedVol;
+              liveStock.change_rate = parseFloat((((lastExecPrice - liveStock.previous_close) / liveStock.previous_close) * 100).toFixed(2));
 
               // 주가 히스토리 추가
               const histId = `hist_${stockId}_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`;
@@ -459,7 +483,7 @@ class LocalMarketEngineInstance {
               });
 
               // 외부에 확정된 시세 발행
-              memoryDb.publish('stocks_changes', { eventType: 'UPDATE', new: stock });
+              memoryDb.publish('stocks_changes', { eventType: 'UPDATE', new: liveStock });
             }
           } catch (err) {
             console.error(`[LocalMarketEngine] Matching settlement failed for stock ${stockId}, rolling back:`, err);

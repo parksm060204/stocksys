@@ -152,42 +152,15 @@ export async function DELETE(request: Request) {
       );
     }
 
-    const { memoryDb } = await import('@/lib/memoryDb/memoryStore');
-    const { withStockLock } = await import('@/lib/engine/marketService');
-
-    const order = memoryDb.orders.get(orderId);
-    if (!order) {
-      return NextResponse.json(
-        { success: false, message: '주문을 찾을 수 없습니다.' },
-        { status: 404 }
-      );
-    }
-
-    if (order.user_id !== authenticatedUserId) {
-      return NextResponse.json(
-        { success: false, message: '본인의 주문만 취소할 수 있습니다.' },
-        { status: 403 }
-      );
-    }
-
-    let cancelled = false;
-    await withStockLock(order.stock_id, async () => {
-      if (order.status === 'open' || order.status === 'partial') {
-        order.status = 'cancelled';
-        memoryDb.orders.set(order.id, order);
-        memoryDb.publish('orders_changes', { eventType: 'UPDATE', new: order });
-        cancelled = true;
-      }
+    const res = await LocalMarketService.cancelOrder({
+      orderId,
+      userId: authenticatedUserId,
     });
 
-    if (!cancelled) {
-      return NextResponse.json(
-        { success: false, message: `이미 ${order.status} 상태인 주문은 취소할 수 없습니다.` },
-        { status: 400 }
-      );
-    }
-
-    return NextResponse.json({ success: true, message: '주문이 정상적으로 취소되었습니다.', orderId });
+    return NextResponse.json(
+      { success: res.success, message: res.message, orderId: res.order?.id || orderId },
+      { status: res.statusCode }
+    );
   } catch (err: any) {
     console.error('[DELETE /api/orders Error]', err);
     return NextResponse.json(

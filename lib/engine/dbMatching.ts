@@ -12,6 +12,14 @@ export interface OrderInput {
   side: 'buy' | 'sell';
   price: number;
   size: number;
+  is_lp?: boolean;
+  order_type?: 'limit' | 'ioc';
+  created_at?: string;
+  simulation_time?: number;
+  sequence?: number;
+  participant_type?: 'human' | 'bot' | 'lp';
+  account_id?: string;
+  agent_id?: string;
 }
 
 export interface MatchOrderResult {
@@ -145,12 +153,14 @@ export async function submitAndMatchOrder(
       query = query
         .lte('price', incomingPrice)
         .order('price', { ascending: true })
-        .order('created_at', { ascending: true });
+        .order('created_at', { ascending: true })
+        .order('sequence', { ascending: true });
     } else {
       query = query
         .gte('price', incomingPrice)
         .order('price', { ascending: false })
-        .order('created_at', { ascending: true });
+        .order('created_at', { ascending: true })
+        .order('sequence', { ascending: true });
     }
 
     const { data: oppOrders, error: fetchErr } = await query;
@@ -198,7 +208,7 @@ export async function submitAndMatchOrder(
           size: matchQty,
           buyer_fee,
           seller_fee,
-          created_at: new Date().toISOString(),
+          created_at: input.created_at || new Date().toISOString(),
         });
 
         const newOppFilled = Number(opp.filled || 0) + matchQty;
@@ -284,8 +294,19 @@ export async function submitAndMatchOrder(
       }
 
       // ── 7. Incoming order insert (direct memoryDb write — orderId captured above) ──
-      const initialStatus: OrderRecord['status'] =
-        totalFilledQty === 0 ? 'open' : remainingQty === 0 ? 'filled' : 'partial';
+      const isIoc = input.order_type === 'ioc';
+      let initialStatus: OrderRecord['status'];
+
+      if (isIoc) {
+        // IOC: immediate-or-cancel. Any unfilled portion is immediately cancelled, never rests in the book.
+        if (remainingQty === 0 && totalFilledQty > 0) {
+          initialStatus = 'filled';
+        } else {
+          initialStatus = 'cancelled';
+        }
+      } else {
+        initialStatus = totalFilledQty === 0 ? 'open' : remainingQty === 0 ? 'filled' : 'partial';
+      }
 
       const newOrder: OrderRecord = {
         id: orderId,
@@ -296,29 +317,39 @@ export async function submitAndMatchOrder(
         size: incomingSize,
         filled: totalFilledQty,
         status: initialStatus,
-        is_lp: false,
-        created_at: new Date().toISOString(),
+        is_lp: input.is_lp ?? false,
+        created_at: input.created_at || new Date().toISOString(),
+        participant_type: input.participant_type,
+        account_id: input.account_id || user_id,
+        agent_id: input.agent_id,
+        order_type: input.order_type || 'limit',
+        sequence: input.sequence,
+        simulation_time: input.simulation_time,
       };
       memoryDb.orders.set(orderId, newOrder);
       memoryDb.addOrderToIndex(newOrder);
 
       // ── 8. Return result ──
       if (totalFilledQty > 0) {
+        const iocNote = isIoc && remainingQty > 0 ? ` (미체결 ${remainingQty}주는 IOC 조건에 따라 취소되었습니다)` : '';
         return {
           success: true,
           filledQty: totalFilledQty,
           execPrice: lastExecPrice,
           status: initialStatus,
           orderId,
-          message: `🎉 ${totalFilledQty.toLocaleString()}주가 체결되었습니다! (체결가: ₩${lastExecPrice.toLocaleString()})`,
+          message: `🎉 ${totalFilledQty.toLocaleString()}주가 체결되었습니다! (체결가: ₩${lastExecPrice.toLocaleString()})${iocNote}`,
         };
       } else {
+        const iocMsg = isIoc
+          ? `IOC 주문 체결 가능 수량이 없어 전량 취소되었습니다. (${incomingPrice.toLocaleString()}원 ${incomingSize}주)`
+          : `주문이 호가창에 정상 접수되었습니다! (${incomingPrice.toLocaleString()}원 ${incomingSize}주)`;
         return {
           success: true,
           filledQty: 0,
           status: initialStatus,
           orderId,
-          message: `주문이 호가창에 정상 접수되었습니다! (${incomingPrice.toLocaleString()}원 ${incomingSize}주)`,
+          message: iocMsg,
         };
       }
     } catch (txErr: any) {

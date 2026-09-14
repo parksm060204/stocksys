@@ -6,6 +6,7 @@ import { withAccountLocks } from '../memoryDb/accountLocks';
 import { snapshotTradingState, rollbackTradingState, TradingSnapshot } from '../memoryDb/memoryTransaction';
 import { calculateTradeFees, executeSettlement, SettlementTrade } from './settlement';
 import { randomUUID } from 'crypto';
+import { AgentManager } from './simulation/agentManager';
 
 interface GlobalWithEngine {
   __STOCKSYS_ENGINE__?: LocalMarketEngineInstance;
@@ -22,7 +23,7 @@ export function __setStandaloneFailureHook(hook: StandaloneFailureHook | null): 
 
 const globalObj = globalThis as unknown as GlobalWithEngine;
 
-class LocalMarketEngineInstance {
+export class LocalMarketEngineInstance {
   private isRunning: boolean = false;
   private tickIntervalMs: number = 1000;
   private timer: NodeJS.Timeout | null = null;
@@ -30,6 +31,8 @@ class LocalMarketEngineInstance {
   private client = createMemoryDbClient();
   private readonly LP_REFRESH_TICKS: number = 5;
   private readonly MAX_RETAINED_LP_ORDERS_PER_STOCK: number = 30;
+
+  public agentManager: AgentManager = new AgentManager();
 
   // SDE: Merton Jump-Diffusion 가치 변동
   private fundamentals: Record<string, number> = {};
@@ -70,67 +73,21 @@ class LocalMarketEngineInstance {
     }, delayMs);
   }
 
+  /**
+   * 시뮬레이션을 수동으로 dt초만큼 전진 (타이머 없이 동기적/결정론적 테스트 지원)
+   */
+  public async stepSimulation(dt: number = 1.0): Promise<void> {
+    await this.agentManager.step(dt);
+  }
+
   public async tick(): Promise<void> {
     this.tickCount++;
 
-    // ── 1. 5틱마다 LP 호가 갱신 ──
-    const shouldRefreshLp = this.tickCount % this.LP_REFRESH_TICKS === 0;
-    if (shouldRefreshLp) {
-      await this.refreshLpOrders();
-    }
+    // ── 1. 에이전트 기반 시장(ABM) 1스텝 실행 ──
+    // MJD SDE, 재고 기반 LP 호가 갱신, 가치 투자자 및 추세 추종자 의사결정 및 즉시 매칭
+    await this.agentManager.step(1.0);
 
-    // ── 2. MJD 주가 펀더멘털 및 시장 변동 시뮬레이션 ──
-    for (const stock of memoryDb.stocks.values()) {
-      if (!this.fundamentals[stock.id]) {
-        this.fundamentals[stock.id] = stock.current_price;
-      }
-      const f = this.fundamentals[stock.id]!;
-      const dW = (Math.random() + Math.random() + Math.random() + Math.random() - 2) * 1.732;
-      let jump = 0;
-      if (Math.random() < this.mjd_lambda) {
-        jump = (Math.random() - 0.5) * 0.05;
-      }
-      const dF = f * (this.mjd_mu + this.mjd_sigma * dW + jump);
-      this.fundamentals[stock.id] = Math.max(100, f + dF);
-    }
-
-    // ── 3. 봇 주문 생성 (Retail & Institutional Bot Flow) ──
-    const botOrders: any[] = [];
-    const stockList = Array.from(memoryDb.stocks.values());
-
-    for (const stock of stockList) {
-      const cp = stock.current_price;
-      const tick = this.getTickSize(cp);
-      const f = this.fundamentals[stock.id] || cp;
-
-      const diffPct = (f - cp) / cp;
-      const isBuyHeavy = diffPct > 0.005 || Math.random() < 0.48;
-
-      // 매 틱 40% 확률로 봇 시장가/지정가 주문 발생
-      if (Math.random() < 0.4) {
-        const side = isBuyHeavy ? 'buy' : 'sell';
-        const price = side === 'buy' ? cp + (Math.random() > 0.5 ? 0 : -tick) : cp - (Math.random() > 0.5 ? 0 : -tick);
-        const alignedPrice = Math.max(tick, Math.round(price / tick) * tick);
-        const size = Math.max(1, Math.min(500, Math.floor(20 + Math.random() * 80)));
-
-        botOrders.push({
-          stock_id: stock.id,
-          user_id: null,
-          side,
-          price: alignedPrice,
-          size,
-          filled: 0,
-          status: 'open',
-          is_lp: false,
-          created_at: new Date().toISOString(),
-        });
-      }
-    }
-
-    // ── 4. 통합 매칭 엔진 실행 (LP + User Orders + Bot Orders) ──
-    await this.processMatching(botOrders);
-
-    // ── 5. 오래된 봇 주문 및 종료된 LP 주문 메모리 정리 (Memory Leak 방지) ──
+    // ── 2. 오래된 봇 주문 및 종료된 LP 주문 메모리 정리 (Memory Leak 방지) ──
     if (this.tickCount % 20 === 0) {
       const nowMs = Date.now();
       for (const [id, order] of Array.from(memoryDb.orders.entries())) {
@@ -227,7 +184,7 @@ class LocalMarketEngineInstance {
                 filled: 0,
                 status: 'open',
                 is_lp: true,
-                created_at: new Date(now - (11 - level) * 1000).toISOString(),
+                created_at: new Date(now).toISOString(),
               };
               memoryDb.orders.set(bidId, ord);
               memoryDb.addOrderToIndex(ord);
@@ -253,7 +210,7 @@ class LocalMarketEngineInstance {
               filled: 0,
               status: 'open',
               is_lp: true,
-              created_at: new Date(now - (11 - level) * 1000).toISOString(),
+              created_at: new Date(now).toISOString(),
             };
             memoryDb.orders.set(askId, aOrd);
             memoryDb.addOrderToIndex(aOrd);

@@ -9,6 +9,14 @@ export interface SubmitOrderParams {
   side: 'buy' | 'sell';
   price: number;
   size: number;
+  isLp?: boolean;
+  orderType?: 'limit' | 'ioc';
+  createdAt?: string;
+  simulationTime?: number;
+  sequence?: number;
+  participantType?: 'human' | 'bot' | 'lp';
+  accountId?: string;
+  agentId?: string;
 }
 
 export interface CancelOrderParams {
@@ -99,6 +107,14 @@ export class LocalMarketService {
         side: params.side,
         price: params.price,
         size: params.size,
+        is_lp: params.isLp,
+        order_type: params.orderType,
+        created_at: params.createdAt,
+        simulation_time: params.simulationTime,
+        sequence: params.sequence,
+        participant_type: params.participantType,
+        account_id: params.accountId,
+        agent_id: params.agentId,
       });
     });
   }

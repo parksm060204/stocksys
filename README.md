@@ -162,9 +162,9 @@ expired
 
 ---
 
-## Market Simulation
+## Market Simulation & Agent-Based Market (ABM)
 
-Local Market Engine은 Next.js Node.js 프로세스 안에서 실행됩니다.
+Local Market Engine은 Next.js Node.js 단일 프로세스 안에서 실행되며, 현실적인 **에이전트 기반 시장(Agent-Based Market, ABM)** 구조를 갖추고 있습니다.
 
 ```text
 npm run dev
@@ -172,22 +172,82 @@ npm run dev
      ▼
 Next.js Node Process
      │
-     ├── Local Memory Database
+     ├── Local Memory Database (Single Authoritative Ledger)
      │
      ├── Local Market Engine
+     │     │
+     │     ├── Simulation Clock (simulationTime, dt, monotonic sequence)
+     │     ├── Decoupled PRNG Streams (Mulberry32 + Box-Muller Gaussian)
+     │     ├── Merton Jump-Diffusion (MJD) Latent Fundamental Process
+     │     └── Agent Manager
+     │           │
+     │           ├── Value Investors (Deadband/Hysteresis, Cost Check)
+     │           ├── Trend Followers (Warm-up, Momentum, IOC Takers)
+     │           └── Inventory-Skewed LP (Avellaneda-Stoikov Skew, Multi-level Budget)
      │
-     ├── Matching Engine
+     ├── Unified Service & Matching Engine (LocalMarketService & dbMatching)
+     │     ├── Universal Price-Time Priority
+     │     ├── Resting Maker Price Execution & Self-Trade Prevention
+     │     └── Immediate-Or-Cancel (IOC) Instant Cancellation
      │
-     ├── Liquidity Providers
-     │
-     ├── Trading Bots
-     │
-     └── Next.js UI
+     └── Next.js Web UI
 ```
 
-Memory DB와 LocalMarketEngine은 `globalThis` singleton으로 유지되어
-개발 중 Hot Module Reload가 발생하더라도 가능한 한 하나의
-authoritative market state를 유지합니다.
+### 1. 참가자 식별과 독립 계좌 장부
+* **참가자 유형(`ParticipantType`)**: `human` | `bot` | `lp`
+* **독립 계좌(`accountId`)**:
+  * LP 주계좌: `acc_lp_main` (시드: 현금 50억 원, 종목별 5,000주)
+  * 가치 투자자 봇: `acc_bot_val_01`, `acc_bot_val_02` (시드: 현금 15~20억 원, 500~1,000주)
+  * 추세 추종자 봇: `acc_bot_trend_01`, `acc_bot_trend_02` (시드: 현금 15~20억 원, 500~1,000주)
+* **자산 제약 & 무차입 원칙**:
+  * 공매도 및 레버리지 금지 (가용 현금 초과 매수 및 가용 보유량 초과 매도 원천 차단).
+  * 자동 잔고 충전 또는 강제 보정 배제 (파산 및 한도 도달 시 활동 자연 축소).
+  * 단일 권위(Single Authority) 예약 자산 모델: 미체결(`open`, `partial`) 주문의 합산 예약금을 실시간 동적 차감하여 이중 지출 차단.
+
+### 2. 구현된 3대 전략과 의사결정 방식
+1. **가치 투자자 (Value Investor)**:
+   * 잠재 펀더멘털 가치($F_t$)에 개별 추정 오차($\epsilon \sim \mathcal{N}(0, \sigma^2)$)와 지연을 반영하여 $\hat{V}$를 산출.
+   * **1% 불감대(Deadband/Hysteresis)**: 미세한 가치 변동에 따른 잦은 포지션 뒤집기(churning) 억제.
+   * **기대이익 검증**: 예상 차익이 거래비용(수수료 + 스프레드 + 슬리피지 한도)을 충분히 상회할 때만 주문 제출.
+   * 저평가 시 매수, 고평가 시 매도가 대칭적으로 작동.
+2. **추세 추종자 (Trend Follower)**:
+   * 미래 정보를 보지 않고 순수 과거 체결 및 가격 이력으로 기간 모멘텀 계산.
+   * **Warm-up 강제**: 최소 5스텝 이상의 과거 데이터 축적 전까지 주문 보류.
+   * $\tanh$ 정규화 신호에 따른 동적 노출 조절 및 강한 추세 시 슬리피지 한도를 둔 IOC 주문 제출.
+3. **재고 기반 유동성 공급자 (Inventory-Skewed LP)**:
+   * **Avellaneda–Stoikov 휴리스틱**:
+     $$\text{quoteCenter} = \text{referencePrice} - (q - q^*) \cdot \kappa \cdot \text{tickSize}$$
+     $$\text{spread} = \text{baseSpread} + \text{volatilityPremium} + \text{inventoryRiskPremium}$$
+   * 재고 과다 시($q > q^*$) 호가 중심을 낮추어 매도를 유도하고, 재고 부족 시 호가 중심을 높여 매수를 유도.
+   * 변동성 및 재고 위험 증가 시 스프레드 자동 확대.
+   * **다단계 합산 자산 예산 한도**: 3단계 호가의 총 매수 대금이 가용 현금을, 총 매도 수량이 가용 주식을 절대 초과하지 않도록 캡 적용.
+   * 가격 미변경 시 기존 주문의 시간우선순위를 보존하는 차분 갱신(Differential Quoting).
+
+### 3. 시뮬레이션 시계와 재현 가능한 난수 (PRNG)
+* 벽시계(Wall Clock)와 경제 시뮬레이션 시간(`simulationTime`)의 명시적 분리.
+* 시드 기반 Mulberry32 PRNG와 Box-Muller 가우시안 난수 생성기 사용.
+* 시장 상태/가치 과정과 봇별 난수 스트림(`agentPrngs`)을 격리.
+* **Merton Jump-Diffusion (MJD)** 연속 시간 모형:
+  * Drift $\propto dt$, Diffusion $\propto \sigma \sqrt{dt}$, Jump 확률 $P(\text{jump}) = 1 - e^{-\lambda dt}$.
+  * 런타임 속도 변경 시에도 경제적 변동성 왜곡 없음.
+* **Headless 수동 전진**: 테스트 환경에서 백그라운드 타이머 없이 `stepSimulation(dt)`를 호출하여 결정론적 단위/회귀 테스트 수행 가능.
+
+### 4. 공통 주문·매칭·정산 및 보안 경로
+* 사람, 봇, LP 모두 단일 서비스 인터페이스(`LocalMarketService.submitOrder`, `cancelOrder`)와 매칭 엔진(`dbMatching`)을 사용.
+* 체결은 resting maker 가격으로 성립되며, 동일 계좌 간 자기 매매(Self-Trade)는 원천 차단.
+* IOC(Immediate-Or-Cancel) 주문은 허용 가격 내에서 체결 후 미체결 잔량을 즉시 `cancelled` 처리하여 호가창 잔류 방지.
+* 정산 실패 시 주가 통계, 호가창, 보조 인덱스, 장부 잔고를 이전 스냅샷으로 100% 원자적 롤백.
+* 공개 REST API는 클라이언트 요청 body의 `accountId`, `participantType`을 신뢰하지 않고 서버 세션 사용자로 강제 바인딩.
+
+### 5. 진단 지표 (`MarketDiagnostics`)
+* 전략별 주문 제출/취소/체결 수 및 거래량 집계.
+* Maker/Taker 체결 비중 및 정산 수수료/리베이트 추적.
+* 호가창 건전성: 스프레드(bps), 호가 뎁스, 단방향/빈 호가 상태 지속 틱수 모니터링.
+* 주문 거절 사유 추적 (원형 링 버퍼 기반 200건 캡으로 메모리 누수 원천 차단).
+
+### 6. 현실을 단순화한 가정 및 미구현 기능
+* **기관 포트폴리오 리밸런싱, 개인 투자자 군집 행동, 레버리지, 공매도, 복잡한 금융 위기 시나리오**는 향후 플러그인 확장이 용이하도록 `StrategyType` 및 `MarketObservation` 인터페이스로 설계되어 있으며, 이번 버전에서는 무차입 현물 시장에 집중하여 구현되었습니다.
+* 외부 실시간 시세 및 외부 DB 연동 없이 독립적인 Standalone 인메모리 환경에서 구동됩니다.
 
 ---
 

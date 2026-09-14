@@ -489,10 +489,6 @@ export class MemoryDbClient {
       // ── Step 2: 누적 사전 검증 (Cumulative Pre-Validation) ──
       // 각 거래를 개별적으로 검증하면 동일 buyer/seller의 여러 거래가 각각 같은 시작 잔고를 보므로
       // 중복 통과가 가능하다. 배치 전체를 합산하여 한 번에 검증해야 원자성이 보장된다.
-      //
-      //   예시: cash=1,000,000 / trade1 required=700,000 / trade2 required=700,000
-      //   개별 검증: 둘 다 통과 → 최종 잔고 -400,000 (부정합)
-      //   누적 검증: total=1,400,000 > 1,000,000 → 전체 배치 거절 (정합)
 
       // Map<buyerId, 누적 필요 현금 (수수료 포함)>
       const buyerRequiredCash = new Map();
@@ -503,11 +499,11 @@ export class MemoryDbClient {
         const tradeAmount = Number(t.price) * Number(t.size);
         const buyerFee = Number(t.buyer_fee ?? 0);
 
-        if (!t.buyer_is_bot && t.buyer_id) {
+        if (t.buyer_id && db.profiles.has(t.buyer_id)) {
           const prev = buyerRequiredCash.get(t.buyer_id) ?? 0;
           buyerRequiredCash.set(t.buyer_id, prev + tradeAmount * (1 + buyerFee));
         }
-        if (!t.seller_is_bot && t.seller_id) {
+        if (t.seller_id && db.profiles.has(t.seller_id)) {
           const key = `${t.seller_id}_${t.stock_id}`;
           const prev = sellerRequiredQty.get(key) ?? 0;
           sellerRequiredQty.set(key, prev + Number(t.size));
@@ -573,7 +569,7 @@ export class MemoryDbClient {
         const buyerFee = Number(t.buyer_fee ?? 0);
         const sellerFee = Number(t.seller_fee ?? 0);
 
-        if (!t.buyer_is_bot && buyerId) {
+        if (buyerId && db.profiles.has(buyerId)) {
           const buyer = getProfile(buyerId);
           if (buyer) {
             buyer.cash -= tradeAmount * (1 + buyerFee);
@@ -598,7 +594,7 @@ export class MemoryDbClient {
           }
         }
 
-        if (!t.seller_is_bot && sellerId) {
+        if (sellerId && db.profiles.has(sellerId)) {
           const seller = getProfile(sellerId);
           if (seller) {
             seller.cash += tradeAmount * (1 - sellerFee);

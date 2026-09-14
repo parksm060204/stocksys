@@ -116,6 +116,13 @@ export interface OrderRecord {
   status: 'open' | 'partial' | 'filled' | 'cancelled' | 'expired';
   is_lp: boolean;
   created_at: string;
+  // ABM participant & sequencing fields
+  participant_type?: 'human' | 'bot' | 'lp';
+  account_id?: string;
+  agent_id?: string;
+  order_type?: 'limit' | 'ioc';
+  sequence?: number;
+  simulation_time?: number;
 }
 
 export interface TradeRecord {
@@ -130,6 +137,8 @@ export interface TradeRecord {
   buyer_fee?: number;
   seller_fee?: number;
   created_at: string;
+  sequence?: number;
+  simulation_time?: number;
 }
 
 export interface OptionContractRecord {
@@ -524,6 +533,48 @@ export class MemoryDatabase {
       }
     });
     guestUser.net_worth = guestUser.cash + totalStockEval;
+
+    // ── ABM 봇 및 LP 계좌 시드 (유한한 현금과 보유주식을 가진 독립 계좌) ──
+    const abmAccounts = [
+      { id: 'acc_lp_main', name: '유동성공급자(LP)', cash: 5_000_000_000, holdingPerStock: 5000 },
+      { id: 'acc_bot_val_01', name: '가치투자 봇 1호', cash: 2_000_000_000, holdingPerStock: 1000 },
+      { id: 'acc_bot_val_02', name: '가치투자 봇 2호', cash: 1_500_000_000, holdingPerStock: 500 },
+      { id: 'acc_bot_trend_01', name: '모멘텀 봇 1호', cash: 2_000_000_000, holdingPerStock: 1000 },
+      { id: 'acc_bot_trend_02', name: '모멘텀 봇 2호', cash: 1_500_000_000, holdingPerStock: 500 },
+    ];
+
+    for (const acc of abmAccounts) {
+      const pRec: ProfileRecord = {
+        id: acc.id,
+        user_id: acc.id,
+        username: acc.name,
+        nickname: acc.name,
+        cash: acc.cash,
+        net_worth: acc.cash,
+        rank_tier: 'Diamond',
+        is_admin: false,
+        created_at: new Date().toISOString(),
+      };
+      this.profiles.set(acc.id, pRec);
+      this.addProfileToIndex(pRec);
+
+      let botStockEval = 0;
+      for (const stk of this.stocks.values()) {
+        const hId = `${acc.id}_${stk.id}`;
+        const hRec: HoldingRecord = {
+          id: hId,
+          user_id: acc.id,
+          stock_id: stk.id,
+          quantity: acc.holdingPerStock,
+          avg_price: stk.current_price,
+          created_at: new Date().toISOString(),
+        };
+        this.holdings.set(hId, hRec);
+        this.addHoldingToIndex(hRec);
+        botStockEval += acc.holdingPerStock * stk.current_price;
+      }
+      pRec.net_worth = acc.cash + botStockEval;
+    }
 
     // ── 관리자 설정 ──
     this.adminSettings.set('1', {

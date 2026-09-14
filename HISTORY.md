@@ -3559,3 +3559,61 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
   - `npm run build`: Next.js Turbopack 23개 라우트 프로덕션 빌드 성공 (exit code 0).
 - [실행하지 못한 검증]
   - 분산 노드 환경 배포 검증 및 수천 동시 유저 부하 테스트 (현재 단일 프로세스 Local Standalone 스펙 준수).
+
+---
+## 2026-09-14 23:33
+
+**요청 요약:** STOCKSYS 봇 거래 메커니즘을 현실에 가까운 에이전트 기반 시장(Agent-Based Market, ABM)으로 개선, 독립 봇/LP 계좌 및 자산 제약, 3대 전략(가치/추세/재고LP), 시뮬레이션 시계·PRNG, 공통 매칭 경로 일원화, 진단 지표 및 종합 회귀 검증
+
+**과거 문제점 및 개선 배경:**
+- 기존 `localStandaloneServer.ts`의 종목별 40% 고정 확률 무작위 주문, 20~99주 획일적 수량, 비대칭 `diffPct` 방향 결정 및 `user_id=null`을 이유로 봇의 자산 제약을 생략하던 구조 제거.
+- LP 주문의 `created_at` 과거 시간 조작 및 새 봇 주문 일괄 삽입 후 사후 교차 매칭하던 비현실적 배치 구조 대체.
+
+**수행 결과:**
+- `lib/engine/simulation/simClock.ts` [NEW]: 시뮬레이션 시계(`simulationTime`, $dt$, `sequence`, `advance`) 및 결정론적 PRNG(`SimPrng`, Mulberry32 + Box-Muller Gaussian) 구현. 시장과 에이전트 간 난수 스트림 격리.
+- `lib/engine/simulation/agentTypes.ts` [NEW]: `ParticipantType`(`human` | `bot` | `lp`), `StrategyType`(`value` | `trend` | `market_maker`), `AgentAccount`, `AgentOrderIntent`, 전략 설정 인터페이스 정의.
+- `lib/memoryDb/memoryStore.ts`:
+  - `OrderRecord` & `TradeRecord`에 `participant_type`, `account_id`, `agent_id`, `order_type`, `sequence`, `simulation_time` 필드 추가.
+  - `seedDefaultData()`에 독립 봇(`acc_bot_val_01/02`, `acc_bot_trend_01/02`) 및 LP(`acc_lp_main`) 프로필과 초기 현금(15~50억)·주식(500~5,000주) 장부 시드 등록.
+- `lib/engine/simulation/marketObservation.ts` [NEW]: 읽기 전용 스냅샷, 호가 뎁스, 단일 권위(Single Authority) 예약 자산 및 가용 자산 계산, 롤링 수익률/변동성, 단방향/빈 호가창 fallback 처리.
+- `lib/engine/simulation/strategies/valueStrategy.ts` [NEW]: 잠재 가치에 개별 추정 오차($\epsilon$)를 반영한 $\hat{V}$ 산출, 1% 데드밴드(Hysteresis), 수수료/슬리피지 초과 기대이익 검증, 대칭적 매수/매도.
+- `lib/engine/simulation/strategies/trendStrategy.ts` [NEW]: 순수 과거 체결 기반 모멘텀, 최소 5스텝 warm-up 강제, $\tanh$ 정규화 신호, 강한 추세 시 IOC 슬리피지 한도 주문.
+- `lib/engine/simulation/strategies/lpStrategy.ts` [NEW]: Avellaneda-Stoikov 휴리스틱 재고 스큐($q \cdot \kappa \cdot \text{tick}$), 변동성/재고위험 스프레드 확장, 다단계 합산 자산 예산 한도, 시간우선순위 보존 차분 갱신.
+- `lib/engine/simulation/marketDiagnostics.ts` [NEW]: 전략별 주문·취소·체결·거래량, Maker/Taker 비중, 스프레드, 뎁스, 링 버퍼 200건 거절 로그 요약 리포트(`generateSummaryReport`) 구현.
+- `lib/engine/simulation/agentManager.ts` [NEW]: SDE(Merton Jump-Diffusion $dt$ 스케일링: $\mu dt, \sigma \sqrt{dt} Z, 1 - e^{-\lambda dt}$), 푸아송 도착($1 - e^{-\lambda dt}$), 에이전트 평가, `LocalMarketService` 통한 단일 경로 주문 제출 및 취소 직렬화.
+- `lib/engine/dbMatching.ts` & `lib/engine/marketService.ts`:
+  - 인간, 봇, LP가 동일한 `submitOrder`와 `dbMatching`을 사용하도록 공통화.
+  - `sequence` 기반 단조 증가 도착 정렬, resting maker 가격 체결, 동일 `accountId` 자기 매매 차단.
+  - IOC(Immediate-Or-Cancel) 주문의 미체결 잔량 즉시 `cancelled` 처리 (호가창 미잔류).
+- `lib/memoryDb/memoryDbClient.ts`: `bulk_settle_trades`에서 프로필을 보유한 봇/LP/인간 계좌 모두에 대해 엄격한 현금 및 주식 잔고 검증 및 원자적 정산 반영 (레거시 가상 봇과의 하위 호환 유지).
+- `lib/engine/localStandaloneServer.ts`: 기존 40% 무작위 주문 로직 완전 대체, `AgentManager` 통합, `tick()`에서 `agentManager.step(1.0)` 구동, 타이머 없는 headless 수동 전진(`stepSimulation(dt)`) 제공.
+- `README.md`: ABM 아키텍처, 3대 전략, 시뮬레이션 시계, 단일 권위 장부, 진단 지표 설명 추가.
+- `scripts/test-agent-based-market.ts` [NEW]: 13개 ABM 핵심 회귀 테스트 스위트 작성 및 전원 통과.
+
+**검증 수행 내역:**
+- [실행한 검증]
+  - `scripts/test-agent-based-market.ts`:
+    1. 봇의 초과지출/초과매도 차단 및 단일 권위 자산 제약 검증 (PASS)
+    2. 동일 계좌 자기 매매(Self-Trade) 방지 검증 (PASS)
+    3. 부분체결 및 취소 후 예약 자산 일치 검증 (PASS)
+    4. 사람-봇-LP 동일 정산 규칙 및 Maker 리베이트(-0.1%)/Taker 수수료(+0.25%) 자산 보존 검증 (PASS)
+    5. 가격 우선 및 시간 우선 매칭 엔진 검증 (PASS)
+    6. IOC 주문 슬리피지 한도 체결 및 잔량 즉시 취소 검증 (PASS)
+    7. 가치 투자자 대칭성 및 1% 데드밴드/기대이익 검증 (PASS)
+    8. 추세 추종자 warm-up 및 과거 데이터 기반 모멘텀 검증 (PASS)
+    9. LP 재고 스큐 호가 중심 하락, 변동성 스프레드 확대, 다단계 합산 자산 예산 한도 검증 (PASS)
+    10. 동일 시드(`seed=42`) 다회 실행 시 100% bit-for-bit 동일 거래 재현(결정론성) 검증 (PASS)
+    11. Headless 수동 시뮬레이션 전진(`stepSimulation(2.5)`) 검증 (PASS)
+    12. 클라이언트 body 변조를 통한 봇 계좌 사칭 방지 검증 (PASS)
+    13. 복수 시드(Seed 101, 202, 303) 시뮬레이션 지표 비교 및 리포트 검증 (PASS)
+  - 기존 5종 회귀 테스트 전수 통과:
+    - `scripts/test-concurrency-and-stale-ref.ts` (PASS, exit 0)
+    - `scripts/test-comprehensive-audit-fixes.ts` (PASS, exit 0)
+    - `scripts/test-order-security-and-atomic.ts` (PASS, exit 0)
+    - `scripts/test-transaction-isolation.ts` (PASS, exit 0)
+    - `scripts/test-order-risk-and-settlement.ts` (PASS, exit 0)
+  - `npx tsc --noEmit`: 컴파일 에러 0건 통과 (exit 0).
+  - `npm run build`: Next.js Turbopack 23개 라우트 프로덕션 빌드 성공 (exit 0).
+- [실행하지 못한 검증]
+  - 대규모 장기(수만 스텝) 시뮬레이션 하에서의 에르고딕성 및 점근적 분포 분석.
+  - 기관 포트폴리오 리밸런싱, 개인 투자자 군집 행동, 레버리지 및 공매도 (이번 범위에서 제외 및 인터페이스만 구비).

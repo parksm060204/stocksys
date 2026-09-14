@@ -208,6 +208,37 @@ async function runScenario1(seed: number): Promise<void> {
   printTable([p0s, p1s, p2s, p3s], `오성전자(반도체) seed=${seed}`);
   printTable([p0f, p1f, p2f, p3f], `KB금융(금융) seed=${seed}`);
 
+  const getSectorShares = (simTime: number) => {
+    const ws = mgr.diagnostics.computeWindowStatistics(simTime, 10, 50);
+    let semiTO = 0;
+    let finTO = 0;
+    let totalTO = 0;
+    for (const s of memoryDb.stocks.values()) {
+      const to = ws.get(s.id)?.turnover || 0;
+      totalTO += to;
+      if (s.sector_id === 'semiconductor') semiTO += to;
+      if (s.sector_id === 'finance') finTO += to;
+    }
+    return {
+      semiPct: totalTO > 0 ? (semiTO / totalTO) * 100 : 0,
+      finPct: totalTO > 0 ? (finTO / totalTO) * 100 : 0,
+      totalTO,
+    };
+  };
+
+  const sh0 = getSectorShares(p0s.simTime);
+  const sh1 = getSectorShares(p1s.simTime);
+  const sh2 = getSectorShares(p2s.simTime);
+
+  console.log(`\n  📋 [S1 주도권 이동 핵심 지표 비교표 / seed=${seed}]`);
+  console.log('  ' + '─'.repeat(96));
+  console.log('  ' + '구간'.padEnd(22) + '산업별 거래대금 비중 (반도체 / 금융)'.padEnd(34) + '봇 보유 비중 (반도체 / 금융)'.padEnd(26) + '주도주 순위 (반도체 / 금융)');
+  console.log('  ' + '─'.repeat(96));
+  console.log('  ' + '평상시 (t=5)'.padEnd(22) + `${sh0.semiPct.toFixed(1)}% / ${sh0.finPct.toFixed(1)}%`.padEnd(34) + `${(p0s.holdingRatio * 100).toFixed(1)}% / ${(p0f.holdingRatio * 100).toFixed(1)}%`.padEnd(26) + `${p0s.leaderRank}위 / ${p0f.leaderRank}위`);
+  console.log('  ' + '반도체 호재 후 (t=15)'.padEnd(22) + `${sh1.semiPct.toFixed(1)}% / ${sh1.finPct.toFixed(1)}%`.padEnd(34) + `${(p1s.holdingRatio * 100).toFixed(1)}% / ${(p1f.holdingRatio * 100).toFixed(1)}%`.padEnd(26) + `${p1s.leaderRank}위 / ${p1f.leaderRank}위`);
+  console.log('  ' + '금융 호재 후 (t=25)'.padEnd(22) + `${sh2.semiPct.toFixed(1)}% / ${sh2.finPct.toFixed(1)}%`.padEnd(34) + `${(p2s.holdingRatio * 100).toFixed(1)}% / ${(p2f.holdingRatio * 100).toFixed(1)}%`.padEnd(26) + `${p2s.leaderRank}위 / ${p2f.leaderRank}위`);
+  console.log('  ' + '─'.repeat(96));
+
   assert(p1s.attentionScore > p0s.attentionScore,
     `[S1] 반도체 호재 후 오성전자 관심도 증가: ${p0s.attentionScore.toFixed(3)}→${p1s.attentionScore.toFixed(3)}`);
   assert(p2f.attentionScore > p1f.attentionScore,

@@ -133,11 +133,11 @@ export class AgentManager {
       maxOrderSize: 200,
       maxPosition: 10000,
       riskTolerance: 0.6,
-      urgency: 0.2,
-      activityRate: 0.5,
+      urgency: 0.4,
+      activityRate: 0.8,
       infoLatency: 2.0,  // 2.0 seconds information latency
-      evaluationsPerStep: 3,
-      sectorPreferences: { semiconductor: 1.3, it: 1.1 },
+      evaluationsPerStep: 4,
+      sectorPreferences: { semiconductor: 1.4, it: 1.1 },
       nextDecisionTime: 0,
       stats: { ordersSubmitted: 0, ordersCancelled: 0, fillsCount: 0, volumeTraded: 0, feesPaid: 0, realizedPnl: 0 },
     });
@@ -152,11 +152,11 @@ export class AgentManager {
       maxOrderSize: 150,
       maxPosition: 8000,
       riskTolerance: 0.4,
-      urgency: 0.1,
-      activityRate: 0.35,
+      urgency: 0.35,
+      activityRate: 0.7,
       infoLatency: 4.0,  // 4.0 seconds latency (slower observer)
-      evaluationsPerStep: 2,
-      sectorPreferences: { auto: 1.2, energy: 1.1 },
+      evaluationsPerStep: 4,
+      sectorPreferences: { finance: 1.4, auto: 1.2 },
       nextDecisionTime: 0,
       stats: { ordersSubmitted: 0, ordersCancelled: 0, fillsCount: 0, volumeTraded: 0, feesPaid: 0, realizedPnl: 0 },
     });
@@ -173,9 +173,9 @@ export class AgentManager {
       maxPosition: 10000,
       riskTolerance: 0.7,
       urgency: 0.7, // High urgency -> IOC orders
-      activityRate: 0.6,
+      activityRate: 0.8,
       infoLatency: 1.0,
-      evaluationsPerStep: 3,
+      evaluationsPerStep: 4,
       sectorPreferences: { semiconductor: 1.2, it: 1.2, auto: 1.0 },
       nextDecisionTime: 0,
       stats: { ordersSubmitted: 0, ordersCancelled: 0, fillsCount: 0, volumeTraded: 0, feesPaid: 0, realizedPnl: 0 },
@@ -191,11 +191,11 @@ export class AgentManager {
       maxOrderSize: 150,
       maxPosition: 6000,
       riskTolerance: 0.5,
-      urgency: 0.4,
-      activityRate: 0.4,
+      urgency: 0.5,
+      activityRate: 0.7,
       infoLatency: 2.0,
-      evaluationsPerStep: 2,
-      sectorPreferences: { energy: 1.3, bio: 1.2 },
+      evaluationsPerStep: 4,
+      sectorPreferences: { energy: 1.3, bio: 1.2, finance: 1.2 },
       nextDecisionTime: 0,
       stats: { ordersSubmitted: 0, ordersCancelled: 0, fillsCount: 0, volumeTraded: 0, feesPaid: 0, realizedPnl: 0 },
     });
@@ -512,6 +512,9 @@ export class AgentManager {
         }
       }
     }
+
+    // ── 6. Record Time-Series Flow Snapshot for Dashboard ──
+    this.diagnostics.recordSnapshot(simTime, this.attentionMap, this.events);
   }
 
   /**

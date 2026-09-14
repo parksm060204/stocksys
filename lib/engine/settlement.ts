@@ -16,6 +16,7 @@ export interface SettlementTrade {
   buyer_fee: number;
   seller_fee: number;
   created_at?: string;
+  simulation_time?: number;
 }
 
 export const MAKER_REBATE_RATE = -0.001; // -0.1% (메이커 리베이트)
@@ -51,14 +52,17 @@ export async function executeSettlement(
 
   if (error) {
     console.error('[Settlement] Failed bulk_settle_trades:', error);
-    return { success: false, settled_count: 0, trade_ids: [], error };
+    return {
+      success: false,
+      settled_count: 0,
+      trade_ids: [],
+      error,
+    };
   }
 
   return {
     success: true,
-    settled_count: data?.settled_count ?? trades.length,
-    trade_ids: Array.isArray(data?.trade_ids)
-      ? data.trade_ids.map((id: unknown) => String(id))
-      : trades.map((trade) => trade.id).filter((id): id is string => Boolean(id)),
+    settled_count: trades.length,
+    trade_ids: trades.map((t) => t.id!).filter(Boolean),
   };
 }

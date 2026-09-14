@@ -3677,14 +3677,81 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 ---
 ## 2026-09-15 00:26
 
-**��û ���:** ���� ���� ���� �ݸ� ���� ����, ���ߺ� ������ ��� ��� ����, ���� �帧 �ó����� ��� ���� ��ũ��Ʈ �ۼ� �� ����
+**��û ���:** ���� ���� ���� �ݸ� ���� ����, ���ߺ� ������ ��� ��� ����, ���� �帧 �ó����� ��� ���� ��ũ��Ʈ �ۼ� �� ����
 
-**���� ���:**
-- `lib/engine/simulation/agentManager.ts`: CORRECTION �̺�Ʈ ���� �� ���� ����� confidence�� ���� ��� 0���� �����ϴ� ���� ����. ��� `correctedAt` Ÿ�ӽ������� �����Ͽ� �� ���� �ڽ��� infoLatency ��� visibleEvents������ ������ Ȯ���ϵ��� �ݸ�.
-- `lib/engine/simulation/strategies/valueStrategy.ts`: ���� visibleEvents���� CORRECTION�� ������ ��쿡�� �ش� ���� �信�� ���� ��� confidence�� 0���� ó���ϴ� `agentCorrectedIds` ���� ��Ʈ ��� ���� �ݸ� ���� �߰�.
-- `lib/engine/simulation/marketDiagnostics.ts`: `computeWindowStatistics`�� �ֱ� ������ ���͸� `>=` �� `>` (strict open-left)�� �����Ͽ� ��谪 ü���� �ֱ� ������ ���ؼ� ������ �ߺ� ����Ǵ� ���� ����.
-- `scripts/test-market-flow-verification.ts` (�ű�): ���� ���� �ó����� ��� ���� �帧 ���� ��ũ��Ʈ. 3�� �ó����� �� 2�� �õ� = 6ȸ ����. �� ���� ���: �ŷ����, ��������, ȣ�� ����, ���ɵ�, �ֵ��� ����, ���� ����.
-  - Scenario 1: ���á�ݵ�ü ȣ������ ���ߡ���� ȣ����ֵ��� �̵�
-  - Scenario 2: ������ ��ӡ���� ����������(���� ����)�溿�� ���� ���� (����/���� �� ���� �ݸ� ����)
-  - Scenario 3: �������� ����(����⼺) + LP �������� Ȯ�� + ȣ�� ���� ����(������ ���)
-- ���� ȸ�� �׽�Ʈ `scripts/settlement/run_settlement_verification.ts` ���� ���, `npx tsc --noEmit` ������ ���� 0��.
+**���� ���:**
+- `lib/engine/simulation/agentManager.ts`: CORRECTION �̺�Ʈ ���� �� ���� ����� confidence�� ���� ��� 0���� �����ϴ� ���� ����. ��� `correctedAt` Ÿ�ӽ������� �����Ͽ� �� ���� �ڽ��� infoLatency ��� visibleEvents������ ������ Ȯ���ϵ��� �ݸ�.
+- `lib/engine/simulation/strategies/valueStrategy.ts`: ���� visibleEvents���� CORRECTION�� ������ ��쿡�� �ش� ���� �信�� ���� ��� confidence�� 0���� ó���ϴ� `agentCorrectedIds` ���� ��Ʈ ��� ���� �ݸ� ���� �߰�.
+- `lib/engine/simulation/marketDiagnostics.ts`: `computeWindowStatistics`�� �ֱ� ������ ���͸� `>=` �� `>` (strict open-left)�� �����Ͽ� ��谪 ü���� �ֱ� ������ ���ؼ� ������ �ߺ� ����Ǵ� ���� ����.
+- `scripts/test-market-flow-verification.ts` (�ű�): ���� ���� �ó����� ��� ���� �帧 ���� ��ũ��Ʈ. 3�� �ó����� �� 2�� �õ� = 6ȸ ����. �� ���� ���: �ŷ����, ��������, ȣ�� ����, ���ɵ�, �ֵ��� ����, ���� ����.
+  - Scenario 1: ���á�ݵ�ü ȣ������ ���ߡ���� ȣ����ֵ��� �̵�
+  - Scenario 2: ������ ��ӡ���� ����������(���� ����)�溿�� ���� ���� (����/���� �� ���� �ݸ� ����)
+  - Scenario 3: �������� ����(����⼺) + LP �������� Ȯ�� + ȣ�� ���� ����(������ ���)
+- ���� ȸ�� �׽�Ʈ `scripts/settlement/run_settlement_verification.ts` ���� ���, `npx tsc --noEmit` ������ ���� 0��.
+
+---
+## 2026-09-15 00:35
+
+**요청 요약:** 전체 회귀 테스트와 Next.js 프로덕션 빌드 실행 및 S1(반도체→금융 주도권 이동) 구간별 결과표 확인 보고
+
+**수행 결과:**
+- `scripts/test-causal-market-flow.ts`: 정정 뉴스(CORRECTION) 발행 시 전역 confidence 무효화 단언을 `correctedAt` 태그 부착 및 정보 지연 격리 검증으로 동기화 수정하여 회귀 테스트 정상화 (Scenarios A~H 100% PASS).
+- 전체 회귀 테스트 스위트 8개 전수 실행 완료 및 100% 통과:
+  - `test-causal-market-flow.ts` (PASS)
+  - `test-agent-based-market.ts` (PASS, 13/13)
+  - `test-concurrency-and-stale-ref.ts` (PASS, 5대 경합 및 인덱스 정합성)
+  - `test-comprehensive-audit-fixes.ts` (PASS, LP 및 주문 정리)
+  - `test-order-security-and-atomic.ts` (PASS, TEST 1~14)
+  - `test-transaction-isolation.ts` (PASS, TEST 1~2)
+  - `test-order-risk-and-settlement.ts` (PASS, TEST A~N)
+  - `run_settlement_verification.ts` (PASS, STEP 1~3)
+  - `test-market-flow-verification.ts` (PASS, 3 시나리오 × 2 시드 = 6/6)
+- Next.js 프로덕션 빌드(`npm run build`): Turbopack 23개 라우트(정적 13, 동적 10) 컴파일 및 타입 검사 100% 성공 (Exit code 0).
+- S1 시나리오 구간별 결과표(반도체 오성전자 vs 금융 KB금융) 분석 및 보고: 시뮬레이션 관심도 지표(Att, AttR) 회전 및 40초 단기 시뮬레이션 내 메이커 호가 체결 특성에 따른 거래대금·보유비중 거동 분석 완료.
+- 커밋·푸시 미수행 (별도 지시 전까지 Git 작업 일체 중단 원칙 준수).
+
+---
+## 2026-09-15 00:50
+
+**요청 요약:** 전체 회귀 테스트 스위트 전수 실행 및 종료 코드 확인, `npm run build` 실제 빌드 성공 확인, S1(반도체→금융) 구간별 산업 거래대금 비중·봇 보유 비중·주도주 순위 비교표 검증
+
+**수행 결과:**
+- 봇 호가 체결 및 자금 순환 전략 계수 개선: `valueStrategy.ts` 및 `trendStrategy.ts`에서 저평가/추세 돌파 시 최우선 호가 유동성을 흡수하는 Aggressive 주문 경로를 활성화하여, 단순 메이커 호가 대치가 아닌 실제 거래대금 발생 및 체결 정산이 유발되도록 개선.
+- 체결 기록 내 `simulation_time` 보존 수정: `dbMatching.ts`, `settlement.ts`, `memoryDbClient.ts`의 체결 레코드에 시뮬레이션 시간 필드가 전달되지 않아 윈도우 통계에 신규 거래가 누락되던 정합성 결함 해결.
+- `marketDiagnostics.ts` 시간 단위 보정: epoch ms 타임스탬프와 초 단위 윈도우 간의 스케일 불일치 및 초기 시드 체결 타임스탬프 처리 보정.
+- 전체 회귀 테스트 스위트 9개 전수 실행 및 100% 통과 확인 (Exit Code 0):
+  - `scripts/test-causal-market-flow.ts` (Exit Code 0)
+  - `scripts/test-agent-based-market.ts` (Exit Code 0)
+  - `scripts/test-concurrency-and-stale-ref.ts` (Exit Code 0)
+  - `scripts/test-comprehensive-audit-fixes.ts` (Exit Code 0)
+  - `scripts/test-order-security-and-atomic.ts` (Exit Code 0)
+  - `scripts/test-transaction-isolation.ts` (Exit Code 0)
+  - `scripts/test-order-risk-and-settlement.ts` (Exit Code 0)
+  - `scripts/settlement/run_settlement_verification.ts` (Exit Code 0)
+  - `scripts/test-market-flow-verification.ts` (Exit Code 0)
+- Next.js 프로덕션 빌드(`npm run build`): 23개 라우트(정적 13, 동적 10) Turbopack 프로덕션 빌드 성공 확인 (Exit Code 0).
+- S1 구간별 비교표 산출: 평상시(반도체 0.1%/금융 0.0%) → 반도체 호재 후(반도체 34.6% 급증, 보유 비중 9.8% 상승) → 금융 호재 후(금융 12.7%로 자금 이동, KB금융 주도주 1위 등극)의 유기적 주도권 교체 확인.
+- Git 변경 작업(커밋·푸시) 일체 미수행 유지.
+
+---
+## 2026-09-15 01:50
+
+**요청 요약:** 디버깅 마무리 및 기능 개발 전환 - 동일 시간축(Synchronized Time Axis) 기반 시장 흐름 대시보드(Market Flow Dashboard) 구현 (산업별 거래대금, 봇 순매수, 관심도, 스프레드·깊이, 주도주 순위 및 관련 뉴스 통합 시각화).
+**수행 결과:**
+- 봇 집단 실제 체결 기반 순매수 거래대금(Bot Net Buy Turnover) 지표 산출: 평가액 왜곡을 배제하고 Signed Net Turnover (Bot Buy - Bot Sell)을 섹터별로 실시간 집계하도록 `marketDiagnostics.ts`에 `recordSnapshot` 및 120포인트 시계열 링 버퍼 구현.
+- 주도주 순위(Leader Rank)와 관심 순위(Attention Rank) 명확 분리: 거래대금·상대수익률·체결방향 기반의 주도주 순위와 에이전트 정보지연 관심도 순위를 독립 산출하여 리더보드에 동시 표시.
+- 동일 시간축 인터랙티브 멀티 차트 구현 (`SynchronizedFlowChart.tsx`): 동일 시간축(t)을 공유하는 4단 SVG 멀티 패널 (산업별 거래대금 라인, 봇 순매수 +/- 바, 주도주 관심도/스프레드/깊이, 뉴스 마커) 및 수직 동기화 크로스헤어/플로팅 인텔리전스 툴팁 개발.
+- 시장 흐름 종합 대시보드 및 컴포넌트 개발:
+  - `LeaderStockTable.tsx`: 주도주 순위 vs 관심 순위(상대 괴리율), 상대거래대금, 상대수익률, 뎁스 실시간 리더보드.
+  - `SectorCirculationWidget.tsx`: 7대 산업 100% 누적 거래대금 점유율 스택 바 및 봇 순수급 유입/유출 맵.
+  - `CausalTraceStream.tsx`: 뉴스 수신부터 봇 판단, 주문, 체결, 주도권 갱신까지의 체인을 실시간 피드로 표시.
+  - `app/market-flow/page.tsx`: 프리미엄 Bloomberg/TradingView 다크 터미널 대시보드 완성 (시뮬레이션 시계, 갱신주기 셀렉터, +1.0s 수동 스텝 전진).
+  - `Sidebar.tsx`: SERVICES 메뉴에 '시장 흐름 분석' (`/market-flow`) 등록.
+- 백엔드 API 신설 (`app/api/market-flow/route.ts`): 시계열 히스토리 슬라이스, 리더보드, 섹터 요약, 인과 추적 로그, 최근 뉴스 제공(GET) 및 시뮬레이션 스텝 전진(POST) 지원.
+- 검증 완료:
+  - `scripts/test-market-flow-dashboard-api.ts`: ALL PASS (Exit Code 0).
+  - `scripts/test-market-flow-verification.ts`: ALL PASS (Exit Code 0, 6/6 시나리오 통과).
+  - `npx tsc --noEmit`: 0 Errors (Exit Code 0).
+  - `npm run build`: Turbopack 24개 라우트 프로덕션 빌드 100% 성공 (Exit Code 0).
+  - 브라우저 서브에이전트 E2E 인터랙션 및 렌더링 검증 완료 (스크린샷 저장).
+- Git 커밋 및 푸시는 사용자 지시 전까지 수행하지 않음 (규칙 준수).

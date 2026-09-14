@@ -358,9 +358,10 @@ async function runScenarioE(mgr: AgentManager): Promise<void> {
 
   mgr.publishEvent(correctionEvent);
 
-  // 원본 루머의 신뢰도(confidence)가 0으로 무효화되었는지 확인
+  // 원본 루머에 correctedAt 태그 부착 확인 (전역 confidence 강제 0 변조 대신 개별 봇 관측 시 무효화)
   const origRumorInStore = mgr.events.find((e) => e.eventId === 'ev_rumor_001')!;
-  assert(origRumorInStore.confidence === 0.0, 'Correction must invalidate original rumor confidence to 0.0');
+  assert((origRumorInStore as any).correctedAt !== undefined, 'Correction must stamp original rumor with correctedAt');
+  assert(origRumorInStore.confidence === 0.50, 'Original rumor global confidence must remain intact for latency isolation');
 
   // 정정이 가격을 강제로 되돌리지 않음을 검증 (자연스러운 체결 조정 원칙)
   console.log(`  [Info] Price discovery occurs naturally via matching engine; no forced artificial price reset`);
@@ -440,6 +441,7 @@ async function runScenarioH(): Promise<void> {
   console.log('\n[SCENARIO H] Reset & Deterministic Bit-For-Bit Replay');
 
   // Run 1 with seed=777
+  await resetDb();
   const mgr1 = new AgentManager(777);
   for (let i = 0; i < 15; i++) {
     await mgr1.step(1.0);
@@ -447,6 +449,7 @@ async function runScenarioH(): Promise<void> {
   const report1 = mgr1.diagnostics.generateSummaryReport();
 
   // Run 2 with same seed=777
+  await resetDb();
   const mgr2 = new AgentManager(777);
   for (let i = 0; i < 15; i++) {
     await mgr2.step(1.0);

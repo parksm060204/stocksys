@@ -209,6 +209,7 @@ export async function submitAndMatchOrder(
           buyer_fee,
           seller_fee,
           created_at: input.created_at || new Date().toISOString(),
+          simulation_time: input.simulation_time,
         });
 
         const newOppFilled = Number(opp.filled || 0) + matchQty;

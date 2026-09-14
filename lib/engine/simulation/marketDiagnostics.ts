@@ -50,6 +50,60 @@ export interface LeaderStockScore {
   signedFlow: number;
 }
 
+export interface MarketFlowTimeSeriesPoint {
+  timestamp: number;              // simTime (epoch ms)
+  timeLabel: string;              // "HH:mm:ss"
+  totalTurnover: number;          // 전체 체결 대금
+  sectorTurnover: Record<string, number>;        // 섹터별 체결 대금 (KRW)
+  sectorTurnoverShare: Record<string, number>;   // 섹터별 거래대금 비중 (%)
+  sectorBotNetTurnover: Record<string, number>;  // 봇 집단 순매수 거래대금 (Signed Net Buy Turnover = Bot Buy - Bot Sell)
+  sectorAvgAttention: Record<string, number>;    // 섹터별 평균 관심도 (0.0 ~ 1.0)
+  topLeaders: {
+    stockId: string;
+    ticker: string;
+    name: string;
+    sectorId: string;
+    leaderRank: number;
+    leaderScore: number;
+    attentionRank: number;
+    attentionScore: number;
+    spreadBps: number;
+    depthNotional: number;
+  }[];
+  newsEvent?: {
+    id: string;
+    headline: string;
+    targetSector?: string;
+    targetStockId?: string;
+    urgency: number;
+    impactDirection?: number;
+  };
+}
+
+export interface SectorFlowSummary {
+  sectorId: string;
+  sectorName: string;
+  turnover: number;
+  turnoverShare: number;
+  botNetTurnover: number;
+  avgAttention: number;
+  stockCount: number;
+  leadStockName: string;
+  leadStockRank: number;
+}
+
+export const SECTOR_METADATA: Record<string, { nameKo: string; color: string }> = {
+  semiconductor: { nameKo: '반도체', color: '#06B6D4' },
+  finance: { nameKo: '금융', color: '#F59E0B' },
+  it: { nameKo: 'IT·플랫폼', color: '#8B5CF6' },
+  auto: { nameKo: '자동차·모빌리티', color: '#10B981' },
+  bio: { nameKo: '바이오·헬스케어', color: '#EC4899' },
+  energy: { nameKo: '에너지·화학', color: '#F97316' },
+  telecom: { nameKo: '통신·네트워크', color: '#3B82F6' },
+  index: { nameKo: '지수·ETF', color: '#94A3B8' },
+  general: { nameKo: '일반제조', color: '#64748B' },
+};
+
 export interface CausalTraceLog {
   timestamp: number;
   eventId?: string;
@@ -64,6 +118,11 @@ export class MarketDiagnostics {
   private strategyStats: Map<string, StrategyMetrics> = new Map();
   private rejectionLog: RejectionRecord[] = [];
   private readonly MAX_REJECTION_LOG = 200;
+
+  // Time-series history ring buffer for synchronized flow dashboard
+  private timeSeriesHistory: MarketFlowTimeSeriesPoint[] = [];
+  private readonly MAX_TIME_SERIES_POINTS = 120;
+  private lastSnapshotSimTime: number = 0;
 
   // Market quality stats
   private emptyBookTicks: Map<string, number> = new Map();
@@ -176,8 +235,11 @@ export class MarketDiagnostics {
     baselineWindowSec: number = 50
   ): Map<string, WindowStatistics> {
     const statsMap = new Map<string, WindowStatistics>();
-    const recentStart = Math.max(0, simTime - recentWindowSec);
-    const baselineStart = Math.max(0, recentStart - baselineWindowSec);
+    const isMs = simTime > 1e11;
+    const recentDelta = isMs ? recentWindowSec * 1000 : recentWindowSec;
+    const baselineDelta = isMs ? baselineWindowSec * 1000 : baselineWindowSec;
+    const recentStart = Math.max(0, simTime - recentDelta);
+    const baselineStart = Math.max(0, recentStart - baselineDelta);
 
     const stocks = Array.from(memoryDb.stocks.values());
     let marketTotalTurnover = 0;
@@ -189,9 +251,10 @@ export class MarketDiagnostics {
       const stockTrades = memoryDb.tradeStockIndex.get(stock.id) || [];
       // Recent window: (recentStart, simTime] — strict open left boundary to avoid
       // double-counting trades that land exactly on recentStart (shared with baseline end).
-      const recentTrades = stockTrades.filter(
-        (t) => (t.simulation_time ?? simTime) > recentStart && (t.simulation_time ?? simTime) <= simTime
-      );
+      const recentTrades = stockTrades.filter((t) => {
+        const tTime = t.simulation_time !== undefined ? t.simulation_time : (isMs ? 0 : 0);
+        return tTime > recentStart && tTime <= simTime;
+      });
 
       let volume = 0;
       let turnover = 0;
@@ -401,6 +464,263 @@ export class MarketDiagnostics {
     };
   }
 
+  public isBotAccount(accountId?: string | null): boolean {
+    if (!accountId) return false;
+    return (
+      accountId.startsWith('acc_') ||
+      accountId.startsWith('bot_') ||
+      accountId.startsWith('inst_') ||
+      accountId.startsWith('lp_') ||
+      accountId === 'lp_system'
+    );
+  }
+
+  /**
+   * 동일 시간축 시계열 스냅샷 기록
+   * - 산업별 거래대금 (Turnover)
+   * - 봇 집단의 실제 체결 기반 순매수 거래대금 (Signed Net Buy Turnover = Bot Buy - Bot Sell)
+   * - 산업별 평균 관심도 (Attention)
+   * - 상위 주도주 스냅샷 (순위, 관심순위, 스프레드, 뎁스)
+   * - 최근 뉴스 이벤트 마커
+   */
+  public recordSnapshot(
+    simTime: number,
+    attentionMap: Map<string, number>,
+    recentEvents?: MarketEvent[]
+  ): MarketFlowTimeSeriesPoint {
+    const isMs = simTime > 1e11;
+    this.lastSnapshotSimTime = simTime;
+
+    const date = new Date(isMs ? simTime : simTime * 1000);
+    const timeLabel = isFinite(date.getTime())
+      ? date.toTimeString().split(' ')[0]
+      : `${Math.floor(simTime)}s`;
+
+    const recentWindowSec = 10;
+    const recentDelta = isMs ? recentWindowSec * 1000 : recentWindowSec;
+    const recentStart = Math.max(0, simTime - recentDelta);
+
+    const statsMap = this.computeWindowStatistics(simTime, recentWindowSec, 50);
+
+    const sectorTurnover: Record<string, number> = {};
+    const sectorTurnoverShare: Record<string, number> = {};
+    const sectorBotNetTurnover: Record<string, number> = {};
+    const sectorAttentionSum: Record<string, number> = {};
+    const sectorStockCount: Record<string, number> = {};
+
+    for (const secKey of Object.keys(SECTOR_METADATA)) {
+      sectorTurnover[secKey] = 0;
+      sectorTurnoverShare[secKey] = 0;
+      sectorBotNetTurnover[secKey] = 0;
+      sectorAttentionSum[secKey] = 0;
+      sectorStockCount[secKey] = 0;
+    }
+
+    let totalTurnover = 0;
+
+    // 1. 섹터별 거래대금 및 관심도 집계
+    for (const stock of memoryDb.stocks.values()) {
+      const secId = stock.sector_id || 'general';
+      const st = statsMap.get(stock.id);
+      const tOver = st ? st.turnover : 0;
+      sectorTurnover[secId] = (sectorTurnover[secId] || 0) + tOver;
+      totalTurnover += tOver;
+
+      const att = attentionMap.get(stock.id) || stock.base_liquidity || 0.5;
+      sectorAttentionSum[secId] = (sectorAttentionSum[secId] || 0) + att;
+      sectorStockCount[secId] = (sectorStockCount[secId] || 0) + 1;
+    }
+
+    // 2. 봇 집단의 실제 체결 기반 순매수 거래대금 계산 (평가액 왜곡 배제)
+    for (const stock of memoryDb.stocks.values()) {
+      const secId = stock.sector_id || 'general';
+      const stockTrades = memoryDb.tradeStockIndex.get(stock.id) || [];
+      for (const t of stockTrades) {
+        const tTime = t.simulation_time !== undefined ? t.simulation_time : 0;
+        if (tTime > recentStart && tTime <= simTime) {
+          const tradeNotional = t.price * t.size;
+          const isBuyerBot = t.buyer_is_bot || this.isBotAccount(t.buyer_id);
+          const isSellerBot = t.seller_is_bot || this.isBotAccount(t.seller_id);
+
+          if (isBuyerBot) {
+            sectorBotNetTurnover[secId] = (sectorBotNetTurnover[secId] || 0) + tradeNotional;
+          }
+          if (isSellerBot) {
+            sectorBotNetTurnover[secId] = (sectorBotNetTurnover[secId] || 0) - tradeNotional;
+          }
+        }
+      }
+    }
+
+    // 3. 비중 및 평균 산출
+    const sectorAvgAttention: Record<string, number> = {};
+    for (const secKey of Object.keys(SECTOR_METADATA)) {
+      const tOver = sectorTurnover[secKey] || 0;
+      sectorTurnoverShare[secKey] = totalTurnover > 0 ? (tOver / totalTurnover) * 100 : 0;
+      const count = sectorStockCount[secKey] || 0;
+      sectorAvgAttention[secKey] = count > 0 ? (sectorAttentionSum[secKey] || 0) / count : 0.5;
+    }
+
+    // 4. 주도주 1~3위 스냅샷
+    const topLeaders = this.leaderBoard.slice(0, 3).map((lb) => {
+      const st = statsMap.get(lb.stockId);
+      const curStock = memoryDb.stocks.get(lb.stockId);
+      const curPrice = curStock?.current_price || 1;
+      const spread = st?.spread || this.getAverageSpread(lb.stockId);
+      const spreadBps = spread > 0 ? Math.round((spread / curPrice) * 10000) : 0;
+
+      return {
+        stockId: lb.stockId,
+        ticker: lb.ticker,
+        name: lb.name,
+        sectorId: lb.sectorId,
+        leaderRank: lb.leaderRank,
+        leaderScore: Number(lb.leaderScore.toFixed(3)),
+        attentionRank: lb.attentionRank,
+        attentionScore: Number(lb.attentionScore.toFixed(3)),
+        spreadBps,
+        depthNotional: st?.depthNotional || 0,
+      };
+    });
+
+    // 5. 최근 뉴스 이벤트 마커
+    let newsEvent: MarketFlowTimeSeriesPoint['newsEvent'] = undefined;
+    if (recentEvents && recentEvents.length > 0) {
+      const latestEvt = [...recentEvents]
+        .reverse()
+        .find((e) => e.publishedAt > recentStart && e.publishedAt <= simTime);
+      if (latestEvt) {
+        newsEvent = {
+          id: latestEvt.eventId,
+          headline: latestEvt.title,
+          targetSector: latestEvt.sectorId,
+          targetStockId: latestEvt.targetStockIds?.[0],
+          urgency: latestEvt.attentionShock,
+          impactDirection: latestEvt.valuationSignal,
+        };
+      }
+    }
+
+    const point: MarketFlowTimeSeriesPoint = {
+      timestamp: simTime,
+      timeLabel,
+      totalTurnover,
+      sectorTurnover,
+      sectorTurnoverShare,
+      sectorBotNetTurnover,
+      sectorAvgAttention,
+      topLeaders,
+      newsEvent,
+    };
+
+    this.timeSeriesHistory.push(point);
+    if (this.timeSeriesHistory.length > this.MAX_TIME_SERIES_POINTS) {
+      this.timeSeriesHistory.shift();
+    }
+
+    return point;
+  }
+
+  /**
+   * 시장 흐름 대시보드 종합 데이터 쿼리
+   */
+  public getMarketFlowData(
+    simTime: number,
+    pointsLimit: number = 60
+  ): {
+    simTime: number;
+    formattedSimTime: string;
+    leaderBoard: LeaderStockScore[];
+    sectorSummary: SectorFlowSummary[];
+    timeSeries: MarketFlowTimeSeriesPoint[];
+    causalLogs: CausalTraceLog[];
+    recentNews: Array<{
+      id: string;
+      title: string;
+      content: string;
+      stock_id: string | null;
+      sector_id?: string | null;
+      sentiment_score?: number | null;
+      urgency?: number | null;
+      created_at: string;
+      simulation_time?: number;
+    }>;
+  } {
+    const isMs = simTime > 1e11;
+    const date = new Date(isMs ? simTime : simTime * 1000);
+    const formattedSimTime = isFinite(date.getTime())
+      ? date.toTimeString().split(' ')[0]
+      : `${Math.floor(simTime)}s`;
+
+    // 최신 시계열 포인트가 없으면 즉시 하나 생성
+    if (this.timeSeriesHistory.length === 0) {
+      const emptyAtt = new Map<string, number>();
+      for (const s of memoryDb.stocks.values()) {
+        emptyAtt.set(s.id, s.base_liquidity || 0.5);
+      }
+      this.recordSnapshot(simTime, emptyAtt);
+    }
+
+    const latestPt = this.timeSeriesHistory[this.timeSeriesHistory.length - 1];
+
+    // 7대 섹터 요약 구성
+    const sectorSummary: SectorFlowSummary[] = Object.keys(SECTOR_METADATA).map((secKey) => {
+      const meta = SECTOR_METADATA[secKey];
+      const turnover = latestPt?.sectorTurnover[secKey] || 0;
+      const turnoverShare = latestPt?.sectorTurnoverShare[secKey] || 0;
+      const botNetTurnover = latestPt?.sectorBotNetTurnover[secKey] || 0;
+      const avgAttention = latestPt?.sectorAvgAttention[secKey] || 0.5;
+
+      const stocksInSec = Array.from(memoryDb.stocks.values()).filter(
+        (s) => (s.sector_id || 'general') === secKey
+      );
+
+      // 해당 섹터 내 최상위 주도주 탐색
+      const lead = this.leaderBoard.find((lb) => lb.sectorId === secKey);
+
+      return {
+        sectorId: secKey,
+        sectorName: meta.nameKo,
+        turnover,
+        turnoverShare: Number(turnoverShare.toFixed(1)),
+        botNetTurnover,
+        avgAttention: Number(avgAttention.toFixed(3)),
+        stockCount: stocksInSec.length,
+        leadStockName: lead ? lead.name : (stocksInSec[0]?.name || '-'),
+        leadStockRank: lead ? lead.leaderRank : 99,
+      };
+    });
+
+    // 최근 뉴스 (최신순 10건)
+    const recentNews = Array.from(memoryDb.marketNews.values())
+      .sort((a, b) => {
+        const timeA = new Date(a.created_at).getTime();
+        const timeB = new Date(b.created_at).getTime();
+        return timeB - timeA;
+      })
+      .slice(0, 10)
+      .map((n) => ({
+        id: n.id,
+        title: n.title,
+        content: n.content,
+        stock_id: n.target_ticker || null,
+        sector_id: n.target_sector || null,
+        sentiment_score: n.impact_score ?? 0,
+        urgency: 0.5,
+        created_at: n.created_at,
+      }));
+
+    return {
+      simTime,
+      formattedSimTime,
+      leaderBoard: this.getLeaderBoard().slice(0, 10),
+      sectorSummary,
+      timeSeries: this.timeSeriesHistory.slice(-pointsLimit),
+      causalLogs: this.getCausalTraces(30),
+      recentNews,
+    };
+  }
+
   public reset(): void {
     this.strategyStats.clear();
     this.rejectionLog = [];
@@ -409,5 +729,8 @@ export class MarketDiagnostics {
     this.causalLogs = [];
     this.leaderBoard = [];
     this.smoothedLeaderScores.clear();
+    this.timeSeriesHistory = [];
+    this.lastSnapshotSimTime = 0;
   }
 }
+

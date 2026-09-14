@@ -622,6 +622,7 @@ export class MemoryDbClient {
           buyer_fee: buyerFee,
           seller_fee: sellerFee,
           created_at: t.created_at || new Date().toISOString(),
+          simulation_time: t.simulation_time,
         });
       }
 

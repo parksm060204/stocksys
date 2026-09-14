@@ -102,10 +102,18 @@ export function evaluateValueStrategy(
 
     const orderSize = Math.max(1, Math.min(neededShares, agent.maxOrderSize, participationCap));
 
-    // Pricing: maker limit order at best bid or 1 tick below mid
-    const idealPrice = obs.bestBid !== null 
-      ? Math.min(obs.bestBid, Math.floor(estimatedValue / tickSize) * tickSize)
-      : Math.floor((midPrice - tickSize) / tickSize) * tickSize;
+    // Pricing:
+    // If valuation is clearly above bestAsk and agent has urgency or large valuation gap,
+    // take available liquidity at best ask (marketable limit / IOC).
+    // Otherwise, place a passive maker limit order at best bid.
+    const canCrossSpread = obs.bestAsk !== null && estimatedValue >= obs.bestAsk;
+    const shouldTakeLiquidity = canCrossSpread && (agent.urgency >= 0.2 || valGap >= 0.05);
+
+    const idealPrice = shouldTakeLiquidity
+      ? obs.bestAsk!
+      : (obs.bestBid !== null 
+          ? Math.min(obs.bestBid, Math.floor(estimatedValue / tickSize) * tickSize)
+          : Math.floor((midPrice - tickSize) / tickSize) * tickSize);
 
     const alignedPrice = Math.max(tickSize, Math.round(idealPrice / tickSize) * tickSize);
 
@@ -119,11 +127,13 @@ export function evaluateValueStrategy(
     }
 
     // Check if existing open order already matches this side and price (no duplicates)
-    const existingMatchingOrder = obs.activeOrders.find(
-      (o) => o.side === 'buy' && Math.abs(o.price - alignedPrice) <= tickSize
-    );
-    if (existingMatchingOrder) {
-      return { action: 'hold', stockId: obs.stockId, reason: 'order_already_resting' };
+    if (!shouldTakeLiquidity) {
+      const existingMatchingOrder = obs.activeOrders.find(
+        (o) => o.side === 'buy' && Math.abs(o.price - alignedPrice) <= tickSize
+      );
+      if (existingMatchingOrder) {
+        return { action: 'hold', stockId: obs.stockId, reason: 'order_already_resting' };
+      }
     }
 
     return {
@@ -131,7 +141,7 @@ export function evaluateValueStrategy(
       stockId: obs.stockId,
       price: alignedPrice,
       size: finalSize,
-      orderType: 'limit',
+      orderType: shouldTakeLiquidity ? 'ioc' : 'limit',
       reason: `value_buy: gap=${(valGap * 100).toFixed(2)}%`,
     };
   }
@@ -150,19 +160,29 @@ export function evaluateValueStrategy(
       return { action: 'hold', stockId: obs.stockId, reason: 'insufficient_holding' };
     }
 
-    // Pricing: maker limit order at best ask or 1 tick above mid
-    const idealPrice = obs.bestAsk !== null
-      ? Math.max(obs.bestAsk, Math.ceil(estimatedValue / tickSize) * tickSize)
-      : Math.ceil((midPrice + tickSize) / tickSize) * tickSize;
+    // Pricing:
+    // If valuation is clearly below bestBid and agent has urgency or large valuation gap,
+    // take available liquidity at best bid (marketable limit / IOC).
+    // Otherwise, place a passive maker limit order at best ask.
+    const canCrossSpreadSell = obs.bestBid !== null && estimatedValue <= obs.bestBid;
+    const shouldTakeLiquiditySell = canCrossSpreadSell && (agent.urgency >= 0.2 || valGap <= -0.05);
+
+    const idealPrice = shouldTakeLiquiditySell
+      ? obs.bestBid!
+      : (obs.bestAsk !== null
+          ? Math.max(obs.bestAsk, Math.ceil(estimatedValue / tickSize) * tickSize)
+          : Math.ceil((midPrice + tickSize) / tickSize) * tickSize);
 
     const alignedPrice = Math.max(tickSize, Math.round(idealPrice / tickSize) * tickSize);
 
     // Check if existing open order already matches this side and price (no duplicates)
-    const existingMatchingOrder = obs.activeOrders.find(
-      (o) => o.side === 'sell' && Math.abs(o.price - alignedPrice) <= tickSize
-    );
-    if (existingMatchingOrder) {
-      return { action: 'hold', stockId: obs.stockId, reason: 'order_already_resting' };
+    if (!shouldTakeLiquiditySell) {
+      const existingMatchingOrder = obs.activeOrders.find(
+        (o) => o.side === 'sell' && Math.abs(o.price - alignedPrice) <= tickSize
+      );
+      if (existingMatchingOrder) {
+        return { action: 'hold', stockId: obs.stockId, reason: 'order_already_resting' };
+      }
     }
 
     return {
@@ -170,7 +190,7 @@ export function evaluateValueStrategy(
       stockId: obs.stockId,
       price: alignedPrice,
       size: availableToSell,
-      orderType: 'limit',
+      orderType: shouldTakeLiquiditySell ? 'ioc' : 'limit',
       reason: `value_sell: gap=${(valGap * 100).toFixed(2)}%`,
     };
   }

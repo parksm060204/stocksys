@@ -1,6 +1,11 @@
 import { memoryDb, StockRecord, TradeRecord, OrderRecord } from '../memoryDb/memoryStore';
 import { createMemoryDbClient } from '../memoryDb/memoryDbClient';
 import { printLocalBannerOnce } from './localDevMode';
+import { withStockLock } from './marketService';
+import { withAccountLocks } from '../memoryDb/accountLocks';
+import { snapshotTradingState, rollbackTradingState, TradingSnapshot } from '../memoryDb/memoryTransaction';
+import { calculateTradeFees, executeSettlement, SettlementTrade } from './settlement';
+import { randomUUID } from 'crypto';
 
 interface GlobalWithEngine {
   __STOCKSYS_ENGINE__?: LocalMarketEngineInstance;
@@ -16,6 +21,7 @@ class LocalMarketEngineInstance {
   private tickCount: number = 0;
   private client = createMemoryDbClient();
   private readonly LP_REFRESH_TICKS: number = 5;
+  private readonly MAX_RETAINED_LP_ORDERS_PER_STOCK: number = 30;
 
   // SDE: Merton Jump-Diffusion 가치 변동
   private fundamentals: Record<string, number> = {};
@@ -56,7 +62,7 @@ class LocalMarketEngineInstance {
     }, delayMs);
   }
 
-  private async tick(): Promise<void> {
+  public async tick(): Promise<void> {
     this.tickCount++;
 
     // ── 1. 5틱마다 LP 호가 갱신 ──
@@ -89,7 +95,6 @@ class LocalMarketEngineInstance {
       const tick = this.getTickSize(cp);
       const f = this.fundamentals[stock.id] || cp;
 
-      // 봇 매수/매도 성향 (펀더멘털 대비 고평가/저평가 판단)
       const diffPct = (f - cp) / cp;
       const isBuyHeavy = diffPct > 0.005 || Math.random() < 0.48;
 
@@ -117,21 +122,32 @@ class LocalMarketEngineInstance {
     // ── 4. 통합 매칭 엔진 실행 (LP + User Orders + Bot Orders) ──
     await this.processMatching(botOrders);
 
-    // ── 5. 오래된 봇 주문 및 체결/취소 완료 주문 메모리 정리 (Memory Leak 방지) ──
+    // ── 5. 오래된 봇 주문 및 종료된 LP 주문 메모리 정리 (Memory Leak 방지) ──
     if (this.tickCount % 20 === 0) {
       const nowMs = Date.now();
       for (const [id, order] of Array.from(memoryDb.orders.entries())) {
-        // 유저 주문(user_id 존재)은 유지, LP 주문은 refreshLpOrders에서 별도 관리
-        // 봇 주문(!order.user_id && !order.is_lp) 중 체결 완료, 취소, 또는 60초 초과 미체결 주문 삭제
-        if (
-          !order.user_id &&
-          !order.is_lp &&
-          (order.status === 'filled' ||
-           order.status === 'cancelled' ||
-           nowMs - new Date(order.created_at).getTime() > 60_000)
-        ) {
-          memoryDb.orders.delete(id);
-          memoryDb.removeOrderFromIndex(order);
+        // 사용자 미체결/보유 주문은 보존
+        if (order.user_id) continue;
+
+        // 일반 봇 주문 정리: 60초 초과 또는 체결/취소 완료
+        if (!order.is_lp) {
+          if (
+            order.status === 'filled' ||
+            order.status === 'cancelled' ||
+            nowMs - new Date(order.created_at).getTime() > 60_000
+          ) {
+            memoryDb.orders.delete(id);
+            memoryDb.removeOrderFromIndex(order);
+          }
+        } else {
+          // 종료된 LP 주문(filled / cancelled) 30초 초과 시 정리
+          if (
+            (order.status === 'filled' || order.status === 'cancelled') &&
+            nowMs - new Date(order.created_at).getTime() > 30_000
+          ) {
+            memoryDb.orders.delete(id);
+            memoryDb.removeOrderFromIndex(order);
+          }
         }
       }
 
@@ -139,179 +155,319 @@ class LocalMarketEngineInstance {
     }
   }
 
-  private async refreshLpOrders(): Promise<void> {
+  /**
+   * 안정적 ID 및 차분 갱신을 사용한 LP 호가 관리.
+   * 종료된 LP 주문 누적을 방지하고, 호가 점멸을 최소화하며, 사용자 주문은 완전 보존.
+   */
+  public async refreshLpOrders(): Promise<void> {
     const now = Date.now();
-    // 기존 LP 주문 정리
-    for (const [id, ord] of Array.from(memoryDb.orders.entries())) {
-      if (ord.is_lp && (ord.status === 'open' || ord.status === 'partial')) {
-        memoryDb.orders.delete(id);
-        memoryDb.removeOrderFromIndex(ord);
-      }
-    }
+    const stocks = Array.from(memoryDb.stocks.values());
 
-    // 종목별 신규 LP 호가 생성 (매수 10단, 매도 10단)
-    for (const stk of memoryDb.stocks.values()) {
-      const cp = stk.current_price;
-      const tick = this.getTickSize(cp);
-      const baseVol = cp >= 50000 ? 2500 : cp >= 10000 ? 800 : 200;
+    for (const stk of stocks) {
+      await withStockLock(stk.id, async () => {
+        const cp = stk.current_price;
+        const tick = this.getTickSize(cp);
+        const baseVol = cp >= 50000 ? 2500 : cp >= 10000 ? 800 : 200;
 
-      for (let level = 1; level <= 10; level++) {
-        const bidPrice = cp - level * tick;
-        if (bidPrice > 0) {
-          const oId = `lp_bid_${stk.id}_${level}_${now}`;
-          const ord: OrderRecord = {
-            id: oId,
-            stock_id: stk.id,
-            user_id: null,
-            side: 'buy',
-            price: bidPrice,
-            size: Math.round(baseVol * (1 + (10 - level) * 0.15)),
-            filled: 0,
-            status: 'open',
-            is_lp: true,
-            created_at: new Date(now - (11 - level) * 1000).toISOString(),
-          };
-          memoryDb.orders.set(oId, ord);
-          memoryDb.addOrderToIndex(ord);
+        // 종목별 종료된 LP 주문 보존 한도(cap) 적용
+        const existingStockOrderIds = memoryDb.orderStockIndex.get(stk.id);
+        if (existingStockOrderIds) {
+          const finishedLpOrders: OrderRecord[] = [];
+          for (const oId of existingStockOrderIds) {
+            const ord = memoryDb.orders.get(oId);
+            if (ord && ord.is_lp && (ord.status === 'filled' || ord.status === 'cancelled')) {
+              finishedLpOrders.push(ord);
+            }
+          }
+
+          if (finishedLpOrders.length > this.MAX_RETAINED_LP_ORDERS_PER_STOCK) {
+            finishedLpOrders.sort((a, b) => a.created_at.localeCompare(b.created_at));
+            const removeCount = finishedLpOrders.length - this.MAX_RETAINED_LP_ORDERS_PER_STOCK;
+            for (let i = 0; i < removeCount; i++) {
+              const toRemove = finishedLpOrders[i];
+              memoryDb.orders.delete(toRemove.id);
+              memoryDb.removeOrderFromIndex(toRemove);
+            }
+          }
         }
 
-        const askPrice = cp + level * tick;
-        const aId = `lp_ask_${stk.id}_${level}_${now}`;
-        const aOrd: OrderRecord = {
-          id: aId,
-          stock_id: stk.id,
-          user_id: null,
-          side: 'sell',
-          price: askPrice,
-          size: Math.round(baseVol * (1 + (10 - level) * 0.15)),
-          filled: 0,
-          status: 'open',
-          is_lp: true,
-          created_at: new Date(now - (11 - level) * 1000).toISOString(),
-        };
-        memoryDb.orders.set(aId, aOrd);
-        memoryDb.addOrderToIndex(aOrd);
-      }
+        // 안정적인 ID를 사용한 10단 호가 차분 갱신 (점멸 방지)
+        for (let level = 1; level <= 10; level++) {
+          // BUY LP 호가
+          const bidPrice = cp - level * tick;
+          if (bidPrice > 0) {
+            const bidId = `lp_${stk.id}_bid_${level}`;
+            const bidSize = Math.round(baseVol * (1 + (10 - level) * 0.15));
+            const existingBid = memoryDb.orders.get(bidId);
+
+            if (existingBid && (existingBid.status === 'open' || existingBid.status === 'partial') && existingBid.price === bidPrice) {
+              // 가격이 동일하면 수량만 조정하거나 기존 호가 유지 (점멸 방지)
+              existingBid.size = bidSize;
+            } else {
+              // 신규 등록 또는 가격 변동 시 업데이트
+              const ord: OrderRecord = {
+                id: bidId,
+                stock_id: stk.id,
+                user_id: null,
+                side: 'buy',
+                price: bidPrice,
+                size: bidSize,
+                filled: 0,
+                status: 'open',
+                is_lp: true,
+                created_at: new Date(now - (11 - level) * 1000).toISOString(),
+              };
+              memoryDb.orders.set(bidId, ord);
+              memoryDb.addOrderToIndex(ord);
+            }
+          }
+
+          // SELL LP 호가
+          const askPrice = cp + level * tick;
+          const askId = `lp_${stk.id}_ask_${level}`;
+          const askSize = Math.round(baseVol * (1 + (10 - level) * 0.15));
+          const existingAsk = memoryDb.orders.get(askId);
+
+          if (existingAsk && (existingAsk.status === 'open' || existingAsk.status === 'partial') && existingAsk.price === askPrice) {
+            existingAsk.size = askSize;
+          } else {
+            const aOrd: OrderRecord = {
+              id: askId,
+              stock_id: stk.id,
+              user_id: null,
+              side: 'sell',
+              price: askPrice,
+              size: askSize,
+              filled: 0,
+              status: 'open',
+              is_lp: true,
+              created_at: new Date(now - (11 - level) * 1000).toISOString(),
+            };
+            memoryDb.orders.set(askId, aOrd);
+            memoryDb.addOrderToIndex(aOrd);
+          }
+        }
+      });
     }
   }
 
-  private async processMatching(botOrders: any[]): Promise<void> {
-    // 1. 봇 주문을 orders에 임시 등록
+  /**
+   * 자동 시장 엔진의 연속 매칭 및 원자적 정산.
+   * - 종목별 lock (withStockLock) 적용으로 사용자 주문과 상호 배제
+   * - 봇/LP user_id=null 명시적 지원 (정상 봇 거래 허용)
+   * - 동일 실제 사용자의 자기 매매 방지
+   * - 정산 실패 또는 에러 발생 시 모든 상태(현금, 보유량, 주문, 거래, 종목 통계, 가격 기록, 인덱스) 완전 롤백
+   * - 확정된 상태만 외부에 발행
+   */
+  public async processMatching(botOrders: any[]): Promise<void> {
+    // 1. 봇 주문을 stock_id별로 분류
+    const botOrdersByStock = new Map<string, any[]>();
     for (const b of botOrders) {
-      const id = `bot_ord_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-      const oRec: OrderRecord = { ...b, id };
-      memoryDb.orders.set(id, oRec);
-      memoryDb.addOrderToIndex(oRec);
+      if (!botOrdersByStock.has(b.stock_id)) {
+        botOrdersByStock.set(b.stock_id, []);
+      }
+      botOrdersByStock.get(b.stock_id)!.push(b);
     }
 
-    // 2. 종목별 미체결 주문 집계
-    const openOrdersByStock: Record<string, { bids: OrderRecord[]; asks: OrderRecord[] }> = {};
-
+    // 활성화된 주문이 있는 모든 종목 수집
+    const targetStockIds = new Set<string>(botOrdersByStock.keys());
     for (const ord of memoryDb.orders.values()) {
-      if (ord.status !== 'open' && ord.status !== 'partial') continue;
-      if (!openOrdersByStock[ord.stock_id]) {
-        openOrdersByStock[ord.stock_id] = { bids: [], asks: [] };
-      }
-      if (ord.side === 'buy') {
-        openOrdersByStock[ord.stock_id]!.bids.push(ord);
-      } else {
-        openOrdersByStock[ord.stock_id]!.asks.push(ord);
+      if (ord.status === 'open' || ord.status === 'partial') {
+        targetStockIds.add(ord.stock_id);
       }
     }
 
-    const settledTrades: any[] = [];
-    const now = new Date().toISOString();
-
-    for (const stockId of Object.keys(openOrdersByStock)) {
-      const book = openOrdersByStock[stockId]!;
+    for (const stockId of targetStockIds) {
       const stock = memoryDb.stocks.get(stockId);
       if (!stock) continue;
 
-      // 매수: 가격 내림차순, 시간 오름차순
-      book.bids.sort((a, b) => b.price !== a.price ? b.price - a.price : a.created_at.localeCompare(b.created_at));
-      // 매도: 가격 오름차순, 시간 오름차순
-      book.asks.sort((a, b) => a.price !== b.price ? a.price - b.price : a.created_at.localeCompare(b.created_at));
-
-      let lastExecPrice: number | null = null;
-      let matchedVol = 0;
-
-      while (book.bids.length > 0 && book.asks.length > 0) {
-        const topBid = book.bids[0]!;
-        const topAsk = book.asks[0]!;
-
-        if (topBid.price < topAsk.price) break; // Cross 미발생
-
-        const bidRemain = topBid.size - topBid.filled;
-        const askRemain = topAsk.size - topAsk.filled;
-        const matchQty = Math.min(bidRemain, askRemain);
-
-        if (matchQty <= 0) break;
-
-        // Maker-Taker 판별 (더 일찍 생성되어 호가창에 resting 중이던 주문이 Maker)
-        const isBidMaker = topBid.created_at <= topAsk.created_at;
-        // 체결가는 Price-Time Priority에 따라 먼저 대기 중이던 Maker의 호가로 체결
-        const execPrice = isBidMaker ? topBid.price : topAsk.price;
-        lastExecPrice = execPrice;
-        matchedVol += matchQty;
-
-        topBid.filled += matchQty;
-        topAsk.filled += matchQty;
-
-        if (topBid.filled >= topBid.size) {
-          topBid.status = 'filled';
-          book.bids.shift();
-        } else {
-          topBid.status = 'partial';
+      // 종목 락으로 사용자 주문과의 동시성 완전 직렬화
+      await withStockLock(stockId, async () => {
+        // 2. 해당 종목의 봇 주문 등록
+        const pendingBots = botOrdersByStock.get(stockId) || [];
+        for (const b of pendingBots) {
+          const id = `bot_ord_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+          const oRec: OrderRecord = { ...b, id };
+          memoryDb.orders.set(id, oRec);
+          memoryDb.addOrderToIndex(oRec);
         }
 
-        if (topAsk.filled >= topAsk.size) {
-          topAsk.status = 'filled';
-          book.asks.shift();
-        } else {
-          topAsk.status = 'partial';
+        // 3. 해당 종목의 미체결 주문 집계
+        const bids: OrderRecord[] = [];
+        const asks: OrderRecord[] = [];
+
+        const stockOrderIds = memoryDb.orderStockIndex.get(stockId);
+        if (stockOrderIds) {
+          for (const oId of stockOrderIds) {
+            const ord = memoryDb.orders.get(oId);
+            if (!ord || (ord.status !== 'open' && ord.status !== 'partial')) continue;
+            if (ord.side === 'buy') bids.push(ord);
+            else asks.push(ord);
+          }
         }
 
-        const bidFee = isBidMaker ? -0.001 : 0.0025;
-        const askFee = isBidMaker ? 0.0025 : -0.001;
+        if (bids.length === 0 || asks.length === 0) return;
 
-        settledTrades.push({
-          stock_id: stockId,
-          buyer_id: topBid.user_id,
-          seller_id: topAsk.user_id,
-          buyer_is_bot: !topBid.user_id,
-          seller_is_bot: !topAsk.user_id,
-          price: execPrice,
-          size: matchQty,
-          buyer_fee: bidFee,
-          seller_fee: askFee,
-          created_at: now,
+        // 가격 우선, 시간 우선 정렬
+        // 매수: 가격 내림차순, 시간 오름차순
+        bids.sort((a, b) => b.price !== a.price ? b.price - a.price : a.created_at.localeCompare(b.created_at));
+        // 매도: 가격 오름차순, 시간 오름차순
+        asks.sort((a, b) => a.price !== b.price ? a.price - b.price : a.created_at.localeCompare(b.created_at));
+
+        const tradesToSettle: SettlementTrade[] = [];
+        const orderUpdates: { orderId: string; newFilled: number; newStatus: OrderRecord['status'] }[] = [];
+        const involvedUserIds = new Set<string>();
+        const localFilledMap = new Map<string, number>();
+
+        let executionHigh = -Infinity;
+        let executionLow = Infinity;
+        let lastExecPrice: number | null = null;
+        let matchedVol = 0;
+        const now = new Date().toISOString();
+
+        let bidIdx = 0;
+        let askIdx = 0;
+
+        while (bidIdx < bids.length && askIdx < asks.length) {
+          const topBid = bids[bidIdx]!;
+          const topAsk = asks[askIdx]!;
+
+          if (topBid.price < topAsk.price) break; // Cross 미발생
+
+          // [Self-Trade Prevention] 동일한 실제 사용자끼리의 체결 방지
+          // 봇/LP(user_id === null)는 자기 매매 차단 대상이 아니며, 정상 거래 가능
+          if (topBid.user_id && topAsk.user_id && topBid.user_id === topAsk.user_id) {
+            // 나중에 들어온 쪽(taker)을 건너뜀
+            if (topBid.created_at > topAsk.created_at) {
+              bidIdx++;
+            } else {
+              askIdx++;
+            }
+            continue;
+          }
+
+          const curBidFilled = localFilledMap.get(topBid.id) ?? (topBid.filled || 0);
+          const curAskFilled = localFilledMap.get(topAsk.id) ?? (topAsk.filled || 0);
+          const bidRemain = topBid.size - curBidFilled;
+          const askRemain = topAsk.size - curAskFilled;
+          const matchQty = Math.min(bidRemain, askRemain);
+
+          if (matchQty <= 0) {
+            if (bidRemain <= 0) bidIdx++;
+            if (askRemain <= 0) askIdx++;
+            continue;
+          }
+
+          // Maker-Taker 판별 (더 일찍 생성된 주문이 Maker)
+          const isBidMaker = topBid.created_at <= topAsk.created_at;
+          const execPrice = isBidMaker ? topBid.price : topAsk.price;
+
+          lastExecPrice = execPrice;
+          executionHigh = Math.max(executionHigh, execPrice);
+          executionLow = Math.min(executionLow, execPrice);
+          matchedVol += matchQty;
+
+          const newBidFilled = curBidFilled + matchQty;
+          const newAskFilled = curAskFilled + matchQty;
+          const newBidStatus: OrderRecord['status'] = newBidFilled >= topBid.size ? 'filled' : 'partial';
+          const newAskStatus: OrderRecord['status'] = newAskFilled >= topAsk.size ? 'filled' : 'partial';
+
+          localFilledMap.set(topBid.id, newBidFilled);
+          localFilledMap.set(topAsk.id, newAskFilled);
+
+          orderUpdates.push({ orderId: topBid.id, newFilled: newBidFilled, newStatus: newBidStatus });
+          orderUpdates.push({ orderId: topAsk.id, newFilled: newAskFilled, newStatus: newAskStatus });
+
+          // 수수료 계산
+          const { buyer_fee, seller_fee } = calculateTradeFees(isBidMaker, !isBidMaker);
+          const tradeId = `trade_${randomUUID()}`;
+
+          tradesToSettle.push({
+            id: tradeId,
+            stock_id: stockId,
+            buyer_id: topBid.user_id || null,
+            seller_id: topAsk.user_id || null,
+            buyer_is_bot: !topBid.user_id,
+            seller_is_bot: !topAsk.user_id,
+            price: execPrice,
+            size: matchQty,
+            buyer_fee,
+            seller_fee,
+            created_at: now,
+          });
+
+          if (topBid.user_id) involvedUserIds.add(topBid.user_id);
+          if (topAsk.user_id) involvedUserIds.add(topAsk.user_id);
+
+          if (newBidStatus === 'filled') bidIdx++;
+          if (newAskStatus === 'filled') askIdx++;
+        }
+
+        if (tradesToSettle.length === 0) return;
+
+        // 실제 사용자 계정 락 획득 후 원자적 정산 실행
+        const userIdsArray = Array.from(involvedUserIds);
+        await withAccountLocks(userIdsArray, async () => {
+          const snap: TradingSnapshot = snapshotTradingState(stockId, userIdsArray);
+          for (const t of tradesToSettle) {
+            if (t.id) snap.createdTradeIds.add(t.id);
+          }
+
+          try {
+            // 정산 실행 및 검증
+            const settleResult = await executeSettlement(this.client, tradesToSettle);
+            if (!settleResult.success) {
+              throw new Error(settleResult.error?.message || '자동 매칭 정산 실패');
+            }
+
+            for (const tradeId of settleResult.trade_ids) {
+              snap.createdTradeIds.add(tradeId);
+            }
+
+            // 정산 성공 확정 후 주문 상태 실제 갱신
+            for (const update of orderUpdates) {
+              const liveOrder = memoryDb.orders.get(update.orderId);
+              if (liveOrder) {
+                liveOrder.filled = update.newFilled;
+                liveOrder.status = update.newStatus;
+              }
+            }
+
+            // 종목 현재가, 최고가, 최저가, 거래량 확정 반영
+            if (lastExecPrice !== null && lastExecPrice > 0) {
+              const curHigh = Number(stock.high || 0);
+              const curLow = Number(stock.low || 0);
+              const newHigh = Math.max(curHigh, executionHigh);
+              const newLow = curLow === 0 ? executionLow : Math.min(curLow, executionLow);
+
+              stock.current_price = lastExecPrice;
+              stock.high = newHigh;
+              stock.low = newLow;
+              stock.high_price = newHigh;
+              stock.low_price = newLow;
+              stock.volume = Number(stock.volume || 0) + matchedVol;
+              stock.change_rate = parseFloat((((lastExecPrice - stock.previous_close) / stock.previous_close) * 100).toFixed(2));
+
+              // 주가 히스토리 추가
+              const histId = `hist_${stockId}_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`;
+              snap.createdHistoryIds.add(histId);
+              memoryDb.stockPriceHistory.push({
+                id: histId,
+                stock_id: stockId,
+                price: lastExecPrice,
+                recorded_at: now,
+              });
+
+              // 외부에 확정된 시세 발행
+              memoryDb.publish('stocks_changes', { eventType: 'UPDATE', new: stock });
+            }
+          } catch (err) {
+            console.error(`[LocalMarketEngine] Matching settlement failed for stock ${stockId}, rolling back:`, err);
+            rollbackTradingState(snap);
+            // 에러를 상위로 전파하지 않고 해당 틱 롤백 완료
+          }
         });
-      }
-
-      // 종목 현재가 및 통계 업데이트
-      if (lastExecPrice !== null && lastExecPrice > 0) {
-        stock.current_price = lastExecPrice;
-        stock.high = Math.max(Number(stock.high || 0), lastExecPrice);
-        stock.low = Number(stock.low || 0) === 0 ? lastExecPrice : Math.min(Number(stock.low), lastExecPrice);
-        stock.high_price = stock.high;
-        stock.low_price = stock.low;
-        stock.volume += matchedVol;
-        stock.change_rate = parseFloat((((lastExecPrice - stock.previous_close) / stock.previous_close) * 100).toFixed(2));
-        memoryDb.publish('stocks_changes', { eventType: 'UPDATE', new: stock });
-
-        // 주가 히스토리 추가
-        memoryDb.stockPriceHistory.push({
-          id: `hist_${stockId}_${Date.now()}`,
-          stock_id: stockId,
-          price: lastExecPrice,
-          recorded_at: now,
-        });
-      }
-    }
-
-    // 체결 정산 RPC 실행
-    if (settledTrades.length > 0) {
-      await this.client.rpc('bulk_settle_trades', { p_trades: settledTrades });
+      });
     }
   }
 
@@ -342,7 +498,17 @@ export function ensureLocalStandaloneEngine(): void {
   }
 }
 
+export function stopLocalStandaloneEngine(): void {
+  if (globalObj.__STOCKSYS_ENGINE__) {
+    globalObj.__STOCKSYS_ENGINE__.stop();
+    globalObj.__STOCKSYS_ENGINE__ = undefined;
+  }
+}
+
+export function getLocalStandaloneEngine(): LocalMarketEngineInstance | undefined {
+  return globalObj.__STOCKSYS_ENGINE__;
+}
+
 export function getLocalStandaloneClient(): any {
   return createMemoryDbClient();
 }
-

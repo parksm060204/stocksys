@@ -1,9 +1,15 @@
 import { NextResponse } from 'next/server';
 import { scenarioManager } from '@/lib/scenario/ScenarioManager';
 import { commodityEngineInstance } from '@/app/api/commodities/route';
-import { createClient } from '@/lib/db/server';
+import { createMemoryDbClient } from '@/lib/memoryDb/memoryDbClient';
+import { verifyAdminSession } from '@/lib/auth/adminAuth';
 
-export async function GET() {
+export async function GET(req: Request) {
+  const auth = await verifyAdminSession(req);
+  if (!auth.isAdmin) {
+    return NextResponse.json({ success: false, message: '관리자 권한이 필요합니다.' }, { status: 403 });
+  }
+
   const activeScenarios = scenarioManager.getActiveScenarios();
   const activeMacroShocks = scenarioManager.getActiveMacroShocks();
   const logs = scenarioManager.getActionLogs();
@@ -19,35 +25,13 @@ export async function GET() {
 
 export async function POST(req: Request) {
   try {
-    const supabase = await createClient();
-    const { data: { user } } = await supabase.auth.getUser();
-
-    // 관리자 권한 확인 (개발 환경 또는 profiles.is_admin 체크)
-    let isAdmin = false;
-    let adminUser = 'admin';
-
-    if (user) {
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('is_admin, email')
-        .eq('id', user.id)
-        .single();
-      if (profile?.is_admin) {
-        isAdmin = true;
-        adminUser = profile.email || user.id;
-      }
-    }
-
-    // 로컬 개발 편의상 미인증 시에도 admin_key 헤더 또는 기본 허용
-    const adminKey = req.headers.get('x-admin-key');
-    if (adminKey === 'myung_admin_secret' || process.env.NODE_ENV !== 'production') {
-      isAdmin = true;
-    }
-
-    if (!isAdmin) {
+    const auth = await verifyAdminSession(req);
+    if (!auth.isAdmin) {
       return NextResponse.json({ success: false, message: '관리자 권한이 필요합니다.' }, { status: 403 });
     }
 
+    const adminUser = auth.adminUser || 'admin';
+    const supabase = createMemoryDbClient();
     const body = await req.json();
     const { action } = body;
 

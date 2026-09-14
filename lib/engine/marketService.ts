@@ -23,7 +23,7 @@ export interface SubmitOrderParams {
  */
 const stockLocks = new Map<string, Promise<void>>();
 
-function acquireLock(stockId: string): { wait: Promise<void>; release: () => void } {
+export function acquireStockLock(stockId: string): { wait: Promise<void>; release: () => void } {
   let release!: () => void;
   const existing = stockLocks.get(stockId) ?? Promise.resolve();
   const next = new Promise<void>((resolve) => {
@@ -32,6 +32,38 @@ function acquireLock(stockId: string): { wait: Promise<void>; release: () => voi
   // 현재 실행 중인 작업이 끝나야 next가 실행 가능한 상태가 됨
   stockLocks.set(stockId, existing.then(() => next));
   return { wait: existing, release };
+}
+
+export async function withStockLock<T>(stockId: string, fn: () => Promise<T>): Promise<T> {
+  const { wait, release } = acquireStockLock(stockId);
+  await wait;
+  try {
+    return await fn();
+  } finally {
+    release();
+  }
+}
+
+/**
+ * 복수 종목(또는 시장 전체) 락 획득 (데드락 방지를 위해 알파벳순 정렬 후 순차 획득)
+ */
+export async function withAllStockLocks<T>(stockIds: string[], fn: () => Promise<T>): Promise<T> {
+  const sortedIds = Array.from(new Set(stockIds)).sort();
+  const releases: (() => void)[] = [];
+
+  try {
+    for (const id of sortedIds) {
+      const { wait, release } = acquireStockLock(id);
+      await wait;
+      releases.push(release);
+    }
+    return await fn();
+  } finally {
+    // 역순으로 락 해제
+    for (let i = releases.length - 1; i >= 0; i--) {
+      releases[i]();
+    }
+  }
 }
 
 export class LocalMarketService {
@@ -47,10 +79,7 @@ export class LocalMarketService {
     ensureLocalStandaloneEngine();
     const client = createMemoryDbClient();
 
-    const { wait, release } = acquireLock(params.stockId);
-    await wait; // 이전 요청이 끝날 때까지 대기
-
-    try {
+    return await withStockLock(params.stockId, async () => {
       return await submitAndMatchOrder(client, {
         stock_id: params.stockId,
         user_id: params.userId,
@@ -58,8 +87,6 @@ export class LocalMarketService {
         price: params.price,
         size: params.size,
       });
-    } finally {
-      release(); // 성공/실패 무관하게 항상 lock 해제
-    }
+    });
   }
 }

@@ -22,6 +22,7 @@ export interface TradingSnapshot {
   holdings: Map<string, HoldingRecord>;
   orders: Map<string, OrderRecord>;
   createdTradeIds: Set<string>;
+  createdHistoryIds: Set<string>;
   stockBefore: StockRecord | undefined;
 
   holdingUserIndexBefore: Map<string, Set<string>>;
@@ -87,6 +88,7 @@ export function snapshotTradingState(stockId: string, userIds: string[]): Tradin
     holdings,
     orders,
     createdTradeIds: new Set<string>(),
+    createdHistoryIds: new Set<string>(),
     stockBefore: stock ? { ...stock } : undefined,
     holdingUserIndexBefore,
     orderStockIndexBefore,
@@ -110,6 +112,17 @@ function removeOwnedTrades(createdTradeIds: Set<string>): void {
       if (createdTradeIds.has(trades[i].id)) trades.splice(i, 1);
     }
     if (trades.length === 0) memoryDb.tradeStockIndex.delete(stockId);
+  }
+}
+
+/** Remove only this transaction's price history records. */
+function removeOwnedHistories(createdHistoryIds: Set<string>): void {
+  if (createdHistoryIds.size === 0) return;
+
+  for (let i = memoryDb.stockPriceHistory.length - 1; i >= 0; i -= 1) {
+    if (createdHistoryIds.has(memoryDb.stockPriceHistory[i].id)) {
+      memoryDb.stockPriceHistory.splice(i, 1);
+    }
   }
 }
 
@@ -143,6 +156,7 @@ export function rollbackTradingState(snapshot: TradingSnapshot): void {
   }
 
   removeOwnedTrades(snapshot.createdTradeIds);
+  removeOwnedHistories(snapshot.createdHistoryIds);
 
   if (snapshot.stockBefore !== undefined) {
     db.stocks.set(snapshot.stockId, snapshot.stockBefore);

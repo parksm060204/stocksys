@@ -3479,3 +3479,46 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 - `memoryTransaction.ts`의 전역 거래 배열 스냅샷/되감기를 제거하고 트랜잭션 소유 `createdTradeIds` 기반으로 `trades`와 `tradeStockIndex`만 선택 롤백하도록 변경.
 - 정렬된 사용자 계정 락과 원자적 로컬 정산 준비/커밋을 추가해 동일 계정의 교차 종목 현금 경쟁 및 부분 정산 orphan을 방지.
 - 교차 종목 롤백 생존성과 동일 사용자 양 종목 매수 초과지출 회귀 테스트를 추가하고 기존 테스트, TypeScript 검사, Next.js 빌드를 통과.
+
+---
+## 2026-09-14 22:08
+
+**요청 요약:** STOCKSYS Local Standalone 아키텍처 내 가격·시간 우선 정렬, 자동 시장 엔진 원자성/동시성, 데이터 API RBAC 및 관리자 인증, LP 호가 누적 결함 수정 및 종합 검증
+
+**과거 보장의 무효화 배경 및 보호한 실행 경로:**
+- 과거 커밋에서 `submitAndMatchOrder` 및 HTTP RPC 계층에 직렬화와 스냅샷 롤백을 적용했으나, 백그라운드 자동 시장 엔진(`localStandaloneServer.ts`의 `processMatching`)은 종목 락 및 계정 락을 우회하여 주문 상태와 주가를 선반영한 뒤 에러 검증 없이 `bulk_settle_trades`를 호출하는 경로가 잔존하여 정산 실패 시 상태 불일치가 발생할 수 있었음.
+- `order()` 호출이 마지막 필드만 보존하여 `dbMatching.ts`의 가격·시간 복수 정렬에서 가격 정렬이 무효화되었던 경로를 다중 정렬 스펙 보존으로 정상화함.
+- `app/api/local-db`에 `isLocalStandaloneMode() === true`로 인해 프로덕션 가드가 무력화되고 임의 장부 수정/내부 RPC 호출이 가능했던 경로를 세션 기반 RBAC 및 엔드포인트 화이트리스트로 차단함.
+- `refreshLpOrders`에서 open/partial 주문만 제거하고 filled LP 주문을 누적시키던 경로를 보존 한도(cap) 및 안정적 ID 기반 차분 갱신으로 교정함.
+
+**수행 결과:**
+- `lib/memoryDb/memoryDbClient.ts` & `lib/db/client.ts`: `orderSpecs` 다중 정렬 배열을 도입하여 호출 순서대로 다단계 정렬을 수행하도록 수정하고, HTTP 쿼리 직렬화에도 `orderSpecs`를 포함하여 가격 우선 및 시간 우선 정렬을 복원.
+- `lib/engine/marketService.ts`: `withStockLock` 및 데드락 방지용 `withAllStockLocks`를 모듈화 및 export하여 자동 엔진과 사용자 주문이 동일 종목 뮤텍스를 공유하도록 일원화.
+- `lib/memoryDb/memoryTransaction.ts`: `TradingSnapshot`에 `createdHistoryIds`를 추가하여 정산 롤백 시 `stockPriceHistory` 레코드까지 일관되게 복원하도록 보강.
+- `lib/engine/localStandaloneServer.ts`:
+  - `processMatching()`에 `withStockLock` 및 `withAccountLocks`를 적용하고, 봇/LP 주문의 `user_id=null`을 명시 지원하여 정상 매칭하되 실제 동일 사용자의 자기 매매는 차단.
+  - 체결 루프 중 원본 주문 객체의 사전 변이를 제거하고 정산 성공 확정 후에만 상태/주가/히스토리를 갱신하도록 변경. 정산 실패 시 `rollbackTradingState`로 모든 상태 복원.
+  - `refreshLpOrders()`에 안정적 ID(`lp_${stockId}_bid_${level}`)와 차분 갱신을 적용하고, 종료된 LP 주문에 보존 한도(종목당 30건)를 적용하여 메모리 누수를 방지하면서 사용자 주문은 보존.
+  - 테스트 및 런타임 제어를 위한 `stopLocalStandaloneEngine()` 추가.
+- `lib/auth/adminAuth.ts` [NEW]: 하드코딩된 헤더 우회 키를 배제하고 서버 세션 및 `ADMIN_EMAILS`/서버 프로필 기반으로 관리자 권한을 검증하는 헬퍼 구현.
+- `app/api/admin/scenarios/route.ts`: 하드코딩된 `x-admin-key` 우회를 제거하고 `GET`/`POST` 모두 `verifyAdminSession`을 적용하여 관리자 외 접근 차단.
+- `app/api/local-db/route.ts`:
+  - 세션 기반 사용자 식별을 적용하고 프로덕션 환경 미인증 주문/개인 데이터 접근을 차단.
+  - 공개 시장 테이블은 SELECT 전용으로 제한하고, `holdings`/`orders`/`profiles` 개인 데이터는 서버 확정 사용자로 격리.
+  - `bulk_settle_trades`, `update_cash_balance` 등 내부 정산 RPC의 클라이언트 직접 호출을 차단(403).
+  - 시장 리셋(`reset_market`)에 관리자 권한 검증 및 `withAllStockLocks` 적용.
+- `app/api/orders/route.ts`: 프로덕션 환경의 미인증 주문 차단(401)을 적용하고, 종목 락 하에서 본인 주문만 안전하게 취소할 수 있는 `DELETE` 핸들러 추가.
+- `README.md`: 실제 Standalone 구조와 `package.json` 스크립트에 맞춰 레거시 PostgreSQL/Supabase/Service-Role 및 미존재 엔진 빌드 명령 설명 제거.
+- `scripts/test-comprehensive-audit-fixes.ts` [NEW]: 가격/시간 우선 정렬, 봇 정상 매칭 및 자기매매 방지, 자동 엔진 정산 거절 롤백, 교차 종목 거래 보존, HTTP 라우트 보안 차단, LP 갱신 한도 및 사용자 주문 보존 검증을 수행하는 회귀 테스트 작성.
+
+**검증 수행 내역:**
+- [실행한 검증]
+  - `scripts/test-comprehensive-audit-fixes.ts`: 가격/시간 우선 정렬, 봇-봇 거래 매칭, 자기매매 차단, 자동 엔진 정산 실패 롤백 및 주가 히스토리 복원, 교차 종목 실패 격리, HTTP 401/403 인가 차단, LP 보존 한도 내 유지 및 사용자 주문 보존 확인 (정상 종료 확인).
+  - `scripts/test-order-security-and-atomic.ts`: TEST 1~14 실행 및 엔진 타이머 정상 종료 후 exit code 0 확인.
+  - `scripts/test-transaction-isolation.ts`: 교차 종목 롤백 격리 및 동일 사용자 초과지출 방지 테스트 통과 및 exit code 0 확인.
+  - `scripts/test-order-risk-and-settlement.ts`: TEST A~N 자산 예약/수수료/정산 테스트 통과 및 exit code 0 확인.
+  - `npx tsc --noEmit`: TypeScript 컴파일 에러 0건 확인.
+  - `npm run build`: Next.js Turbopack 23개 라우트 프로덕션 빌드 정상 완료 확인.
+- [실행하지 못한 검증]
+  - 실제 멀티 노드 분산 배포 환경에서의 네트워크 파티션 테스트 (현재 Local Standalone 단일 프로세스 전제).
+  - 수천 명의 동시 실사용자 브라우저 세션을 모사하는 대규모 실 브라우저 E2E 부하 테스트.

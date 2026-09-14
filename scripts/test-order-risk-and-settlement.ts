@@ -541,9 +541,16 @@ async function runAllTests() {
   console.log('\n==================================================');
   console.log('🎉 ALL TESTS PASSED SUCCESSFULLY! (TEST A ~ TEST N)');
   console.log('==================================================\n');
+
+  const { stopLocalStandaloneEngine } = await import('../lib/engine/localStandaloneServer');
+  stopLocalStandaloneEngine();
 }
 
-runAllTests().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+runAllTests()
+  .then(() => {
+    process.exit(0);
+  })
+  .catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });

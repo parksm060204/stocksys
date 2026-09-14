@@ -5,6 +5,7 @@ let browserClient: any = null;
 export class HttpQueryBuilder {
   private tableName: string;
   private filters: { col: string; op: string; val: any }[] = [];
+  private orderSpecs: { col: string; ascending: boolean }[] = [];
   private orderCol?: string;
   private orderAsc: boolean = true;
   private limitCount?: number;
@@ -87,8 +88,10 @@ export class HttpQueryBuilder {
   }
 
   public order(col: string, options?: { ascending?: boolean }): this {
+    const ascending = options?.ascending ?? true;
+    this.orderSpecs.push({ col, ascending });
     this.orderCol = col;
-    this.orderAsc = options?.ascending ?? true;
+    this.orderAsc = ascending;
     return this;
   }
 
@@ -117,6 +120,7 @@ export class HttpQueryBuilder {
           tableName: this.tableName,
           query: {
             filters: this.filters,
+            orderSpecs: this.orderSpecs,
             orderCol: this.orderCol,
             orderAsc: this.orderAsc,
             limitCount: this.limitCount,

@@ -249,84 +249,48 @@ STOCKSYS는 외부 DB나 호스팅 서버 없이 Next.js 단일 프로세스 내
 
 ### 핵심 보안 및 트랜잭션 원칙:
 
-1. **외부 DB 및 서드파티 호스팅 의존성 0%**:
-   - Supabase, PostgreSQL, Render, Docker 등의 외부 인프라가 필요하지 않습니다.
+1. **외부 DB 및 서드파티 호스팅 의존성 0% (Local Standalone)**:
+   - Supabase, PostgreSQL, Render, Docker 등의 외부 인프라 없이 완전히 독립 구동됩니다.
+   - Next.js 프로세스 내부의 Authoritative In-Memory DB와 임베디드 마켓 엔진으로 전 과정이 처리됩니다.
    - `npm install && npm run dev`만으로 프론트엔드와 시장 시뮬레이션이 즉시 실행됩니다.
 
 2. **사용자 식별은 서버 세션에서만 결정 (Request Body user_id 신뢰 금지)**:
-   - `/api/orders`는 클라이언트가 요청 body로 보내는 `user_id`를 완전히 무시합니다.
+   - `/api/orders` 및 `/api/local-db`는 클라이언트가 요청 body로 보내는 `user_id`를 신뢰하지 않으며, 서버 세션(NextAuth)에서 확정된 사용자만 사용합니다.
+   - Production 환경에서는 미인증 주문이 즉시 거절(401)되며, 비프로덕션 환경에서만 서버가 관리하는 테스트 게스트 계정이 허용됩니다.
 
-4. **Anon Key Fallback 금지**:
-   - 서버 주문 API는 Service Role Key가 누락되었을 때 anon key로 fallback하지 않고 즉시 에러를 반환합니다.
-
----
-
-## Production Architecture
-
-```text
-                     Browser (NextAuth Session)
-                                │
-                                ▼
-                  Next.js Web App (/api/orders)
-                                │ (Server-side Session Validation)
-                                │ (Service Role Client Only)
-                                ▼
-                      PostgreSQL Database
-                     ┌─────────────────────┐
-                     │ submit_and_match_   │
-                     │ order (Single Tx)   │
-                     └─────────────────────┘
-                                ▲
-                                │
-                     MarketEngine (engine-server)
-                                │
-                 ┌──────────────┼──────────────┐
-                Bots            LP           Events
-```
-
-Production에서는 웹 애플리케이션과 시장 엔진을 분리하여 실행합니다.
+3. **엔진 직렬화 및 원자적 트랜잭션 롤백**:
+   - 동일 종목의 주문 매칭은 비동기 종목 락(per-stock mutex)을 통해 완전 직렬화됩니다.
+   - 사용자 계정 락 및 자산 스냅샷/롤백 메커니즘을 통해 정산 실패 시 현금, 보유량, 주문, 거래, 호가, 주가 기록이 원자적으로 원상 복구됩니다.
+   - 브라우저의 임의 장부 수정 및 내부 정산 RPC(`bulk_settle_trades` 등)의 외부 직접 호출은 차단됩니다.
 
 ---
 
-## Production Environment
+## Commands & Build
 
-Production에서는 최소 다음 서버 환경변수가 필요합니다.
+패키지 스크립트는 `package.json`에 정의된 명령어를 사용합니다.
 
-```env
-NEXT_PUBLIC_ENGINE_DB_URL=
-NEXT_PUBLIC_ENGINE_DB_ANON_KEY=
+### 실행 명령어
 
-ENGINE_DB_SERVICE_ROLE_KEY=
-```
-
-또는 기존 Supabase naming convention을 사용하는 경우:
-
-```env
-NEXT_PUBLIC_SUPABASE_URL=
-NEXT_PUBLIC_SUPABASE_ANON_KEY=
-
-SUPABASE_SERVICE_ROLE_KEY=
-```
-
-Service Role Key는 server-side 환경에만 존재해야 합니다.
-
----
-
-## Production Build
-
-웹 애플리케이션:
-
-```bash
-npm run build
-npm run start
-```
-
-MarketEngine:
-
-```bash
-npm run engine:build
-npm run engine:start
-```
+- **로컬 개발 서버**:
+  ```bash
+  npm run dev
+  ```
+- **프로덕션 빌드**:
+  ```bash
+  npm run build
+  ```
+- **프로덕션 서버 시작**:
+  ```bash
+  npm run start
+  ```
+- **린트 검사**:
+  ```bash
+  npm run lint
+  ```
+- **정산 시스템 검증**:
+  ```bash
+  npm run test:settlement
+  ```
 
 ---
 

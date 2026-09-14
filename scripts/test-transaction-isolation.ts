@@ -165,10 +165,17 @@ async function main(): Promise<void> {
   await testCrossStockRollback();
   await testSameUserCashSerialization();
   console.log('\nALL TRANSACTION ISOLATION TESTS PASSED');
+
+  const { stopLocalStandaloneEngine } = await import('../lib/engine/localStandaloneServer');
+  stopLocalStandaloneEngine();
 }
 
-main().catch((error) => {
-  __setTestFailureHook(null);
-  console.error(error);
-  process.exit(1);
-});
+main()
+  .then(() => {
+    process.exit(0);
+  })
+  .catch((error) => {
+    __setTestFailureHook(null);
+    console.error(error);
+    process.exit(1);
+  });

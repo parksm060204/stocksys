@@ -82,6 +82,7 @@ export interface ProfileRecord {
   user_id: string;
   username: string;
   nickname: string;
+  email?: string;
   cash: number;
   net_worth: number;
   rank_tier: string;

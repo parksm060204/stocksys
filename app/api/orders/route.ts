@@ -26,9 +26,16 @@ function checkRateLimit(userId: string): boolean {
 
 export async function POST(request: Request) {
   try {
-    // 1. 서버 세션 인증 (세션 사용자 ID 또는 로컬 게스트 ID)
-    const session = await getServerSession(authOptions);
-    const authenticatedUserId = session?.user?.id || GUEST_USER_ID;
+    // 1. 서버 세션 인증 (프로덕션 미인증은 거절, 개발 환경만 로컬 게스트 ID 허용)
+    let session: any = null;
+    try {
+      session = await getServerSession(authOptions);
+    } catch {
+      session = null;
+    }
+
+    const isProd = process.env.NODE_ENV === 'production';
+    const authenticatedUserId = session?.user?.id || (!isProd ? GUEST_USER_ID : null);
 
     if (!authenticatedUserId) {
       return NextResponse.json(
@@ -111,6 +118,80 @@ export async function POST(request: Request) {
     console.error('[POST /api/orders Error]', error);
     return NextResponse.json(
       { success: false, filledQty: 0, message: error?.message || '주문 처리 중 서버 내부 오류가 발생했습니다.' },
+      { status: 500 }
+    );
+  }
+}
+
+export async function DELETE(request: Request) {
+  try {
+    let session: any = null;
+    try {
+      session = await getServerSession(authOptions);
+    } catch {
+      session = null;
+    }
+
+    const isProd = process.env.NODE_ENV === 'production';
+    const authenticatedUserId = session?.user?.id || (!isProd ? GUEST_USER_ID : null);
+
+    if (!authenticatedUserId) {
+      return NextResponse.json(
+        { success: false, message: '로그인이 필요한 서비스입니다.' },
+        { status: 401 }
+      );
+    }
+
+    const { searchParams } = new URL(request.url);
+    const orderId = searchParams.get('order_id') || searchParams.get('id');
+
+    if (!orderId) {
+      return NextResponse.json(
+        { success: false, message: '취소할 주문 식별자(order_id)가 필요합니다.' },
+        { status: 400 }
+      );
+    }
+
+    const { memoryDb } = await import('@/lib/memoryDb/memoryStore');
+    const { withStockLock } = await import('@/lib/engine/marketService');
+
+    const order = memoryDb.orders.get(orderId);
+    if (!order) {
+      return NextResponse.json(
+        { success: false, message: '주문을 찾을 수 없습니다.' },
+        { status: 404 }
+      );
+    }
+
+    if (order.user_id !== authenticatedUserId) {
+      return NextResponse.json(
+        { success: false, message: '본인의 주문만 취소할 수 있습니다.' },
+        { status: 403 }
+      );
+    }
+
+    let cancelled = false;
+    await withStockLock(order.stock_id, async () => {
+      if (order.status === 'open' || order.status === 'partial') {
+        order.status = 'cancelled';
+        memoryDb.orders.set(order.id, order);
+        memoryDb.publish('orders_changes', { eventType: 'UPDATE', new: order });
+        cancelled = true;
+      }
+    });
+
+    if (!cancelled) {
+      return NextResponse.json(
+        { success: false, message: `이미 ${order.status} 상태인 주문은 취소할 수 없습니다.` },
+        { status: 400 }
+      );
+    }
+
+    return NextResponse.json({ success: true, message: '주문이 정상적으로 취소되었습니다.', orderId });
+  } catch (err: any) {
+    console.error('[DELETE /api/orders Error]', err);
+    return NextResponse.json(
+      { success: false, message: err?.message || '주문 취소 중 서버 내부 오류가 발생했습니다.' },
       { status: 500 }
     );
   }

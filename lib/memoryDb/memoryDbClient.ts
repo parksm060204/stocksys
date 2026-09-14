@@ -20,6 +20,7 @@ type FilterOp = {
 export class MemoryQueryBuilder {
   private tableName: string;
   private filters: FilterOp[] = [];
+  private orderSpecs: { col: string; ascending: boolean }[] = [];
   private orderCol?: string;
   private orderAsc: boolean = true;
   private limitCount?: number;
@@ -44,6 +45,13 @@ export class MemoryQueryBuilder {
     return this;
   }
 
+  public upsert(data: any, options?: { onConflict?: string }): this {
+    this.action = 'upsert';
+    this.payloadData = data;
+    this.upsertOptions = options;
+    return this;
+  }
+
   public update(data: any): this {
     this.action = 'update';
     this.payloadData = data;
@@ -52,13 +60,6 @@ export class MemoryQueryBuilder {
 
   public delete(): this {
     this.action = 'delete';
-    return this;
-  }
-
-  public upsert(data: any, options?: { onConflict?: string }): this {
-    this.action = 'upsert';
-    this.payloadData = data;
-    this.upsertOptions = options;
     return this;
   }
 
@@ -98,8 +99,10 @@ export class MemoryQueryBuilder {
   }
 
   public order(col: string, options?: { ascending?: boolean }): this {
+    const ascending = options?.ascending ?? true;
+    this.orderSpecs.push({ col, ascending });
     this.orderCol = col;
-    this.orderAsc = options?.ascending ?? true;
+    this.orderAsc = ascending;
     return this;
   }
 
@@ -320,19 +323,27 @@ export class MemoryQueryBuilder {
       // ── 3. SELECT 쿼리 필터링 & 정렬 ──
       let result = this.applyFilters(targetList);
 
-      if (this.orderCol) {
-        const col = this.orderCol;
-        const asc = this.orderAsc;
+      const specs = this.orderSpecs.length > 0 
+        ? this.orderSpecs 
+        : (this.orderCol ? [{ col: this.orderCol, ascending: this.orderAsc }] : []);
+
+      if (specs.length > 0) {
         result.sort((a, b) => {
-          const valA = a[col];
-          const valB = b[col];
-          if (valA === valB) return 0;
-          if (valA === undefined || valA === null) return 1;
-          if (valB === undefined || valB === null) return -1;
-          if (typeof valA === 'number' && typeof valB === 'number') {
-            return asc ? valA - valB : valB - valA;
+          for (const spec of specs) {
+            const valA = a[spec.col];
+            const valB = b[spec.col];
+            if (valA === valB) continue;
+            if (valA === undefined || valA === null) return 1;
+            if (valB === undefined || valB === null) return -1;
+            if (typeof valA === 'number' && typeof valB === 'number') {
+              return spec.ascending ? valA - valB : valB - valA;
+            }
+            const cmp = String(valA).localeCompare(String(valB));
+            if (cmp !== 0) {
+              return spec.ascending ? cmp : -cmp;
+            }
           }
-          return asc ? String(valA).localeCompare(String(valB)) : String(valB).localeCompare(String(valA));
+          return 0;
         });
       }
 

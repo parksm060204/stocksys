@@ -745,9 +745,16 @@ async function runSecurityAndSafetyTests() {
   console.log('\n==================================================');
   console.log('🎉 ALL SECURITY & ATOMIC TX TESTS PASSED! (TEST 1 ~ TEST 14)');
   console.log('==================================================\n');
+
+  const { stopLocalStandaloneEngine } = await import('../lib/engine/localStandaloneServer');
+  stopLocalStandaloneEngine();
 }
 
-runSecurityAndSafetyTests().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+runSecurityAndSafetyTests()
+  .then(() => {
+    process.exit(0);
+  })
+  .catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });

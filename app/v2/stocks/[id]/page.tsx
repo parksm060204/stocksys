@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import { fmtCap } from "@/lib/format";
 import { createClient } from "@/lib/db/server";
+import { sanitizePublicNewsRecord } from "@/lib/engine/simulation/marketEventTypes";
 import type { Stock } from "@/lib/types";
 import StockDetailV2Client from "./StockDetailV2Client";
 
@@ -103,7 +104,7 @@ export default async function StockDetailV2Page({
     )
     .order("created_at", { ascending: false })
     .limit(8);
-  const relatedNews = newsData || [];
+  const relatedNews = (newsData || []).map(sanitizePublicNewsRecord);
 
 
   const messages: never[] = [];

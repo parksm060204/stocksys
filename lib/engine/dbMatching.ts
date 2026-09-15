@@ -29,6 +29,15 @@ export interface MatchOrderResult {
   orderId?: string;
   execPrice?: number;
   status?: string;
+  fills?: ExecutionFill[];
+}
+
+export interface ExecutionFill {
+  tradeId: string;
+  price: number;
+  size: number;
+  makerOrderId: string;
+  takerOrderId: string;
 }
 
 // ── Test-only failure hook ──
@@ -134,6 +143,7 @@ export async function submitAndMatchOrder(
     let remainingQty = incomingSize;
     let totalFilledQty = 0;
     let lastExecPrice = incomingPrice;
+    const executionFills: Array<Omit<ExecutionFill, 'tradeId' | 'takerOrderId'> & { tradeIndex: number }> = [];
 
     // [Multi-Fill OHLC] track high/low across all fills in this order
     let executionHigh = -Infinity;
@@ -210,6 +220,12 @@ export async function submitAndMatchOrder(
           seller_fee,
           created_at: input.created_at || new Date().toISOString(),
           simulation_time: input.simulation_time,
+        });
+        executionFills.push({
+          price: execPrice,
+          size: matchQty,
+          makerOrderId: String(opp.id),
+          tradeIndex: tradesToSettle.length - 1,
         });
 
         const newOppFilled = Number(opp.filled || 0) + matchQty;
@@ -336,10 +352,17 @@ export async function submitAndMatchOrder(
         return {
           success: true,
           filledQty: totalFilledQty,
-          execPrice: lastExecPrice,
+          execPrice: executionFills.reduce((sum, fill) => sum + fill.price * fill.size, 0) / totalFilledQty,
+          fills: executionFills.map((fill) => ({
+            tradeId: tradeIds[fill.tradeIndex],
+            price: fill.price,
+            size: fill.size,
+            makerOrderId: fill.makerOrderId,
+            takerOrderId: orderId,
+          })),
           status: initialStatus,
           orderId,
-          message: `🎉 ${totalFilledQty.toLocaleString()}주가 체결되었습니다! (체결가: ₩${lastExecPrice.toLocaleString()})${iocNote}`,
+          message: `🎉 ${totalFilledQty.toLocaleString()}주가 체결되었습니다! (가중평균 체결가: ₩${(executionFills.reduce((sum, fill) => sum + fill.price * fill.size, 0) / totalFilledQty).toLocaleString()})${iocNote}`,
         };
       } else {
         const iocMsg = isIoc

@@ -10,7 +10,7 @@
 
 import { MarketObservation } from '../marketObservation';
 import { AgentAccount, AgentOrderIntent, ValueStrategyConfig } from '../agentTypes';
-import { SimPrng } from '../simClock';
+import { millisecondsToSeconds, SimPrng } from '../simClock';
 
 export function evaluateValueStrategy(
   obs: MarketObservation,
@@ -25,17 +25,17 @@ export function evaluateValueStrategy(
     // Build the set of rumor eventIds this agent has already seen corrected (via its visible CORRECTION events)
     const agentCorrectedIds = new Set<string>();
     for (const ev of obs.recentEvents) {
-      if (ev.eventType === 'CORRECTION' && ev.originalEventId) {
+      if (ev.eventType === 'CORRECTION' && ev.originalEventId && ev.effectiveFrom <= obs.simulationTime) {
         agentCorrectedIds.add(ev.originalEventId);
       }
     }
 
     for (const ev of obs.recentEvents) {
-      if (ev.targetStockIds.includes(obs.stockId)) {
+      if (ev.targetStockIds.includes(obs.stockId) && ev.effectiveFrom <= obs.simulationTime) {
         // If this agent has already received a CORRECTION that nullifies this rumor, treat confidence as 0
         const effectiveConfidence = agentCorrectedIds.has(ev.eventId) ? 0 : ev.confidence;
-        const elapsed = Math.max(0, obs.simulationTime - ev.publishedAt);
-        const decay = Math.pow(2, -elapsed / Math.max(1, ev.halfLife));
+        const elapsed = millisecondsToSeconds(Math.max(0, obs.simulationTime - ev.effectiveFrom));
+        const decay = Math.pow(2, -elapsed / ev.halfLife);
         newsValuationDelta += ev.valuationSignal * effectiveConfidence * decay;
       }
     }

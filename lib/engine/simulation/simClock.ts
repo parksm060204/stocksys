@@ -71,6 +71,38 @@ export class SimPrng {
   }
 }
 
+/** Canonical simulation time conventions.
+ *
+ * Timestamps are epoch milliseconds. Durations (dt, latency and half-life)
+ * are seconds and must be converted explicitly with secondsToMs().
+ */
+export const SIMULATION_MS_PER_SECOND = 1000;
+
+export function secondsToMs(seconds: number): number {
+  if (!Number.isFinite(seconds) || seconds < 0) {
+    throw new RangeError(`Simulation duration must be finite and non-negative: ${seconds}`);
+  }
+  const milliseconds = seconds * SIMULATION_MS_PER_SECOND;
+  if (!Number.isFinite(milliseconds)) {
+    throw new RangeError(`Simulation duration is outside the representable epoch-ms range: ${seconds}`);
+  }
+  return milliseconds;
+}
+
+export function millisecondsToSeconds(milliseconds: number): number {
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) {
+    throw new RangeError(`Simulation timestamp delta must be finite and non-negative: ${milliseconds}`);
+  }
+  return milliseconds / SIMULATION_MS_PER_SECOND;
+}
+
+export function assertFinitePositive(value: number, name: string): number {
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new RangeError(`${name} must be a finite number greater than zero: ${value}`);
+  }
+  return value;
+}
+
 export interface ClockState {
   simulationTime: number; // ms timestamp
   simulationStep: number;
@@ -89,6 +121,14 @@ export class SimulationClock {
     dtSeconds: number = 1.0,
     initialStep: number = 0
   ) {
+    assertFinitePositive(startEpochMs, 'startEpochMs');
+    if (!Number.isSafeInteger(startEpochMs)) {
+      throw new RangeError(`startEpochMs must be a safe integer epoch-millisecond timestamp: ${startEpochMs}`);
+    }
+    assertFinitePositive(dtSeconds, 'dtSeconds');
+    if (!Number.isInteger(initialStep) || initialStep < 0) {
+      throw new RangeError(`initialStep must be a non-negative integer: ${initialStep}`);
+    }
     this._simulationTime = startEpochMs;
     this._dt = dtSeconds;
     this._simulationStep = initialStep;
@@ -123,8 +163,13 @@ export class SimulationClock {
    */
   public advance(dtSeconds?: number): { step: number; time: number; dt: number } {
     const stepDt = dtSeconds !== undefined ? dtSeconds : this._dt;
+    assertFinitePositive(stepDt, 'dtSeconds');
+    const deltaMs = Math.round(secondsToMs(stepDt));
+    if (deltaMs < 1) {
+      throw new RangeError(`dtSeconds must advance simulation by at least 1 millisecond: ${stepDt}`);
+    }
     this._simulationStep++;
-    this._simulationTime += Math.round(stepDt * 1000);
+    this._simulationTime += deltaMs;
     return {
       step: this._simulationStep,
       time: this._simulationTime,
@@ -143,6 +188,10 @@ export class SimulationClock {
 
   public reset(startEpochMs?: number): void {
     if (startEpochMs !== undefined) {
+      assertFinitePositive(startEpochMs, 'startEpochMs');
+      if (!Number.isSafeInteger(startEpochMs)) {
+        throw new RangeError(`startEpochMs must be a safe integer epoch-millisecond timestamp: ${startEpochMs}`);
+      }
       this._simulationTime = startEpochMs;
     }
     this._simulationStep = 0;

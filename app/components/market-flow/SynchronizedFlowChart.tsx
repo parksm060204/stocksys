@@ -340,20 +340,22 @@ export const SynchronizedFlowChart: React.FC<SynchronizedFlowChartProps> = ({
             <line x1={padding.left} y1={p4Top + 12} x2={padding.left + innerWidth} y2={p4Top + 12} stroke="#374151" strokeWidth="1.5" />
 
             {/* 뉴스 발생 마커 */}
-            {data.map((pt, i) => {
-              if (!pt.newsEvent) return null;
+            {data.flatMap((pt, i) => {
+              const events = pt.newsEvents || (pt.newsEvent ? [pt.newsEvent] : []);
               const x = getX(i);
-              const isPositive = (pt.newsEvent.impactDirection ?? 0) >= 0;
-
-              return (
-                <g key={`news-flag-${i}`} className="cursor-pointer">
-                  <line x1={x} y1={padding.top} x2={x} y2={p4Top + 12} stroke={isPositive ? '#F04452' : '#3182F6'} strokeWidth="1" strokeDasharray="2,2" opacity="0.6" />
-                  <circle cx={x} cy={p4Top + 12} r="5.5" fill={isPositive ? '#F04452' : '#3182F6'} filter="url(#glowEffect)" />
-                  <text x={x} y={p4Top + 28} textAnchor="middle" className="text-[8.5px] font-mono fill-white font-extrabold">
-                    {pt.newsEvent.targetSector ? SECTOR_METADATA[pt.newsEvent.targetSector]?.nameKo || '뉴스' : '뉴스'}
-                  </text>
-                </g>
-              );
+              return events.map((newsEvent, eventIndex) => {
+                const isPositive = (newsEvent.impactDirection ?? 0) >= 0;
+                const offset = (eventIndex - (events.length - 1) / 2) * 8;
+                return (
+                  <g key={`news-flag-${newsEvent.id}`} className="cursor-pointer">
+                    <line x1={x + offset} y1={padding.top} x2={x + offset} y2={p4Top + 12} stroke={isPositive ? '#F04452' : '#3182F6'} strokeWidth="1" strokeDasharray="2,2" opacity="0.6" />
+                    <circle cx={x + offset} cy={p4Top + 12} r="5.5" fill={isPositive ? '#F04452' : '#3182F6'} filter="url(#glowEffect)" />
+                    <text x={x + offset} y={p4Top + 28} textAnchor="middle" className="text-[8.5px] font-mono fill-white font-extrabold">
+                      {newsEvent.targetSector ? SECTOR_METADATA[newsEvent.targetSector]?.nameKo || '뉴스' : '뉴스'}
+                    </text>
+                  </g>
+                );
+              });
             })}
           </g>
 

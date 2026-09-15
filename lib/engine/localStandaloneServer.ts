@@ -1,12 +1,13 @@
 import { memoryDb, StockRecord, TradeRecord, OrderRecord } from '../memoryDb/memoryStore';
 import { createMemoryDbClient } from '../memoryDb/memoryDbClient';
 import { printLocalBannerOnce } from './localDevMode';
-import { withStockLock } from './marketService';
+import { withStockLock, withAllStockLocks } from './marketService';
 import { withAccountLocks } from '../memoryDb/accountLocks';
 import { snapshotTradingState, rollbackTradingState, TradingSnapshot } from '../memoryDb/memoryTransaction';
 import { calculateTradeFees, executeSettlement, SettlementTrade } from './settlement';
 import { randomUUID } from 'crypto';
 import { AgentManager } from './simulation/agentManager';
+import { SerialExecutionQueue } from './simulation/executionQueue';
 
 interface GlobalWithEngine {
   __STOCKSYS_ENGINE__?: LocalMarketEngineInstance;
@@ -28,6 +29,7 @@ export class LocalMarketEngineInstance {
   private tickIntervalMs: number = 1000;
   private timer: NodeJS.Timeout | null = null;
   private tickCount: number = 0;
+  private simulationQueue = new SerialExecutionQueue();
   private client = createMemoryDbClient();
   private readonly LP_REFRESH_TICKS: number = 5;
   private readonly MAX_RETAINED_LP_ORDERS_PER_STOCK: number = 30;
@@ -77,10 +79,33 @@ export class LocalMarketEngineInstance {
    * 시뮬레이션을 수동으로 dt초만큼 전진 (타이머 없이 동기적/결정론적 테스트 지원)
    */
   public async stepSimulation(dt: number = 1.0): Promise<void> {
-    await this.agentManager.step(dt);
+    await this.enqueueSimulation(() => this.agentManager.step(dt));
   }
 
   public async tick(): Promise<void> {
+    await this.enqueueSimulation(() => this.runTick());
+  }
+
+  public async publishEvent(event: Parameters<AgentManager['publishEvent']>[0]): Promise<boolean> {
+    return this.enqueueSimulation(() => Promise.resolve(this.agentManager.publishEvent(event)));
+  }
+
+  public async resetSimulation(): Promise<void> {
+    await this.enqueueSimulation(async () => {
+      const stockIds = Array.from(memoryDb.stocks.keys());
+      await withAllStockLocks(stockIds, async () => {
+        memoryDb.resetToSeedData();
+        this.agentManager.reset();
+        this.tickCount = 0;
+      });
+    });
+  }
+
+  private enqueueSimulation<T>(task: () => Promise<T>): Promise<T> {
+    return this.simulationQueue.run(task);
+  }
+
+  private async runTick(): Promise<void> {
     this.tickCount++;
 
     // ── 1. 에이전트 기반 시장(ABM) 1스텝 실행 ──

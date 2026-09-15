@@ -17,7 +17,6 @@ export type CombinedNews = {
   target_sector?: string | null;
   target_ticker?: string | null;
   impact_score?: number;
-  is_fake?: boolean;
 };
 
 export default function NewsPage() {
@@ -59,14 +58,13 @@ export default function NewsPage() {
             id: row.id,
             created_at: row.created_at,
             type: 'MARKET',
-            category: row.sentiment === 'positive' ? 'OFFICIAL' : row.sentiment === 'negative' ? 'RUMOR' : 'CORRECTION',
+            category: row.category || (row.sentiment === 'positive' ? 'OFFICIAL' : row.sentiment === 'negative' ? 'RUMOR' : 'CORRECTION'),
             publisher: row.publisher || 'AI 터미널',
-            title: row.headline,
-            content: row.summary || row.headline,
-            target_sector: row.related_sector,
-            target_ticker: row.related_ticker,
+            title: row.title || row.headline,
+            content: row.content || row.summary || row.title || row.headline,
+            target_sector: row.target_sector || row.related_sector,
+            target_ticker: row.target_ticker || row.related_ticker,
             impact_score: row.impact_score || 5,
-            is_fake: false,
           });
         });
       }
@@ -84,7 +82,6 @@ export default function NewsPage() {
             target_sector: row.target_sector,
             target_ticker: row.target_ticker,
             impact_score: row.impact_score || 5,
-            is_fake: row.is_fake || false,
           });
         });
       }

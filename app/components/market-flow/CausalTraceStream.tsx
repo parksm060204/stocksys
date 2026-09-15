@@ -26,9 +26,8 @@ export const CausalTraceStream: React.FC<CausalTraceStreamProps> = ({ logs }) =>
   };
 
   const formatTime = (ts: number) => {
-    const isMs = ts > 1e11;
-    const date = new Date(isMs ? ts : ts * 1000);
-    return isFinite(date.getTime()) ? date.toTimeString().split(' ')[0] : `${Math.floor(ts)}s`;
+    const date = new Date(ts);
+    return isFinite(date.getTime()) ? date.toTimeString().split(' ')[0] : 'Invalid time';
   };
 
   return (

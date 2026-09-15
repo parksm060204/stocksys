@@ -10,6 +10,7 @@
  */
 
 import { memoryDb, StockRecord } from '../../memoryDb/memoryStore';
+import { secondsToMs } from './simClock';
 
 export type EventScope = 'market' | 'sector' | 'stock';
 export type EventCategory = 'OFFICIAL' | 'RUMOR' | 'CORRECTION';
@@ -17,8 +18,8 @@ export type EventCategory = 'OFFICIAL' | 'RUMOR' | 'CORRECTION';
 export interface MarketEvent {
   eventId: string;
   sourceEventId?: string;
-  publishedAt: number;        // simulationTime (seconds)
-  effectiveFrom: number;      // simulationTime (seconds)
+  publishedAt: number;        // canonical simulation timestamp (epoch ms)
+  effectiveFrom: number;      // canonical simulation timestamp (epoch ms)
   scope: EventScope;
   targetStockIds: string[];   // Canonical stock IDs
   sectorId?: string;          // Canonical sector ID ('semiconductor', 'auto', 'energy', etc.)
@@ -28,13 +29,81 @@ export interface MarketEvent {
   attentionShock: number;     // Non-directional attention shock: 0.0 to 1.0 (bad news also shocks attention)
   uncertaintyShock: number;   // Uncertainty shock: 0.0 to 1.0 (widens LP spread, reduces depth)
   confidence: number;         // 0.0 to 1.0
-  halfLife: number;           // Decay half-life in simulation seconds (e.g. 30s)
+  halfLife: number;           // Decay half-life in simulation seconds (duration)
   originalEventId?: string;   // Pointer to original rumor event for CORRECTION
   isRumorFake?: boolean;      // Internal simulation truth (bots cannot peek before correction)
+  correctedAt?: number;       // Internal timestamp of the correction publication
+  sequence?: number;          // Monotonic tie-breaker for equal timestamps
   // Display metadata for UI & terminal
   publisher: string;
   title: string;
   content: string;
+}
+
+export function validateMarketEvent(event: MarketEvent): string | null {
+  if (!event || typeof event.eventId !== 'string' || event.eventId.trim() === '') {
+    return 'eventId is required';
+  }
+  if (!Number.isSafeInteger(event.publishedAt) || !Number.isSafeInteger(event.effectiveFrom)) {
+    return 'publishedAt and effectiveFrom must be safe integer epoch-millisecond timestamps';
+  }
+  if (!['market', 'sector', 'stock'].includes(event.scope)) {
+    return 'scope must be market, sector, or stock';
+  }
+  if (!['OFFICIAL', 'RUMOR', 'CORRECTION'].includes(event.eventType)) {
+    return 'eventType is invalid';
+  }
+  if (event.effectiveFrom < event.publishedAt) {
+    return 'effectiveFrom cannot precede publishedAt';
+  }
+  if (!Array.isArray(event.targetStockIds)) {
+    return 'targetStockIds must be an array';
+  }
+  if (event.targetStockIds.some((stockId) => typeof stockId !== 'string' || stockId.trim() === '')) {
+    return 'targetStockIds must contain non-empty strings';
+  }
+  if (!Number.isFinite(event.halfLife) || event.halfLife <= 0) {
+    return 'halfLife must be a finite duration greater than zero seconds';
+  }
+  if (!Number.isFinite(event.valuationSignal) || event.valuationSignal < -1 || event.valuationSignal > 1) {
+    return 'valuationSignal must be between -1 and 1';
+  }
+  for (const [name, value] of [
+    ['attentionShock', event.attentionShock],
+    ['uncertaintyShock', event.uncertaintyShock],
+    ['confidence', event.confidence],
+  ] as const) {
+    if (!Number.isFinite(value) || value < 0 || value > 1) {
+      return `${name} must be between 0 and 1`;
+    }
+  }
+  return null;
+}
+
+/** Returns the events an agent can observe at a canonical epoch-ms timestamp. */
+export function getVisibleMarketEvents(
+  events: MarketEvent[],
+  simulationTimeMs: number,
+  infoLatencySeconds: number
+): MarketEvent[] {
+  if (!Number.isFinite(simulationTimeMs)) return [];
+  const latencyMs = secondsToMs(infoLatencySeconds);
+  return events
+    .filter((event) => event.publishedAt <= simulationTimeMs - latencyMs)
+    .map((event) => {
+      const { isRumorFake, ...sanitized } = event;
+      return sanitized as MarketEvent;
+    });
+}
+
+/** Remove simulation-only truth from every public news read path. */
+export function sanitizePublicNewsRecord<T extends Record<string, unknown>>(record: T): Omit<T, 'is_fake' | 'isRumorFake' | 'correctedAt'> {
+  const { is_fake: _isFake, isRumorFake: _isRumorFake, correctedAt: _correctedAt, ...publicRecord } = record as T & {
+    is_fake?: unknown;
+    isRumorFake?: unknown;
+    correctedAt?: unknown;
+  };
+  return publicRecord as Omit<T, 'is_fake' | 'isRumorFake' | 'correctedAt'>;
 }
 
 /**

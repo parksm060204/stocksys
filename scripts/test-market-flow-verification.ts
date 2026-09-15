@@ -15,6 +15,7 @@ import { AgentManager } from '../lib/engine/simulation/agentManager';
 import { MarketEvent, resolveTargetStockIds } from '../lib/engine/simulation/marketEventTypes';
 import { buildMarketObservation } from '../lib/engine/simulation/marketObservation';
 import { ensureLocalStandaloneEngine, getLocalStandaloneEngine } from '../lib/engine/localStandaloneServer';
+import { secondsToMs } from '../lib/engine/simulation/simClock';
 
 // ── Utilities ────────────────────────────────────────────────────────────────
 
@@ -329,12 +330,12 @@ async function runScenario2(seed: number): Promise<void> {
   // 4. 빠른 봇(latency=1s)은 t=11에 정정 수신 가능
   const fastBot = mgr.agents.get('acc_bot_trend_01')!; // latency=1.0s
   const slowBot = mgr.agents.get('acc_bot_val_02')!;   // latency=4.0s
-  const t11 = correctionTime + 3;
+  const t11 = correctionTime + secondsToMs(3);
   const fastSees = mgr.events.some((e) =>
-    e.eventType === 'CORRECTION' && e.publishedAt <= t11 - (fastBot.infoLatency ?? 0) && e.originalEventId === `ev_s2_rumor_seed${seed}`
+    e.eventType === 'CORRECTION' && e.publishedAt <= t11 - secondsToMs(fastBot.infoLatency ?? 0) && e.originalEventId === `ev_s2_rumor_seed${seed}`
   );
   const slowSees = mgr.events.some((e) =>
-    e.eventType === 'CORRECTION' && e.publishedAt <= t11 - (slowBot.infoLatency ?? 0) && e.originalEventId === `ev_s2_rumor_seed${seed}`
+    e.eventType === 'CORRECTION' && e.publishedAt <= t11 - secondsToMs(slowBot.infoLatency ?? 0) && e.originalEventId === `ev_s2_rumor_seed${seed}`
   );
   assert(fastSees,  `[S2] 빠른 봇(latency=${fastBot.infoLatency}s)은 t=${t11}에 정정 수신`);
   assert(!slowSees, `[S2] 느린 봇(latency=${slowBot.infoLatency}s)은 t=${t11}에 정정 미수신(지연 격리)`);
@@ -428,8 +429,8 @@ async function runScenario3(seed: number): Promise<void> {
   );
 
   // 5. 비중복 윈도우 경계 중복 없음 검증
-  const wsT5 = mgr.diagnostics.computeWindowStatistics(5.0, 10, 50);
-  const wsT8 = mgr.diagnostics.computeWindowStatistics(8.0, 10, 50);
+  const wsT5 = mgr.diagnostics.computeWindowStatistics(p0.simTime, 10, 50);
+  const wsT8 = mgr.diagnostics.computeWindowStatistics(p1.simTime, 10, 50);
   const stT5 = wsT5.get(bioStock.id);
   const stT8 = wsT8.get(bioStock.id);
   assert(

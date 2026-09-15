@@ -3,9 +3,10 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '@/app/api/auth/[...nextauth]/route';
 import { memoryDb, GUEST_USER_ID, OrderRecord } from '@/lib/memoryDb/memoryStore';
 import { createMemoryDbClient } from '@/lib/memoryDb/memoryDbClient';
-import { ensureLocalStandaloneEngine } from '@/lib/engine/localStandaloneServer';
+import { ensureLocalStandaloneEngine, getLocalStandaloneEngine } from '@/lib/engine/localStandaloneServer';
 import { LocalMarketService, withStockLock, withAllStockLocks } from '@/lib/engine/marketService';
 import { verifyAdminSession } from '@/lib/auth/adminAuth';
+import { sanitizePublicNewsRecord } from '@/lib/engine/simulation/marketEventTypes';
 
 // 공개 시장 데이터 테이블 (SELECT 전용)
 const PUBLIC_READ_TABLES = new Set([
@@ -28,6 +29,7 @@ const PUBLIC_READ_TABLES = new Set([
   'bond_coupon_payments',
   'trades',
 ]);
+const NEWS_TABLES = new Set(['market_news', 'news', 'news_v2']);
 
 // 외부 클라이언트가 직접 호출할 수 없는 내부 정산/유지보수 RPC 목록
 const FORBIDDEN_INTERNAL_RPCS = new Set([
@@ -131,9 +133,14 @@ export async function POST(request: Request) {
 
       // 모든 종목의 락을 획득하여 진행 중인 모든 거래가 완료된 후 안전하게 리셋
       const allStockIds = Array.from(memoryDb.stocks.keys());
-      await withAllStockLocks(allStockIds, async () => {
-        memoryDb.resetToSeedData();
-      });
+      const engine = getLocalStandaloneEngine();
+      if (engine) {
+        await engine.resetSimulation();
+      } else {
+        await withAllStockLocks(allStockIds, async () => {
+          memoryDb.resetToSeedData();
+        });
+      }
 
       return NextResponse.json({ success: true, message: 'Market reset successfully' });
     }
@@ -158,6 +165,14 @@ export async function POST(request: Request) {
         const qb = createMemoryDbClient().from(tableName);
         applyQueryOptions(qb, query);
         const result = await qb.execute();
+        if (NEWS_TABLES.has(tableName) && result.data) {
+          return NextResponse.json({
+            ...result,
+            data: Array.isArray(result.data)
+              ? result.data.map(sanitizePublicNewsRecord)
+              : sanitizePublicNewsRecord(result.data),
+          });
+        }
         return NextResponse.json(result);
       }
 

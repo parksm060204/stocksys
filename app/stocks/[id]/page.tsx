@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { fmtCap } from "@/lib/format";
 import RealtimePriceHeader from "@/app/components/RealtimePriceHeader";
 import { createClient } from "@/lib/db/server";
+import { sanitizePublicNewsRecord } from "@/lib/engine/simulation/marketEventTypes";
 import type { Stock } from "@/lib/types";
 import StockDetailClient from "./StockDetailClient";
 
@@ -101,7 +102,7 @@ export default async function StockDetail({
       .or(`target_sector.eq.${stock.sector},headline.ilike.%${stock.name}%,summary.ilike.%${stock.name}%`)
       .order('created_at', { ascending: false })
       .limit(5);
-    relatedNews = newsData || [];
+    relatedNews = (newsData || []).map(sanitizePublicNewsRecord);
   } catch (e) {
     console.warn("Failed to fetch market news:", e);
   }

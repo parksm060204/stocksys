@@ -78,6 +78,7 @@ export interface MarketFlowTimeSeriesPoint {
     urgency: number;
     impactDirection?: number;
   };
+  newsEvents?: NonNullable<MarketFlowTimeSeriesPoint['newsEvent']>[];
 }
 
 export interface SectorFlowSummary {
@@ -107,9 +108,13 @@ export const SECTOR_METADATA: Record<string, { nameKo: string; color: string }> 
 export interface CausalTraceLog {
   timestamp: number;
   eventId?: string;
+  eventIds?: string[];
   eventType?: string;
   stockId?: string;
   agentId?: string;
+  decisionId?: string;
+  orderId?: string;
+  tradeId?: string;
   stage: 'NEWS_RECEIVED' | 'STRATEGY_DECISION' | 'ORDER_SUBMIT' | 'ORDER_FILL' | 'LEADER_UPDATE';
   details: string;
 }
@@ -235,9 +240,11 @@ export class MarketDiagnostics {
     baselineWindowSec: number = 50
   ): Map<string, WindowStatistics> {
     const statsMap = new Map<string, WindowStatistics>();
-    const isMs = simTime > 1e11;
-    const recentDelta = isMs ? recentWindowSec * 1000 : recentWindowSec;
-    const baselineDelta = isMs ? baselineWindowSec * 1000 : baselineWindowSec;
+    if (!Number.isFinite(simTime)) {
+      throw new RangeError(`simTime must be a finite epoch-millisecond timestamp: ${simTime}`);
+    }
+    const recentDelta = recentWindowSec * 1000;
+    const baselineDelta = baselineWindowSec * 1000;
     const recentStart = Math.max(0, simTime - recentDelta);
     const baselineStart = Math.max(0, recentStart - baselineDelta);
 
@@ -252,7 +259,7 @@ export class MarketDiagnostics {
       // Recent window: (recentStart, simTime] — strict open left boundary to avoid
       // double-counting trades that land exactly on recentStart (shared with baseline end).
       const recentTrades = stockTrades.filter((t) => {
-        const tTime = t.simulation_time !== undefined ? t.simulation_time : (isMs ? 0 : 0);
+        const tTime = t.simulation_time ?? 0;
         return tTime > recentStart && tTime <= simTime;
       });
 
@@ -335,8 +342,11 @@ export class MarketDiagnostics {
   /**
    * 주도주 점수 갱신 및 순위 산출 (관심 순위 vs 주도주 순위 분리)
    */
-  public updateLeaderBoard(simTime: number, attentionMap: Map<string, number>): LeaderStockScore[] {
-    const statsMap = this.computeWindowStatistics(simTime, 10, 50);
+  public updateLeaderBoard(
+    simTime: number,
+    attentionMap: Map<string, number>,
+    statsMap: Map<string, WindowStatistics> = this.computeWindowStatistics(simTime, 10, 50)
+  ): LeaderStockScore[] {
     const scores: LeaderStockScore[] = [];
 
     for (const stock of memoryDb.stocks.values()) {
@@ -486,21 +496,26 @@ export class MarketDiagnostics {
   public recordSnapshot(
     simTime: number,
     attentionMap: Map<string, number>,
-    recentEvents?: MarketEvent[]
+    recentEvents?: MarketEvent[],
+    statsMap?: Map<string, WindowStatistics>
   ): MarketFlowTimeSeriesPoint {
-    const isMs = simTime > 1e11;
+    if (!Number.isFinite(simTime)) {
+      throw new RangeError(`simTime must be a finite epoch-millisecond timestamp: ${simTime}`);
+    }
+    const existingPoint = this.timeSeriesHistory.find((item) => item.timestamp === simTime);
+    const previousSnapshotSimTime = this.lastSnapshotSimTime;
     this.lastSnapshotSimTime = simTime;
 
-    const date = new Date(isMs ? simTime : simTime * 1000);
+    const date = new Date(simTime);
     const timeLabel = isFinite(date.getTime())
       ? date.toTimeString().split(' ')[0]
       : `${Math.floor(simTime)}s`;
 
     const recentWindowSec = 10;
-    const recentDelta = isMs ? recentWindowSec * 1000 : recentWindowSec;
+    const recentDelta = recentWindowSec * 1000;
     const recentStart = Math.max(0, simTime - recentDelta);
 
-    const statsMap = this.computeWindowStatistics(simTime, recentWindowSec, 50);
+    const finalStatsMap = statsMap ?? this.computeWindowStatistics(simTime, recentWindowSec, 50);
 
     const sectorTurnover: Record<string, number> = {};
     const sectorTurnoverShare: Record<string, number> = {};
@@ -521,7 +536,7 @@ export class MarketDiagnostics {
     // 1. 섹터별 거래대금 및 관심도 집계
     for (const stock of memoryDb.stocks.values()) {
       const secId = stock.sector_id || 'general';
-      const st = statsMap.get(stock.id);
+      const st = finalStatsMap.get(stock.id);
       const tOver = st ? st.turnover : 0;
       sectorTurnover[secId] = (sectorTurnover[secId] || 0) + tOver;
       totalTurnover += tOver;
@@ -563,7 +578,7 @@ export class MarketDiagnostics {
 
     // 4. 주도주 1~3위 스냅샷
     const topLeaders = this.leaderBoard.slice(0, 3).map((lb) => {
-      const st = statsMap.get(lb.stockId);
+      const st = finalStatsMap.get(lb.stockId);
       const curStock = memoryDb.stocks.get(lb.stockId);
       const curPrice = curStock?.current_price || 1;
       const spread = st?.spread || this.getAverageSpread(lb.stockId);
@@ -584,22 +599,20 @@ export class MarketDiagnostics {
     });
 
     // 5. 최근 뉴스 이벤트 마커
-    let newsEvent: MarketFlowTimeSeriesPoint['newsEvent'] = undefined;
-    if (recentEvents && recentEvents.length > 0) {
-      const latestEvt = [...recentEvents]
-        .reverse()
-        .find((e) => e.publishedAt > recentStart && e.publishedAt <= simTime);
-      if (latestEvt) {
-        newsEvent = {
-          id: latestEvt.eventId,
-          headline: latestEvt.title,
-          targetSector: latestEvt.sectorId,
-          targetStockId: latestEvt.targetStockIds?.[0],
-          urgency: latestEvt.attentionShock,
-          impactDirection: latestEvt.valuationSignal,
-        };
-      }
-    }
+    const markerStart = existingPoint
+      ? recentStart
+      : Math.max(recentStart, previousSnapshotSimTime);
+    const newsEvents: NonNullable<MarketFlowTimeSeriesPoint['newsEvent']>[] = (recentEvents || [])
+      .filter((event) => event.publishedAt > markerStart && event.publishedAt <= simTime)
+      .sort((a, b) => a.publishedAt - b.publishedAt || (a.sequence ?? 0) - (b.sequence ?? 0))
+      .map((event) => ({
+        id: event.eventId,
+        headline: event.title,
+        targetSector: event.sectorId,
+        targetStockId: event.targetStockIds?.[0],
+        urgency: event.attentionShock,
+        impactDirection: event.valuationSignal,
+      }));
 
     const point: MarketFlowTimeSeriesPoint = {
       timestamp: simTime,
@@ -610,10 +623,16 @@ export class MarketDiagnostics {
       sectorBotNetTurnover,
       sectorAvgAttention,
       topLeaders,
-      newsEvent,
+      newsEvent: newsEvents[newsEvents.length - 1],
+      newsEvents,
     };
 
-    this.timeSeriesHistory.push(point);
+    const existingPointIndex = this.timeSeriesHistory.findIndex((item) => item.timestamp === simTime);
+    if (existingPointIndex >= 0) {
+      this.timeSeriesHistory[existingPointIndex] = point;
+    } else {
+      this.timeSeriesHistory.push(point);
+    }
     if (this.timeSeriesHistory.length > this.MAX_TIME_SERIES_POINTS) {
       this.timeSeriesHistory.shift();
     }
@@ -646,21 +665,15 @@ export class MarketDiagnostics {
       simulation_time?: number;
     }>;
   } {
-    const isMs = simTime > 1e11;
-    const date = new Date(isMs ? simTime : simTime * 1000);
+    if (!Number.isFinite(simTime)) {
+      throw new RangeError(`simTime must be a finite epoch-millisecond timestamp: ${simTime}`);
+    }
+    const date = new Date(simTime);
     const formattedSimTime = isFinite(date.getTime())
       ? date.toTimeString().split(' ')[0]
       : `${Math.floor(simTime)}s`;
 
     // 최신 시계열 포인트가 없으면 즉시 하나 생성
-    if (this.timeSeriesHistory.length === 0) {
-      const emptyAtt = new Map<string, number>();
-      for (const s of memoryDb.stocks.values()) {
-        emptyAtt.set(s.id, s.base_liquidity || 0.5);
-      }
-      this.recordSnapshot(simTime, emptyAtt);
-    }
-
     const latestPt = this.timeSeriesHistory[this.timeSeriesHistory.length - 1];
 
     // 7대 섹터 요약 구성
@@ -694,9 +707,9 @@ export class MarketDiagnostics {
     // 최근 뉴스 (최신순 10건)
     const recentNews = Array.from(memoryDb.marketNews.values())
       .sort((a, b) => {
-        const timeA = new Date(a.created_at).getTime();
-        const timeB = new Date(b.created_at).getTime();
-        return timeB - timeA;
+        const timeA = a.simulation_time ?? new Date(a.created_at).getTime();
+        const timeB = b.simulation_time ?? new Date(b.created_at).getTime();
+        return timeB - timeA || (b.sequence ?? 0) - (a.sequence ?? 0);
       })
       .slice(0, 10)
       .map((n) => ({
@@ -708,6 +721,7 @@ export class MarketDiagnostics {
         sentiment_score: n.impact_score ?? 0,
         urgency: 0.5,
         created_at: n.created_at,
+        simulation_time: n.simulation_time,
       }));
 
     return {
@@ -733,4 +747,3 @@ export class MarketDiagnostics {
     this.lastSnapshotSimTime = 0;
   }
 }
-

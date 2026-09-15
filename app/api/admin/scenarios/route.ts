@@ -114,7 +114,7 @@ export async function POST(req: Request) {
       if (!engine) {
         return NextResponse.json({ success: false, message: '엔진이 기동되지 않았습니다.' }, { status: 503 });
       }
-      const accepted = engine.agentManager.publishEvent(event);
+      const accepted = await engine.publishEvent(event);
       return NextResponse.json({ success: accepted, eventId: event?.eventId });
     }
 

@@ -467,3 +467,11 @@ STOCKSYS는 실제 증권 거래소가 아닙니다.
 This project is currently developed as an experimental simulation project.
 
 Copyright © STOCKSYS / MUMYEONG.
+
+## Simulation correctness conventions
+
+- Simulation timestamps (`simulationTime`, `publishedAt`, `effectiveFrom`, and `simulation_time`) are epoch milliseconds.
+- Durations (`dt`, information latency, and news half-life) are seconds. Use `secondsToMs()` and `millisecondsToSeconds()` for every boundary conversion; do not infer units from magnitude.
+- News registration/publication is separate from economic effects: an event becomes visible after its latency boundary, while its valuation, attention, and uncertainty effects begin at `effectiveFrom`.
+- Automatic ticks, manual steps, event injection, and reset operations share one failure-safe serial execution queue. `GET /api/market-flow` is read-only; `POST` step requests require administrator authorization, strict `dt` validation, and rate limiting.
+- Public news responses remove simulation-only truth fields such as `is_fake`, `isRumorFake`, and `correctedAt`. Dashboard flow points use one final post-execution `as-of` timestamp for statistics, ranks, and snapshots, and retain all news markers occurring at that timestamp.

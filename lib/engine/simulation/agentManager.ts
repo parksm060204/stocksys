@@ -32,6 +32,8 @@ import {
   EventIdempotencyTracker,
   SEED_EVENT_TEMPLATES,
   resolveTargetStockIds,
+  getVisibleMarketEvents,
+  validateMarketEvent,
 } from './marketEventTypes';
 
 export class AgentManager {
@@ -49,6 +51,7 @@ export class AgentManager {
   public idempotencyTracker: EventIdempotencyTracker = new EventIdempotencyTracker();
   public attentionMap: Map<string, number> = new Map();     // stockId -> attentionScore [0, 1]
   public uncertaintyMap: Map<string, number> = new Map();   // stockId -> uncertaintyScore [0, 1]
+  private effectiveEventIds: Set<string> = new Set();
 
   // MJD SDE parameters (per-second units)
   public readonly mjd_mu: number = 0.00005;     // Drift per second
@@ -228,11 +231,21 @@ export class AgentManager {
    * Guarantees idempotency and syncs directly to memoryDb.marketNews for terminal UI rendering.
    */
   public publishEvent(event: MarketEvent): boolean {
+    if (validateMarketEvent(event)) return false;
     if (!this.idempotencyTracker.record(event.eventId)) {
       return false; // Duplicate event rejected
     }
 
-    this.events.push(event);
+    const storedEvent: MarketEvent = {
+      ...event,
+      targetStockIds: [...event.targetStockIds],
+      themeIds: event.themeIds ? [...event.themeIds] : undefined,
+      sequence: event.sequence ?? this.clock.nextSequence(),
+    };
+    this.events.push(storedEvent);
+    this.events.sort((a, b) =>
+      a.publishedAt - b.publishedAt || (a.sequence ?? 0) - (b.sequence ?? 0)
+    );
 
     // If this is a CORRECTION, stamp the original rumor with correctedAt time.
     // Do NOT globally zero the confidence — bots who haven't received the CORRECTION
@@ -240,40 +253,33 @@ export class AgentManager {
     // The value strategy discounts corrected events by checking visibleEvents for
     // a matching CORRECTION event and zeroing confidence only in that agent's view.
     if (event.eventType === 'CORRECTION' && event.originalEventId) {
-      const orig = this.events.find((e) => e.eventId === event.originalEventId);
+      const orig = this.events.find((e) => e.eventId === storedEvent.originalEventId);
       if (orig) {
         // Only tag with correctedAt — do not mutate global confidence
-        (orig as any).correctedAt = event.publishedAt;
+        orig.correctedAt = storedEvent.publishedAt;
       }
     }
 
-    // Apply immediate attention & uncertainty shocks to target stocks
-    for (const sId of event.targetStockIds) {
-      const curAtt = this.attentionMap.get(sId) || 0.5;
-      const curUnc = this.uncertaintyMap.get(sId) || 0.05;
-
-      // Attention increases non-directionally (bad news also increases attention)
-      const newAtt = Math.min(1.0, curAtt + event.attentionShock);
-      const newUnc = Math.min(1.0, curUnc + event.uncertaintyShock);
-
-      this.attentionMap.set(sId, newAtt);
-      this.uncertaintyMap.set(sId, newUnc);
-    }
+    // Registration/publication is separate from economic effect application.
+    this.applyDueEventEffects(this.clock.simulationTime);
 
     // Synchronize to memoryDb.marketNews for UI display (without triggering artificial price changes)
     const newsRecord: MarketNewsRecord = {
-      id: event.eventId,
-      type: event.scope.toUpperCase(),
-      category: event.eventType,
-      publisher: event.publisher,
-      title: event.title,
-      content: event.content,
-      target_sector: event.sectorId || null,
-      target_ticker: event.targetStockIds.length === 1 ? memoryDb.stocks.get(event.targetStockIds[0])?.ticker || null : null,
-      impact_score: parseFloat((event.valuationSignal * 10).toFixed(1)),
-      is_fake: Boolean(event.isRumorFake),
-      created_at: new Date(this.clock.simulationTime).toISOString(),
+      id: storedEvent.eventId,
+      type: storedEvent.scope.toUpperCase(),
+      category: storedEvent.eventType,
+      publisher: storedEvent.publisher,
+      title: storedEvent.title,
+      content: storedEvent.content,
+      target_sector: storedEvent.sectorId || null,
+      target_ticker: storedEvent.targetStockIds.length === 1 ? memoryDb.stocks.get(storedEvent.targetStockIds[0])?.ticker || null : null,
+      impact_score: parseFloat((storedEvent.valuationSignal * 10).toFixed(1)),
+      created_at: new Date(storedEvent.publishedAt).toISOString(),
+      simulation_time: storedEvent.publishedAt,
+      sequence: storedEvent.sequence,
     };
+    const existingNewsIndex = memoryDb.marketNews.findIndex((news) => news.id === newsRecord.id);
+    if (existingNewsIndex >= 0) memoryDb.marketNews.splice(existingNewsIndex, 1);
     memoryDb.marketNews.unshift(newsRecord);
     if (memoryDb.marketNews.length > 200) {
       memoryDb.marketNews.pop();
@@ -281,9 +287,9 @@ export class AgentManager {
 
     // Record causal trace
     this.diagnostics.recordCausalTrace({
-      timestamp: event.publishedAt,
-      eventId: event.eventId,
-      eventType: event.eventType,
+      timestamp: storedEvent.publishedAt,
+      eventId: storedEvent.eventId,
+      eventType: storedEvent.eventType,
       stage: 'NEWS_RECEIVED',
       details: `[${event.eventType}] ${event.title} (ValSignal: ${event.valuationSignal}, AttShock: ${event.attentionShock})`,
     });
@@ -302,6 +308,7 @@ export class AgentManager {
    */
   public async step(dt: number = 1.0): Promise<void> {
     const { time: simTime } = this.clock.advance(dt);
+    this.applyDueEventEffects(simTime);
 
     // ── 1. MJD Latent Fundamental SDE Update ──
     for (const stock of memoryDb.stocks.values()) {
@@ -381,6 +388,7 @@ export class AgentManager {
             isLp: true,
             orderType: 'limit',
             simulationTime: simTime,
+            createdAt: new Date(simTime).toISOString(),
             sequence: seq,
             participantType: 'lp',
             accountId: lpAgent.accountId,
@@ -391,9 +399,11 @@ export class AgentManager {
           lpAgent.stats.ordersSubmitted++;
 
           if (matchRes.success && matchRes.filledQty > 0) {
-            this.diagnostics.recordOrderFill('market_maker', matchRes.filledQty, true);
-            lpAgent.stats.fillsCount++;
-            lpAgent.stats.volumeTraded += matchRes.filledQty;
+            for (const fill of matchRes.fills || [{ size: matchRes.filledQty }]) {
+              this.diagnostics.recordOrderFill('market_maker', fill.size, false);
+              lpAgent.stats.fillsCount++;
+              lpAgent.stats.volumeTraded += fill.size;
+            }
           }
         }
       }
@@ -415,12 +425,7 @@ export class AgentManager {
 
       // Filter events visible to this agent based on information latency
       // Internal truth (isRumorFake) is strictly redacted from bot observations
-      const visibleEvents = this.events
-        .filter((e) => e.publishedAt <= simTime - (agent.infoLatency ?? 0))
-        .map((e) => {
-          const { isRumorFake, ...sanitized } = e;
-          return sanitized as MarketEvent;
-        });
+      const visibleEvents = getVisibleMarketEvents(this.events, simTime, agent.infoLatency ?? 0);
 
       // Select candidate stocks to evaluate (eliminates fixed-order full evaluation)
       const candidateStocks = this.selectCandidateStocks(agent, stockList, agentPrng);
@@ -465,6 +470,7 @@ export class AgentManager {
           if (!intent.price || !intent.size || intent.size <= 0) continue;
 
           const seq = this.clock.nextSequence();
+          const decisionId = `decision_${agent.agentId}_${simTime}_${seq}`;
           const matchRes = await LocalMarketService.submitOrder({
             userId: accountId,
             stockId: stock.id,
@@ -474,6 +480,7 @@ export class AgentManager {
             isLp: false,
             orderType: intent.orderType || 'limit',
             simulationTime: simTime,
+            createdAt: new Date(simTime).toISOString(),
             sequence: seq,
             participantType: 'bot',
             accountId: accountId,
@@ -487,24 +494,53 @@ export class AgentManager {
             timestamp: simTime,
             stockId: stock.id,
             agentId: agent.agentId,
+            decisionId,
+            orderId: matchRes.orderId,
+            eventIds: visibleEvents
+              .filter((event) => event.targetStockIds.includes(stock.id) && event.effectiveFrom <= simTime)
+              .map((event) => event.eventId),
             stage: 'ORDER_SUBMIT',
             details: `[${agent.strategyType}] ${intent.action.toUpperCase()} ${intent.size}sh @ ${intent.price} (reason: ${intent.reason})`,
           });
 
           if (matchRes.success) {
             if (matchRes.filledQty > 0) {
-              const isTaker = intent.orderType === 'ioc';
-              this.diagnostics.recordOrderFill(agent.strategyType, matchRes.filledQty, !isTaker);
-              agent.stats.fillsCount++;
-              agent.stats.volumeTraded += matchRes.filledQty;
+              const fills = matchRes.fills || [{
+                tradeId: '',
+                price: matchRes.execPrice ?? intent.price,
+                size: matchRes.filledQty,
+                makerOrderId: '',
+                takerOrderId: matchRes.orderId || '',
+              }];
+              for (const fill of fills) {
+                // The incoming order is the taker for every actual match;
+                // IOC is not a reliable proxy for maker/taker role.
+                this.diagnostics.recordOrderFill(agent.strategyType, fill.size, false);
+                agent.stats.fillsCount++;
+                agent.stats.volumeTraded += fill.size;
 
-              this.diagnostics.recordCausalTrace({
-                timestamp: simTime,
-                stockId: stock.id,
-                agentId: agent.agentId,
-                stage: 'ORDER_FILL',
-                details: `Filled ${matchRes.filledQty}sh @ avg ${intent.price}`,
-              });
+                const makerOrder = fill.makerOrderId ? memoryDb.orders.get(fill.makerOrderId) : undefined;
+                const makerAgent = makerOrder?.account_id ? this.agents.get(makerOrder.account_id) : undefined;
+                if (makerAgent) {
+                  const makerStrategy = makerAgent.strategyType;
+                  this.diagnostics.recordOrderFill(makerStrategy, fill.size, true);
+                  makerAgent.stats.fillsCount++;
+                  makerAgent.stats.volumeTraded += fill.size;
+                }
+              }
+
+              for (const fill of fills) {
+                this.diagnostics.recordCausalTrace({
+                  timestamp: simTime,
+                  stockId: stock.id,
+                  agentId: agent.agentId,
+                  decisionId,
+                  orderId: matchRes.orderId,
+                  tradeId: fill.tradeId,
+                  stage: 'ORDER_FILL',
+                  details: `Filled ${fill.size}sh @ ${fill.price} (weighted order avg ${matchRes.execPrice ?? intent.price}; makerOrder=${fill.makerOrderId || 'unknown'})`,
+                });
+              }
             }
           } else {
             this.diagnostics.recordRejection(accountId, stock.id, matchRes.message || 'order_rejected', simTime);
@@ -514,7 +550,9 @@ export class AgentManager {
     }
 
     // ── 6. Record Time-Series Flow Snapshot for Dashboard ──
-    this.diagnostics.recordSnapshot(simTime, this.attentionMap, this.events);
+    const finalWindowStats = this.diagnostics.computeWindowStatistics(simTime, 10, 50);
+    this.diagnostics.updateLeaderBoard(simTime, this.attentionMap, finalWindowStats);
+    this.diagnostics.recordSnapshot(simTime, this.attentionMap, this.events, finalWindowStats);
   }
 
   /**
@@ -579,11 +617,26 @@ export class AgentManager {
     this.fundamentals.clear();
     this.events = [];
     this.idempotencyTracker.reset();
+    this.effectiveEventIds.clear();
     this.attentionMap.clear();
     this.uncertaintyMap.clear();
 
     this.registerDefaultAgents();
     this.initFundamentals();
     this.initAttentionAndUncertainty();
+  }
+
+  private applyDueEventEffects(simTime: number): void {
+    for (const event of this.events) {
+      if (this.effectiveEventIds.has(event.eventId) || event.effectiveFrom > simTime) continue;
+
+      for (const stockId of event.targetStockIds) {
+        const currentAttention = this.attentionMap.get(stockId) ?? 0.5;
+        const currentUncertainty = this.uncertaintyMap.get(stockId) ?? 0.05;
+        this.attentionMap.set(stockId, Math.min(1, currentAttention + event.attentionShock));
+        this.uncertaintyMap.set(stockId, Math.min(1, currentUncertainty + event.uncertaintyShock));
+      }
+      this.effectiveEventIds.add(event.eventId);
+    }
   }
 }

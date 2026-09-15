@@ -19,6 +19,7 @@ import { MarketEvent, resolveTargetStockIds } from '../lib/engine/simulation/mar
 import { buildMarketObservation } from '../lib/engine/simulation/marketObservation';
 import { evaluateLpStrategy } from '../lib/engine/simulation/strategies/lpStrategy';
 import { ensureLocalStandaloneEngine, getLocalStandaloneEngine } from '../lib/engine/localStandaloneServer';
+import { secondsToMs } from '../lib/engine/simulation/simClock';
 
 function assert(condition: unknown, msg: string): void {
   if (!condition) {
@@ -154,7 +155,7 @@ async function runScenarioB(mgr: AgentManager): Promise<void> {
     20,
     mgr.attentionMap,
     mgr.uncertaintyMap,
-    mgr.events.filter((e) => e.publishedAt <= eventTime - (agentVal1.infoLatency ?? 0))
+    mgr.events.filter((e) => e.publishedAt <= eventTime - secondsToMs(agentVal1.infoLatency ?? 0))
   );
 
   if (!obsImmediate) throw new Error('Immediate observation must not be null');
@@ -164,11 +165,11 @@ async function runScenarioB(mgr: AgentManager): Promise<void> {
   const obsLater = buildMarketObservation(
     targetStock.id,
     agentVal1.accountId,
-    eventTime + 2.5,
+    eventTime + secondsToMs(2.5),
     20,
     mgr.attentionMap,
     mgr.uncertaintyMap,
-    mgr.events.filter((e) => e.publishedAt <= (eventTime + 2.5) - (agentVal1.infoLatency ?? 0))
+    mgr.events.filter((e) => e.publishedAt <= (eventTime + secondsToMs(2.5)) - secondsToMs(agentVal1.infoLatency ?? 0))
   );
 
   if (!obsLater) throw new Error('Later observation must not be null');
@@ -313,7 +314,7 @@ async function runScenarioE(mgr: AgentManager): Promise<void> {
   // 3. 봇 시야 검증: 봇에게 제공되는 관측 객체에서 isRumorFake는 비공개 처리되어 엿볼 수 없음
   const agentVal = mgr.agents.get('acc_bot_val_01')!;
   const visibleToBot = mgr.events
-    .filter((e) => e.publishedAt <= (mgr.clock.simulationTime + 3) - (agentVal.infoLatency ?? 0))
+    .filter((e) => e.publishedAt <= (mgr.clock.simulationTime + secondsToMs(3)) - secondsToMs(agentVal.infoLatency ?? 0))
     .map((e) => {
       const { isRumorFake, ...sanitized } = e;
       return sanitized as MarketEvent;
@@ -322,7 +323,7 @@ async function runScenarioE(mgr: AgentManager): Promise<void> {
   const obsRumor = buildMarketObservation(
     rumorStock.id,
     agentVal.accountId,
-    mgr.clock.simulationTime + 3,
+    mgr.clock.simulationTime + secondsToMs(3),
     20,
     mgr.attentionMap,
     mgr.uncertaintyMap,
@@ -341,8 +342,8 @@ async function runScenarioE(mgr: AgentManager): Promise<void> {
   const correctionEvent: MarketEvent = {
     eventId: 'ev_corr_001',
     originalEventId: 'ev_rumor_001',
-    publishedAt: mgr.clock.simulationTime + 5,
-    effectiveFrom: mgr.clock.simulationTime + 5,
+    publishedAt: mgr.clock.simulationTime + secondsToMs(5),
+    effectiveFrom: mgr.clock.simulationTime + secondsToMs(5),
     scope: 'stock',
     targetStockIds: [rumorStock.id],
     eventType: 'CORRECTION',

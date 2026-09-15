@@ -196,6 +196,8 @@ export interface MarketNewsRecord {
   target_ticker?: string | null;
   impact_score?: number;
   is_fake?: boolean;
+  simulation_time?: number;
+  sequence?: number;
   created_at: string;
 }
 

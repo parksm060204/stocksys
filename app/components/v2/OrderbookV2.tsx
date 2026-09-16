@@ -12,11 +12,11 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useOrderbookData } from "@/lib/hooks/useOrderbookData";
-
-interface OrderbookLevel {
-  price: number;
-  totalSize: number;
-}
+import {
+  filterValidOrderbookLevels,
+  calculateMaxVisibleQuantity,
+  type OrderbookLevel,
+} from "@/lib/utils/orderbookSelector";
 
 export default function OrderbookV2({
   ticker,
@@ -48,18 +48,18 @@ export default function OrderbookV2({
     }
   }, [livePrice, currentPrice]);
 
-  const maxSize = Math.max(
-    ...bids.map((b) => b.totalSize),
-    ...asks.map((a) => a.totalSize),
-    1
-  );
-  const totalAskSize = asks.reduce((a, c) => a + c.totalSize, 0);
-  const totalBidSize = bids.reduce((a, c) => a + c.totalSize, 0);
+  const visibleAsks = filterValidOrderbookLevels(asks, "ask").slice(0, 10);
+  const visibleBids = filterValidOrderbookLevels(bids, "bid").slice(0, 10);
+
+  const maxSize = calculateMaxVisibleQuantity(visibleAsks, visibleBids);
+  const totalAskSize = visibleAsks.reduce((a, c) => a + c.totalSize, 0);
+  const totalBidSize = visibleBids.reduce((a, c) => a + c.totalSize, 0);
   const displayPrice = livePrice || currentPrice;
 
   /* ── 매도 행 (파랑) ── */
   const AskRow = ({ ask }: { ask: OrderbookLevel }) => {
-    const pct = Math.min(100, (ask.totalSize / maxSize) * 100);
+    const hasVolume = ask.totalSize > 0;
+    const pct = hasVolume ? Math.min(100, (ask.totalSize / maxSize) * 100) : 0;
     const isCurrent = ask.price === displayPrice;
     return (
       <div
@@ -68,13 +68,15 @@ export default function OrderbookV2({
         }`}
       >
         {/* 배경 바 — 오른쪽에서 왼쪽으로 */}
-        <div
-          className="absolute right-0 top-0 bottom-0 bg-down/12 pointer-events-none"
-          style={{ width: `${pct}%` }}
-        />
+        {hasVolume && (
+          <div
+            className="absolute right-0 top-0 bottom-0 bg-down/12 pointer-events-none"
+            style={{ width: `${pct}%` }}
+          />
+        )}
         {/* 잔량 (좌) */}
         <span className="relative z-10 font-mono text-xs tabular-nums text-muted">
-          {ask.totalSize.toLocaleString()}
+          {hasVolume ? ask.totalSize.toLocaleString() : ""}
         </span>
         {/* 호가 (우) */}
         <span
@@ -90,7 +92,8 @@ export default function OrderbookV2({
 
   /* ── 매수 행 (빨강) ── */
   const BidRow = ({ bid }: { bid: OrderbookLevel }) => {
-    const pct = Math.min(100, (bid.totalSize / maxSize) * 100);
+    const hasVolume = bid.totalSize > 0;
+    const pct = hasVolume ? Math.min(100, (bid.totalSize / maxSize) * 100) : 0;
     const isCurrent = bid.price === displayPrice;
     return (
       <div
@@ -99,10 +102,12 @@ export default function OrderbookV2({
         }`}
       >
         {/* 배경 바 — 왼쪽에서 오른쪽으로 */}
-        <div
-          className="absolute left-0 top-0 bottom-0 bg-up/12 pointer-events-none"
-          style={{ width: `${pct}%` }}
-        />
+        {hasVolume && (
+          <div
+            className="absolute left-0 top-0 bottom-0 bg-up/12 pointer-events-none"
+            style={{ width: `${pct}%` }}
+          />
+        )}
         {/* 호가 (좌) */}
         <span
           className={`relative z-10 font-mono text-[12px] tabular-nums font-semibold ${
@@ -113,7 +118,7 @@ export default function OrderbookV2({
         </span>
         {/* 잔량 (우) */}
         <span className="relative z-10 font-mono text-xs tabular-nums text-muted">
-          {bid.totalSize.toLocaleString()}
+          {hasVolume ? bid.totalSize.toLocaleString() : ""}
         </span>
       </div>
     );
@@ -160,46 +165,67 @@ export default function OrderbookV2({
 
       {/* 구분선 — 하나만, 매도/매수 경계 */}
       <div className="flex-1 flex flex-col overflow-hidden">
-        {/* 매도 호가 (내림차순 → 아래로 정렬) */}
-        <div className="flex flex-col flex-1 overflow-y-auto no-scrollbar justify-end">
-          {asks
-            .slice()
-            .reverse()
-            .map((ask) => (
-              <AskRow key={`ask-${ask.price}`} ask={ask} />
-            ))}
-        </div>
+        {visibleAsks.length === 0 && visibleBids.length === 0 ? (
+          <div className="flex-1 flex flex-col items-center justify-center p-6 text-muted font-mono select-none">
+            <span className="text-xs font-bold text-tx mb-1">대기 주문이 없습니다</span>
+            <span className="text-[10.5px] text-muted">현재 시장에 제출된 미체결 호가가 없습니다.</span>
+          </div>
+        ) : (
+          <>
+            {/* 매도 호가 (내림차순 → 아래로 정렬) */}
+            <div className="flex flex-col flex-1 overflow-y-auto no-scrollbar justify-end">
+              {visibleAsks.length === 0 ? (
+                <div className="h-full flex items-center justify-center text-[10.5px] text-muted/60 font-mono py-2 select-none">
+                  대기 매도 주문 없음
+                </div>
+              ) : (
+                visibleAsks
+                  .slice()
+                  .reverse()
+                  .map((ask) => (
+                    <AskRow key={`ask-${ask.price}`} ask={ask} />
+                  ))
+              )}
+            </div>
 
-        {/* 현재가 중앙 구분 (플래시 효과) */}
-        <div
-          className={`flex items-center justify-between px-3 py-2 shrink-0 transition-colors duration-200 ${
-            flashType === "up"
-              ? "bg-up/15"
-              : flashType === "down"
-              ? "bg-down/15"
-              : "bg-[#151821]"
-          }`}
-        >
-          <span className="text-[10px] text-dim font-medium">현재가</span>
-          <span
-            className={`font-mono text-[15px] font-bold tabular-nums ${
-              flashType === "up"
-                ? "text-up"
-                : flashType === "down"
-                ? "text-down"
-                : "text-white"
-            }`}
-          >
-            {displayPrice.toLocaleString()}
-          </span>
-        </div>
+            {/* 현재가 중앙 구분 (플래시 효과) */}
+            <div
+              className={`flex items-center justify-between px-3 py-2 shrink-0 transition-colors duration-200 ${
+                flashType === "up"
+                  ? "bg-up/15"
+                  : flashType === "down"
+                  ? "bg-down/15"
+                  : "bg-[#151821]"
+              }`}
+            >
+              <span className="text-[10px] text-dim font-medium">현재가</span>
+              <span
+                className={`font-mono text-[15px] font-bold tabular-nums ${
+                  flashType === "up"
+                    ? "text-up"
+                    : flashType === "down"
+                    ? "text-down"
+                    : "text-white"
+                }`}
+              >
+                {displayPrice.toLocaleString()}
+              </span>
+            </div>
 
-        {/* 매수 호가 (내림차순) */}
-        <div className="flex flex-col flex-1 overflow-y-auto no-scrollbar">
-          {bids.map((bid) => (
-            <BidRow key={`bid-${bid.price}`} bid={bid} />
-          ))}
-        </div>
+            {/* 매수 호가 (내림차순) */}
+            <div className="flex flex-col flex-1 overflow-y-auto no-scrollbar">
+              {visibleBids.length === 0 ? (
+                <div className="h-full flex items-center justify-center text-[10.5px] text-muted/60 font-mono py-2 select-none">
+                  대기 매수 주문 없음
+                </div>
+              ) : (
+                visibleBids.map((bid) => (
+                  <BidRow key={`bid-${bid.price}`} bid={bid} />
+                ))
+              )}
+            </div>
+          </>
+        )}
       </div>
 
       {/* 푸터 — 총잔량 요약 (border 없이) */}

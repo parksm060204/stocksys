@@ -21,6 +21,9 @@ export const SectorCirculationWidget: React.FC<SectorCirculationWidgetProps> = (
   // 거래대금 비중 순 정렬
   const sortedSectors = [...sectorSummary].sort((a, b) => b.turnoverShare - a.turnoverShare);
 
+  const totalTurnoverSum = sortedSectors.reduce((sum, s) => sum + s.turnover, 0);
+  const hasTrades = totalTurnoverSum > 0;
+
   return (
     <div className="bg-[#0E1117] border border-[#1F2937] rounded-3xl p-5 shadow-2xl space-y-4 font-mono text-xs">
       {/* 헤더 */}
@@ -45,23 +48,29 @@ export const SectorCirculationWidget: React.FC<SectorCirculationWidgetProps> = (
       <div className="space-y-1.5 bg-[#07090E] p-3 rounded-2xl border border-[#1F2937]">
         <div className="flex justify-between text-[10.5px] text-[#8E939D] font-bold">
           <span>시장 전체 거래대금 비중 배분</span>
-          <span className="text-slate-300">총 100%</span>
+          <span className={hasTrades ? "text-slate-300" : "text-slate-500"}>
+            {hasTrades ? "총 100%" : "거래 없음 (0%)"}
+          </span>
         </div>
-        <div className="h-4 w-full bg-[#161B22] rounded-full overflow-hidden flex border border-[#2D3748]">
-          {sortedSectors.map((sec) => {
-            if (sec.turnoverShare <= 0) return null;
-            const meta = SECTOR_METADATA[sec.sectorId] || { nameKo: sec.sectorName, color: '#64748B' };
+        <div className="h-4 w-full bg-[#161B22] rounded-full overflow-hidden flex items-center justify-center border border-[#2D3748]">
+          {!hasTrades ? (
+            <span className="text-[9.5px] text-slate-500 font-mono">거래 없음</span>
+          ) : (
+            sortedSectors.map((sec) => {
+              if (sec.turnoverShare <= 0) return null;
+              const meta = SECTOR_METADATA[sec.sectorId] || { nameKo: sec.sectorName, color: '#64748B' };
 
-            return (
-              <div
-                key={sec.sectorId}
-                className="h-full transition-all duration-300 relative group cursor-pointer"
-                style={{ width: `${sec.turnoverShare}%`, backgroundColor: meta.color }}
-                title={`${sec.sectorName}: ${sec.turnoverShare}% (${formatKrw(sec.turnover)})`}
-                onClick={() => onSelectSector?.(sec.sectorId)}
-              />
-            );
-          })}
+              return (
+                <div
+                  key={sec.sectorId}
+                  className="h-full transition-all duration-300 relative group cursor-pointer"
+                  style={{ width: `${sec.turnoverShare}%`, backgroundColor: meta.color }}
+                  title={`${sec.sectorName}: ${sec.turnoverShare}% (${formatKrw(sec.turnover)})`}
+                  onClick={() => onSelectSector?.(sec.sectorId)}
+                />
+              );
+            })
+          )}
         </div>
       </div>
 

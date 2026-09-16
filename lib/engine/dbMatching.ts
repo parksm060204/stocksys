@@ -28,6 +28,8 @@ export interface MatchOrderResult {
   message: string;
   orderId?: string;
   execPrice?: number;
+  lastExecPrice?: number;
+  avgPrice?: number;
   status?: string;
   fills?: ExecutionFill[];
 }
@@ -349,10 +351,13 @@ export async function submitAndMatchOrder(
       // ── 8. Return result ──
       if (totalFilledQty > 0) {
         const iocNote = isIoc && remainingQty > 0 ? ` (미체결 ${remainingQty}주는 IOC 조건에 따라 취소되었습니다)` : '';
+        const weightedAvgPrice = executionFills.reduce((sum, fill) => sum + fill.price * fill.size, 0) / totalFilledQty;
         return {
           success: true,
           filledQty: totalFilledQty,
-          execPrice: executionFills.reduce((sum, fill) => sum + fill.price * fill.size, 0) / totalFilledQty,
+          execPrice: lastExecPrice,
+          lastExecPrice,
+          avgPrice: weightedAvgPrice,
           fills: executionFills.map((fill) => ({
             tradeId: tradeIds[fill.tradeIndex],
             price: fill.price,
@@ -362,7 +367,7 @@ export async function submitAndMatchOrder(
           })),
           status: initialStatus,
           orderId,
-          message: `🎉 ${totalFilledQty.toLocaleString()}주가 체결되었습니다! (가중평균 체결가: ₩${(executionFills.reduce((sum, fill) => sum + fill.price * fill.size, 0) / totalFilledQty).toLocaleString()})${iocNote}`,
+          message: `🎉 ${totalFilledQty.toLocaleString()}주가 체결되었습니다! (가중평균 체결가: ₩${weightedAvgPrice.toLocaleString()})${iocNote}`,
         };
       } else {
         const iocMsg = isIoc

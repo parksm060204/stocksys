@@ -21,18 +21,21 @@ export function evaluateValueStrategy(
 ): AgentOrderIntent {
   // 1. Latent fundamental observation with agent-specific estimation error & observable news signals
   let newsValuationDelta = 0;
-  if (obs.recentEvents && obs.recentEvents.length > 0) {
-    // Build the set of rumor eventIds this agent has already seen corrected (via its visible CORRECTION events)
+  // Economic signals can strictly ONLY come from events where effectiveFrom <= simulationTime
+  const effectiveEvents = obs.effectiveEvents ?? (obs.recentEvents || []).filter((e) => e.effectiveFrom <= obs.simulationTime);
+
+  if (effectiveEvents.length > 0) {
+    // Build the set of rumor eventIds this agent has already seen corrected (via its visible and effective CORRECTION events)
     const agentCorrectedIds = new Set<string>();
-    for (const ev of obs.recentEvents) {
-      if (ev.eventType === 'CORRECTION' && ev.originalEventId && ev.effectiveFrom <= obs.simulationTime) {
+    for (const ev of effectiveEvents) {
+      if (ev.eventType === 'CORRECTION' && ev.originalEventId) {
         agentCorrectedIds.add(ev.originalEventId);
       }
     }
 
-    for (const ev of obs.recentEvents) {
-      if (ev.targetStockIds.includes(obs.stockId) && ev.effectiveFrom <= obs.simulationTime) {
-        // If this agent has already received a CORRECTION that nullifies this rumor, treat confidence as 0
+    for (const ev of effectiveEvents) {
+      if (ev.targetStockIds.includes(obs.stockId)) {
+        // If this agent has already received an effective CORRECTION that nullifies this rumor, treat confidence as 0
         const effectiveConfidence = agentCorrectedIds.has(ev.eventId) ? 0 : ev.confidence;
         const elapsed = millisecondsToSeconds(Math.max(0, obs.simulationTime - ev.effectiveFrom));
         const decay = Math.pow(2, -elapsed / ev.halfLife);

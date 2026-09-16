@@ -115,8 +115,11 @@ export interface CausalTraceLog {
   decisionId?: string;
   orderId?: string;
   tradeId?: string;
-  stage: 'NEWS_RECEIVED' | 'STRATEGY_DECISION' | 'ORDER_SUBMIT' | 'ORDER_FILL' | 'LEADER_UPDATE';
+  tradeIds?: string[];
+  stage: 'NEWS_RECEIVED' | 'NEWS_PUBLISHED' | 'STRATEGY_DECISION' | 'ORDER_SUBMIT' | 'ORDER_FILL' | 'ORDER_REJECTED' | 'LEADER_UPDATE';
   details: string;
+  isCausalConnected?: boolean;
+  correlationOnly?: boolean;
 }
 
 export class MarketDiagnostics {
@@ -217,6 +220,8 @@ export class MarketDiagnostics {
   private readonly MAX_CAUSAL_LOGS = 300;
   private leaderBoard: LeaderStockScore[] = [];
   private smoothedLeaderScores: Map<string, number> = new Map(); // stockId -> smoothed score
+  private lastLeaderBoardAsOfTime: number = -1;
+  private recordedMarkerEventIds: Set<string> = new Set();
 
   public recordCausalTrace(log: CausalTraceLog): void {
     this.causalLogs.push(log);
@@ -341,13 +346,24 @@ export class MarketDiagnostics {
 
   /**
    * 주도주 점수 갱신 및 순위 산출 (관심 순위 vs 주도주 순위 분리)
+   * 동일 asOfTime(simTime)에 대해서는 멱등성을 보장하여 평활화가 중복 적용되지 않도록 방어.
    */
   public updateLeaderBoard(
     simTime: number,
     attentionMap: Map<string, number>,
-    statsMap: Map<string, WindowStatistics> = this.computeWindowStatistics(simTime, 10, 50)
+    statsMap: Map<string, WindowStatistics> = this.computeWindowStatistics(simTime, 10, 50),
+    dt: number = 1.0
   ): LeaderStockScore[] {
+    // Defense: If already computed for this exact simulation timestamp, return existing cached result without double-smoothing
+    if (this.lastLeaderBoardAsOfTime === simTime && this.leaderBoard.length > 0) {
+      return [...this.leaderBoard];
+    }
+
     const scores: LeaderStockScore[] = [];
+    const baseAlpha = 0.3;
+    const effectiveDt = typeof dt === 'number' && Number.isFinite(dt) && dt > 0 ? dt : 1.0;
+    // Scale alpha with elapsed time so smoothing rate remains physically meaningful across varying dt
+    const alpha = Math.max(0.01, Math.min(0.95, 1 - Math.pow(1 - baseAlpha, effectiveDt)));
 
     for (const stock of memoryDb.stocks.values()) {
       const st = statsMap.get(stock.id);
@@ -367,7 +383,7 @@ export class MarketDiagnostics {
 
       // 지수이동평균(EMA) 평활화 (급격한 순위 점멸 방지)
       const prevSmoothed = this.smoothedLeaderScores.get(stock.id) ?? rawScore;
-      const smoothed = 0.3 * rawScore + 0.7 * prevSmoothed;
+      const smoothed = alpha * rawScore + (1 - alpha) * prevSmoothed;
       this.smoothedLeaderScores.set(stock.id, smoothed);
 
       scores.push({
@@ -599,20 +615,41 @@ export class MarketDiagnostics {
     });
 
     // 5. 최근 뉴스 이벤트 마커
+    let newsEvents: NonNullable<MarketFlowTimeSeriesPoint['newsEvent']>[] = [];
+
     const markerStart = existingPoint
-      ? recentStart
+      ? Math.min(recentStart, previousSnapshotSimTime)
       : Math.max(recentStart, previousSnapshotSimTime);
-    const newsEvents: NonNullable<MarketFlowTimeSeriesPoint['newsEvent']>[] = (recentEvents || [])
+
+    const candidates = (recentEvents || [])
       .filter((event) => event.publishedAt > markerStart && event.publishedAt <= simTime)
-      .sort((a, b) => a.publishedAt - b.publishedAt || (a.sequence ?? 0) - (b.sequence ?? 0))
-      .map((event) => ({
-        id: event.eventId,
-        headline: event.title,
-        targetSector: event.sectorId,
-        targetStockId: event.targetStockIds?.[0],
-        urgency: event.attentionShock,
-        impactDirection: event.valuationSignal,
-      }));
+      .sort((a, b) => a.publishedAt - b.publishedAt || (a.sequence ?? 0) - (b.sequence ?? 0));
+
+    for (const event of candidates) {
+      if (!this.recordedMarkerEventIds.has(event.eventId)) {
+        this.recordedMarkerEventIds.add(event.eventId);
+        newsEvents.push({
+          id: event.eventId,
+          headline: event.title,
+          targetSector: event.sectorId,
+          targetStockId: event.targetStockIds?.[0],
+          urgency: event.attentionShock,
+          impactDirection: event.valuationSignal,
+        });
+      }
+    }
+
+    // 동일 시각 스냅샷 교체 시 기존 마커 유실 방지
+    if (existingPoint?.newsEvents && existingPoint.newsEvents.length > 0) {
+      const mergedMap = new Map<string, NonNullable<MarketFlowTimeSeriesPoint['newsEvent']>>();
+      for (const m of existingPoint.newsEvents) {
+        mergedMap.set(m.id, m);
+      }
+      for (const m of newsEvents) {
+        mergedMap.set(m.id, m);
+      }
+      newsEvents = Array.from(mergedMap.values());
+    }
 
     const point: MarketFlowTimeSeriesPoint = {
       timestamp: simTime,
@@ -648,6 +685,7 @@ export class MarketDiagnostics {
     pointsLimit: number = 60
   ): {
     simTime: number;
+    asOfTime: number;
     formattedSimTime: string;
     leaderBoard: LeaderStockScore[];
     sectorSummary: SectorFlowSummary[];
@@ -726,6 +764,7 @@ export class MarketDiagnostics {
 
     return {
       simTime,
+      asOfTime: simTime,
       formattedSimTime,
       leaderBoard: this.getLeaderBoard().slice(0, 10),
       sectorSummary,
@@ -743,6 +782,8 @@ export class MarketDiagnostics {
     this.causalLogs = [];
     this.leaderBoard = [];
     this.smoothedLeaderScores.clear();
+    this.lastLeaderBoardAsOfTime = -1;
+    this.recordedMarkerEventIds.clear();
     this.timeSeriesHistory = [];
     this.lastSnapshotSimTime = 0;
   }

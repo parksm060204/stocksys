@@ -33,8 +33,9 @@ export class LocalMarketEngineInstance {
   private client = createMemoryDbClient();
   private readonly LP_REFRESH_TICKS: number = 5;
   private readonly MAX_RETAINED_LP_ORDERS_PER_STOCK: number = 30;
+  private isTicking: boolean = false;
 
-  public agentManager: AgentManager = new AgentManager();
+  private agentManager: AgentManager = new AgentManager();
 
   // SDE: Merton Jump-Diffusion 가치 변동
   private fundamentals: Record<string, number> = {};
@@ -63,11 +64,15 @@ export class LocalMarketEngineInstance {
   private scheduleTick(delayMs: number): void {
     if (!this.isRunning) return;
     this.timer = setTimeout(async () => {
+      if (this.isTicking) return; // Prevent overlapping timer ticks
       const startTime = Date.now();
       try {
+        this.isTicking = true;
         await this.tick();
       } catch (err) {
         console.error('❌ [LocalMarketEngine] Tick Error:', err);
+      } finally {
+        this.isTicking = false;
       }
       const elapsed = Date.now() - startTime;
       const nextDelay = Math.max(300, Math.min(2500, this.tickIntervalMs - elapsed));
@@ -76,7 +81,7 @@ export class LocalMarketEngineInstance {
   }
 
   /**
-   * 시뮬레이션을 수동으로 dt초만큼 전진 (타이머 없이 동기적/결정론적 테스트 지원)
+   * Advances the simulation deterministically through the serialized execution queue.
    */
   public async stepSimulation(dt: number = 1.0): Promise<void> {
     await this.enqueueSimulation(() => this.agentManager.step(dt));
@@ -84,6 +89,10 @@ export class LocalMarketEngineInstance {
 
   public async tick(): Promise<void> {
     await this.enqueueSimulation(() => this.runTick());
+  }
+
+  public async scheduleEvent(event: Parameters<AgentManager['registerEvent']>[0]): Promise<boolean> {
+    return this.enqueueSimulation(() => Promise.resolve(this.agentManager.registerEvent(event)));
   }
 
   public async publishEvent(event: Parameters<AgentManager['publishEvent']>[0]): Promise<boolean> {
@@ -99,6 +108,36 @@ export class LocalMarketEngineInstance {
         this.tickCount = 0;
       });
     });
+  }
+
+  // ── Read-Only Diagnostic Accessors (No State Mutations) ──
+
+  public getSimulationTime(): number {
+    return this.agentManager.clock.simulationTime;
+  }
+
+  public getActiveAgentsCount(): number {
+    return this.agentManager.agents.size;
+  }
+
+  public getMarketFlowData(pointsLimit: number = 60) {
+    return this.agentManager.diagnostics.getMarketFlowData(
+      this.agentManager.clock.simulationTime,
+      pointsLimit
+    );
+  }
+
+  public getDiagnosticsSummaryReport(stockId?: string) {
+    return this.agentManager.diagnostics.generateSummaryReport(stockId);
+  }
+
+  public isEngineRunning(): boolean {
+    return this.isRunning;
+  }
+
+  /** @internal Test-only access to underlying AgentManager for explicit headless unit assertions */
+  public __getAgentManagerForTesting(): AgentManager {
+    return this.agentManager;
   }
 
   private enqueueSimulation<T>(task: () => Promise<T>): Promise<T> {
@@ -517,4 +556,25 @@ export function getLocalStandaloneEngine(): LocalMarketEngineInstance | undefine
 
 export function getLocalStandaloneClient(): any {
   return createMemoryDbClient();
+}
+
+/**
+ * Creates a standalone, queue-aware headless simulation runner for isolated deterministic tests.
+ */
+export function createHeadlessSimulationRunner(seed: number = 42, startEpochMs: number = 1773500000000) {
+  const queue = new SerialExecutionQueue();
+  const agentManager = new AgentManager(seed, startEpochMs);
+  return {
+    agentManager,
+    queue,
+    step: (dt: number = 1.0) => queue.run(() => agentManager.step(dt)),
+    registerEvent: (ev: Parameters<AgentManager['registerEvent']>[0]) =>
+      queue.run(() => Promise.resolve(agentManager.registerEvent(ev))),
+    publishEvent: (ev: Parameters<AgentManager['publishEvent']>[0]) =>
+      queue.run(() => Promise.resolve(agentManager.publishEvent(ev))),
+    reset: (s?: number) => queue.run(() => Promise.resolve(agentManager.reset(s))),
+    getFlowData: (points: number = 60) =>
+      agentManager.diagnostics.getMarketFlowData(agentManager.clock.simulationTime, points),
+    getSimulationTime: () => agentManager.clock.simulationTime,
+  };
 }

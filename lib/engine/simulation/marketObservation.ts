@@ -8,7 +8,7 @@
 
 import { memoryDb, OrderRecord, TradeRecord } from '../../memoryDb/memoryStore';
 import { calculateReservedCash, calculateReservedQty, OpenOrderForRisk } from '../orderRisk';
-import { MarketEvent } from './marketEventTypes';
+import { MarketEvent, getEffectiveMarketEvents } from './marketEventTypes';
 import { WindowStatistics } from './marketDiagnostics';
 
 export interface BookLevel {
@@ -52,6 +52,7 @@ export interface MarketObservation {
   attentionScore?: number;      // 0.0 ~ 1.0 (Bounded attention)
   uncertaintyScore?: number;    // 0.0 ~ 1.0 (Uncertainty shock)
   recentEvents?: MarketEvent[]; // Visible events for this agent
+  effectiveEvents?: MarketEvent[]; // Visible AND economically effective events (effectiveFrom <= simulationTime)
   windowStats?: WindowStatistics;
   // Single-authority account state
   account: {
@@ -220,6 +221,7 @@ export function buildMarketObservation(
     attentionScore: attentionMap?.get(stockId) ?? (stock.base_liquidity ?? 0.5),
     uncertaintyScore: uncertaintyMap?.get(stockId) ?? 0.1,
     recentEvents: visibleEvents || [],
+    effectiveEvents: getEffectiveMarketEvents(visibleEvents || [], simulationTime),
     windowStats,
     account: {
       cash: rawCash,

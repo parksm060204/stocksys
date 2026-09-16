@@ -12,12 +12,16 @@ export const CausalTraceStream: React.FC<CausalTraceStreamProps> = ({ logs }) =>
     switch (stage) {
       case 'NEWS_RECEIVED':
         return <span className="bg-rose-950/60 text-[#F04452] border border-rose-800/80 px-2 py-0.5 rounded text-[9.5px] font-black">뉴스수신</span>;
+      case 'NEWS_PUBLISHED':
+        return <span className="bg-rose-950/80 text-rose-300 border border-rose-600/80 px-2 py-0.5 rounded text-[9.5px] font-black">공식발표</span>;
       case 'STRATEGY_DECISION':
         return <span className="bg-amber-950/60 text-amber-400 border border-amber-800/80 px-2 py-0.5 rounded text-[9.5px] font-black">전략판단</span>;
       case 'ORDER_SUBMIT':
         return <span className="bg-cyan-950/60 text-cyan-400 border border-cyan-800/80 px-2 py-0.5 rounded text-[9.5px] font-black">주문제출</span>;
       case 'ORDER_FILL':
         return <span className="bg-emerald-950/60 text-emerald-400 border border-emerald-800/80 px-2 py-0.5 rounded text-[9.5px] font-black">실체결</span>;
+      case 'ORDER_REJECTED':
+        return <span className="bg-red-950/80 text-red-400 border border-red-800/80 px-2 py-0.5 rounded text-[9.5px] font-black">주문거절</span>;
       case 'LEADER_UPDATE':
         return <span className="bg-purple-950/60 text-purple-400 border border-purple-800/80 px-2 py-0.5 rounded text-[9.5px] font-black">주도순위</span>;
       default:
@@ -56,26 +60,40 @@ export const CausalTraceStream: React.FC<CausalTraceStreamProps> = ({ logs }) =>
             기록된 시장 인과 로그가 없습니다. 시뮬레이션이 진행되면 자동으로 수집됩니다.
           </div>
         ) : (
-          [...logs].reverse().map((log, idx) => (
-            <div
-              key={`${log.timestamp}-${idx}`}
-              className="flex items-start gap-2.5 p-2 rounded-xl bg-[#0E1117]/60 border border-[#1F2937]/40 hover:bg-[#161B22] transition-colors"
-            >
-              <span className="text-[10px] text-slate-500 font-mono shrink-0 pt-0.5">
-                {formatTime(log.timestamp)}
-              </span>
-              <div className="shrink-0">{getStageBadge(log.stage)}</div>
-              <div className="flex-1 text-[11px] text-slate-300 break-all leading-snug">
-                {log.stockId && (
-                  <span className="text-cyan-400 font-bold mr-1.5">[{log.stockId}]</span>
-                )}
-                {log.agentId && (
-                  <span className="text-amber-400 font-bold mr-1.5">({log.agentId})</span>
-                )}
-                <span>{log.details}</span>
+          [...logs].reverse().map((log, idx) => {
+            const isFullCausal = Boolean(log.isCausalConnected || (log.decisionId && log.orderId));
+            return (
+              <div
+                key={`${log.timestamp}-${idx}`}
+                className="flex items-start gap-2.5 p-2 rounded-xl bg-[#0E1117]/60 border border-[#1F2937]/40 hover:bg-[#161B22] transition-colors"
+              >
+                <span className="text-[10px] text-slate-500 font-mono shrink-0 pt-0.5">
+                  {formatTime(log.timestamp)}
+                </span>
+                <div className="shrink-0 flex items-center gap-1">
+                  {getStageBadge(log.stage)}
+                  <span
+                    className={`text-[8.5px] px-1 py-0.2 rounded font-sans font-semibold border ${
+                      isFullCausal
+                        ? 'bg-cyan-950/60 text-cyan-300 border-cyan-800/80'
+                        : 'bg-slate-800/60 text-slate-400 border-slate-700/80'
+                    }`}
+                  >
+                    {isFullCausal ? '인과 추적' : '시장 이벤트 흐름'}
+                  </span>
+                </div>
+                <div className="flex-1 text-[11px] text-slate-300 break-all leading-snug">
+                  {log.stockId && (
+                    <span className="text-cyan-400 font-bold mr-1.5">[{log.stockId}]</span>
+                  )}
+                  {log.agentId && (
+                    <span className="text-amber-400 font-bold mr-1.5">({log.agentId})</span>
+                  )}
+                  <span>{log.details}</span>
+                </div>
               </div>
-            </div>
-          ))
+            );
+          })
         )}
       </div>
     </div>

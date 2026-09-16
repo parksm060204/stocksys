@@ -60,16 +60,15 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const pointsLimit = parsePointsLimit(searchParams.get('points'));
 
-    const simTime = engine.agentManager.clock.simulationTime;
-    const flowData = engine.agentManager.diagnostics.getMarketFlowData(simTime, pointsLimit);
+    const flowData = engine.getMarketFlowData(pointsLimit);
 
     return NextResponse.json(
       {
         success: true,
         data: {
           ...flowData,
-          engineRunning: true,
-          activeAgentsCount: engine.agentManager.agents.size,
+          engineRunning: engine.isEngineRunning(),
+          activeAgentsCount: engine.getActiveAgentsCount(),
         },
       },
       {
@@ -129,8 +128,7 @@ export async function POST(request: Request) {
 
     if (parsed.ok) {
       await engine.stepSimulation(parsed.dt);
-      const simTime = engine.agentManager.clock.simulationTime;
-      const flowData = engine.agentManager.diagnostics.getMarketFlowData(simTime, 60);
+      const flowData = engine.getMarketFlowData(60);
 
       return NextResponse.json({
         success: true,

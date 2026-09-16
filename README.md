@@ -468,10 +468,52 @@ This project is currently developed as an experimental simulation project.
 
 Copyright © STOCKSYS / MUMYEONG.
 
-## Simulation correctness conventions
+## Simulation Correctness & Architecture
 
-- Simulation timestamps (`simulationTime`, `publishedAt`, `effectiveFrom`, and `simulation_time`) are epoch milliseconds.
-- Durations (`dt`, information latency, and news half-life) are seconds. Use `secondsToMs()` and `millisecondsToSeconds()` for every boundary conversion; do not infer units from magnitude.
-- News registration/publication is separate from economic effects: an event becomes visible after its latency boundary, while its valuation, attention, and uncertainty effects begin at `effectiveFrom`.
-- Automatic ticks, manual steps, event injection, and reset operations share one failure-safe serial execution queue. `GET /api/market-flow` is read-only; `POST` step requests require administrator authorization, strict `dt` validation, and rate limiting.
-- Public news responses remove simulation-only truth fields such as `is_fake`, `isRumorFake`, and `correctedAt`. Dashboard flow points use one final post-execution `as-of` timestamp for statistics, ranks, and snapshots, and retain all news markers occurring at that timestamp.
+### 1. 뉴스 이벤트 라이프사이클 (Three-Stage Lifecycle)
+* **`registered` (등록 대기)**:
+  - 이벤트가 엔진 내부 큐에 등록된 상태.
+  - 미래 이벤트(`publishedAt > simulationTime`)는 내부 대기 큐에만 존재하며, 공개 뉴스 DB(`memoryDb.marketNews`), 대시보드, 일반 사용자 API, 봇 관측 어디에도 노출되지 않습니다.
+  - 이벤트 등록 자체는 가격, 거래량, 관심도, 불확실성, 호가를 변경하지 않습니다.
+* **`published` (공개 완료)**:
+  - `publishedAt <= simulationTime`이 된 시점에 공개 뉴스 저장소와 타임라인에 정확히 한 번 추가(`NEWS_PUBLISHED` 로그 기록).
+  - 봇은 이 시점부터 자신의 개인 정보 지연(`infoLatency`)이 경과한 뒤 뉴스를 인지합니다.
+* **`effective` (효력 발생)**:
+  - `effectiveFrom <= simulationTime`이 된 시점에 관심도(`attention`), 불확실성(`uncertainty`), 경제 가치 신호(`valuationSignal`)가 정확히 한 번 반영됩니다.
+  - `publishedAt`과 `effectiveFrom`이 동일하더라도 멱등성 추적(`appliedEffectEventIds`)을 통해 중복 처리가 방지됩니다.
+
+### 2. 시간 단위 및 변환 규칙
+* 시뮬레이션 타임스탬프(`simulationTime`, `publishedAt`, `effectiveFrom`, `simulation_time`)는 **정수형 Epoch Millisecond(ms)**입니다.
+* 시간 간격(`dt`), 봇 정보 지연(`infoLatency`), 뉴스 반감기(`halfLife`)는 **초(Seconds)** 단위입니다.
+* 단위 변환 시 크기 추측(heuristic threshold)을 금지하고 반드시 `secondsToMs()` 및 `millisecondsToSeconds()` 변환 헬퍼를 사용합니다.
+
+### 3. 봇별 정보 지연(`infoLatency`)과 효력 시점(`effectiveFrom`)의 차이
+* **뉴스 인지 시점**: `publishedAt + infoLatencyMs <= observationTime`
+  - 봇은 자신의 정보 지연이 지난 후에만 해당 뉴스의 존재와 헤드라인을 알 수 있습니다.
+* **경제 신호 반영 시점**: `effectiveFrom <= observationTime`
+  - 뉴스를 이미 인지했더라도 `effectiveFrom` 이전에는 전략의 `valuationSignal` 합산 및 관심도 반영에서 엄격히 제외됩니다.
+* 두 조건을 모두 만족하는 `effectiveEvents`만 가치 전략 및 의사결정의 입력으로 사용됩니다.
+
+### 4. 시뮬레이션 직렬 실행 큐와 락 획득 순서
+모든 경제 상태 변경 및 엔진 명령은 다음 단일 직렬화 순서를 엄격히 준수합니다:
+```text
+SerialExecutionQueue (시뮬레이션 큐)
+  → withStockLock (종목 락)
+    → withAccountLocks (참여 계정 락)
+```
+- 외부 API 및 운영 코드는 `AgentManager.step()`을 직접 호출할 수 없으며, `LocalMarketEngineInstance`의 큐 인터페이스(`stepSimulation`, `publishEvent`, `resetSimulation`)를 통해서만 실행됩니다.
+- 실패한 작업 뒤에도 큐가 안전하게 해제되어 다음 명령이 정상 실행되며, 자동 틱 지연 시 타이머 작업의 무제한 누적을 방지합니다.
+
+### 5. 수동 전진 권한 및 API 정합성
+- `GET /api/market-flow`: 순수 읽기 전용 진단 쿼리. 여러 번 반복 호출하더라도 시장 시각, 평활화 점수, 경제 상태가 일절 변경되지 않습니다.
+- `POST /api/market-flow`: 관리자 권한(`verifyAdminSession`, 개발 환경의 `ALLOW_DEV_ADMIN=true` 또는 세션 어드민)이 필요하며, 비관리자 요청은 `403 Forbidden`으로 즉시 거절됩니다. 유효한 `dt`(0.1초~10.0초) 검증 및 초당 15회 호출 제한이 적용됩니다.
+
+### 6. 대시보드 순위 및 뉴스 마커의 `asOfTime`
+- 한 스텝 내에서 지수 평활화(`updateLeaderBoard`)는 모든 거래·체결이 완료된 후 동일한 `asOfTime`에 정확히 한 번만 수행됩니다.
+- 스텝 종료 직전에 체결된 마지막 거래가 해당 스냅샷의 거래대금, 순매수, 주도주 순위에 함께 반영됩니다.
+- 동일 시각(`asOfTime`)의 복수 뉴스는 마커 배열(`newsEvents`)에 누락 없이 보존되며, 동일 스냅샷 교체 시에도 기존 마커가 유실되지 않습니다.
+
+### 7. 인과 로그 추적 범위 및 한계
+- 지원 ID 체인: `eventId` → `decisionId` → `orderId` → `tradeIds` (모든 분할 체결 및 maker/taker 역할 정확히 연결)
+- 체결 로그의 평균 체결가는 실제 체결 레코드 가중평균으로 계산되며, 주문 거절은 `ORDER_REJECTED`로 독립 기록됩니다.
+- ID 체인이 완전하게 연결된 이벤트는 `[인과 추적]`으로 배지 표기되며, 단순 상관 기록은 `[시장 이벤트 흐름]`으로 명확히 구분하여 표기합니다.

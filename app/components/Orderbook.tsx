@@ -2,12 +2,12 @@
 
 import { memo, useEffect, useRef, useState } from 'react';
 import { useOrderbookData } from '@/lib/hooks/useOrderbookData';
+import {
+  filterValidOrderbookLevels,
+  calculateMaxVisibleQuantity,
+  type OrderbookLevel,
+} from '@/lib/utils/orderbookSelector';
 import StrictWidget from './StrictWidget';
-
-interface OrderbookLevel {
-  price: number;
-  totalSize: number;
-}
 
 // 매도 호가 행 (키움 MTS 스타일 직사각형 테두리 박스 & 시작가 흑백 분기)
 const AskRow = memo(({
@@ -23,7 +23,10 @@ const AskRow = memo(({
   openPrice?: number;
   isLastTraded: boolean;
 }) => {
-  const pct = Math.min(100, Math.max(2, (ask.totalSize / Math.max(maxSize, 1)) * 100));
+  const hasVolume = ask.totalSize > 0;
+  const pct = hasVolume
+    ? Math.min(100, Math.max(2, (ask.totalSize / Math.max(maxSize, 1)) * 100))
+    : 0;
   const prevSizeRef = useRef(ask.totalSize);
   const [delta, setDelta] = useState<number | null>(null);
 
@@ -63,7 +66,7 @@ const AskRow = memo(({
   }, [ask.totalSize]);
 
   return (
-    <div className="grid grid-cols-[1.1fr_108px_1.1fr] w-full h-full items-center border-b border-[#1e2230]/40 transition-colors font-mono select-none hover:bg-down/10">
+    <div className="grid grid-cols-[1.1fr_108px_1.1fr] w-full h-[26px] min-h-[26px] items-center border-b border-border/40 transition-colors font-mono select-none hover:bg-down/10 shrink-0">
       {/* 매도 잔량 열 (좌측 끝 증감 델타 + 우측 잔량) */}
       <div className="relative h-full flex items-center justify-between px-2 overflow-hidden">
         {/* 좌측 증감 델타 (+-n) */}
@@ -80,13 +83,15 @@ const AskRow = memo(({
         </div>
 
         {/* 잔량 막대 게이지 */}
-        <div
-          className="absolute right-0 top-0.5 bottom-0.5 bg-down/15 rounded-l-xs pointer-events-none"
-          style={{ width: `${pct}%` }}
-        />
+        {hasVolume && (
+          <div
+            className="absolute right-0 top-0.5 bottom-0.5 bg-down/15 rounded-l-xs pointer-events-none"
+            style={{ width: `${pct}%` }}
+          />
+        )}
         {/* 잔량 수치 */}
         <span className="z-10 text-[10.5px] tabular-nums text-[#8E939D] truncate font-medium">
-          {ask.totalSize.toLocaleString()}
+          {hasVolume ? ask.totalSize.toLocaleString() : ''}
         </span>
       </div>
 
@@ -131,7 +136,10 @@ const BidRow = memo(({
   openPrice?: number;
   isLastTraded: boolean;
 }) => {
-  const pct = Math.min(100, Math.max(2, (bid.totalSize / Math.max(maxSize, 1)) * 100));
+  const hasVolume = bid.totalSize > 0;
+  const pct = hasVolume
+    ? Math.min(100, Math.max(2, (bid.totalSize / Math.max(maxSize, 1)) * 100))
+    : 0;
   const prevSizeRef = useRef(bid.totalSize);
   const [delta, setDelta] = useState<number | null>(null);
 
@@ -171,7 +179,7 @@ const BidRow = memo(({
   }, [bid.totalSize]);
 
   return (
-    <div className="grid grid-cols-[1.1fr_108px_1.1fr] w-full h-full items-center border-b border-border/40 transition-colors font-mono select-none hover:bg-up/10">
+    <div className="grid grid-cols-[1.1fr_108px_1.1fr] w-full h-[26px] min-h-[26px] items-center border-b border-border/40 transition-colors font-mono select-none hover:bg-up/10 shrink-0">
       {/* 매도측 빈칸 */}
       <div className="h-full bg-bg" />
 
@@ -198,13 +206,15 @@ const BidRow = memo(({
       {/* 매수 잔량 열 (좌측 잔량 + 우측 끝 증감 델타) */}
       <div className="relative h-full flex items-center justify-between px-2 overflow-hidden">
         {/* 잔량 막대 게이지 */}
-        <div
-          className="absolute left-0 top-0.5 bottom-0.5 bg-up/15 rounded-r-xs pointer-events-none"
-          style={{ width: `${pct}%` }}
-        />
+        {hasVolume && (
+          <div
+            className="absolute left-0 top-0.5 bottom-0.5 bg-up/15 rounded-r-xs pointer-events-none"
+            style={{ width: `${pct}%` }}
+          />
+        )}
         {/* 잔량 수치 */}
         <span className="z-10 text-[10.5px] tabular-nums text-[#8E939D] truncate font-medium">
-          {bid.totalSize.toLocaleString()}
+          {hasVolume ? bid.totalSize.toLocaleString() : ''}
         </span>
 
         {/* 우측 끝 증감 델타 (+-n) */}
@@ -246,10 +256,13 @@ export default function Orderbook({
   const lastTradedPrice = trades[0]?.price ?? liveCurrentPrice;
   const effectiveOpenPrice = openPrice && openPrice > 0 ? openPrice : liveCurrentPrice;
 
-  const maxRaw = Math.max(...bids.map((b) => b.totalSize), ...asks.map((a) => a.totalSize), 5000);
-  const maxSize = Math.max(10000, Math.ceil(maxRaw / 1000) * 1000);
-  const totalAskSize = asks.reduce((acc, a) => acc + a.totalSize, 0);
-  const totalBidSize = bids.reduce((acc, b) => acc + b.totalSize, 0);
+  // 실제 미체결 잔량이 존재하는 호가만 정제 및 정렬 (최대 10호가)
+  const visibleAsks = filterValidOrderbookLevels(asks, 'ask').slice(0, 10);
+  const visibleBids = filterValidOrderbookLevels(bids, 'bid').slice(0, 10);
+
+  const maxSize = calculateMaxVisibleQuantity(visibleAsks, visibleBids);
+  const totalAskSize = visibleAsks.reduce((acc, a) => acc + a.totalSize, 0);
+  const totalBidSize = visibleBids.reduce((acc, b) => acc + b.totalSize, 0);
   const totalSum = totalAskSize + totalBidSize;
 
   return (
@@ -284,35 +297,59 @@ export default function Orderbook({
         <span className="text-center text-[10.5px] text-up font-bold">매수잔량</span>
       </div>
 
-      {/* 호가 20단계 리스트 (스크롤 없이 완벽히 핏되는 10x2 그리드) */}
+      {/* 호가 리스트 (실제 주문이 있는 호가만 연속 표시, 0 수량 행 및 가상 간격 제거) */}
       <div className="flex flex-col flex-1 overflow-hidden bg-panel">
-        {/* 매도 10호가 */}
-        <div className="flex-1 grid grid-rows-10 overflow-hidden border-b border-border/40">
-          {asks.slice(0, 10).reverse().map((ask) => (
-            <AskRow
-              key={`ask-${ask.price}`}
-              ask={ask}
-              maxSize={maxSize}
-              basePrice={liveCurrentPrice}
-              openPrice={effectiveOpenPrice}
-              isLastTraded={ask.price === lastTradedPrice}
-            />
-          ))}
-        </div>
+        {visibleAsks.length === 0 && visibleBids.length === 0 ? (
+          <div className="flex-1 flex flex-col items-center justify-center p-6 text-muted font-mono select-none">
+            <span className="text-xs font-bold text-tx mb-1">대기 주문이 없습니다</span>
+            <span className="text-[10.5px] text-muted">현재 시장에 제출된 미체결 호가가 없습니다.</span>
+          </div>
+        ) : (
+          <>
+            {/* 매도 호가 (오름차순 배열을 역순 매핑하여 높은 호가가 위, 최우선 매도호가가 아래에 배치) */}
+            <div className="flex-1 flex flex-col justify-end overflow-y-auto no-scrollbar border-b border-border/40">
+              {visibleAsks.length === 0 ? (
+                <div className="h-full flex items-center justify-center text-[10.5px] text-muted/60 font-mono py-4 select-none">
+                  대기 매도 주문 없음
+                </div>
+              ) : (
+                visibleAsks
+                  .slice()
+                  .reverse()
+                  .map((ask) => (
+                    <AskRow
+                      key={`ask-${ask.price}`}
+                      ask={ask}
+                      maxSize={maxSize}
+                      basePrice={liveCurrentPrice}
+                      openPrice={effectiveOpenPrice}
+                      isLastTraded={ask.price === lastTradedPrice}
+                    />
+                  ))
+              )}
+            </div>
 
-        {/* 매수 10호가 */}
-        <div className="flex-1 grid grid-rows-10 overflow-hidden">
-          {bids.slice(0, 10).map((bid) => (
-            <BidRow
-              key={`bid-${bid.price}`}
-              bid={bid}
-              maxSize={maxSize}
-              basePrice={liveCurrentPrice}
-              openPrice={effectiveOpenPrice}
-              isLastTraded={bid.price === lastTradedPrice}
-            />
-          ))}
-        </div>
+            {/* 매수 호가 (내림차순 배열을 순서대로 매핑하여 최우선 매수호가가 위에 배치) */}
+            <div className="flex-1 flex flex-col justify-start overflow-y-auto no-scrollbar">
+              {visibleBids.length === 0 ? (
+                <div className="h-full flex items-center justify-center text-[10.5px] text-muted/60 font-mono py-4 select-none">
+                  대기 매수 주문 없음
+                </div>
+              ) : (
+                visibleBids.map((bid) => (
+                  <BidRow
+                    key={`bid-${bid.price}`}
+                    bid={bid}
+                    maxSize={maxSize}
+                    basePrice={liveCurrentPrice}
+                    openPrice={effectiveOpenPrice}
+                    isLastTraded={bid.price === lastTradedPrice}
+                  />
+                ))
+              )}
+            </div>
+          </>
+        )}
       </div>
 
       {/* 푸터 (총 잔량) */}

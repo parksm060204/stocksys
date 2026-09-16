@@ -615,9 +615,9 @@ async function runAbmTests() {
   ensureLocalStandaloneEngine();
   const engine = getLocalStandaloneEngine()!;
   engine.stop();
-  const initialSimTime = engine.agentManager.clock.simulationTime;
+  const initialSimTime = engine.getSimulationTime();
   await engine.stepSimulation(2.5);
-  const postSimTime = engine.agentManager.clock.simulationTime;
+  const postSimTime = engine.getSimulationTime();
   assert(postSimTime === initialSimTime + 2500, `Manual simulation step advanced clock by exactly dt=2.5s (${initialSimTime} -> ${postSimTime})`);
 
   // ----------------------------------------------------------------

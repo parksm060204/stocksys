@@ -8,7 +8,7 @@ import {
 } from './useStockBotSimulation';
 
 import { createClient } from '@/lib/db/client';
-import { isLocalStandaloneMode } from '@/lib/engine/localDevMode';
+import { filterValidOrderbookLevels } from '@/lib/utils/orderbookSelector';
 
 // ─── DB 행 타입 ──────────────────────────────────────────────────────────────
 interface DBOrder {
@@ -75,9 +75,6 @@ export function useOrderbookData(
   const [price, setPrice] = useState(currentPrice);
   const mountedRef = useRef(true);
   const currentPriceRef = useRef(currentPrice);
-  const depthStateRef = useRef<Map<number, number>>(new Map());
-  const persistedVolumesRef = useRef<Map<number, number>>(new Map());
-  const tickSeqRef = useRef(0);
 
   useEffect(() => {
     currentPriceRef.current = currentPrice;
@@ -117,9 +114,6 @@ export function useOrderbookData(
 
       const hasOrders = orders && orders.length > 0;
       const hasTrades = dbTrades && dbTrades.length > 0;
-
-      tickSeqRef.current += 1;
-      const seq = tickSeqRef.current;
 
       // 최신 체결가 추정
       let latestPrice = currentPriceRef.current;
@@ -174,110 +168,33 @@ export function useOrderbookData(
         }
       }
 
-      const centerPrice = alignToTickSize(latestPrice > 0 ? latestPrice : currentPriceRef.current);
-      const tick = getTickSize(centerPrice);
-      const baseVolMultiplier = centerPrice >= 50000 ? 25000 : centerPrice >= 10000 ? 8000 : 1500;
-
-      const wallCache = persistedVolumesRef.current;
-
-      // ── 현재 보여야 할 가격 집합 계산 ──
-      const visiblePrices = new Set<number>();
-      for (let i = 1; i <= 10; i++) visiblePrices.add(centerPrice + i * tick);
-      for (let i = 0; i < 10; i++) visiblePrices.add(Math.max(tick, centerPrice - i * tick));
-
-      // ── 더 이상 보이지 않는 가격 캐시 정리 (메모리 누수 방지) ──
-      for (const cachedPrice of Array.from(wallCache.keys())) {
-        if (!visiblePrices.has(cachedPrice)) {
-          wallCache.delete(cachedPrice);
-        }
-      }
-
-      // ── 초당 체결 차감: 1호가(bestAsk, bestBid)에서 소량 자연 감소 ──
-      if (seq % 2 === 0) {
-        const bestAskPrice = centerPrice + tick;
-        const bestBidPrice = centerPrice;
-        if (wallCache.has(bestAskPrice)) {
-          const cur = wallCache.get(bestAskPrice)!;
-          const drain = Math.floor(Math.random() * 80) + 20;
-          const after = cur - drain;
-          if (after > 200) {
-            wallCache.set(bestAskPrice, after);
-          } else {
-            // 소진되면 자연 리필 (새 지정가 주문 유입 시뮬)
-            const seedOffset = Math.floor(((bestAskPrice * 9301 + 49297) % 233280) / 233280 * 873) + 127;
-            wallCache.set(bestAskPrice, Math.floor(baseVolMultiplier * 0.8) + seedOffset + Math.floor(Math.random() * 200));
-          }
-        }
-        if (wallCache.has(bestBidPrice)) {
-          const cur = wallCache.get(bestBidPrice)!;
-          const drain = Math.floor(Math.random() * 80) + 20;
-          const after = cur - drain;
-          if (after > 200) {
-            wallCache.set(bestBidPrice, after);
-          } else {
-            const seedOffset = Math.floor(((bestBidPrice * 7919 + 65537) % 233280) / 233280 * 891) + 109;
-            wallCache.set(bestBidPrice, Math.floor(baseVolMultiplier * 0.85) + seedOffset + Math.floor(Math.random() * 200));
-          }
-        }
-      }
-
-      const isLocal = isLocalStandaloneMode();
-
-      // 매도 10호가
+      // ── 3. 실제 유효 주문이 존재하는 가격 행만 추출 (0 수량 및 인위적 빈 간격 생성 금지) ──
       const newAsks: OrderbookLevel[] = [];
-      for (let i = 1; i <= 10; i++) {
-        const p = centerPrice + i * tick;
-        const dbVol = askMap.get(p) ?? 0;
-
-        let size = dbVol;
-        if (size <= 0 && !isLocal) {
-          if (!wallCache.has(p)) {
-            const wallFactor = (i === 3 || i === 5 || i === 10) ? 2.4 : 1.0;
-            const seedOffset = Math.floor(((p * 9301 + 49297) % 233280) / 233280 * 873) + 127;
-            const generated = Math.floor(baseVolMultiplier * (0.8 + (i % 3) * 0.3) * wallFactor) + seedOffset;
-            wallCache.set(p, generated);
-          }
-          size = wallCache.get(p)!;
-        } else if (size > 0) {
-          // DB 실제 주문이 있으면 캐시도 업데이트
-          wallCache.set(p, size);
+      for (const [p, dbVol] of askMap.entries()) {
+        if (Number.isFinite(p) && p > 0 && Number.isFinite(dbVol) && dbVol > 0) {
+          newAsks.push({
+            price: p,
+            totalSize: Math.round(dbVol),
+            isSynthetic: false,
+            actualDbSize: dbVol,
+          });
         }
-
-        newAsks.push({
-          price: p,
-          totalSize: Math.max(0, Math.round(size)),
-          isSynthetic: !isLocal && dbVol <= 0,
-          actualDbSize: dbVol,
-        });
       }
+      // 매도 호가: 가격 오름차순 (최우선 매도호가가 앞쪽)
       newAsks.sort((a, b) => a.price - b.price);
 
-      // 매수 10호가
       const newBids: OrderbookLevel[] = [];
-      for (let i = 0; i < 10; i++) {
-        const p = Math.max(tick, centerPrice - i * tick);
-        const dbVol = bidMap.get(p) ?? 0;
-
-        let size = dbVol;
-        if (size <= 0 && !isLocal) {
-          if (!wallCache.has(p)) {
-            const bidWallFactor = (i === 2 || i === 4 || i === 9) ? 2.8 : 1.0;
-            const seedOffset = Math.floor(((p * 7919 + 65537) % 233280) / 233280 * 891) + 109;
-            const generated = Math.floor(baseVolMultiplier * (0.85 + (i % 3) * 0.35) * bidWallFactor) + seedOffset;
-            wallCache.set(p, generated);
-          }
-          size = wallCache.get(p)!;
-        } else if (size > 0) {
-          wallCache.set(p, size);
+      for (const [p, dbVol] of bidMap.entries()) {
+        if (Number.isFinite(p) && p > 0 && Number.isFinite(dbVol) && dbVol > 0) {
+          newBids.push({
+            price: p,
+            totalSize: Math.round(dbVol),
+            isSynthetic: false,
+            actualDbSize: dbVol,
+          });
         }
-
-        newBids.push({
-          price: p,
-          totalSize: Math.max(0, Math.round(size)),
-          isSynthetic: !isLocal && dbVol <= 0,
-          actualDbSize: dbVol,
-        });
       }
+      // 매수 호가: 가격 내림차순 (최우선 매수호가가 앞쪽)
       newBids.sort((a, b) => b.price - a.price);
 
       // ── 체결 피드 구성 (100% DB trades 테이블 데이터) ──
@@ -313,7 +230,7 @@ export function useOrderbookData(
       if (mountedRef.current) {
         setBids(newBids);
         setAsks(newAsks);
-        setPrice(centerPrice);
+        setPrice(latestPrice > 0 ? latestPrice : currentPriceRef.current);
       }
     } catch {
       // ignore fetch errors

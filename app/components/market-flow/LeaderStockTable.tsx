@@ -90,8 +90,13 @@ export const LeaderStockTable: React.FC<LeaderStockTableProps> = ({
 
                   {/* 종목명 & 티커 */}
                   <td className="py-2.5 px-2">
-                    <div className="font-extrabold text-white text-[12px] truncate max-w-[130px]">
+                    <div className="font-extrabold text-white text-[12px] truncate max-w-[130px] flex items-center gap-1">
                       {item.name}
+                      {item.leaderRank === 1 && (
+                        <span className="text-[9px] font-normal px-1 py-0.2 bg-amber-400/20 text-amber-300 border border-amber-400/40 rounded">
+                          1위
+                        </span>
+                      )}
                     </div>
                     <div className="text-[9.5px] text-slate-500 font-mono">{item.ticker}</div>
                   </td>
@@ -125,8 +130,8 @@ export const LeaderStockTable: React.FC<LeaderStockTableProps> = ({
                         }`}
                         title={
                           rankDiff > 0
-                            ? `관심 순위보다 주도 순위가 ${rankDiff}단계 더 높음 (실제 거래 집중)`
-                            : `관심 순위가 주도 순위보다 ${Math.abs(rankDiff)}단계 더 높음 (관심 선행)`
+                            ? `관심 순위 대비 주도 순위 괴리 (+${rankDiff}): 체결 기반 거래대금 및 수급 집중형`
+                            : `주도 순위 대비 관심 순위 괴리 (${rankDiff}): 뉴스/소문에 의한 관심 집중형`
                         }
                       >
                         {rankDiff > 0 ? `▲${rankDiff}` : `▼${Math.abs(rankDiff)}`}

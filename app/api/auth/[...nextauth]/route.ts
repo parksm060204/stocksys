@@ -16,19 +16,34 @@ export const authOptions: NextAuthOptions = {
   providers,
   callbacks: {
     async signIn({ user }) {
-      return true;
+      try {
+        return true;
+      } catch (e) {
+        console.error('[Auth] signIn error (ignored):', e);
+        return true;
+      }
     },
     async jwt({ token, user }) {
-      if (user?.id) {
-        token.userId = user.id;
+      try {
+        if (user?.id) {
+          token.userId = user.id;
+        }
+        return token;
+      } catch (e) {
+        console.error('[Auth] jwt error (ignored):', e);
+        return token;
       }
-      return token;
     },
     async session({ session, token }) {
-      if (session.user) {
-        session.user.id = (token.userId as string) || token.sub || '';
+      try {
+        if (session.user) {
+          session.user.id = (token.userId as string) || token.sub || '';
+        }
+        return session;
+      } catch (e) {
+        console.error('[Auth] session error (ignored):', e);
+        return session;
       }
-      return session;
     },
   },
   pages: {

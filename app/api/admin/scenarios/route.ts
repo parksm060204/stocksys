@@ -15,7 +15,7 @@ export async function GET(req: Request) {
   const activeMacroShocks = scenarioManager.getActiveMacroShocks();
   const logs = scenarioManager.getActionLogs();
   const engine = getLocalStandaloneEngine();
-  const diagnostics = engine ? engine.agentManager.diagnostics.generateSummaryReport() : null;
+  const diagnostics = engine ? engine.getDiagnosticsSummaryReport() : null;
 
   return NextResponse.json({
     success: true,

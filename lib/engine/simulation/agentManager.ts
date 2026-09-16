@@ -46,12 +46,15 @@ export class AgentManager {
   public fundamentals: Map<string, number> = new Map();
   public diagnostics: MarketDiagnostics = new MarketDiagnostics();
 
-  // ── Single-Source Event & Attention State ──
-  public events: MarketEvent[] = [];
+  // ── Single-Source Event & Attention State (3-Stage Lifecycle: registered -> published -> effective) ──
+  public pendingEvents: MarketEvent[] = [];       // Registered events awaiting publishedAt
+  public publishedEvents: MarketEvent[] = [];     // Officially published events (publishedAt <= simTime)
+  public events: MarketEvent[] = [];              // Alias to publishedEvents for compatibility
+  public publishedEventIds: Set<string> = new Set();
+  public effectiveEventIds: Set<string> = new Set();
   public idempotencyTracker: EventIdempotencyTracker = new EventIdempotencyTracker();
   public attentionMap: Map<string, number> = new Map();     // stockId -> attentionScore [0, 1]
   public uncertaintyMap: Map<string, number> = new Map();   // stockId -> uncertaintyScore [0, 1]
-  private effectiveEventIds: Set<string> = new Set();
 
   // MJD SDE parameters (per-second units)
   public readonly mjd_mu: number = 0.00005;     // Drift per second
@@ -227,10 +230,12 @@ export class AgentManager {
   }
 
   /**
-   * Publishes a structured market event into the simulation engine.
-   * Guarantees idempotency and syncs directly to memoryDb.marketNews for terminal UI rendering.
+   * Registers a structured market event into the internal pending queue (Status: 'registered').
+   * Guarantees idempotency and strictly prevents lookahead leaks:
+   * Future events are kept in the pending queue and are NOT visible in public news DB,
+   * dashboard feeds, or agent observations until their publishedAt simulation timestamp is reached.
    */
-  public publishEvent(event: MarketEvent): boolean {
+  public registerEvent(event: MarketEvent): boolean {
     if (validateMarketEvent(event)) return false;
     if (!this.idempotencyTracker.record(event.eventId)) {
       return false; // Duplicate event rejected
@@ -242,73 +247,155 @@ export class AgentManager {
       themeIds: event.themeIds ? [...event.themeIds] : undefined,
       sequence: event.sequence ?? this.clock.nextSequence(),
     };
-    this.events.push(storedEvent);
-    this.events.sort((a, b) =>
-      a.publishedAt - b.publishedAt || (a.sequence ?? 0) - (b.sequence ?? 0)
-    );
 
-    // If this is a CORRECTION, stamp the original rumor with correctedAt time.
-    // Do NOT globally zero the confidence — bots who haven't received the CORRECTION
-    // yet (due to infoLatency) should still see the original confidence intact.
-    // The value strategy discounts corrected events by checking visibleEvents for
-    // a matching CORRECTION event and zeroing confidence only in that agent's view.
+    // If this is a CORRECTION, tag the original rumor with correctedAt time.
+    // Confidence is NOT globally zeroed: agents will discover the correction
+    // strictly when their personal infoLatency allows them to observe it.
     if (event.eventType === 'CORRECTION' && event.originalEventId) {
-      const orig = this.events.find((e) => e.eventId === storedEvent.originalEventId);
+      const orig =
+        this.pendingEvents.find((e) => e.eventId === storedEvent.originalEventId) ||
+        this.publishedEvents.find((e) => e.eventId === storedEvent.originalEventId);
       if (orig) {
-        // Only tag with correctedAt — do not mutate global confidence
         orig.correctedAt = storedEvent.publishedAt;
       }
     }
 
-    // Registration/publication is separate from economic effect application.
-    this.applyDueEventEffects(this.clock.simulationTime);
+    this.pendingEvents.push(storedEvent);
+    this.pendingEvents.sort((a, b) =>
+      a.publishedAt - b.publishedAt || a.effectiveFrom - b.effectiveFrom || (a.sequence ?? 0) - (b.sequence ?? 0)
+    );
 
-    // Synchronize to memoryDb.marketNews for UI display (without triggering artificial price changes)
-    const newsRecord: MarketNewsRecord = {
-      id: storedEvent.eventId,
-      type: storedEvent.scope.toUpperCase(),
-      category: storedEvent.eventType,
-      publisher: storedEvent.publisher,
-      title: storedEvent.title,
-      content: storedEvent.content,
-      target_sector: storedEvent.sectorId || null,
-      target_ticker: storedEvent.targetStockIds.length === 1 ? memoryDb.stocks.get(storedEvent.targetStockIds[0])?.ticker || null : null,
-      impact_score: parseFloat((storedEvent.valuationSignal * 10).toFixed(1)),
-      created_at: new Date(storedEvent.publishedAt).toISOString(),
-      simulation_time: storedEvent.publishedAt,
-      sequence: storedEvent.sequence,
-    };
-    const existingNewsIndex = memoryDb.marketNews.findIndex((news) => news.id === newsRecord.id);
-    if (existingNewsIndex >= 0) memoryDb.marketNews.splice(existingNewsIndex, 1);
-    memoryDb.marketNews.unshift(newsRecord);
-    if (memoryDb.marketNews.length > 200) {
-      memoryDb.marketNews.pop();
+    // If publishedAt <= current simulation time, transition to published immediately
+    if (storedEvent.publishedAt <= this.clock.simulationTime) {
+      this.processDuePublications(this.clock.simulationTime);
     }
 
-    // Record causal trace
-    this.diagnostics.recordCausalTrace({
-      timestamp: storedEvent.publishedAt,
-      eventId: storedEvent.eventId,
-      eventType: storedEvent.eventType,
-      stage: 'NEWS_RECEIVED',
-      details: `[${event.eventType}] ${event.title} (ValSignal: ${event.valuationSignal}, AttShock: ${event.attentionShock})`,
-    });
+    // If effectiveFrom <= current simulation time, apply due effects immediately
+    // For future events (effectiveFrom > simTime), effects are strictly deferred to serialized simulation steps
+    if (storedEvent.effectiveFrom <= this.clock.simulationTime) {
+      this.processDueEffects(this.clock.simulationTime);
+    }
 
     return true;
   }
 
   /**
+   * Backward-compatible alias for registerEvent.
+   */
+  public publishEvent(event: MarketEvent): boolean {
+    return this.registerEvent(event);
+  }
+
+  /**
+   * Processes due publications (Status: 'registered' -> 'published'):
+   * Moves events where publishedAt <= simTime into publishedEvents,
+   * adds them to memoryDb.marketNews exactly once, and records NEWS_PUBLISHED.
+   */
+  public processDuePublications(simTime: number): void {
+    const dueEvents: MarketEvent[] = [];
+    const remainingPending: MarketEvent[] = [];
+
+    for (const event of this.pendingEvents) {
+      if (event.publishedAt <= simTime) {
+        dueEvents.push(event);
+      } else {
+        remainingPending.push(event);
+      }
+    }
+    this.pendingEvents = remainingPending;
+
+    dueEvents.sort((a, b) =>
+      a.publishedAt - b.publishedAt || a.effectiveFrom - b.effectiveFrom || (a.sequence ?? 0) - (b.sequence ?? 0)
+    );
+
+    for (const event of dueEvents) {
+      if (this.publishedEventIds.has(event.eventId)) continue;
+      this.publishedEventIds.add(event.eventId);
+      this.publishedEvents.push(event);
+
+      // Synchronize to memoryDb.marketNews for UI display (created_at and simulation_time use publishedAt)
+      const newsRecord: MarketNewsRecord = {
+        id: event.eventId,
+        type: event.scope.toUpperCase(),
+        category: event.eventType,
+        publisher: event.publisher,
+        title: event.title,
+        content: event.content,
+        target_sector: event.sectorId || null,
+        target_ticker:
+          event.targetStockIds.length === 1
+            ? memoryDb.stocks.get(event.targetStockIds[0])?.ticker || null
+            : null,
+        impact_score: parseFloat((event.valuationSignal * 10).toFixed(1)),
+        created_at: new Date(event.publishedAt).toISOString(),
+        simulation_time: event.publishedAt,
+        sequence: event.sequence,
+      };
+      const existingNewsIndex = memoryDb.marketNews.findIndex((news) => news.id === newsRecord.id);
+      if (existingNewsIndex >= 0) memoryDb.marketNews.splice(existingNewsIndex, 1);
+      memoryDb.marketNews.unshift(newsRecord);
+      if (memoryDb.marketNews.length > 200) {
+        memoryDb.marketNews.pop();
+      }
+
+      // Record causal trace for official publication
+      this.diagnostics.recordCausalTrace({
+        timestamp: event.publishedAt,
+        eventId: event.eventId,
+        eventType: event.eventType,
+        stage: 'NEWS_PUBLISHED',
+        details: `[${event.eventType}] ${event.title} published (ValSignal: ${event.valuationSignal}, AttShock: ${event.attentionShock})`,
+        isCausalConnected: true,
+      });
+    }
+
+    this.publishedEvents.sort((a, b) =>
+      a.publishedAt - b.publishedAt || a.effectiveFrom - b.effectiveFrom || (a.sequence ?? 0) - (b.sequence ?? 0)
+    );
+    this.events = this.publishedEvents;
+  }
+
+  /**
+   * Processes due economic effects (Status: 'published' -> 'effective'):
+   * Applies attention & uncertainty shocks exactly once when effectiveFrom <= simTime.
+   */
+  public processDueEffects(simTime: number): void {
+    const dueEffects = this.publishedEvents.filter(
+      (e) => !this.effectiveEventIds.has(e.eventId) && e.effectiveFrom <= simTime
+    );
+    dueEffects.sort((a, b) =>
+      a.effectiveFrom - b.effectiveFrom || (a.sequence ?? 0) - (b.sequence ?? 0)
+    );
+
+    for (const event of dueEffects) {
+      if (this.effectiveEventIds.has(event.eventId)) continue;
+      this.effectiveEventIds.add(event.eventId);
+
+      for (const stockId of event.targetStockIds) {
+        const currentAttention = this.attentionMap.get(stockId) ?? 0.5;
+        const currentUncertainty = this.uncertaintyMap.get(stockId) ?? 0.05;
+        this.attentionMap.set(stockId, Math.min(1, currentAttention + event.attentionShock));
+        this.uncertaintyMap.set(stockId, Math.min(1, currentUncertainty + event.uncertaintyShock));
+      }
+    }
+  }
+
+  /**
    * Advances the simulation by dt seconds and executes the full agent lifecycle:
    * 1. Advance simulation clock
-   * 2. Merton Jump-Diffusion SDE update with dt scaling
-   * 3. Decay attention & uncertainty over simulation time
-   * 4. Update rolling window statistics and leader stock rankings
-   * 5. Two-phase LP quoting (Cancels first, then budget-safe new orders)
-   * 6. Bot decision making via weighted candidate sampling & latency buffer
+   * 2. Process due publications (registered -> published)
+   * 3. Process due economic effects (published -> effective)
+   * 4. Merton Jump-Diffusion SDE update with dt scaling
+   * 5. Decay attention & uncertainty over simulation time
+   * 6. Rolling window statistics
+   * 7. Two-phase LP quoting (Cancels first, then budget-safe new orders)
+   * 8. Bot decision making via weighted candidate sampling & latency buffer
+   * 9. Post-execution single leaderboard update and dashboard snapshot
    */
   public async step(dt: number = 1.0): Promise<void> {
     const { time: simTime } = this.clock.advance(dt);
-    this.applyDueEventEffects(simTime);
+    this.processDuePublications(simTime);
+    this.processDueEffects(simTime);
 
     // ── 1. MJD Latent Fundamental SDE Update ──
     for (const stock of memoryDb.stocks.values()) {
@@ -340,9 +427,8 @@ export class AgentManager {
       this.uncertaintyMap.set(stock.id, Math.max(0.01, Math.min(1.0, decayedUnc)));
     }
 
-    // ── 3. Rolling Window Statistics & Leader Ranking ──
+    // ── 3. Rolling Window Statistics (Read-Only during decision phase) ──
     const windowStatsMap = this.diagnostics.computeWindowStatistics(simTime, 10, 50);
-    this.diagnostics.updateLeaderBoard(simTime, this.attentionMap);
 
     // ── 4. Two-Phase LP (Market Maker) Quoting Lifecycle ──
     const lpAgent = this.agents.get('acc_lp_main');
@@ -490,28 +576,33 @@ export class AgentManager {
           this.diagnostics.recordOrderSubmit(agent.strategyType);
           agent.stats.ordersSubmitted++;
 
+          const causalEventIds = visibleEvents
+            .filter((event) => event.targetStockIds.includes(stock.id) && event.effectiveFrom <= simTime)
+            .map((event) => event.eventId);
+
           this.diagnostics.recordCausalTrace({
             timestamp: simTime,
             stockId: stock.id,
             agentId: agent.agentId,
             decisionId,
             orderId: matchRes.orderId,
-            eventIds: visibleEvents
-              .filter((event) => event.targetStockIds.includes(stock.id) && event.effectiveFrom <= simTime)
-              .map((event) => event.eventId),
+            eventIds: causalEventIds,
             stage: 'ORDER_SUBMIT',
             details: `[${agent.strategyType}] ${intent.action.toUpperCase()} ${intent.size}sh @ ${intent.price} (reason: ${intent.reason})`,
+            isCausalConnected: true,
           });
 
           if (matchRes.success) {
             if (matchRes.filledQty > 0) {
               const fills = matchRes.fills || [{
                 tradeId: '',
-                price: matchRes.execPrice ?? intent.price,
+                price: matchRes.avgPrice ?? matchRes.execPrice ?? intent.price,
                 size: matchRes.filledQty,
                 makerOrderId: '',
                 takerOrderId: matchRes.orderId || '',
               }];
+              const allTradeIds = fills.map((f) => f.tradeId).filter(Boolean);
+
               for (const fill of fills) {
                 // The incoming order is the taker for every actual match;
                 // IOC is not a reliable proxy for maker/taker role.
@@ -537,22 +628,34 @@ export class AgentManager {
                   decisionId,
                   orderId: matchRes.orderId,
                   tradeId: fill.tradeId,
+                  tradeIds: allTradeIds,
                   stage: 'ORDER_FILL',
-                  details: `Filled ${fill.size}sh @ ${fill.price} (weighted order avg ${matchRes.execPrice ?? intent.price}; makerOrder=${fill.makerOrderId || 'unknown'})`,
+                  details: `Filled ${fill.size}sh @ ${fill.price} (weighted order avg ${matchRes.avgPrice ?? matchRes.execPrice ?? intent.price}; makerOrder=${fill.makerOrderId || 'unknown'})`,
+                  isCausalConnected: true,
                 });
               }
             }
           } else {
             this.diagnostics.recordRejection(accountId, stock.id, matchRes.message || 'order_rejected', simTime);
+            this.diagnostics.recordCausalTrace({
+              timestamp: simTime,
+              stockId: stock.id,
+              agentId: agent.agentId,
+              decisionId,
+              orderId: matchRes.orderId,
+              stage: 'ORDER_REJECTED',
+              details: `Order rejected: ${matchRes.message || 'order_rejected'}`,
+              isCausalConnected: true,
+            });
           }
         }
       }
     }
 
-    // ── 6. Record Time-Series Flow Snapshot for Dashboard ──
+    // ── 6. Record Time-Series Flow Snapshot for Dashboard (Single End-of-Step Execution) ──
     const finalWindowStats = this.diagnostics.computeWindowStatistics(simTime, 10, 50);
-    this.diagnostics.updateLeaderBoard(simTime, this.attentionMap, finalWindowStats);
-    this.diagnostics.recordSnapshot(simTime, this.attentionMap, this.events, finalWindowStats);
+    this.diagnostics.updateLeaderBoard(simTime, this.attentionMap, finalWindowStats, dt);
+    this.diagnostics.recordSnapshot(simTime, this.attentionMap, this.publishedEvents, finalWindowStats);
   }
 
   /**
@@ -615,9 +718,12 @@ export class AgentManager {
     this.agents.clear();
     this.agentPrngs.clear();
     this.fundamentals.clear();
+    this.pendingEvents = [];
+    this.publishedEvents = [];
     this.events = [];
-    this.idempotencyTracker.reset();
+    this.publishedEventIds.clear();
     this.effectiveEventIds.clear();
+    this.idempotencyTracker.reset();
     this.attentionMap.clear();
     this.uncertaintyMap.clear();
 
@@ -626,17 +732,7 @@ export class AgentManager {
     this.initAttentionAndUncertainty();
   }
 
-  private applyDueEventEffects(simTime: number): void {
-    for (const event of this.events) {
-      if (this.effectiveEventIds.has(event.eventId) || event.effectiveFrom > simTime) continue;
-
-      for (const stockId of event.targetStockIds) {
-        const currentAttention = this.attentionMap.get(stockId) ?? 0.5;
-        const currentUncertainty = this.uncertaintyMap.get(stockId) ?? 0.05;
-        this.attentionMap.set(stockId, Math.min(1, currentAttention + event.attentionShock));
-        this.uncertaintyMap.set(stockId, Math.min(1, currentUncertainty + event.uncertaintyShock));
-      }
-      this.effectiveEventIds.add(event.eventId);
-    }
+  public applyDueEventEffects(simTime: number): void {
+    this.processDueEffects(simTime);
   }
 }

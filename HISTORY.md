@@ -3774,3 +3774,101 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 - 자동 tick·수동 step·이벤트 주입·reset을 실패 안전 직렬 큐로 통합하고 관리자 전용 step API, 입력 검증, rate limit 적용
 - 공개 뉴스에서 내부 truth 필드를 제거하고, 실제 체결 fill 기반 가중평균 가격·maker/taker 진단과 다중 뉴스 마커를 반영
 - 대시보드 통계·순위·스냅샷을 최종 체결 이후 동일 as-of 시각으로 생성하고 README 및 집중 회귀 테스트 보강
+
+---
+## 2026-09-16 09:10
+
+**요청 요약:** STOCKSYS 최신 코드의 뉴스 라이프사이클(registered → published → effective), `effectiveFrom` 이전 경제 신호 차단, 루머·정정 지연 격리, 리더보드 단일 평활화, 시뮬레이션 직렬 큐 우회 차단, 뉴스 마커 및 인과 추적 ID 체인 정합성 전면 수정 및 검증 완료.
+**수행 결과:**
+- 3단계 뉴스 라이프사이클 분리 (`lib/engine/simulation/agentManager.ts`, `marketEventTypes.ts`):
+  - `registered`: 미래 이벤트(`publishedAt > simulationTime`)를 내부 대기 큐에만 격리하여 공개 DB, 대시보드, 봇 관측에서 완전히 은닉.
+  - `published`: `publishedAt <= simulationTime` 도달 시점에 공개 뉴스 저장소 및 타임라인에 1회 등록(`NEWS_PUBLISHED` 로그 기록).
+  - `effective`: `effectiveFrom <= simulationTime` 도달 시점에만 관심도/불확실성 충격 및 전략 경제 가치 신호(`valuationSignal`) 적용. 동일 시각 등록/발표 시에도 멱등성 보장(`appliedEffectEventIds`).
+- 경제 가치 신호 조기 사용 차단 (`lib/engine/simulation/strategies/valueStrategy.ts`, `marketObservation.ts`):
+  - `MarketObservation`에 `effectiveEvents` (`effectiveFrom <= simTime`) 필드 추가.
+  - 가치 전략 평가 시 `effectiveFrom` 이전의 뉴스는 봇이 제목/내용을 인지하더라도 경제 가치 신호(`valuationSignal`) 합산에서 엄격히 배제.
+- 루머 및 정정 공시 정보 격리 유지:
+  - `isRumorFake`, `is_fake`, `correctedAt` 등 내부 진실 상태를 공개 DTO 및 봇 관측에서 마스킹.
+  - 정정 발표 후에도 개별 봇의 `infoLatency` 경과 시점에만 관측 관점에서 원본 루머 신뢰도를 무효화하며, 전역 confidence 유지 및 체결가 강제 복구 금지.
+- 리더보드 중복 평활화 제거 (`lib/engine/simulation/marketDiagnostics.ts`):
+  - 한 스텝 내 주문·체결·정산이 모두 완료된 후 동일 `asOfTime`에 1회만 평활화(`updateLeaderBoard`) 수행.
+  - 동일 `asOfTime` 중복 호출 방어 및 `dt` 비례 적응형 지수 평활화(`alpha = 1 - Math.pow(1 - 0.3, dt)`) 적용.
+- 시뮬레이션 큐 우회 차단 (`lib/engine/localStandaloneServer.ts`, `app/api/market-flow/route.ts`):
+  - `agentManager`를 private으로 캡슐화하고 read-only 접근자(`getSimulationTime`, `getMarketFlowData` 등) 제공.
+  - 모든 경제 상태 변경은 `SerialExecutionQueue`를 통해서만 실행되도록 강제(`SerialExecutionQueue` → `withStockLock` → `withAccountLocks` 락 순서 보존).
+  - 자동 틱 중복 진입 방어 플래그(`isTicking`) 추가.
+- 뉴스 타임라인 및 인과 ID 체인 강화 (`marketDiagnostics.ts`, UI 컴포넌트):
+  - `CausalTraceLog`에 `NEWS_PUBLISHED`, `ORDER_REJECTED` 스테이지 추가, 분할 체결 시 전체 `tradeIds` 연결, 완전한 ID 체인 여부에 따라 `[인과 추적]` vs `[시장 이벤트 흐름]` 구분.
+  - `SynchronizedFlowChart.tsx`, `SectorCirculationWidget.tsx`, `LeaderStockTable.tsx`, `CausalTraceStream.tsx`에 동일 마커 중복 방지, 1위 교체 배지, 무거래 시 "거래 없음 (0%)" 표시 반영.
+- 종합 테스트 및 빌드 검증:
+  - 신규 회귀 테스트 `scripts/test-news-lifecycle-and-causal-flow.ts` (TEST A~F) PASS (Exit Code 0).
+  - 기존 10종 핵심 테스트 전체 순차 검증 PASS (Exit Code 0):
+    - `test-market-flow-dashboard-api.ts` (Exit Code 0)
+    - `test-market-flow-verification.ts` (Exit Code 0, 6/6 시나리오)
+    - `test-causal-market-flow.ts` (Exit Code 0, 시나리오 A~H)
+    - `test-agent-based-market.ts` (Exit Code 0, 13/13 테스트)
+    - `test-concurrency-and-stale-ref.ts` (Exit Code 0)
+    - `test-comprehensive-audit-fixes.ts` (Exit Code 0)
+    - `test-order-security-and-atomic.ts` (Exit Code 0, TEST 1~14)
+    - `test-transaction-isolation.ts` (Exit Code 0)
+    - `test-order-risk-and-settlement.ts` (Exit Code 0, TEST A~N)
+    - `scripts/settlement/run_settlement_verification.ts` (Exit Code 0, STEP 1~3)
+  - API 라우트 핸들러 직접 통합 검증 `scripts/test-route-handlers-e2e.ts` (TEST 1~5) PASS (Exit Code 0).
+  - TypeScript 타입 검사 (`npx tsc --noEmit`): 에러 0건 (Exit Code 0).
+  - 프로덕션 빌드 (`npm run build`): Turbopack 24개 라우트 빌드 성공 (Exit Code 0).
+  - Git 커밋 및 푸시는 사용자 지시 전까지 수행하지 않음 (규칙 준수).
+
+---
+## 2026-09-16 13:21
+
+**요청 요약:** NextAuth `CLIENT_FETCH_ERROR` (`Unexpected token '<', "<!DOCTYPE "... is not valid JSON`) 콘솔 에러 원인 분석 및 수정.
+**수행 결과:**
+- `proxy.ts` matcher 및 반환 로직 수정:
+  - `proxy.ts` matcher에서 `/api/*` 경로를 정규식으로 제외(`(?!api|...)`)하도록 수정하여 API 라우트 인터셉트 및 라우팅 간섭 방지.
+  - `NextResponse.next({ request })`에서 잘못된 `{ request }` 래퍼를 제거하고 표준 `NextResponse.next()`로 수정.
+- NextAuth 콜백 방어 강화 (`app/api/auth/[...nextauth]/route.ts`):
+  - `AGENTS.md` 크리티컬 장애 예방 규칙에 따라 `signIn`, `jwt`, `session` 콜백을 `try-catch`로 감싸 예외 발생 시에도 500 HTML 에러 페이지가 아닌 정상 JSON 응답이 반환되도록 방어.
+- `lib/engine/simulation/marketDiagnostics.ts`:
+  - `getMarketFlowData` 반환 타입에 `asOfTime: number;` 누락 필드 추가하여 타입 일관성 확보.
+- 검증:
+  - `http://localhost:3000/api/auth/session` 호출 시 `200 application/json {}` 정상 응답 확인.
+  - `http://localhost:3000/api/auth/csrf` 및 `/api/auth/providers` 200 JSON 정상 응답 확인.
+  - `npx tsc --noEmit` 0 Errors (Exit Code 0).
+  - `npm run build` Turbopack 24개 라우트 프로덕션 빌드 성공 (Exit Code 0).
+
+---
+## 2026-09-16 13:26
+
+**요청 요약:** 호가창에서 잔량이 0인 호가 단계의 '0' 수치 표기 및 불필요한 막대 게이지 제거.
+**수행 결과:**
+- `app/components/Orderbook.tsx`:
+  - `AskRow` 및 `BidRow`에서 `totalSize > 0`인 경우에만 수치 텍스트(`totalSize.toLocaleString()`)를 렌더링하고, 0 이하인 경우 빈 문자열(`''`)을 출력하도록 개선.
+  - 잔량이 0일 때 최소 2% 너비로 출력되던 잔량 막대 게이지(`pct` 2% 고정 및 배경 div)가 잔량 0일 때는 완전히 렌더링되지 않도록 조건부 렌더링 적용.
+- `app/components/v2/OrderbookV2.tsx`:
+  - `AskRow` 및 `BidRow`에서도 동일하게 `totalSize > 0` 조건에 한해서만 잔량 텍스트와 배경 게이지 바가 표시되도록 동기화.
+- 검증:
+  - TypeScript 타입 검사 (`npx tsc --noEmit`): 0 Errors (Exit Code 0).
+  - Next.js 프로덕션 빌드 (`npm run build`): Turbopack 24개 라우트 빌드 성공 (Exit Code 0).
+
+---
+## 2026-09-16 13:34
+
+**요청 요약:** 호가창 UI에서 실제 주문 잔량이 없는 가격 행 전체를 제거하고, 실제 미체결 호가만 연속적으로 표시하도록 데이터 흐름 및 컴포넌트 개선.
+**수행 결과:**
+- `lib/utils/orderbookSelector.ts`:
+  - `filterValidOrderbookLevels`: `Number.isFinite(quantity) && quantity > 0` 조건을 만족하는 호가만 통과시키고, 0, -0, 음수, NaN, null, undefined를 엄격히 필터링하며 동일 가격 주문의 잔량을 합산.
+  - `aggregateRawOrders`: 미체결 잔량(`max(0, size - filled) > 0`) 기준 호가 집계 및 취소/전량체결 상태 제외 로직 구현.
+  - `calculateMaxVisibleQuantity`: 화면에 표시 중인 실제 유효 호가만을 기준으로 최대 잔량(`maxVisibleQuantity`)을 계산하여 NaN/0 나누기 방지(최소값 1).
+- `lib/hooks/useOrderbookData.ts`:
+  - 인위적으로 10개 틱 가격 단계를 반복 생성하던 고정 루프(`for i=1..10`) 및 비정상 0 수량 행 생성을 완전히 제거.
+  - DB 실제 미체결 주문(`open`, `partial`) 기반 집계 맵(`askMap`, `bidMap`)에서 실존하는 호가만 추출하여 오름차순(매도)/내림차순(매수) 정렬.
+- `app/components/Orderbook.tsx` & `app/components/v2/OrderbookV2.tsx`:
+  - 고정 그리드(`grid-rows-10`)를 유연한 스크롤 컨테이너(`justify-end` / `justify-start`)로 개편하여 최우선 매도호가와 최우선 매수호가가 시각적으로 즉시 맞닿도록 배치.
+  - 한쪽 또는 양쪽 호가가 모두 비었을 때 "대기 주문이 없습니다" 및 개별 안내 UI 제공.
+  - 행 높이를 정규화(`h-[26px] min-h-[26px] shrink-0`)하고 고유 key(`ask-${price}`, `bid-${price}`) 부여.
+- 검증 및 테스트:
+  - `scripts/test-orderbook-zero-suppression.ts`: 사용자 지정 13가지 검증 시나리오 전체 PASS (Exit Code 0).
+  - 기존 핵심 회귀 테스트 (`test-news-lifecycle-and-causal-flow.ts`, `test-route-handlers-e2e.ts`, `test-order-security-and-atomic.ts`) 전체 PASS (Exit Code 0).
+  - TypeScript 타입 검사 (`npx tsc --noEmit`): 0 Errors (Exit Code 0).
+  - Next.js 프로덕션 빌드 (`npm run build`): Turbopack 24개 라우트 정상 빌드 완료 (Exit Code 0).
+

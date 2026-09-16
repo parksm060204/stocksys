@@ -96,6 +96,18 @@ export function getVisibleMarketEvents(
     });
 }
 
+/**
+ * Filters visible events to only those whose economic effects have officially started (effectiveFrom <= observationTimeMs).
+ * Guarantees that news is known (visible) but economic valuation/shock is withheld until effectiveFrom.
+ */
+export function getEffectiveMarketEvents(
+  visibleEvents: MarketEvent[],
+  observationTimeMs: number
+): MarketEvent[] {
+  if (!Number.isFinite(observationTimeMs)) return [];
+  return visibleEvents.filter((event) => event.effectiveFrom <= observationTimeMs);
+}
+
 /** Remove simulation-only truth from every public news read path. */
 export function sanitizePublicNewsRecord<T extends Record<string, unknown>>(record: T): Omit<T, 'is_fake' | 'isRumorFake' | 'correctedAt'> {
   const { is_fake: _isFake, isRumorFake: _isRumorFake, correctedAt: _correctedAt, ...publicRecord } = record as T & {

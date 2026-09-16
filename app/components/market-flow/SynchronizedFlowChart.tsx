@@ -340,23 +340,30 @@ export const SynchronizedFlowChart: React.FC<SynchronizedFlowChartProps> = ({
             <line x1={padding.left} y1={p4Top + 12} x2={padding.left + innerWidth} y2={p4Top + 12} stroke="#374151" strokeWidth="1.5" />
 
             {/* 뉴스 발생 마커 */}
-            {data.flatMap((pt, i) => {
-              const events = pt.newsEvents || (pt.newsEvent ? [pt.newsEvent] : []);
-              const x = getX(i);
-              return events.map((newsEvent, eventIndex) => {
-                const isPositive = (newsEvent.impactDirection ?? 0) >= 0;
-                const offset = (eventIndex - (events.length - 1) / 2) * 8;
-                return (
-                  <g key={`news-flag-${newsEvent.id}`} className="cursor-pointer">
-                    <line x1={x + offset} y1={padding.top} x2={x + offset} y2={p4Top + 12} stroke={isPositive ? '#F04452' : '#3182F6'} strokeWidth="1" strokeDasharray="2,2" opacity="0.6" />
-                    <circle cx={x + offset} cy={p4Top + 12} r="5.5" fill={isPositive ? '#F04452' : '#3182F6'} filter="url(#glowEffect)" />
-                    <text x={x + offset} y={p4Top + 28} textAnchor="middle" className="text-[8.5px] font-mono fill-white font-extrabold">
-                      {newsEvent.targetSector ? SECTOR_METADATA[newsEvent.targetSector]?.nameKo || '뉴스' : '뉴스'}
-                    </text>
-                  </g>
-                );
+            {(() => {
+              const renderedMarkerIds = new Set<string>();
+              return data.flatMap((pt, i) => {
+                const events = (pt.newsEvents || (pt.newsEvent ? [pt.newsEvent] : [])).filter((ev) => {
+                  if (renderedMarkerIds.has(ev.id)) return false;
+                  renderedMarkerIds.add(ev.id);
+                  return true;
+                });
+                const x = getX(i);
+                return events.map((newsEvent, eventIndex) => {
+                  const isPositive = (newsEvent.impactDirection ?? 0) >= 0;
+                  const offset = (eventIndex - (events.length - 1) / 2) * 8;
+                  return (
+                    <g key={`news-flag-${newsEvent.id}`} className="cursor-pointer">
+                      <line x1={x + offset} y1={padding.top} x2={x + offset} y2={p4Top + 12} stroke={isPositive ? '#F04452' : '#3182F6'} strokeWidth="1" strokeDasharray="2,2" opacity="0.6" />
+                      <circle cx={x + offset} cy={p4Top + 12} r="5.5" fill={isPositive ? '#F04452' : '#3182F6'} filter="url(#glowEffect)" />
+                      <text x={x + offset} y={p4Top + 28} textAnchor="middle" className="text-[8.5px] font-mono fill-white font-extrabold">
+                        {newsEvent.targetSector ? SECTOR_METADATA[newsEvent.targetSector]?.nameKo || '뉴스' : '뉴스'}
+                      </text>
+                    </g>
+                  );
+                });
               });
-            })}
+            })()}
           </g>
 
           {/* ══════════════════════════════════════════
@@ -435,22 +442,37 @@ export const SynchronizedFlowChart: React.FC<SynchronizedFlowChartProps> = ({
             </div>
 
             {/* 1위 주도주 상태 */}
-            {activePoint.topLeaders[0] && (
-              <div className="border-t border-[#2D3748] pt-1.5 text-[10.5px]">
-                <div className="flex justify-between items-center">
-                  <span className="text-amber-400 font-bold">
-                    1위: {activePoint.topLeaders[0].name}
-                  </span>
-                  <span className="text-slate-300">
-                    관심도: {(activePoint.topLeaders[0].attentionScore * 100).toFixed(0)}%
-                  </span>
+            {activePoint.topLeaders[0] && (() => {
+              const activeIdx = hoverIndex !== null ? hoverIndex : data.length - 1;
+              const prevPoint = activeIdx > 0 ? data[activeIdx - 1] : undefined;
+              const isLeaderSwitched = !!(
+                prevPoint?.topLeaders?.[0]?.stockId &&
+                activePoint.topLeaders[0]?.stockId &&
+                prevPoint.topLeaders[0].stockId !== activePoint.topLeaders[0].stockId
+              );
+
+              return (
+                <div className="border-t border-[#2D3748] pt-1.5 text-[10.5px]">
+                  <div className="flex justify-between items-center">
+                    <span className="text-amber-400 font-bold flex items-center gap-1">
+                      1위: {activePoint.topLeaders[0].name}
+                      {isLeaderSwitched && (
+                        <span className="px-1 py-0.2 text-[9px] bg-amber-500/20 text-amber-300 border border-amber-500/40 rounded font-normal">
+                          👑 교체
+                        </span>
+                      )}
+                    </span>
+                    <span className="text-slate-300">
+                      관심도: {(activePoint.topLeaders[0].attentionScore * 100).toFixed(0)}%
+                    </span>
+                  </div>
+                  <div className="flex justify-between text-[9.5px] text-slate-400 mt-0.5">
+                    <span>스프레드: {activePoint.topLeaders[0].spreadBps}bps</span>
+                    <span>호가잔량: {fmtKrw(activePoint.topLeaders[0].depthNotional)}</span>
+                  </div>
                 </div>
-                <div className="flex justify-between text-[9.5px] text-slate-400 mt-0.5">
-                  <span>스프레드: {activePoint.topLeaders[0].spreadBps}bps</span>
-                  <span>호가잔량: {fmtKrw(activePoint.topLeaders[0].depthNotional)}</span>
-                </div>
-              </div>
-            )}
+              );
+            })()}
 
             {/* 이벤트 발생 요약 */}
             {activePoint.newsEvent && (

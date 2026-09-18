@@ -35,6 +35,12 @@ import {
   getVisibleMarketEvents,
   validateMarketEvent,
 } from './marketEventTypes';
+import {
+  MarketStateEngine,
+  MarketStateSnapshot,
+  RegimeObservation,
+  deriveDeterministicSeed,
+} from './regime';
 
 export class AgentManager {
   public clock: SimulationClock;
@@ -45,6 +51,7 @@ export class AgentManager {
   public agents: Map<string, AgentAccount> = new Map();
   public fundamentals: Map<string, number> = new Map();
   public diagnostics: MarketDiagnostics = new MarketDiagnostics();
+  public marketStateEngine: MarketStateEngine;
 
   // ── Single-Source Event & Attention State (3-Stage Lifecycle: registered -> published -> effective) ──
   public pendingEvents: MarketEvent[] = [];       // Registered events awaiting publishedAt
@@ -101,6 +108,8 @@ export class AgentManager {
     this.clock = new SimulationClock(startEpochMs, 1.0);
     this.prng = new SimPrng(seed);
     this.fundamentalPrng = this.prng.split(100);
+    const regimeSeed = deriveDeterministicSeed(seed, 'market-regime-v1');
+    this.marketStateEngine = new MarketStateEngine({}, regimeSeed, startEpochMs);
 
     this.registerDefaultAgents();
     this.initFundamentals();
@@ -392,7 +401,18 @@ export class AgentManager {
    * 9. Post-execution single leaderboard update and dashboard snapshot
    */
   public async step(dt: number = 1.0): Promise<void> {
-    const { time: simTime } = this.clock.advance(dt);
+    if (!Number.isFinite(dt) || dt <= 0) {
+      throw new RangeError(`[AgentManager] dt must be positive finite: ${dt}`);
+    }
+    const t0 = this.clock.simulationTime;
+    const currentStepId = this.clock.simulationStep;
+
+    // 1. t0 시점에 적용 예정인 pending 국면 활성화
+    this.marketStateEngine.activatePendingRegime(t0, currentStepId);
+
+    // 2. 시계를 t1 = t0 + dt로 전진
+    const { time: simTime, step: nextStepId } = this.clock.advance(dt);
+
     this.processDuePublications(simTime);
     this.processDueEffects(simTime);
 
@@ -655,6 +675,72 @@ export class AgentManager {
     const finalWindowStats = this.diagnostics.computeWindowStatistics(simTime, 10, 50);
     this.diagnostics.updateLeaderBoard(simTime, this.attentionMap, finalWindowStats, dt);
     this.diagnostics.recordSnapshot(simTime, this.attentionMap, this.publishedEvents, finalWindowStats);
+
+    // ── 7. Deterministic Market Regime Evaluation (Scheduled for next step, No circular causality) ──
+    const statsList = Array.from(finalWindowStats.values());
+    let aggReturn = 0;
+    let avgSpreadBps = 0;
+    let validSpreadCount = 0;
+
+    for (const st of statsList) {
+      aggReturn += st.returnRate;
+      if (st.spread !== null && st.spread > 0) {
+        const stk = memoryDb.stocks.get(st.stockId);
+        const price = stk?.current_price ?? 50000;
+        const bps = (st.spread / price) * 10000;
+        avgSpreadBps += bps;
+        validSpreadCount++;
+      }
+    }
+
+    const stockCount = Math.max(1, statsList.length);
+    const meanReturn = aggReturn / stockCount;
+    const meanSpreadBps = validSpreadCount > 0 ? avgSpreadBps / validSpreadCount : 20.0;
+
+    let varSum = 0;
+    for (const st of statsList) {
+      const diff = st.returnRate - meanReturn;
+      varSum += diff * diff;
+    }
+    const realizedVol = Math.sqrt(varSum / stockCount);
+
+    let avgUncertainty = 0.05;
+    if (this.uncertaintyMap.size > 0) {
+      let sumUnc = 0;
+      for (const u of this.uncertaintyMap.values()) sumUnc += u;
+      avgUncertainty = sumUnc / this.uncertaintyMap.size;
+    }
+
+    // Effective Macro News Signal (Strict barrier: publishedAt <= simTime && effectiveFrom <= simTime only)
+    let macroSignal = 0;
+    const effectiveMacroEvents = this.publishedEvents.filter(
+      (e) => e.scope === 'market' && e.effectiveFrom <= simTime && this.effectiveEventIds.has(e.eventId)
+    );
+    for (const ev of effectiveMacroEvents) {
+      macroSignal += ev.valuationSignal;
+    }
+    macroSignal = Math.max(-1.0, Math.min(1.0, macroSignal));
+
+    const observation: RegimeObservation = {
+      simulationTime: simTime,
+      aggregateReturn: meanReturn,
+      realizedVolatility: realizedVol,
+      turnoverChange: 0,
+      averageSpreadBps: meanSpreadBps,
+      depthChange: 0,
+      uncertainty: avgUncertainty,
+      emptyBookDurationSeconds: 0,
+      effectiveMacroNewsSignal: macroSignal,
+    };
+
+    // 7. (t0, t1]에서 통과한 세션 경계 전부 처리
+    this.marketStateEngine.advanceSession(simTime);
+
+    const nextStepTime = simTime + Math.round(dt * 1000);
+    this.marketStateEngine.evaluateNextRegime(observation, simTime, nextStepTime, nextStepId);
+
+    // 8. 완성된 t1 스냅샷 원자적 게시
+    this.marketStateEngine.publishSnapshot(simTime);
   }
 
   /**
@@ -713,6 +799,8 @@ export class AgentManager {
     this.clock.reset();
     this.prng = new SimPrng(seed);
     this.fundamentalPrng = this.prng.split(100);
+    const regimeSeed = deriveDeterministicSeed(seed, 'market-regime-v1');
+    this.marketStateEngine.reset(this.clock.simulationTime, regimeSeed);
     this.diagnostics.reset();
     this.agents.clear();
     this.agentPrngs.clear();
@@ -729,6 +817,10 @@ export class AgentManager {
     this.registerDefaultAgents();
     this.initFundamentals();
     this.initAttentionAndUncertainty();
+  }
+
+  public getMarketStateSnapshot(): MarketStateSnapshot {
+    return this.marketStateEngine.getSnapshot();
   }
 
   public applyDueEventEffects(simTime: number): void {

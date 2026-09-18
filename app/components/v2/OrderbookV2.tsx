@@ -4,13 +4,14 @@
  * OrderbookV2.tsx
  *
  * V2 Robinhood-style 호가창.
- * ─ 백엔드 훅 `useOrderbookData`는 절대 수정하지 않음.
+ * ─ 순수 표시용 OrderbookV2View와 데이터 연동용 OrderbookV2 컨테이너 분리.
+ * ─ 프로덕션 컴포넌트에 테스트 전용 override props 완전 제거.
  * ─ 세로 border 완전 제거.
  * ─ 텍스트 정렬 + py-2 여백만으로 구분.
  * ─ 왼쪽: 매도잔량 배경 바 (파랑), 오른쪽: 매수잔량 배경 바 (빨강).
  */
 
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { useOrderbookData, type OrderbookConnectionState } from "@/lib/hooks/useOrderbookData";
 import {
   filterValidOrderbookLevels,
@@ -18,53 +19,29 @@ import {
   type OrderbookLevel,
 } from "@/lib/utils/orderbookSelector";
 
-export default function OrderbookV2({
-  ticker,
-  currentPrice,
-  stockId,
-  initialBids,
-  initialAsks,
-  connectionState: connectionStateProp,
-}: {
-  ticker: string;
-  currentPrice: number;
-  stockId?: string;
-  initialBids?: OrderbookLevel[];
-  initialAsks?: OrderbookLevel[];
-  connectionState?: OrderbookConnectionState;
-}) {
-  /* ── 백엔드 연동 (원본 훅 그대로) ── */
-  const { bids, asks, price: livePrice, source, connectionState: hookConnectionState } = useOrderbookData(
-    stockId ?? "__none__",
-    ticker,
-    currentPrice,
-    800
-  );
-  const connectionState = connectionStateProp ?? hookConnectionState;
-  const rawBids = initialBids ?? bids;
-  const rawAsks = initialAsks ?? asks;
+export interface OrderbookV2ViewProps {
+  visibleAsks: OrderbookLevel[];
+  visibleBids: OrderbookLevel[];
+  maxSize: number;
+  displayPrice: number;
+  flashType: "up" | "down" | null;
+  connectionState: OrderbookConnectionState;
+  source: 'db' | 'hybrid' | 'simulation';
+  totalAskSize: number;
+  totalBidSize: number;
+}
 
-  const [flashType, setFlashType] = useState<"up" | "down" | null>(null);
-  const prevPriceRef = useRef<number>(currentPrice);
-
-  useEffect(() => {
-    const p = livePrice || currentPrice;
-    if (p !== prevPriceRef.current) {
-      setFlashType(p > prevPriceRef.current ? "up" : "down");
-      prevPriceRef.current = p;
-      const t = setTimeout(() => setFlashType(null), 250);
-      return () => clearTimeout(t);
-    }
-  }, [livePrice, currentPrice]);
-
-  const visibleAsks = filterValidOrderbookLevels(rawAsks, "ask").slice(0, 10);
-  const visibleBids = filterValidOrderbookLevels(rawBids, "bid").slice(0, 10);
-
-  const maxSize = calculateMaxVisibleQuantity(visibleAsks, visibleBids);
-  const totalAskSize = visibleAsks.reduce((a, c) => a + c.totalSize, 0);
-  const totalBidSize = visibleBids.reduce((a, c) => a + c.totalSize, 0);
-  const displayPrice = livePrice || currentPrice;
-
+export const OrderbookV2View = memo(function OrderbookV2View({
+  visibleAsks,
+  visibleBids,
+  maxSize,
+  displayPrice,
+  flashType,
+  connectionState,
+  source,
+  totalAskSize,
+  totalBidSize,
+}: OrderbookV2ViewProps) {
   /* ── 매도 행 (파랑) ── */
   const AskRow = ({ ask }: { ask: OrderbookLevel }) => {
     const hasVolume = ask.totalSize > 0;
@@ -271,5 +248,57 @@ export default function OrderbookV2({
         </div>
       </div>
     </div>
+  );
+});
+
+export default function OrderbookV2({
+  ticker,
+  currentPrice,
+  stockId,
+}: {
+  ticker: string;
+  currentPrice: number;
+  stockId?: string;
+}) {
+  const { bids, asks, price: livePrice, source, connectionState } = useOrderbookData(
+    stockId ?? "__none__",
+    ticker,
+    currentPrice,
+    800
+  );
+
+  const [flashType, setFlashType] = useState<"up" | "down" | null>(null);
+  const prevPriceRef = useRef<number>(currentPrice);
+
+  useEffect(() => {
+    const p = livePrice || currentPrice;
+    if (p !== prevPriceRef.current) {
+      setFlashType(p > prevPriceRef.current ? "up" : "down");
+      prevPriceRef.current = p;
+      const t = setTimeout(() => setFlashType(null), 250);
+      return () => clearTimeout(t);
+    }
+  }, [livePrice, currentPrice]);
+
+  const visibleAsks = filterValidOrderbookLevels(asks, "ask").slice(0, 10);
+  const visibleBids = filterValidOrderbookLevels(bids, "bid").slice(0, 10);
+
+  const maxSize = calculateMaxVisibleQuantity(visibleAsks, visibleBids);
+  const totalAskSize = visibleAsks.reduce((a, c) => a + c.totalSize, 0);
+  const totalBidSize = visibleBids.reduce((a, c) => a + c.totalSize, 0);
+  const displayPrice = livePrice || currentPrice;
+
+  return (
+    <OrderbookV2View
+      visibleAsks={visibleAsks}
+      visibleBids={visibleBids}
+      maxSize={maxSize}
+      displayPrice={displayPrice}
+      flashType={flashType}
+      connectionState={connectionState}
+      source={source}
+      totalAskSize={totalAskSize}
+      totalBidSize={totalBidSize}
+    />
   );
 }

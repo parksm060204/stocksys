@@ -517,3 +517,31 @@ SerialExecutionQueue (시뮬레이션 큐)
 - 지원 ID 체인: `eventId` → `decisionId` → `orderId` → `tradeIds` (모든 분할 체결 및 maker/taker 역할 정확히 연결)
 - 체결 로그의 평균 체결가는 실제 체결 레코드 가중평균으로 계산되며, 주문 거절은 `ORDER_REJECTED`로 독립 기록됩니다.
 - ID 체인이 완전하게 연결된 이벤트는 `[인과 추적]`으로 배지 표기되며, 단순 상관 기록은 `[시장 이벤트 흐름]`으로 명확히 구분하여 표기합니다.
+
+### 8. 시장 국면(Market Regime) 및 거래 세션(Trading Session) 기반 엔진 (1단계)
+* **시장 국면(MarketRegime) 타입**:
+  - `BULL` (상승장), `BEAR` (하락장), `SIDEWAYS` (횡보장), `HIGH_VOLATILITY` (고변동성), `LIQUIDITY_CRISIS` (유동성 위기)
+* **거래 세션(TradingSession) 타입**:
+  - `PRE_OPEN` (장개시전), `OPENING_AUCTION` (시초가 동시호가), `CONTINUOUS` (정규 단일가/연속매매), `CLOSING_AUCTION` (종가 동시호가), `CLOSED` (장마감 후 익일 롤오버)
+* **거래일 시간 기준점 및 `[start, end)` 세션 경계 규칙**:
+  - 거래일 시작 기준점(`tradingDayAnchorMs`)을 기반으로 시뮬레이션 경과 시간(`elapsedMs`)의 양의 모듈로 연산을 통해 일중 시간(`timeWithinDayMs`)을 계산합니다.
+  - 세션 구간은 `[start, end)` 반열린 구간 규칙을 엄격히 적용하여 경계 1ms 직전에는 이전 세션, 정확한 경계 시각에는 다음 세션으로 전환됩니다. 큰 `dt` 경과 시 중간의 모든 세션 전환 경계가 누락 없이 순서대로 기록되며, 86,400초 경과 시 익일 롤오버 및 `tradingDayIndex`가 증가합니다.
+* **국면 전환 우선순위 및 진입/이탈 분리 히스테리시스**:
+  - `Date.now()`, `Math.random()` 사용을 원천 배제하고 초기 시드로부터 유도된 독립 Seeded PRNG(`market-regime-v1`)와 완료된 스텝의 확정 통계(`RegimeObservation`)만으로 동작합니다.
+  - 평가 우선순위: 유동성 위기(`LIQUIDITY_CRISIS`) → 고변동성(`HIGH_VOLATILITY`) → 상승/하락장(`BULL`/`BEAR`) → 횡보장(`SIDEWAYS`).
+  - 단순 진입 조건의 부정이 아닌, 진입 임계치와 회복(이탈) 임계치를 분리한 양방향 히스테리시스, 최소 유지 시간(`minRegimeDurationSeconds`), 전환 쿨다운(`regimeCooldownSeconds`)을 통해 경계 부근의 잦은 국면 진동을 방지합니다.
+* **다음 스텝 지연 활성화 원칙 (No Circular Causality)**:
+  - 현재 스텝 $t_1$ 종료 시 확정 통계로 평가된 국면은 `pendingTransition`(`decisionStepId: currentStepId`, `effectiveAt: nextStepStartTime`)에 등록되며, 동일 스텝 내에서는 활성화되지 않습니다.
+  - 다음 스텝 $t_2$ 시작 시점(`decisionStepId < currentStepId && effectiveAt <= currentStepStartTime`)에 비로소 실제 활성화되어 `previousRegime`, `regimeStartedAt`, 이력이 갱신됩니다.
+  - 이를 통해 스텝의 경제적 결과가 같은 스텝의 시장 국면을 바꾸고 다시 그 스텝의 주문을 바꾸는 순환 인과 및 시간 역행을 원천 차단합니다.
+* **원자적 상태 스냅샷 (Atomic Snapshot Swap)**:
+  - 스텝 진행 중 가변 객체가 중간 노출되지 않도록, 모든 계산 완료 후 완전한 `MarketStateSnapshot`을 단일 참조 교체(atomic reference swap)로 게시합니다.
+  - 단조 증가하는 `stateVersion`을 부여하며, `getMarketStateSnapshot()`은 내부 상태를 깊은 복제(deep clone) 및 동결(freeze)하여 반환하므로 순수 읽기 전용으로 부작용이 0이며 외부 변조가 불가능합니다.
+* **1단계 구현 범위 및 무영향성 명시 (중요)**:
+  - **현재 단계는 관측용 기반 엔진(타입·설정·결정론적 상태 전환) 구축 단계입니다.**
+  - **국면별 파라미터(`DEFAULT_REGIME_PARAMETERS`)는 아직 주문 생성, 봇 전략, LP 호가, 체결, 주가에 일절 적용되지 않습니다.**
+  - **거래 세션 상태(`CLOSED`, `OPENING_AUCTION` 등) 역시 현재는 거래나 주문 허용 여부를 제한하지 않으며, 기존 주문·정산 구조는 그대로 동작합니다.**
+  - 스냅샷 메타데이터:
+    - `implementationStage: 1`
+    - `marketMechanicsApplied: false`
+    - `capabilities: { regimeDetection: true, sessionTracking: true, botBehaviorAdjustment: false, lpAdjustment: false, auctionMatching: false, sessionOrderRestriction: false }`

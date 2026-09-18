@@ -34,6 +34,7 @@ interface DBTrade {
 
 // ─── 공통 리턴 타입 ──────────────────────────────────────────────────────────
 export type OrderbookConnectionState = 'loading' | 'live' | 'stale' | 'error';
+export type OrderbookDataQuality = 'authoritative' | 'legacy-fallback';
 
 export interface OrderbookLevel {
   price: number;
@@ -51,13 +52,14 @@ export interface TradeRecord {
   timestamp: number;
 }
 
-interface UseOrderbookDataResult {
+export interface UseOrderbookDataResult {
   bids: OrderbookLevel[];
   asks: OrderbookLevel[];
   trades: TradeRecord[];
   price: number;
   source: 'db' | 'hybrid' | 'simulation';
   connectionState: OrderbookConnectionState;
+  dataQuality: OrderbookDataQuality;
 }
 
 // ─── 틱 사이즈 (중복 정의 방지용 re-export) ─────────────────────────────────
@@ -109,18 +111,26 @@ export function useOrderbookData(
   _ticker: string,
   currentPrice: number,
   intervalMs = 1000,
+  clientOverride?: any,
 ): UseOrderbookDataResult {
   const [bids, setBids] = useState<OrderbookLevel[]>([]);
   const [asks, setAsks] = useState<OrderbookLevel[]>([]);
   const [trades, setTrades] = useState<TradeRecord[]>([]);
   const [price, setPrice] = useState(currentPrice);
   const [connectionState, setConnectionState] = useState<OrderbookConnectionState>('loading');
+  const [dataQuality, setDataQuality] = useState<OrderbookDataQuality>('authoritative');
 
   const mountedRef = useRef(true);
   const currentPriceRef = useRef(currentPrice);
   const activeStockIdRef = useRef(stockId);
   const prevStockIdRef = useRef(stockId);
   const requestGenerationRef = useRef(0);
+  const hasBookDataRef = useRef(false);
+  const clientRef = useRef(clientOverride);
+
+  useEffect(() => {
+    clientRef.current = clientOverride;
+  }, [clientOverride]);
 
   useEffect(() => {
     currentPriceRef.current = currentPrice;
@@ -139,6 +149,7 @@ export function useOrderbookData(
       prevStockIdRef.current = stockId;
       activeStockIdRef.current = stockId;
       requestGenerationRef.current++;
+      hasBookDataRef.current = false;
 
       // 이전 종목 상태를 즉시 클리어하여 화면 잔류 방지
       setBids([]);
@@ -146,13 +157,14 @@ export function useOrderbookData(
       setTrades([]);
       setPrice(currentPrice);
       setConnectionState('loading');
+      setDataQuality('authoritative');
     }
   }, [stockId, currentPrice]);
 
   // ─── DB 폴링 및 권위 있는 호가 집계 ────────────────────────────────────
   const fetchFromDB = useCallback(async (targetStockId: string, generation: number) => {
     if (!targetStockId || targetStockId === '__none__') return;
-    const supabase = createClient();
+    const supabase = clientRef.current || createClient();
 
     try {
       // 1. 단일 스냅샷 기반의 서버 권위 호가 집계 RPC 호출 (100% 완전 잔량 합산 및 매수/매도 시점 일치 보장)
@@ -218,16 +230,22 @@ export function useOrderbookData(
         setTrades(newTrades);
         setPrice(latestPrice > 0 ? latestPrice : currentPriceRef.current);
         setConnectionState('live');
+        setDataQuality('authoritative');
+        hasBookDataRef.current = newBids.length > 0 || newAsks.length > 0;
         return;
       }
 
       // RPC 에러가 치명적인 DB 오류/네트워크 단절인 경우 빈 호가창으로 오인하지 않고 에러 상태로 처리
+      // 문자열 검색 대신 PostgREST 구조화된 에러 코드(PGRST202, 42883) 우선 사용
       if (rpcRes.error) {
+        const code = (rpcRes.error as any).code;
         const errMsg = String(rpcRes.error.message || rpcRes.error);
-        const isRpcNotFound = errMsg.includes('not found') || errMsg.includes('does not exist') || errMsg.includes('누락');
+        const isRpcNotFound = code === 'PGRST202' || code === '42883' || errMsg.includes('PGRST202');
         if (!isRpcNotFound) {
           throw rpcRes.error;
         }
+        console.warn(`[useOrderbookData] Authoritative RPC not installed (${code}). Falling back to legacy 200-limit queries.`);
+        setDataQuality('legacy-fallback');
       }
 
       // ── Fallback: RPC를 지원하지 않는 레거시 환경 전용 분리 쿼리 수행 ──
@@ -398,6 +416,8 @@ export function useOrderbookData(
         setTrades(newTrades);
         setPrice(latestPrice > 0 ? latestPrice : currentPriceRef.current);
         setConnectionState('live');
+        setDataQuality('legacy-fallback');
+        hasBookDataRef.current = newBids.length > 0 || newAsks.length > 0;
       }
     } catch (err) {
       if (
@@ -408,9 +428,9 @@ export function useOrderbookData(
         return;
       }
       console.warn(`[useOrderbookData] DB fetch error for stock ${targetStockId}:`, (err as any)?.message || err);
-      setConnectionState((prev) => (prev === 'live' || bids.length > 0 || asks.length > 0 ? 'stale' : 'error'));
+      setConnectionState(hasBookDataRef.current ? 'stale' : 'error');
     }
-  }, [bids.length, asks.length]);
+  }, []);
 
   // ─── 완료 기반 재귀 폴링 루프 (요청 중첩 및 경합 방지) ──────────────────
   useEffect(() => {
@@ -451,7 +471,7 @@ export function useOrderbookData(
       ? 'simulation'
       : 'hybrid';
 
-  return { bids, asks, trades, price, source, connectionState };
+  return { bids, asks, trades, price, source, connectionState, dataQuality };
 }
 
 // ─── 시뮬레이션 결과를 SimOrderbookLevel 호환성 유지 ──────────────────

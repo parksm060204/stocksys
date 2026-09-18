@@ -3997,3 +3997,107 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
   - NextAuth 호환성 안전 래퍼: `app/api/auth/[...nextauth]/route.ts`
   - 통합 및 단위 테스트 스위트: `scripts/test-orderbook-and-news-integrity.ts`, `scripts/test-orderbook-react-render.tsx`, `scripts/test-nextauth-safe-handler.ts`, `scripts/test-causal-market-flow.ts`, `scripts/test-time-concurrency-news.ts`
 - `git add`, `git commit` 및 `git push origin main` 실행 완료.
+
+---
+## 2026-09-18 21:22
+
+**요청 요약:** STOCKSYS 최신 커밋 `d474cd9` 기준 코드 리뷰 잔여 결함 4대 영역(NextAuth 오류 처리 및 상태 코드 계약, 권위 호가 SQL RPC 스냅샷 및 보안 보장, 정정 뉴스 종목 범위 및 복수 정정 결정론적 정책, 실제 useOrderbookData 훅의 폴링·경합 테스트) 완벽 복원 및 신뢰성 확보.
+**수행 결과:**
+- `app/api/auth/[...nextauth]/route.ts`:
+  - `signIn` 콜백의 무의미한 try-catch 제거 및 실패 시 명시적 실패 정책 유지.
+  - Request 객체 mutation(`(req as any).nextUrl`) 제거 및 URL pathname 기반 순수 라우팅 적용.
+  - 200 JSON 위장 제거: 세션/CSRF/프로바이더 내부 장애 시 HTTP 500 JSON 반환 (`InternalAuthenticationError`, 고정 안전 메시지).
+  - OAuth redirect/HTML 엔드포인트(`signin`, `signout`, `callback`, `error`)의 NextAuth 기본 HTTP 계약(302/HTML) 완벽 보존.
+- `scripts/test-nextauth-safe-handler.ts` & `scripts/test-nextauth-http-integration.ts`:
+  - 500 JSON 반환 및 내부 메시지 은닉 단위 테스트 및 실제 테스트 포트(3098) Next.js 서버 라이브 HTTP 6대 경로(session, csrf, providers, signin 302, signout 302, callback error 302) 통합 검증 완료.
+- `docs/sql/02_get_authoritative_orderbook.sql`:
+  - `LANGUAGE sql STABLE` 단일 CTE(`order_bids`, `order_asks`, `recent_trades`) 구조로 재작성하여 세 쿼리 간 동일 트랜잭션/스냅샷 원자성 보장.
+  - `SECURITY DEFINER`, `search_path = public, pg_temp`, `REVOKE ALL ON FUNCTION ... FROM PUBLIC`, `GRANT EXECUTE ... TO anon, authenticated` 적용.
+  - `p_stock_id` 빈 문자열 거부, `p_depth` 1~50 클램핑 및 비공개 개인정보(user_id 등) 완전 배제.
+- `lib/hooks/useOrderbookData.ts`:
+  - PostgREST 구조화 에러 코드(`rpcRes.error.code === 'PGRST202'`) 기반 판별 및 `OrderbookDataQuality` ('authoritative' | 'legacy-fallback') 분리.
+  - `hasBookDataRef` 도입으로 `fetchFromDB` 의존성 배열에서 `[bids.length, asks.length]` 제거하여 호가 레벨 수 변화 시 불필요한 폴링 effect 재시작 차단.
+  - `clientRef` 기반 클라이언트 주입 지원으로 프로덕션 코드 훼손 없이 결정론적 훅 테스트 가능.
+- `app/components/Orderbook.tsx` & `app/components/v2/OrderbookV2.tsx`:
+  - 순수 프레젠테이션 뷰(`OrderbookView`, `OrderbookV2View`)와 데이터 연결 컨테이너(`Orderbook`, `OrderbookV2`)로 깔끔하게 분리.
+  - 프로덕션 컴포넌트에서 테스트 전용 override props(`initialBids`, `initialAsks`, `connectionState`) 완전 제거.
+- `lib/engine/simulation/strategies/valueStrategy.ts`:
+  - `computeEffectiveNewsValuation`: `stockEvents` 필터링으로 `targetStockIds`에 포함된 종목에만 원본 및 정정 신호가 적용되도록 종목별 타겟 완벽 격리.
+  - 동일 원본 복수 정정 결정론적 우선순위(`effectiveFrom -> publishedAt -> sequence -> eventId`) 구현으로 100회 무작위 배열 Shuffle에도 100% 동일한 수학적 결과 보장.
+- `lib/engine/simulation/marketEventTypes.ts`:
+  - `validateMarketEvent`: `correctionMode` 허용값 검증, CORRECTION의 `originalEventId` 필수 검증, 비정정 이벤트의 `correctionMode` 금지, `targetStockIds` 중복 거부, finite 및 safe integer 검증 추가.
+- 신규 테스트 스위트 작성 및 통과:
+  - `scripts/test-orderbook-rpc-contract.ts`: Local Memory DB와 PostgreSQL SQL RPC 간 계약(필드명, 타입, 정렬, orderCount, 반올림, depth 클램핑 등) 일치성 검증 완료 (ALL PASS, Exit Code 0).
+  - `scripts/test-news-correction-determinism.ts`: 종목별 격리 4시나리오, 복수 정정 무작위 셔플 결정론, 런타임 검증 전체 통과 (ALL PASS, Exit Code 0).
+  - `scripts/test-use-orderbook-hook.tsx`: 실제 React 훅 마운트 기반 10대 시나리오(첫 RPC 성공, 일시 실패 stale, 최초 실패 error, 회복, 종목 전환 응답 폐기, unmount 타이머 정리, 순차 폴링 직렬화, PGRST202 fallback, authoritative/legacy 구분, depth 변화 시 루프 안정성) 실증 완료 (ALL PASS, Exit Code 0).
+- 전체 회귀 테스트 16종 및 빌드:
+  - 전체 회귀 테스트 스크립트 실행 완료 (ALL PASS, Exit Code 0).
+  - TypeScript 타입 검사 (`npx tsc --noEmit`): 0 Errors (Exit Code 0).
+  - Next.js 프로덕션 빌드 (`npm run build`): Turbopack 24개 라우트 컴파일 및 최적화 성공 (Exit Code 0).
+
+---
+## 2026-09-18 21:44
+
+**요청 요약:** STOCKSYS 시장 국면(Market Regime) 기능 — 1단계: 타입·설정·결정론적 상태 전환 엔진 구축 (실제 주문/가격/체결 미반영, 부작용 없는 기반 엔진 및 불변 스냅샷 구현).
+**수행 결과:**
+- `lib/engine/simulation/regime/regimeTypes.ts`:
+  - 5대 시장 국면(`MarketRegime`: `BULL`, `BEAR`, `SIDEWAYS`, `HIGH_VOLATILITY`, `LIQUIDITY_CRISIS`) 및 5대 거래 세션(`TradingSession`: `PRE_OPEN`, `OPENING_AUCTION`, `CONTINUOUS`, `CLOSING_AUCTION`, `CLOSED`) 명시적 타입 정의.
+  - `MarketRegimeParameters` (11개 배수 파라미터), `RegimeObservation` (확정 통계 관측 DTO), `MarketStateSnapshot` (읽기 전용 상태 스냅샷), 구조화된 `RegimeTransitionReason` 및 이력 레코드 타입 정의.
+- `lib/engine/simulation/regime/regimeConfig.ts`:
+  - 5대 국면별 불변 기본 파라미터(`DEFAULT_REGIME_PARAMETERS`) 및 유효성 검증 함수(`validateRegimeParameters`: NaN, Infinity, 음수, 과대값, cashPreference 클램핑 거절) 구현.
+  - 24시간 거래일 세션 스케줄(`DEFAULT_SESSION_SCHEDULE`: PRE_OPEN 30m, OPENING_AUCTION 10m, CONTINUOUS 6h, CLOSING_AUCTION 10m, CLOSED 17h10m = 86,400s) 및 스케줄 유효성 검증 함수(`validateSessionSchedule`) 구현.
+  - 국면 전환 기본 임계치 및 히스테리시스 설정(`DEFAULT_REGIME_THRESHOLDS`) 정의.
+- `lib/engine/simulation/regime/marketStateEngine.ts`:
+  - `MarketStateEngine` 구현:
+    - 경제 상태 결정에 `Date.now()`, `Math.random()` 완전 배제, 결정론적 `SimPrng` 전용 사용.
+    - 거래 세션: `[start, end)` 반열린 구간 규칙, 경계 시각 즉시 전환, 큰 `dt` 시 다중 경계 순차 누적 처리 및 익일 롤오버.
+    - 우선순위 평가: `LIQUIDITY_CRISIS` → `HIGH_VOLATILITY` → `BULL`/`BEAR` → `SIDEWAYS`.
+    - 진동 방지: 최소 유지 시간(`minRegimeDurationSeconds`), 쿨다운(`regimeCooldownSeconds`), 진입/이탈 분리 히스테리시스, 스텝당 최대 1회 전환, 동일 국면 무의미 전환 방지.
+    - 다음 스텝 지연 활성화(No Circular Causality): 스텝 $N$ 통계 확정 시 `pendingRegime` 등록 → 스텝 $N+1$ 시작 시 활성화.
+    - `getSnapshot()`: deep copy / frozen 스냅샷 반환으로 외부 변조 방지 및 순수 조회 시 부작용 0 보장.
+    - `reset()`: 시드, 초기 국면, 세션, 이력 완전 복원.
+- `lib/engine/simulation/agentManager.ts`:
+  - `MarketStateEngine` 인스턴스 소속화 및 `step(dt)` 시작 시 `activatePendingRegime`, `advanceSession` 호출.
+  - `step(dt)` 종료 시 확정된 통계(`finalWindowStats`) 기반으로 비발효/미래 뉴스를 철저 배제한 `RegimeObservation` 구성 후 `evaluateNextRegime` 호출 (pending 등록).
+  - `reset()` 및 `getMarketStateSnapshot()` 노출.
+- `lib/engine/localStandaloneServer.ts` & `app/api/market-flow/route.ts`:
+  - `LocalMarketEngineInstance`에 `getMarketStateSnapshot()` 연계 및 `GET /api/market-flow` 진단 응답에 읽기 전용 `marketState` 추가 (조회 시 시간 전진, PRNG 소비, 주문 생성 등 부작용 일절 없음).
+- `README.md`:
+  - 시뮬레이션 정합성 섹션에 시장 국면과 거래 세션 타입, 결정론적 전환 구조, 다음 스텝 적용 원칙, 주문/가격에 영향 없는 1단계 기반이라는 점 명시.
+- 테스트 스위트 검증:
+  - `scripts/test-market-regime-foundation.ts`: 16대 필수 검증 항목 완전 구현 및 100% 통과 (Exit Code 0).
+  - 전체 회귀 테스트 통과: `test-time-concurrency-news.ts`, `test-news-lifecycle-and-causal-flow.ts`, `test-causal-market-flow.ts`, `test-agent-based-market.ts`, `test-concurrency-and-stale-ref.ts` (모두 Exit Code 0).
+  - `npx tsc --noEmit` 타입 검사 무결성 (0 Errors, Exit Code 0).
+  - `npm run build` Next.js Turbopack 24개 라우트 빌드 성공 (Exit Code 0).
+
+---
+## 2026-09-18 22:20
+
+**요청 요약:** STOCKSYS 시장 국면(Market Regime) 1단계 핵심 정합성 보완 (원자적 스냅샷 단일 참조 교체, 거래일 시간 기준점 및 반열린 구간 규칙, 깊은 불변성, pending 국면 강화, 독립 PRNG 스트림, 진입/이탈 히스테리시스 분리, 1단계 정보성 메타데이터 명시, 미래 뉴스 차단, 경제 시뮬레이션 A/B 무영향성 검증).
+**수행 결과:**
+- `lib/engine/simulation/regime/regimeTypes.ts`:
+  - `stateVersion`, `tradingDayIndex`, `tradingDayStartedAt` 추가.
+  - `PendingRegimeTransition`에 `decisionStepId`, `metrics` 추가.
+  - 1단계 정보성 메타데이터(`implementationStage: 1`, `marketMechanicsApplied: false`, `capabilities`) 정의.
+  - 유동성 위기 및 고변동성의 진입/이탈 분리 임계치 필드(`liquidityCrisisEnterSpreadBps`, `exitSpreadBps`, `highVolatilityEnterThreshold`, `exitThreshold`) 정의.
+- `lib/engine/simulation/regime/regimeConfig.ts`:
+  - `deepFreeze<T>()`, `deepClone<T>()` 유틸리티 및 `deriveDeterministicSeed()` 구현 (기존 PRNG 상태 미소비).
+  - `validateRegimeThresholds()`에 진입 > 이탈 논리 검증 및 유한수/음수 방어 로직 추가.
+  - `DEFAULT_REGIME_THRESHOLDS`, `DEFAULT_SESSION_SCHEDULE`, `DEFAULT_REGIME_PARAMETERS`의 깊은 동결(deep freeze) 적용.
+- `lib/engine/simulation/regime/marketStateEngine.ts`:
+  - 원자적 상태 스냅샷(`publishedSnapshot` 단일 참조 교체, `stateVersion` 단조 증가) 구현으로 비동기 스텝 중 중간 상태 노출 원천 차단.
+  - `tradingDayAnchorMs` 기반 양의 모듈로 일중 시각 및 `[start, end)` 반열린 구간 경계 처리 정밀화 (큰 dt 다중 경계 순차 누적 및 익일 롤오버).
+  - pending 국면 적용 조건 강화(`decisionStepId < currentStepId && effectiveAt <= currentStepStartTime`, 동일 스텝 중복 평가 차단 및 PRNG 추가 소비 방지, 동일 국면 전환 배제).
+  - 진입과 이탈 임계치를 분리한 히스테리시스 평가 로직 구현.
+  - 순수 읽기 전용 `getSnapshot()` (deepClone 반환, 부작용 0, 외부 변조 차단).
+- `lib/engine/simulation/agentManager.ts`:
+  - `deriveDeterministicSeed(seed, 'market-regime-v1')`를 적용하여 기존 봇 및 시뮬레이션 PRNG 스트림을 일절 소비하지 않는 독립 국면 PRNG 생성.
+  - 스텝 시간 순서 정합성 확립: t0 pending 활성화 -> clock을 t1으로 전진 -> 시장 스텝 실행 -> `advanceSession(t1)` -> `evaluateNextRegime(obs, t1, nextTime, nextStepId)` -> `publishSnapshot(t1)`.
+- `app/api/market-flow/route.ts`:
+  - `POST` 응답 `data` 객체에 `marketState: engine.getMarketStateSnapshot()`을 추가하여 GET과 응답 구조 동등화.
+- `scripts/test-market-regime-foundation.ts`:
+  - 요구사항 28개 전 항목을 정밀 검증하는 테스트 스위트 완전 구현 (Test 1 ~ 28 전체 PASS, Exit Code 0).
+  - 경제 시뮬레이션 A/B 동등성 검증(Test 24): 주문 방향/가격/수량, 체결, 종목 시세, 현금, 보유량, 봇별 PRNG 상태 100% 일치 실증.
+  - 국면 엔진 단독 무영향성 검증(Test 23): DB 원본 지문 100% 불변 실증.
+- `README.md`:
+  - 1단계가 관측용 기반 기능이며 주문·봇·LP·체결·주가에 미반영, 세션 상태가 주문을 제한하지 않음, 메타데이터 명시, 거래일 기준점 및 반열린 구간 규칙, 다음 스텝 지연 활성화 이유 명시.

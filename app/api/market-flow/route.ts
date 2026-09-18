@@ -69,6 +69,7 @@ export async function GET(request: Request) {
           ...flowData,
           engineRunning: engine.isEngineRunning(),
           activeAgentsCount: engine.getActiveAgentsCount(),
+          marketState: engine.getMarketStateSnapshot(),
         },
       },
       {
@@ -133,7 +134,12 @@ export async function POST(request: Request) {
       return NextResponse.json({
         success: true,
         message: `Simulation advanced by ${parsed.dt}s`,
-        data: flowData,
+        data: {
+          ...flowData,
+          engineRunning: engine.isEngineRunning(),
+          activeAgentsCount: engine.getActiveAgentsCount(),
+          marketState: engine.getMarketStateSnapshot(),
+        },
       });
     }
 

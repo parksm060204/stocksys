@@ -206,6 +206,10 @@ export class HttpMemoryClient {
   public removeChannel(_channel?: any): void {}
 }
 
+export function setBrowserClient(client: any): void {
+  browserClient = client;
+}
+
 export function createClient(..._args: any[]): HttpMemoryClient {
   if (browserClient) return browserClient;
   browserClient = new HttpMemoryClient();

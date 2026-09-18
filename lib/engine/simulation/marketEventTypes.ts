@@ -109,6 +109,31 @@ export function validateMarketEvent(event: MarketEvent): string | null {
   if (event.targetStockIds.some((stockId) => typeof stockId !== 'string' || stockId.trim() === '')) {
     return 'targetStockIds must contain non-empty strings';
   }
+  // targetStockIds 중복 거부
+  if (new Set(event.targetStockIds).size !== event.targetStockIds.length) {
+    return 'targetStockIds must not contain duplicate stock IDs';
+  }
+
+  // 정정 이벤트 관련 정책 검증
+  if (event.eventType === 'CORRECTION') {
+    if (!event.originalEventId || typeof event.originalEventId !== 'string' || event.originalEventId.trim() === '') {
+      return 'originalEventId is required for CORRECTION events';
+    }
+    if (event.correctionMode !== undefined && !['RETRACT', 'REPLACE', 'ADDITIVE'].includes(event.correctionMode)) {
+      return 'correctionMode must be RETRACT, REPLACE, or ADDITIVE';
+    }
+  } else {
+    // 비정정 이벤트에 correctionMode가 포함된 경우 거절
+    if (event.correctionMode !== undefined) {
+      return 'correctionMode is only allowed on CORRECTION events';
+    }
+  }
+
+  // sequence 숫자 검증 (제공된 경우)
+  if (event.sequence !== undefined && !Number.isSafeInteger(event.sequence)) {
+    return 'sequence must be a safe integer';
+  }
+
   if (!Number.isFinite(event.halfLife) || event.halfLife <= 0) {
     return 'halfLife must be a finite duration greater than zero seconds';
   }

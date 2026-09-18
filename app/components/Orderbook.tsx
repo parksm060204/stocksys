@@ -218,14 +218,14 @@ const BidRow = memo(({
         </span>
 
         {/* 우측 끝 증감 델타 (+-n) */}
-        <div className="w-[45px] text-right z-10">
+        <div className="w-[32px] text-right z-10 shrink-0">
           {delta !== null && (
             <span
-              className={`text-[9.5px] font-bold tracking-tight animate-fade-in ${
+              className={`text-[9.5px] font-bold tabular-nums animate-fade-in ${
                 delta > 0 ? 'text-up' : 'text-down'
               }`}
             >
-              {delta > 0 ? `+${delta.toLocaleString()}` : delta.toLocaleString()}
+              {delta > 0 ? `+${delta}` : delta}
             </span>
           )}
         </div>
@@ -233,48 +233,34 @@ const BidRow = memo(({
     </div>
   );
 });
-BidRow.displayName = 'BidRow';
 
-export default function Orderbook({
-  ticker,
-  currentPrice,
-  stockId,
-  openPrice,
-  initialBids,
-  initialAsks,
-  connectionState: connectionStateProp,
-}: {
-  ticker: string;
-  currentPrice: number;
-  stockId?: string;
-  openPrice?: number;
-  initialBids?: OrderbookLevel[];
-  initialAsks?: OrderbookLevel[];
-  connectionState?: OrderbookConnectionState;
-}) {
-  const { bids, asks, trades, price, source, connectionState: hookConnectionState } = useOrderbookData(
-    stockId ?? '__none__',
-    ticker,
-    currentPrice,
-    800,
-  );
-  const connectionState = connectionStateProp ?? hookConnectionState;
-  const rawBids = initialBids ?? bids;
-  const rawAsks = initialAsks ?? asks;
+export interface OrderbookViewProps {
+  visibleAsks: OrderbookLevel[];
+  visibleBids: OrderbookLevel[];
+  maxSize: number;
+  liveCurrentPrice: number;
+  effectiveOpenPrice: number;
+  lastTradedPrice: number;
+  connectionState: OrderbookConnectionState;
+  source: 'db' | 'hybrid' | 'simulation';
+  totalAskSize: number;
+  totalBidSize: number;
+  totalSum: number;
+}
 
-  const liveCurrentPrice = price > 0 ? price : currentPrice;
-  const lastTradedPrice = trades[0]?.price ?? liveCurrentPrice;
-  const effectiveOpenPrice = openPrice && openPrice > 0 ? openPrice : liveCurrentPrice;
-
-  // 실제 미체결 잔량이 존재하는 호가만 정제 및 정렬 (최대 10호가)
-  const visibleAsks = filterValidOrderbookLevels(rawAsks, 'ask').slice(0, 10);
-  const visibleBids = filterValidOrderbookLevels(rawBids, 'bid').slice(0, 10);
-
-  const maxSize = calculateMaxVisibleQuantity(visibleAsks, visibleBids);
-  const totalAskSize = visibleAsks.reduce((acc, a) => acc + a.totalSize, 0);
-  const totalBidSize = visibleBids.reduce((acc, b) => acc + b.totalSize, 0);
-  const totalSum = totalAskSize + totalBidSize;
-
+export const OrderbookView = memo(function OrderbookView({
+  visibleAsks,
+  visibleBids,
+  maxSize,
+  liveCurrentPrice,
+  effectiveOpenPrice,
+  lastTradedPrice,
+  connectionState,
+  source,
+  totalAskSize,
+  totalBidSize,
+  totalSum,
+}: OrderbookViewProps) {
   return (
     <StrictWidget className="h-full flex flex-col font-sans" overflowClass="overflow-hidden">
       {/* 헤더 (실시간 현재가 외부 표기 연동) */}
@@ -397,5 +383,53 @@ export default function Orderbook({
         <span className="text-center text-up font-black">{totalBidSize.toLocaleString()}</span>
       </div>
     </StrictWidget>
+  );
+});
+
+export default function Orderbook({
+  ticker,
+  currentPrice,
+  stockId,
+  openPrice,
+}: {
+  ticker: string;
+  currentPrice: number;
+  stockId?: string;
+  openPrice?: number;
+}) {
+  const { bids, asks, trades, price, source, connectionState } = useOrderbookData(
+    stockId ?? '__none__',
+    ticker,
+    currentPrice,
+    800,
+  );
+
+  const liveCurrentPrice = price > 0 ? price : currentPrice;
+  const lastTradedPrice = trades[0]?.price ?? liveCurrentPrice;
+  const effectiveOpenPrice = openPrice && openPrice > 0 ? openPrice : liveCurrentPrice;
+
+  // 실제 미체결 잔량이 존재하는 호가만 정제 및 정렬 (최대 10호가)
+  const visibleAsks = filterValidOrderbookLevels(asks, 'ask').slice(0, 10);
+  const visibleBids = filterValidOrderbookLevels(bids, 'bid').slice(0, 10);
+
+  const maxSize = calculateMaxVisibleQuantity(visibleAsks, visibleBids);
+  const totalAskSize = visibleAsks.reduce((acc, a) => acc + a.totalSize, 0);
+  const totalBidSize = visibleBids.reduce((acc, b) => acc + b.totalSize, 0);
+  const totalSum = totalAskSize + totalBidSize;
+
+  return (
+    <OrderbookView
+      visibleAsks={visibleAsks}
+      visibleBids={visibleBids}
+      maxSize={maxSize}
+      liveCurrentPrice={liveCurrentPrice}
+      effectiveOpenPrice={effectiveOpenPrice}
+      lastTradedPrice={lastTradedPrice}
+      connectionState={connectionState}
+      source={source}
+      totalAskSize={totalAskSize}
+      totalBidSize={totalBidSize}
+      totalSum={totalSum}
+    />
   );
 }

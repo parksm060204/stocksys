@@ -48,8 +48,8 @@ import { MarketEvent, ObservableMarketEvent } from '../lib/engine/simulation/mar
 import { computeEffectiveNewsValuation, evaluateValueStrategy } from '../lib/engine/simulation/strategies/valueStrategy';
 import { SimPrng } from '../lib/engine/simulation/simClock';
 import { MarketObservation } from '../lib/engine/simulation/marketObservation';
-import Orderbook from '../app/components/Orderbook';
-import OrderbookV2 from '../app/components/v2/OrderbookV2';
+import { OrderbookView } from '../app/components/Orderbook';
+import { OrderbookV2View } from '../app/components/v2/OrderbookV2';
 import { filterValidOrderbookLevels } from '../lib/utils/orderbookSelector';
 
 function assert(condition: boolean, msg: string) {
@@ -229,13 +229,18 @@ async function runAllTests() {
 
   await act(async () => {
     root.render(
-      <Orderbook
-        stockId="stock_dom_test"
-        ticker="005930"
-        currentPrice={70000}
-        initialBids={[{ price: 69900, totalSize: 80, isSynthetic: false }]}
-        initialAsks={filteredAsks}
+      <OrderbookView
+        visibleAsks={filteredAsks}
+        visibleBids={[{ price: 69900, totalSize: 80, isSynthetic: false }]}
+        maxSize={100}
+        liveCurrentPrice={70000}
+        effectiveOpenPrice={70000}
+        lastTradedPrice={70000}
         connectionState="live"
+        source="db"
+        totalAskSize={150}
+        totalBidSize={80}
+        totalSum={230}
       />
     );
   });
@@ -251,13 +256,18 @@ async function runAllTests() {
   // 70,300원이 전량 체결되어 잔량이 0이 된 후 rerender
   await act(async () => {
     root.render(
-      <Orderbook
-        stockId="stock_dom_test"
-        ticker="005930"
-        currentPrice={70000}
-        initialBids={[{ price: 69900, totalSize: 80, isSynthetic: false }]}
-        initialAsks={[{ price: 70000, totalSize: 100, isSynthetic: false }]}
+      <OrderbookView
+        visibleAsks={[{ price: 70000, totalSize: 100, isSynthetic: false }]}
+        visibleBids={[{ price: 69900, totalSize: 80, isSynthetic: false }]}
+        maxSize={100}
+        liveCurrentPrice={70000}
+        effectiveOpenPrice={70000}
+        lastTradedPrice={70000}
         connectionState="live"
+        source="db"
+        totalAskSize={100}
+        totalBidSize={80}
+        totalSum={180}
       />
     );
   });
@@ -267,40 +277,79 @@ async function runAllTests() {
   // 2.3. connectionState 전이 (loading -> live -> stale -> error)
   await act(async () => {
     root.render(
-      <Orderbook stockId="s1" ticker="005930" currentPrice={1000} connectionState="loading" />
+      <OrderbookView
+        visibleAsks={[]}
+        visibleBids={[]}
+        maxSize={0}
+        liveCurrentPrice={1000}
+        effectiveOpenPrice={1000}
+        lastTradedPrice={1000}
+        connectionState="loading"
+        source="db"
+        totalAskSize={0}
+        totalBidSize={0}
+        totalSum={0}
+      />
     );
   });
   assert(container.textContent!.includes('CONNECTING'), 'DOM 배지: loading -> CONNECTING 표시 확인');
 
   await act(async () => {
     root.render(
-      <Orderbook stockId="s1" ticker="005930" currentPrice={1000} connectionState="stale" />
+      <OrderbookView
+        visibleAsks={[]}
+        visibleBids={[]}
+        maxSize={0}
+        liveCurrentPrice={1000}
+        effectiveOpenPrice={1000}
+        lastTradedPrice={1000}
+        connectionState="stale"
+        source="db"
+        totalAskSize={0}
+        totalBidSize={0}
+        totalSum={0}
+      />
     );
   });
   assert(container.textContent!.includes('STALE'), 'DOM 배지: live -> STALE 표시 확인');
 
   await act(async () => {
     root.render(
-      <Orderbook stockId="s1" ticker="005930" currentPrice={1000} connectionState="error" />
+      <OrderbookView
+        visibleAsks={[]}
+        visibleBids={[]}
+        maxSize={0}
+        liveCurrentPrice={1000}
+        effectiveOpenPrice={1000}
+        lastTradedPrice={1000}
+        connectionState="error"
+        source="db"
+        totalAskSize={0}
+        totalBidSize={0}
+        totalSum={0}
+      />
     );
   });
   assert(container.textContent!.includes('DISCONNECTED'), 'DOM 배지: error -> DISCONNECTED 표시 확인');
 
-  // 2.4. OrderbookV2 DOM 마운트 실증
+  // 2.4. OrderbookV2View DOM 마운트 실증
   await act(async () => {
     root.render(
-      <OrderbookV2
-        stockId="stock_v2"
-        ticker="005930"
-        currentPrice={70000}
-        initialBids={[{ price: 69800, totalSize: 300, isSynthetic: false }]}
-        initialAsks={[{ price: 70200, totalSize: 400, isSynthetic: false }]}
+      <OrderbookV2View
+        visibleBids={[{ price: 69800, totalSize: 300, isSynthetic: false }]}
+        visibleAsks={[{ price: 70200, totalSize: 400, isSynthetic: false }]}
+        maxSize={400}
+        displayPrice={70000}
+        flashType={null}
         connectionState="live"
+        source="db"
+        totalAskSize={400}
+        totalBidSize={300}
       />
     );
   });
   assert(container.textContent!.includes('70,200') && container.textContent!.includes('69,800'),
-    'OrderbookV2가 실제 DOM에 매수/매도 호가를 마운트해야 함');
+    'OrderbookV2View가 실제 DOM에 매수/매도 호가를 마운트해야 함');
 
   // 2.5. 컴포넌트 실제 언마운트 라이프사이클 수행
   await act(async () => {

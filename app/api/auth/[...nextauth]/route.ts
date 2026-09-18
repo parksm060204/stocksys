@@ -15,35 +15,21 @@ if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
 export const authOptions: NextAuthOptions = {
   providers,
   callbacks: {
-    async signIn({ user }) {
-      try {
-        return true;
-      } catch (e) {
-        console.error('[Auth] signIn error (ignored):', e);
-        return true;
-      }
+    async signIn() {
+      // 명시적 인증 허용 정책 (추가 인가 검증이 필요할 경우 여기에 정책 작성)
+      return true;
     },
     async jwt({ token, user }) {
-      try {
-        if (user?.id) {
-          token.userId = user.id;
-        }
-        return token;
-      } catch (e) {
-        console.error('[Auth] jwt error (ignored):', e);
-        return token;
+      if (user?.id) {
+        token.userId = user.id;
       }
+      return token;
     },
     async session({ session, token }) {
-      try {
-        if (session.user) {
-          session.user.id = (token.userId as string) || token.sub || '';
-        }
-        return session;
-      } catch (e) {
-        console.error('[Auth] session error (ignored):', e);
-        return session;
+      if (session.user) {
+        session.user.id = (token.userId as string) || token.sub || '';
       }
+      return session;
     },
   },
   pages: {
@@ -59,48 +45,80 @@ export const authOptions: NextAuthOptions = {
 
 const nextAuthHandler = NextAuth(authOptions);
 
+type RouteContext = {
+  params: Promise<{ nextauth: string[] }> | { nextauth: string[] };
+};
+
 /**
- * Next.js 15/16 App Router 호환 안전 래퍼:
- * 내부 핸들러에서 예외가 발생하거나 HTML 에러 페이지가 반환되더라도,
- * NextAuth 클라이언트가 JSON 파싱 실패(`Unexpected token '<'`)를 겪지 않도록
- * 반드시 유효한 JSON(null session 또는 error json)을 보장합니다.
+ * Next.js App Router 호환 안전 래퍼:
+ * - JSON 전용 엔드포인트(session, csrf, providers)에서 서버 내부 장애 발생 시
+ *   HTML 500 에러 페이지 대신 규격화된 HTTP 500 JSON 응답을 반환하여 파싱 오류를 방지합니다.
+ * - 오류 상태를 200 OK로 위장하지 않으며, 올바른 HTTP 500 상태 코드를 유지합니다.
+ * - 내부 예외 스택/메시지를 외부에 노출하지 않고 안전한 고정 메시지를 제공합니다.
+ * - signin, signout, callback 등 브라우저 redirect/HTML이 필요한 경로는 NextAuth 기본 계약을 그대로 보존합니다.
  */
-async function safeAuthHandler(req: Request, context: any) {
+async function safeAuthHandler(req: Request, context: RouteContext) {
+  let action: string | undefined;
+
   try {
-    // Next.js 15/16 App Router 호환성: req.nextUrl이 없는 일반 Request인 경우 URL 객체 주입
-    const reqWithNextUrl = req as any;
-    if (!reqWithNextUrl.nextUrl && req.url) {
-      try {
-        reqWithNextUrl.nextUrl = new URL(req.url);
-      } catch {
-        // ignore url parsing error
+    const resolvedParams = context && context.params ? await context.params : null;
+    action = resolvedParams?.nextauth?.[0];
+  } catch {
+    // context.params 언래핑 실패 시 URL에서 action 추출 시도
+    try {
+      const url = new URL(req.url);
+      const segments = url.pathname.split('/').filter(Boolean);
+      const authIdx = segments.indexOf('auth');
+      if (authIdx !== -1 && authIdx + 1 < segments.length) {
+        action = segments[authIdx + 1];
+      }
+    } catch {
+      action = undefined;
+    }
+  }
+
+  const isJsonEndpoint = action === 'session' || action === 'csrf' || action === 'providers';
+
+  try {
+    const res = await nextAuthHandler(req, context as any);
+
+    // JSON 엔드포인트인데 응답이 HTML 4xx/5xx 에러인 경우에만 규격화된 JSON 에러로 변환 (상태 코드 보존)
+    if (isJsonEndpoint && res && res.status >= 400) {
+      const contentType = res.headers.get('content-type') || '';
+      if (contentType.includes('text/html')) {
+        console.warn(`[NextAuth] JSON endpoint '${action}' returned HTML error (${res.status}). Converting to JSON error.`);
+        return Response.json(
+          {
+            error: 'AuthenticationError',
+            message: 'Authentication service encountered an error.',
+          },
+          { status: res.status, headers: { 'Content-Type': 'application/json' } }
+        );
       }
     }
 
-    const res = await nextAuthHandler(reqWithNextUrl, context);
-    // 만약 NextAuth 응답이 HTML(에러 페이지)인 경우 JSON으로 치환하여 CLIENT_FETCH_ERROR 방어
-    const contentType = res?.headers?.get('content-type') || '';
-    if (res && res.status >= 400 && contentType.includes('text/html')) {
-      console.warn(`[NextAuth] Caught HTML error response (${res.status}), returning fallback JSON.`);
-      return Response.json(
-        { error: 'AuthenticationError', message: 'An error occurred during authentication.' },
-        { status: 200, headers: { 'Content-Type': 'application/json' } }
-      );
-    }
     return res;
   } catch (error) {
-    console.error('[NextAuth] Unexpected route handler error (safely handled):', error);
-    const url = req.url || '';
-    // 세션 요청은 빈 세션(null)을 반환하여 클라이언트가 게스트 모드로 정상 폴백하도록 허용
-    if (url.includes('/api/auth/session')) {
-      return Response.json(null, {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
+    console.error(`[NextAuth] Unhandled route handler exception for action '${action}':`, error);
+
+    // JSON 엔드포인트인 경우 서버 장애를 의미하는 정식 HTTP 500 JSON 반환 (200 위장 금지, 내부 메시지 은닉)
+    if (isJsonEndpoint) {
+      return Response.json(
+        {
+          error: 'InternalAuthenticationError',
+          message: 'Authentication service is temporarily unavailable.',
+        },
+        { status: 500, headers: { 'Content-Type': 'application/json' } }
+      );
     }
+
+    // signin, signout, callback 등 redirect/HTML 경로는 표준 에러 전파 또는 500 반환
     return Response.json(
-      { error: 'InternalAuthenticationError', message: (error as Error)?.message || String(error) },
-      { status: 200, headers: { 'Content-Type': 'application/json' } }
+      {
+        error: 'InternalAuthenticationError',
+        message: 'Authentication service is temporarily unavailable.',
+      },
+      { status: 500, headers: { 'Content-Type': 'application/json' } }
     );
   }
 }

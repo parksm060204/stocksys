@@ -131,6 +131,10 @@ export class LocalMarketEngineInstance {
     return this.agentManager.diagnostics.generateSummaryReport(stockId);
   }
 
+  public getMarketStateSnapshot() {
+    return this.agentManager.getMarketStateSnapshot();
+  }
+
   public isEngineRunning(): boolean {
     return this.isRunning;
   }

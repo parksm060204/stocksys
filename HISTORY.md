@@ -4155,3 +4155,25 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
   - 총 31개 테스트로 확장 (TEST 20/21 검증 범위 확장, TEST 29 거시 뉴스 순수 함수 감쇠/신뢰도/시간차단/클램핑, TEST 30 정정 정책 및 복수 정정 순서 결정론, TEST 31 시장 전체 빈 장부 비율 판정).
   - TEST 24: 25스텝 동안 BULL 및 HIGH_VOLATILITY 실제 전환이 발생하고 전환 이력이 축적되는 상황에서 Baseline A vs Regime Active B 간 주문·체결·호가·시세·현금·보유량·봇 PRNG·펀더멘털 PRNG가 비트 단위로 동일함을 실증.
 - 검증 결과: 6개 테스트 스크립트 전수 통과, `npx tsc --noEmit` 통과, Next.js `npm run build` 성공, `git diff --check` 클린 확인.
+
+---
+## 2026-09-18 23:55
+
+**요청 요약:** STOCKSYS 시장 국면 1단계 최종 수정 (커밋 31e458c9 기준 설정의 완전한 불변성 보장, 시가총액 단일 권위 공식 확립, reset 시 세션 시각 재계산, 빈 장부 테스트의 주문·인덱스 1:1 정합성 확보).
+
+**수행 결과:**
+- `lib/engine/simulation/regime/marketStateEngine.ts`:
+  - 생성자에서 `sessionSchedule`, `thresholds`, `this.config` 및 모든 개별 세션 배열/객체에 대해 `deepFreeze(deepClone(...))`를 적용하여 사용자 원본 설정 객체의 참조 보관을 원천 배제.
+  - `getThresholds()` 반환 시 `deepFreeze(deepClone(this.config.thresholds))`를 반환하여 내부 가변 참조 노출 차단 및 런타임 동결 보장.
+  - `reset(initialEpochMs)` 호출 시 초기 생성 시점의 `initialSession`을 재사용하지 않고 `calculateSessionAtTime(initialEpochMs)`를 통해 해당 시점의 세션, 세션 시작 시각, 다음 세션 및 전이 시점을 동적으로 재계산하도록 수정.
+- `lib/engine/simulation/regime/regimeTypes.ts`:
+  - STOCKSYS 시가총액 산출 단일 권위 순수 함수 `getAuthoritativeShares(stock)` 및 `calculateAuthoritativeMarketCap(stock)` 구현 및 export.
+  - `shares_outstanding`을 1차 권위로 우선 적용하고, 부재 시 `floating_shares`, 둘 다 부재 시 `FALLBACK_SHARES`(100,000)를 폴백으로 사용하는 산식 통일 (`marketCap = current_price * authoritativeShares`).
+- `lib/engine/simulation/agentManager.ts`:
+  - 시장 지수 가중 수익률 산출 시 단일 권위 순수 함수 `calculateAuthoritativeMarketCap(stk)`를 적용하여 대형주/소형주 가중치 왜곡(구버전 유동주식수 우선 시 소형주 가중치 역전 버그) 원천 방지.
+- `scripts/test-market-regime-foundation.ts`:
+  - TEST 21: 사용자 원본 설정 객체 변조 방어, `getThresholds()` 깊은 동결 및 외부 변조 불가 실증 추가.
+  - TEST 22: `PRE_OPEN`, `OPENING_AUCTION`, `CONTINUOUS`, `CLOSING_AUCTION`, `CLOSED`, 익일 롤오버 등 6대 세션 시각별 `reset()` 정합성 전수 검증 추가.
+  - TEST 31: `safeCancelAndDeleteOrder` 안전 취소/삭제 헬퍼 적용, `memoryDb.orders`와 `orderStockIndex` 간 1:1 양방향 정합성 검증, 삭제 주문 인덱스 잔존 부재 및 타 종목 주문 보존 실증.
+  - TEST 32 (신설): 상장주식수 기준 시가총액 단일 권위 순수 함수 검증 및 대형주(10배 가중치) vs 소형주 기여도 차등화와 `AgentManager` 통합 경로 검증 추가 (총 32개 테스트 전수 통과).
+- 검증 결과: 8개 테스트 스크립트 전수 통과, `npx tsc --noEmit` 통과(Exit Code 0), `npm run build` 성공(Exit Code 0), `git diff --check` 클린(Exit Code 0).

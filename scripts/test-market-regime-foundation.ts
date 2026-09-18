@@ -45,8 +45,13 @@ import {
 } from '../lib/engine/simulation/regime/regimeConfig';
 import {
   MarketRegime,
+  TradingSession,
+  MarketStateEngineConfig,
   RegimeObservation,
   MarketStateSnapshot,
+  getAuthoritativeShares,
+  calculateAuthoritativeMarketCap,
+  FALLBACK_SHARES,
 } from '../lib/engine/simulation/regime/regimeTypes';
 import {
   MarketEvent,
@@ -1065,13 +1070,73 @@ async function runAllTests() {
     }
     assert(ratioThresholdThrown === true, '1.0 초과 emptyBookStockRatioThreshold 거부');
 
-    console.log('  ✓ TEST 21 통과: 전체 14개 설정 무결성 거절 검증 완료\n');
+    // 15. 설정 객체 완전 불변성 & getThresholds() 동결 & 원본 변조 방어 검증
+    {
+      const customSchedule = {
+        tradingDayAnchorMs: startMs,
+        tradingDayDurationSeconds: 86400,
+        sessions: [
+          { session: 'PRE_OPEN' as TradingSession, durationSeconds: 1800 },
+          { session: 'OPENING_AUCTION' as TradingSession, durationSeconds: 600 },
+          { session: 'CONTINUOUS' as TradingSession, durationSeconds: 21600 },
+          { session: 'CLOSING_AUCTION' as TradingSession, durationSeconds: 600 },
+          { session: 'CLOSED' as TradingSession, durationSeconds: 61800 },
+        ],
+      };
+      const customThresholds = {
+        ...DEFAULT_REGIME_THRESHOLDS,
+        bullReturnThreshold: 0.05,
+      };
+      const externalConfig: MarketStateEngineConfig = {
+        initialRegime: 'SIDEWAYS',
+        initialSession: 'PRE_OPEN',
+        sessionSchedule: customSchedule,
+        thresholds: customThresholds,
+        maxHistoryLimit: 100,
+      };
+
+      const engine = new MarketStateEngine(externalConfig, 42, startMs);
+
+      // (1) 원본 설정 객체 변조 시도
+      (externalConfig as any).maxHistoryLimit = 999;
+      (customThresholds as any).bullReturnThreshold = 0.99;
+      (customSchedule.sessions[0] as any).durationSeconds = 999999;
+      (customSchedule.sessions as any).push({ session: 'CLOSED' as TradingSession, durationSeconds: 100 });
+
+      // (2) 엔진 내부 동작 및 임계치 불변 검증
+      const engineThresholds = engine.getThresholds();
+      assert(engineThresholds.bullReturnThreshold === 0.05, '원본 thresholds 변조 후에도 엔진 내부 bullReturnThreshold는 0.05 유지');
+      assert((engine as any).config.maxHistoryLimit === 100, '원본 config 변조 후에도 maxHistoryLimit 불변');
+      assert((engine as any).config.sessionSchedule.sessions.length === 5, '원본 schedule 배열 변경(push)이 엔진 내부에 영향 없음');
+
+      // (3) getThresholds() 반환값 및 중첩 필드의 런타임 동결(deepFreeze) 검증
+      assert(Object.isFrozen(engineThresholds), 'getThresholds() 반환값은 런타임에서 Object.isFrozen 상태여야 함');
+      let mutateErrorThrown = false;
+      try {
+        (engineThresholds as any).bullReturnThreshold = 0.01;
+      } catch {
+        mutateErrorThrown = true;
+      }
+      assert(mutateErrorThrown || engineThresholds.bullReturnThreshold === 0.05, 'getThresholds() 반환 객체 변조 불가');
+
+      // 재조회 시에도 내부 임계값 불변 검증
+      const engineThresholds2 = engine.getThresholds();
+      assert(engineThresholds2.bullReturnThreshold === 0.05, '외부 변조 시도 후에도 getThresholds() 내부 임계값 불변');
+
+      // (4) 검증 완료 후 설정값을 변조해 검증을 우회할 수 없음 증명
+      assert(Object.isFrozen((engine as any).config), 'engine.config는 deepFreeze되어 있음');
+      assert(Object.isFrozen((engine as any).config.sessionSchedule), 'engine.config.sessionSchedule은 deepFreeze되어 있음');
+      assert(Object.isFrozen((engine as any).config.sessionSchedule.sessions), 'engine.config.sessionSchedule.sessions는 deepFreeze되어 있음');
+      assert(Object.isFrozen((engine as any).config.sessionSchedule.sessions[0]), '개별 세션 객체도 deepFreeze되어 있음');
+    }
+
+    console.log('  ✓ TEST 21 통과: 전체 15개 설정 무결성, 불변성 및 getThresholds() 동결 검증 완료\n');
   }
 
   // ─────────────────────────────────────────────────────────────────
-  // TEST 22: reset 후 상태·이력·PRNG 완전 복원
+  // TEST 22: reset 후 상태·이력·PRNG 완전 복원 및 세션별 시각 재계산
   // ─────────────────────────────────────────────────────────────────
-  console.log('▶ [TEST 22] reset 후 상태·이력·PRNG 완전 복원');
+  console.log('▶ [TEST 22] reset 후 상태·이력·PRNG 완전 복원 및 세션별 시각 재계산');
   {
     const engine = new MarketStateEngine({}, 42, startMs);
     engine.advanceSession(startMs + 10000 * 1000);
@@ -1096,7 +1161,41 @@ async function runAllTests() {
     assert(snap.transitionId === 0, 'reset 후 transitionId는 0');
     assert(engine.getRegimeHistory().length === 0, 'reset 후 regimeHistory 빈 배열');
     assert(engine.getSessionHistory().length === 0, 'reset 후 sessionHistory 빈 배열');
-    console.log('  ✓ TEST 22 통과: 완전한 리셋 복원 확인 완료\n');
+
+    // 세션별 reset 재계산 정합성 검증:
+    // PRE_OPEN, OPENING_AUCTION, CONTINUOUS, CLOSING_AUCTION, CLOSED, 익일 rollover 시각
+    const testCases: Array<{
+      offsetSec: number;
+      expectedSession: TradingSession;
+      expectedStartedSec: number;
+      expectedNextSession: TradingSession;
+      expectedNextTransitionSec: number;
+      expectedDayIndex: number;
+    }> = [
+      { offsetSec: 900, expectedSession: 'PRE_OPEN', expectedStartedSec: 0, expectedNextSession: 'OPENING_AUCTION', expectedNextTransitionSec: 1800, expectedDayIndex: 0 },
+      { offsetSec: 2000, expectedSession: 'OPENING_AUCTION', expectedStartedSec: 1800, expectedNextSession: 'CONTINUOUS', expectedNextTransitionSec: 2400, expectedDayIndex: 0 },
+      { offsetSec: 10000, expectedSession: 'CONTINUOUS', expectedStartedSec: 2400, expectedNextSession: 'CLOSING_AUCTION', expectedNextTransitionSec: 24000, expectedDayIndex: 0 },
+      { offsetSec: 24200, expectedSession: 'CLOSING_AUCTION', expectedStartedSec: 24000, expectedNextSession: 'CLOSED', expectedNextTransitionSec: 24600, expectedDayIndex: 0 },
+      { offsetSec: 30000, expectedSession: 'CLOSED', expectedStartedSec: 24600, expectedNextSession: 'PRE_OPEN', expectedNextTransitionSec: 86400, expectedDayIndex: 0 },
+      { offsetSec: 87300, expectedSession: 'PRE_OPEN', expectedStartedSec: 86400, expectedNextSession: 'OPENING_AUCTION', expectedNextTransitionSec: 88200, expectedDayIndex: 1 },
+    ];
+
+    for (const tc of testCases) {
+      const resetTime = startMs + tc.offsetSec * 1000;
+      // 다른 상태로 advance 후 reset 실행
+      engine.advanceSession(startMs + 50000 * 1000);
+      engine.reset(resetTime, 42);
+      const s = engine.getSnapshot();
+
+      assert(s.session === tc.expectedSession, `reset(${tc.offsetSec}s) session 불일치: 기대 ${tc.expectedSession}, 실제 ${s.session}`);
+      assert(s.sessionStartedAt === startMs + tc.expectedStartedSec * 1000, `reset(${tc.offsetSec}s) sessionStartedAt 불일치`);
+      assert(s.nextSession === tc.expectedNextSession, `reset(${tc.offsetSec}s) nextSession 불일치: 기대 ${tc.expectedNextSession}, 실제 ${s.nextSession}`);
+      assert(s.nextTransitionAt === startMs + tc.expectedNextTransitionSec * 1000, `reset(${tc.offsetSec}s) nextTransitionAt 불일치`);
+      assert(s.tradingDayIndex === tc.expectedDayIndex, `reset(${tc.offsetSec}s) tradingDayIndex 불일치: 기대 ${tc.expectedDayIndex}, 실제 ${s.tradingDayIndex}`);
+      console.log(`  ✓ reset(${tc.expectedSession}, ${tc.offsetSec}s) 논리 시점 완전 정합 확인`);
+    }
+
+    console.log('  ✓ TEST 22 통과: 완전한 리셋 복원 및 6대 세션 시각별 reset 정합성 확인 완료\n');
   }
 
   // ─────────────────────────────────────────────────────────────────
@@ -1463,10 +1562,37 @@ async function runAllTests() {
   }
 
   // ─────────────────────────────────────────────────────────────────
-  // TEST 31: 시장 전체 빈 장부 판정 및 종목 비율 임계값 검증
+  // TEST 31: 시장 전체 빈 장부 판정 및 주문·인덱스 1:1 정합성 검증
   // ─────────────────────────────────────────────────────────────────
-  console.log('▶ [TEST 31] 시장 전체 빈 장부 판정 및 종목 비율 임계값 검증');
+  console.log('▶ [TEST 31] 시장 전체 빈 장부 판정 및 주문·인덱스 1:1 정합성 검증');
   {
+    // 주문 상태를 cancelled로 변경하고 orderStockIndex와 orders Map에서 함께 안전하게 제거하는 헬퍼
+    function safeCancelAndDeleteOrder(orderId: string) {
+      const ord = memoryDb.orders.get(orderId);
+      if (ord) {
+        ord.status = 'cancelled';
+        memoryDb.removeOrderFromIndex(ord);
+        memoryDb.orders.delete(orderId);
+      }
+    }
+
+    // memoryDb.orders와 orderStockIndex 간의 완전한 1:1 양방향 정합성 검증 헬퍼
+    function verifyOrderIndexIntegrity() {
+      // 1) orders에 존재하는 모든 활성 주문이 orderStockIndex에 정확히 1건 매핑되는지 검증
+      for (const [orderId, order] of memoryDb.orders.entries()) {
+        const stockSet = memoryDb.orderStockIndex.get(order.stock_id);
+        assert(stockSet !== undefined && stockSet.has(orderId), `주문 ${orderId}가 orderStockIndex[${order.stock_id}]에 1:1 정합 매핑되어야 함`);
+      }
+      // 2) orderStockIndex에 등록된 모든 orderId가 실제 memoryDb.orders에 실존하고 stock_id가 일치하는지 검증
+      for (const [stockId, idSet] of memoryDb.orderStockIndex.entries()) {
+        for (const orderId of idSet) {
+          const order = memoryDb.orders.get(orderId);
+          assert(order !== undefined, `인덱스 내 주문 ${orderId}가 memoryDb.orders에 실존해야 함 (stale index 부재)`);
+          assert(order!.stock_id === stockId, `인덱스 stock_id(${stockId})와 주문 본체 stock_id(${order!.stock_id}) 일치`);
+        }
+      }
+    }
+
     // 1. 단일 종목 빈 장부로 시장 위기 미발생 (전체 26개 중 1개 = ~3.8% < 30%)
     memoryDb.resetToSeedData();
     const mgr = new AgentManager(42, startMs, {
@@ -1489,17 +1615,28 @@ async function runAllTests() {
     // 정상 1스텝 실행: LP가 모든 26개 종목에 대해 정상 호가 및 spreadHistory 적재
     await mgr.step(1.0);
     assert(mgr.getEmptyBookAccumulatedSeconds() === 0, '정상 호가 상태에서는 누적 시간 0초');
+    verifyOrderIndexIntegrity();
 
     // LP 봇의 자동 호가 재생성을 중단하여 수동 장부 제어
     mgr.agents.delete('acc_lp_main');
 
-    // 1개 종목만 호가 완전 제거 (1/26 = 3.8% < 30%)
+    // 1개 종목만 호가 완전 안전 제거 (1/26 = 3.8% < 30%)
     const targetStockId1 = stocks[0].id;
-    for (const [orderId, order] of memoryDb.orders.entries()) {
-      if (order.stock_id === targetStockId1) {
-        memoryDb.orders.delete(orderId);
-      }
+    const targetOrders1 = Array.from(memoryDb.orders.values())
+      .filter(o => o.stock_id === targetStockId1)
+      .map(o => o.id);
+    assert(targetOrders1.length > 0, '타깃 종목 1에 기존 주문이 존재해야 함');
+
+    for (const orderId of targetOrders1) {
+      safeCancelAndDeleteOrder(orderId);
     }
+
+    // 인덱스 정합성 및 삭제 주문 인덱스 잔존 부재, 타 종목 보존 검증
+    verifyOrderIndexIntegrity();
+    const stock1Index = memoryDb.orderStockIndex.get(targetStockId1);
+    assert(!stock1Index || stock1Index.size === 0, '삭제된 타깃 종목의 주문 ID가 인덱스에 일체 남아있지 않음');
+    const remainingOrdersOtherStocks = Array.from(memoryDb.orders.values()).filter(o => o.stock_id !== targetStockId1);
+    assert(remainingOrdersOtherStocks.length > 0, '다른 종목 주문과 인덱스는 완전 보존되어야 함');
 
     await mgr.step(1.0);
     const accumulated1 = mgr.getEmptyBookAccumulatedSeconds();
@@ -1507,15 +1644,30 @@ async function runAllTests() {
     const snap1 = mgr.getMarketStateSnapshot();
     assert(snap1.regime !== 'LIQUIDITY_CRISIS' && snap1.pendingRegime !== 'LIQUIDITY_CRISIS', '1개 종목 빈 장부로는 위기가 발생하지 않음');
     console.log('  ✓ 1개 종목 빈 장부(3.8% < 30%)로는 시장 위기가 발생하지 않고 누적 시간 0 유지 확인');
+    console.log('  ✓ 안전 취소 헬퍼 동작 및 1:1 인덱스 정합성, 타 종목 주문 보존 확인');
 
     // 2. 비율 임계치(30%) 이상 빈 장부 시 정상 누적
-    // 전체 26개 중 40% (11개) 종목의 호가 완전 제거 (11/26 = 42.3% >= 30%)
+    // 전체 26개 중 40% (11개) 종목의 호가 안전 제거 (11/26 = 42.3% >= 30%)
     const emptyCount = Math.ceil(stocks.length * 0.4);
     const targetEmptyStockIds = new Set(stocks.slice(0, emptyCount).map(s => s.id));
-    for (const [orderId, order] of memoryDb.orders.entries()) {
-      if (targetEmptyStockIds.has(order.stock_id)) {
-        memoryDb.orders.delete(orderId);
-      }
+    const ordersToDelete = Array.from(memoryDb.orders.values())
+      .filter(o => targetEmptyStockIds.has(o.stock_id))
+      .map(o => o.id);
+
+    for (const orderId of ordersToDelete) {
+      safeCancelAndDeleteOrder(orderId);
+    }
+
+    // 제거 후 인덱스 정합성 재검증 및 stale index 부재 실증
+    verifyOrderIndexIntegrity();
+    for (const sId of targetEmptyStockIds) {
+      const idx = memoryDb.orderStockIndex.get(sId);
+      assert(!idx || idx.size === 0, `빈 장부 대상 종목 ${sId}의 인덱스에 잔여 주문 없음`);
+    }
+    // 빈 장부 판정이 stale index 때문이 아니라 실제 orders 맵 상 유효 주문 부재로 발생함을 증명
+    for (const sId of targetEmptyStockIds) {
+      const actualOrders = Array.from(memoryDb.orders.values()).filter(o => o.stock_id === sId);
+      assert(actualOrders.length === 0, `실제 유효 주문 부재 확인: 종목 ${sId}`);
     }
 
     // 3스텝 연속 빈 장부 유지 -> 누적 시간 증가 확인
@@ -1536,12 +1688,219 @@ async function runAllTests() {
     assert(isCrisisOrPending, '빈 장부 누적 시간 기준 충족 시 LIQUIDITY_CRISIS 정상 예약/발생');
     console.log('  ✓ 빈 장부 비율 임계값(30%) 초과 시 정상 누적 및 LIQUIDITY_CRISIS 발생 확인');
 
-    console.log('  ✓ TEST 31 통과: 시장 전체 빈 장부 비율 판정 및 임계값 동작 검증 완료\n');
+    // 최종 인덱스 정합성 확인
+    verifyOrderIndexIntegrity();
+    console.log('  ✓ TEST 31 통과: 시장 전체 빈 장부 비율 판정 및 주문·인덱스 1:1 완전 정합성 검증 완료\n');
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // TEST 32: 상장주식수 기준 시가총액 단일 권위 및 대형주/소형주 가중수익률 기여도 검증
+  // ─────────────────────────────────────────────────────────────────
+  console.log('▶ [TEST 32] 상장주식수 기준 시가총액 단일 권위 및 대형주/소형주 가중수익률 기여도 검증');
+  {
+    // 1. 단일 권위 순수 함수 getAuthoritativeShares 검증
+    // A) shares_outstanding 우선 (floating_shares 무시)
+    assert(getAuthoritativeShares({ shares_outstanding: 5000000, floating_shares: 1000000 }) === 5000000, 'shares_outstanding 우선 적용');
+    // B) shares_outstanding 없을 때 floating_shares fallback
+    assert(getAuthoritativeShares({ shares_outstanding: null, floating_shares: 2000000 }) === 2000000, 'shares_outstanding null 시 floating_shares fallback');
+    assert(getAuthoritativeShares({ floating_shares: 3000000 }) === 3000000, 'shares_outstanding undefined 시 floating_shares fallback');
+    // C) 둘 다 없을 때 FALLBACK_SHARES (100,000)
+    assert(getAuthoritativeShares({}) === FALLBACK_SHARES, `둘 다 부재 시 FALLBACK_SHARES(${FALLBACK_SHARES}) 적용`);
+    assert(getAuthoritativeShares(undefined) === FALLBACK_SHARES, 'stock undefined 시 FALLBACK_SHARES 적용');
+
+    // 2. 단일 권위 순수 함수 calculateAuthoritativeMarketCap 검증
+    const cap1 = calculateAuthoritativeMarketCap({ current_price: 50000, shares_outstanding: 2000000, floating_shares: 500000 });
+    assert(cap1 === 50000 * 2000000, `시가총액은 current_price * shares_outstanding (${50000 * 2000000})`);
+    const capFallback = calculateAuthoritativeMarketCap({ current_price: 10000 });
+    assert(capFallback === 10000 * FALLBACK_SHARES, `fallback 시가총액 (${10000 * FALLBACK_SHARES})`);
+    const capZero = calculateAuthoritativeMarketCap({ current_price: 0, shares_outstanding: 100 });
+    assert(capZero === 1, '최소 시가총액은 1로 클램핑');
+
+    // 3. 대형주 vs 소형주 가중수익률 기여도 검증
+    // 대형주: price = 10,000, shares_outstanding = 10,000,000 (1천만주), floating_shares = 100,000 (10만주, 1% 유통)
+    // 소형주: price = 10,000, shares_outstanding = 1,000,000 (1백만주), floating_shares = 800,000 (80만주, 80% 유통)
+    const largeStock = {
+      id: 'LARGE_01',
+      current_price: 10000,
+      shares_outstanding: 10000000,
+      floating_shares: 100000,
+    };
+    const smallStock = {
+      id: 'SMALL_01',
+      current_price: 10000,
+      shares_outstanding: 1000000,
+      floating_shares: 800000,
+    };
+
+    const largeCap = calculateAuthoritativeMarketCap(largeStock); // 1000억
+    const smallCap = calculateAuthoritativeMarketCap(smallStock); // 100억
+    assert(largeCap === 100_000_000_000, '대형주 상장주식수 기준 시가총액 1000억원');
+    assert(smallCap === 10_000_000_000, '소형주 상장주식수 기준 시가총액 100억원');
+    assert(largeCap / smallCap === 10, '대형주의 시가총액 가중치는 소형주의 정확히 10배여야 함');
+
+    // 구버전처럼 floating_shares를 우선했을 때의 왜곡 증명:
+    const flawedLargeCap = largeStock.current_price * largeStock.floating_shares; // 10억
+    const flawedSmallCap = smallStock.current_price * smallStock.floating_shares; // 80억
+    assert(flawedSmallCap > flawedLargeCap, '구버전 유동주식수 우선 시 소형주가 대형주보다 8배 가중치가 커지는 치명적 역전 발생 확인');
+
+    // 상장주식수 기준 가중 수익률 계산:
+    // 대형주 수익률: +10% (+0.10)
+    // 소형주 수익률: -10% (-0.10)
+    const totalCap = largeCap + smallCap; // 1100억
+    const expectedWeightedReturn = (0.10 * largeCap + (-0.10) * smallCap) / totalCap; // (100억 - 10억) / 1100억 = 90 / 1100 = +0.081818...
+    assert(expectedWeightedReturn > 0.08 && expectedWeightedReturn < 0.082, '상장주식수 기준 시 대형주(+10%)의 영향력이 압도하여 시장 전체는 강한 플러스(+8.18%)여야 함');
+
+    // 4. AgentManager 내부 실제 통합 계산 검증
+    memoryDb.resetToSeedData();
+    // memoryDb의 기존 종목을 대형주 1개, 소형주 1개로 재구성하여 AgentManager 관측값 산출 테스트
+    memoryDb.stocks.clear();
+    memoryDb.stocks.set('STOCK_LARGE', {
+      id: 'STOCK_LARGE',
+      ticker: 'LARGE',
+      name: '대형주',
+      market: 'KRX',
+      current_price: 10000,
+      previous_close: 10000,
+      open_price: 10000,
+      high: 11000,
+      low: 10000,
+      volume: 10000,
+      change_rate: 0.1,
+      market_cap: 100_000_000_000,
+      pe_ratio: 15,
+      dividend_yield: 0.02,
+      sector: 'Technology',
+      shares_outstanding: 10000000,
+      floating_shares: 100000,
+    });
+    memoryDb.stocks.set('STOCK_SMALL', {
+      id: 'STOCK_SMALL',
+      ticker: 'SMALL',
+      name: '소형주',
+      market: 'KRX',
+      current_price: 10000,
+      previous_close: 10000,
+      open_price: 10000,
+      high: 10000,
+      low: 9000,
+      volume: 50000,
+      change_rate: -0.1,
+      market_cap: 10_000_000_000,
+      pe_ratio: 20,
+      dividend_yield: 0.01,
+      sector: 'Technology',
+      shares_outstanding: 1000000,
+      floating_shares: 800000,
+    });
+
+    // 가격 이력 주입: LARGE는 +10%, SMALL은 -10%
+    const now = startMs + 10000;
+    memoryDb.stockPriceHistory = [
+      { id: 'sph_l1', stock_id: 'STOCK_LARGE', price: 10000, recorded_at: new Date(now - 1000).toISOString() },
+      { id: 'sph_l2', stock_id: 'STOCK_LARGE', price: 11000, recorded_at: new Date(now).toISOString() },
+      { id: 'sph_s1', stock_id: 'STOCK_SMALL', price: 10000, recorded_at: new Date(now - 1000).toISOString() },
+      { id: 'sph_s2', stock_id: 'STOCK_SMALL', price: 9000, recorded_at: new Date(now).toISOString() },
+    ];
+
+    const mgr = new AgentManager(42, now, {
+      enableRegimeEngine: true,
+      regimeEngineConfig: {
+        thresholds: {
+          ...DEFAULT_REGIME_THRESHOLDS,
+          minRegimeDurationSeconds: 0,
+          regimeCooldownSeconds: 0,
+          highVolatilityEnterThreshold: 0.20,
+          highVolatilityExitThreshold: 0.15,
+        },
+      },
+    });
+
+    mgr.registerEvent({
+      eventId: 'evt_macro_support_test32',
+      publishedAt: now,
+      effectiveFrom: now,
+      scope: 'market',
+      targetStockIds: [],
+      eventType: 'OFFICIAL',
+      valuationSignal: 0.8,
+      attentionShock: 0.5,
+      uncertaintyShock: 0.05,
+      confidence: 0.9,
+      halfLife: 60,
+      publisher: '시장테스트',
+      title: '거시 지표 호조',
+      content: '시장 전반 거시 지표 상승',
+    });
+    // 빈 장부 위기 방지를 위해 최소 호가 추가
+    memoryDb.orders.set('ord_l_buy', {
+      id: 'ord_l_buy',
+      user_id: 'usr_lp',
+      stock_id: 'STOCK_LARGE',
+      side: 'buy',
+      order_type: 'limit',
+      price: 10900,
+      size: 100,
+      filled: 0,
+      status: 'open',
+      is_lp: true,
+      created_at: new Date(now).toISOString(),
+    });
+    memoryDb.orders.set('ord_l_sell', {
+      id: 'ord_l_sell',
+      user_id: 'usr_lp',
+      stock_id: 'STOCK_LARGE',
+      side: 'sell',
+      order_type: 'limit',
+      price: 11100,
+      size: 100,
+      filled: 0,
+      status: 'open',
+      is_lp: true,
+      created_at: new Date(now).toISOString(),
+    });
+    memoryDb.orders.set('ord_s_buy', {
+      id: 'ord_s_buy',
+      user_id: 'usr_lp',
+      stock_id: 'STOCK_SMALL',
+      side: 'buy',
+      order_type: 'limit',
+      price: 8900,
+      size: 100,
+      filled: 0,
+      status: 'open',
+      is_lp: true,
+      created_at: new Date(now).toISOString(),
+    });
+    memoryDb.orders.set('ord_s_sell', {
+      id: 'ord_s_sell',
+      user_id: 'usr_lp',
+      stock_id: 'STOCK_SMALL',
+      side: 'sell',
+      order_type: 'limit',
+      price: 9100,
+      size: 100,
+      filled: 0,
+      status: 'open',
+      is_lp: true,
+      created_at: new Date(now).toISOString(),
+    });
+    memoryDb.addOrderToIndex(memoryDb.orders.get('ord_l_buy')!);
+    memoryDb.addOrderToIndex(memoryDb.orders.get('ord_l_sell')!);
+    memoryDb.addOrderToIndex(memoryDb.orders.get('ord_s_buy')!);
+    memoryDb.addOrderToIndex(memoryDb.orders.get('ord_s_sell')!);
+
+    await mgr.step(1.0);
+    const snap = mgr.getMarketStateSnapshot();
+    assert(snap.pendingRegime === 'BULL', `상장주식수 기준 대형주 가중(+8.18% > 0.02)으로 BULL이 예약되어야 함 (실제: ${snap.pendingRegime})`);
+    console.log(`  ✓ AgentManager 실측 국면 예약: pendingRegime === '${snap.pendingRegime}' (상장주식수 단일 권위 정상 판정)`);
+
+    console.log('  ✓ TEST 32 통과: 상장주식수 기준 시가총액 단일 권위 및 대형주/소형주 가중수익률 기여도 검증 완료\n');
   }
 
   console.log('================================================================');
-  console.log('  🎉 ALL 31 MARKET REGIME FOUNDATION TESTS PASSED (EXIT CODE 0)');
+  console.log('  🎉 ALL 32 MARKET REGIME FOUNDATION TESTS PASSED (EXIT CODE 0)');
   console.log('================================================================\n');
+  process.exit(0);
 }
 
 runAllTests().catch((err) => {

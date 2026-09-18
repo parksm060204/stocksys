@@ -42,6 +42,7 @@ import {
   RegimeObservation,
   MarketStateEngineConfig,
   deriveDeterministicSeed,
+  calculateAuthoritativeMarketCap,
 } from './regime';
 
 export class AgentManager {
@@ -718,8 +719,7 @@ export class AgentManager {
         aggReturn += st.returnRate;
         const stk = memoryDb.stocks.get(st.stockId);
         const price = stk?.current_price ?? 50000;
-        const shares = stk?.floating_shares ?? stk?.shares_outstanding ?? 100000;
-        const mcap = Math.max(1, price * shares);
+        const mcap = calculateAuthoritativeMarketCap(stk);
         totalMarketCap += mcap;
         weightedReturnSum += st.returnRate * mcap;
 

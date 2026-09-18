@@ -234,3 +234,37 @@ export interface MarketStateEngineConfig {
   readonly thresholds: RegimeThresholdConfig;
   readonly maxHistoryLimit?: number;
 }
+
+/** 기본 주식수 폴백 (100,000주) */
+export const FALLBACK_SHARES = 100000;
+export const DEFAULT_FALLBACK_SHARES = FALLBACK_SHARES;
+
+/**
+ * STOCKSYS 단일 권위 주식수 산출 순수 함수
+ * - 상장주식수(shares_outstanding)를 1차 권위로 사용
+ * - 부재 시 유통주식수(floating_shares)를 fallback으로 사용
+ * - 둘 다 부재 시 기본 fallback(100,000) 사용
+ */
+export function getAuthoritativeShares(stock?: {
+  shares_outstanding?: number | null;
+  floating_shares?: number | null;
+}): number {
+  if (!stock) return FALLBACK_SHARES;
+  return stock.shares_outstanding ?? stock.floating_shares ?? FALLBACK_SHARES;
+}
+
+/**
+ * STOCKSYS 단일 권위 시가총액 산출 순수 함수 (일반 시가총액)
+ * marketCap = current_price * authoritativeShares
+ */
+export function calculateAuthoritativeMarketCap(stock?: {
+  current_price: number;
+  shares_outstanding?: number | null;
+  floating_shares?: number | null;
+}): number {
+  if (!stock || typeof stock.current_price !== 'number' || !Number.isFinite(stock.current_price)) {
+    return 1;
+  }
+  const authoritativeShares = getAuthoritativeShares(stock);
+  return Math.max(1, stock.current_price * authoritativeShares);
+}

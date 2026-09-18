@@ -545,3 +545,8 @@ SerialExecutionQueue (시뮬레이션 큐)
     - `implementationStage: 1`
     - `marketMechanicsApplied: false`
     - `capabilities: { regimeDetection: true, sessionTracking: true, botBehaviorAdjustment: false, lpAdjustment: false, auctionMatching: false, sessionOrderRestriction: false }`
+* **1단계 최종 정합성 보완 (커밋 31e458c9 후속)**:
+  - **설정의 완전한 불변성 보장**: `MarketStateEngine` 생성자에서 `sessionSchedule`, `thresholds`, `this.config` 및 중첩 객체 전체를 `deepFreeze(deepClone(...))`하여 원본 참조 보관을 원천 차단. `getThresholds()` 호출 시에도 `deepFreeze(deepClone(...))`을 반환하여 외부 변조를 방어하고 런타임 동결 상태를 보장.
+  - **시가총액 단일 권위**: `shares_outstanding`을 1차 권위로 사용하고, 부재 시 `floating_shares`, 둘 다 부재 시 `FALLBACK_SHARES`(100,000)를 사용하는 순수 함수 `getAuthoritativeShares`와 `calculateAuthoritativeMarketCap`(`Math.max(1, current_price * authoritativeShares)`)으로 시가총액 정의를 통일. 유동주식수는 회전율/유동성 계산에만 한정 사용하며, 시장수익률 가중치에서 대형주/소형주 가중치 역전 현상을 교정.
+  - **reset() 세션 시각 재계산**: `reset(initialEpochMs)` 호출 시 생성 당시의 `initialSession`을 재사용하지 않고 `calculateSessionAtTime(initialEpochMs)`를 호출하여 5대 세션(`PRE_OPEN`, `OPENING_AUCTION`, `CONTINUOUS`, `CLOSING_AUCTION`, `CLOSED`) 및 익일 롤오버 시점에 맞는 논리적 세션 시작/전이 시점을 정확히 재계산.
+  - **빈 장부 판정 시 주문·인덱스 1:1 정합성**: `orders` Map 직접 삭제 대신 `cancelled` 상태 변경, `removeOrderFromIndex`, `orders.delete`를 함께 수행하는 안전 삭제 헬퍼를 적용하고, `memoryDb.orders`와 `orderStockIndex` 간의 1:1 양방향 정합성 및 stale index 부재를 상시 검증.

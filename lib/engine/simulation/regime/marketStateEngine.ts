@@ -89,17 +89,21 @@ export class MarketStateEngine {
     const regimeSeed = deriveDeterministicSeed(seed, 'market-regime-v1');
     this.prng = new SimPrng(regimeSeed);
 
-    const schedule = config?.sessionSchedule ?? DEFAULT_SESSION_SCHEDULE;
-    validateSessionSchedule(schedule);
+    const sessionSchedule = deepFreeze(
+      deepClone(config?.sessionSchedule ?? DEFAULT_SESSION_SCHEDULE)
+    );
+    validateSessionSchedule(sessionSchedule);
 
-    const thresholds = config?.thresholds ?? DEFAULT_REGIME_THRESHOLDS;
+    const thresholds = deepFreeze(
+      deepClone(config?.thresholds ?? DEFAULT_REGIME_THRESHOLDS)
+    );
     validateRegimeThresholds(thresholds);
 
-    this.tradingDayAnchorMs = schedule.tradingDayAnchorMs ?? schedule.dayStartEpochMs ?? initialEpochMs;
-    const dayDurationSec = schedule.tradingDayDurationSeconds ?? schedule.totalDayDurationSeconds ?? 86400;
+    this.tradingDayAnchorMs = sessionSchedule.tradingDayAnchorMs ?? sessionSchedule.dayStartEpochMs ?? initialEpochMs;
+    const dayDurationSec = sessionSchedule.tradingDayDurationSeconds ?? sessionSchedule.totalDayDurationSeconds ?? 86400;
     this.tradingDayDurationMs = dayDurationSec * 1000;
 
-    const sessionCalc = this.calculateSessionAtTime(initialEpochMs, schedule);
+    const sessionCalc = this.calculateSessionAtTime(initialEpochMs, sessionSchedule);
 
     const VALID_REGIMES = new Set(['BULL', 'BEAR', 'SIDEWAYS', 'HIGH_VOLATILITY', 'LIQUIDITY_CRISIS']);
     if (config?.initialRegime && !VALID_REGIMES.has(config.initialRegime)) {
@@ -130,14 +134,18 @@ export class MarketStateEngine {
       }
     }
 
-    this.config = {
-      initialRegime: config?.initialRegime ?? 'SIDEWAYS',
-      initialSession: config?.initialSession ?? sessionCalc.session,
-      sessionSchedule: schedule,
+    const initialRegime = config?.initialRegime ?? 'SIDEWAYS';
+    const initialSession = config?.initialSession ?? sessionCalc.session;
+    const maxHistoryLimit = config?.maxHistoryLimit ?? 200;
+
+    this.config = deepFreeze({
+      initialRegime,
+      initialSession,
+      sessionSchedule,
       thresholds,
-      maxHistoryLimit: config?.maxHistoryLimit ?? 200,
-    };
-    this.maxHistoryLimit = this.config.maxHistoryLimit!;
+      maxHistoryLimit,
+    });
+    this.maxHistoryLimit = maxHistoryLimit;
 
     this.currentRegime = this.config.initialRegime;
     this.regimeStartedAt = initialEpochMs;
@@ -716,7 +724,7 @@ export class MarketStateEngine {
   }
 
   public getThresholds(): Readonly<RegimeThresholdConfig> {
-    return this.config.thresholds;
+    return deepFreeze(deepClone(this.config.thresholds));
   }
 
   // ─────────────────────────────────────────────────────────────────
@@ -738,7 +746,7 @@ export class MarketStateEngine {
     this.pendingTransition = null;
 
     const sessionCalc = this.calculateSessionAtTime(initialEpochMs);
-    this.currentSession = this.config.initialSession ?? sessionCalc.session;
+    this.currentSession = sessionCalc.session;
     this.sessionStartedAt = sessionCalc.sessionStartedAt;
     this.nextSession = sessionCalc.nextSession;
     this.nextTransitionAt = sessionCalc.nextTransitionAt;

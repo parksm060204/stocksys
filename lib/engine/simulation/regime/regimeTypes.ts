@@ -58,7 +58,7 @@ export interface MarketRegimeParameters {
 export interface RegimeObservation {
   /** 관측 시점 시뮬레이션 절대 시각 (epoch ms) */
   readonly simulationTime: number;
-  /** 시장 가중 평균 수익률 */
+  /** 시가총액 가중 평균 시장수익률 (Market-cap weighted aggregate return) */
   readonly aggregateReturn: number;
   /** 시장 지수 시계열 실현 변동성 (Time-series realized volatility) */
   readonly realizedVolatility: number;
@@ -196,6 +196,8 @@ export interface RegimeThresholdConfig {
   readonly liquidityCrisisEnterDepthDrop: number;
   readonly liquidityCrisisExitDepthDrop: number;
   readonly liquidityCrisisEmptyBookDurationSeconds: number;
+  /** 시장 전체 빈 장부 판정 종목 비율 임계값 (0.0 ~ 1.0) */
+  readonly emptyBookStockRatioThreshold?: number;
 
   // 2. 고변동성 (HIGH_VOLATILITY) 진입 / 이탈 임계치 분리
   readonly highVolatilityEnterThreshold: number;

@@ -12,6 +12,8 @@ import { MarketObservation } from '../marketObservation';
 import { AgentAccount, AgentOrderIntent, ValueStrategyConfig } from '../agentTypes';
 import { millisecondsToSeconds, SimPrng } from '../simClock';
 
+import { computeEffectiveEventValuationDelta, ObservableMarketEvent } from '../marketEventTypes';
+
 /**
  * 순수 함수: 관측 가능한 시장 이벤트 목록으로부터 특정 종목의 유효 뉴스 가치평가 신호(delta)를 산출합니다.
  * - 특정 종목(stockId)을 대상(targetStockIds)으로 하는 이벤트만 반영
@@ -27,102 +29,18 @@ import { millisecondsToSeconds, SimPrng } from '../simClock';
  * - 중복 수신된 이벤트 멱등성 보장 (eventId 기반)
  */
 export function computeEffectiveNewsValuation(
-  events: import('../marketEventTypes').ObservableMarketEvent[],
+  events: ObservableMarketEvent[],
   stockId: string,
   simulationTime: number
 ): number {
   if (!events || events.length === 0 || !stockId) return 0;
-
-  // 1. 이벤트 중복 방지 (멱등성 보장)
-  const uniqueEventsMap = new Map<string, import('../marketEventTypes').ObservableMarketEvent>();
-  for (const ev of events) {
-    if (ev && typeof ev.eventId === 'string' && !uniqueEventsMap.has(ev.eventId)) {
-      uniqueEventsMap.set(ev.eventId, ev);
-    }
-  }
-  const uniqueEvents = Array.from(uniqueEventsMap.values());
-
-  // 2. 유효 시점 필터링 (effectiveFrom <= simulationTime)
-  const effectiveEvents = uniqueEvents.filter((e) => Number.isFinite(e.effectiveFrom) && e.effectiveFrom <= simulationTime);
-  if (effectiveEvents.length === 0) return 0;
-
-  // 3. 대상 종목(stockId) 필터링: 해당 종목을 명시적으로 포함하는 이벤트만 참여
-  const stockEvents = effectiveEvents.filter((e) => Array.isArray(e.targetStockIds) && e.targetStockIds.includes(stockId));
-  if (stockEvents.length === 0) return 0;
-
-  // 4. 해당 종목에 적용되는 정정 이벤트(CORRECTION) 추출 및 결정론적 정렬
-  const correctionsByOriginalId = new Map<string, import('../marketEventTypes').ObservableMarketEvent[]>();
-  const presentRumorIds = new Set<string>();
-
-  for (const ev of stockEvents) {
-    if (ev.eventType === 'RUMOR') {
-      presentRumorIds.add(ev.eventId);
-    } else if (ev.eventType === 'CORRECTION' && ev.originalEventId) {
-      const list = correctionsByOriginalId.get(ev.originalEventId) ?? [];
-      list.push(ev);
-      correctionsByOriginalId.set(ev.originalEventId, list);
-    }
-  }
-
-  // 결정론적 정렬: effectiveFrom ASC -> publishedAt ASC -> sequence ASC -> eventId ASC
-  const winningCorrectionByOriginalId = new Map<string, import('../marketEventTypes').ObservableMarketEvent>();
-  for (const [origId, corrList] of correctionsByOriginalId.entries()) {
-    corrList.sort((a, b) => {
-      if (a.effectiveFrom !== b.effectiveFrom) return a.effectiveFrom - b.effectiveFrom;
-      if (a.publishedAt !== b.publishedAt) return a.publishedAt - b.publishedAt;
-      const seqA = a.sequence ?? 0;
-      const seqB = b.sequence ?? 0;
-      if (seqA !== seqB) return seqA - seqB;
-      return a.eventId.localeCompare(b.eventId);
-    });
-    // 가장 최신 정정 1건을 승자로 선정
-    winningCorrectionByOriginalId.set(origId, corrList[corrList.length - 1]);
-  }
-
-  let newsValuationDelta = 0;
-
-  for (const ev of stockEvents) {
-    // 1. 원본 루머 처리
-    if (ev.eventType === 'RUMOR') {
-      const winningCorr = winningCorrectionByOriginalId.get(ev.eventId);
-      if (winningCorr) {
-        const mode = winningCorr.correctionMode ?? 'RETRACT';
-        // RETRACT, REPLACE 모드: 정정 수신 이후 미래 의사결정에서 원본 루머의 가치평가 기여도 제거
-        if (mode === 'RETRACT' || mode === 'REPLACE') {
-          continue;
-        }
-        // ADDITIVE 모드: 원본 루머의 가치평가 기여도를 그대로 유지하며 아래에서 감쇠 계산 진행
-      }
-    }
-
-    // 2. 정정 이벤트(CORRECTION) 처리
-    if (ev.eventType === 'CORRECTION') {
-      // 복수 정정 중 최신으로 선별된 정정이 아니라면 이전 정정은 무시(최신 정정 승자독식)
-      if (ev.originalEventId) {
-        const winningCorr = winningCorrectionByOriginalId.get(ev.originalEventId);
-        if (winningCorr && winningCorr.eventId !== ev.eventId) {
-          continue;
-        }
-      }
-
-      const mode = ev.correctionMode ?? 'RETRACT';
-      if (ev.originalEventId && presentRumorIds.has(ev.originalEventId)) {
-        if (mode === 'RETRACT') {
-          // RETRACT 모드: 원본 루머 무효화만 수행하고 자체 valuationSignal은 미반영 (이중 계산 방지)
-          continue;
-        }
-        // REPLACE 모드: 원본은 무효화되었고, 정정 이벤트의 새로운 valuationSignal을 대체 반영
-        // ADDITIVE 모드: 원본도 유지되고, 정정 이벤트의 신호도 추가 가산 반영
-      }
-    }
-
-    const elapsed = millisecondsToSeconds(Math.max(0, simulationTime - ev.effectiveFrom));
-    const decay = Math.pow(2, -elapsed / ev.halfLife);
-    newsValuationDelta += ev.valuationSignal * ev.confidence * decay;
-  }
-
-  return newsValuationDelta;
+  return computeEffectiveEventValuationDelta(
+    events,
+    (e) => Array.isArray(e.targetStockIds) && e.targetStockIds.includes(stockId),
+    simulationTime
+  );
 }
+
 
 export function evaluateValueStrategy(
   obs: MarketObservation,

@@ -374,3 +374,150 @@ export const SEED_EVENT_TEMPLATES: EventTemplate[] = [
     isRumorFake: true, // 시뮬레이션 내부 진실 (거짓 루머)
   },
 ];
+
+/**
+ * 순수 함수: 관측 가능한 시장 이벤트 목록으로부터 유효 뉴스 가치평가 신호(delta)를 산출합니다.
+ *
+ * 공식:
+ * effectiveSignal = valuationSignal * confidence * Math.pow(2, -elapsedSeconds / halfLife)
+ *
+ * 정정 정책:
+ * - RETRACT: 원본 기여 제거
+ * - REPLACE: 원본 제거 후 정정 신호 대체 반영
+ * - ADDITIVE: 원본 유지 + 정정 신호 가산 반영
+ * - 복수 정정 결정론적 정렬:
+ *   1) effectiveFrom ASC
+ *   2) publishedAt ASC
+ *   3) sequence ASC
+ *   4) eventId ASC (tie-breaker)
+ *   -> 가장 최신 1건 승자 선정 (배열 입력 순서 무관)
+ *
+ * 유효성 및 장벽:
+ * - publishedAt <= simTime && effectiveFrom <= simTime (pending / 미래 뉴스 차단)
+ * - eventId 기반 멱등성 보장
+ */
+export function computeEffectiveEventValuationDelta(
+  events: readonly (ObservableMarketEvent | MarketEvent)[],
+  filterFn: (event: ObservableMarketEvent) => boolean,
+  simTime: number
+): number {
+  if (!events || events.length === 0 || !Number.isFinite(simTime)) return 0;
+
+  // 1. 이벤트 중복 방지 (멱등성 보장)
+  const uniqueEventsMap = new Map<string, ObservableMarketEvent>();
+  for (const ev of events) {
+    if (ev && typeof ev.eventId === 'string' && !uniqueEventsMap.has(ev.eventId)) {
+      uniqueEventsMap.set(ev.eventId, ev);
+    }
+  }
+
+  // 2. 유효 시점 필터링 (publishedAt <= simTime && effectiveFrom <= simTime)
+  // pending 및 미래 뉴스는 엄격히 제외
+  const timeFilteredEvents = Array.from(uniqueEventsMap.values()).filter(
+    (e) =>
+      Number.isFinite(e.publishedAt) &&
+      e.publishedAt <= simTime &&
+      Number.isFinite(e.effectiveFrom) &&
+      e.effectiveFrom <= simTime
+  );
+  if (timeFilteredEvents.length === 0) return 0;
+
+  // 3. 사용자 지정 범위(scope 또는 stockId 등) 필터링
+  const matchingEvents = timeFilteredEvents.filter(filterFn);
+  if (matchingEvents.length === 0) return 0;
+
+  // 4. 정정 이벤트(CORRECTION) 추출 및 결정론적 정렬
+  const correctionsByOriginalId = new Map<string, ObservableMarketEvent[]>();
+  const presentRumorIds = new Set<string>();
+
+  for (const ev of matchingEvents) {
+    if (ev.eventType === 'RUMOR') {
+      presentRumorIds.add(ev.eventId);
+    } else if (ev.eventType === 'CORRECTION' && ev.originalEventId) {
+      const list = correctionsByOriginalId.get(ev.originalEventId) ?? [];
+      list.push(ev);
+      correctionsByOriginalId.set(ev.originalEventId, list);
+    }
+  }
+
+  // 결정론적 정렬: effectiveFrom ASC -> publishedAt ASC -> sequence ASC -> eventId ASC
+  const winningCorrectionByOriginalId = new Map<string, ObservableMarketEvent>();
+  for (const [origId, corrList] of correctionsByOriginalId.entries()) {
+    corrList.sort((a, b) => {
+      if (a.effectiveFrom !== b.effectiveFrom) return a.effectiveFrom - b.effectiveFrom;
+      if (a.publishedAt !== b.publishedAt) return a.publishedAt - b.publishedAt;
+      const seqA = a.sequence ?? 0;
+      const seqB = b.sequence ?? 0;
+      if (seqA !== seqB) return seqA - seqB;
+      return a.eventId.localeCompare(b.eventId);
+    });
+    // 가장 최신 정정 1건을 승자로 선정
+    winningCorrectionByOriginalId.set(origId, corrList[corrList.length - 1]);
+  }
+
+  let totalSignal = 0;
+
+  for (const ev of matchingEvents) {
+    // 1. 원본 루머 처리
+    if (ev.eventType === 'RUMOR') {
+      const winningCorr = winningCorrectionByOriginalId.get(ev.eventId);
+      if (winningCorr) {
+        const mode = winningCorr.correctionMode ?? 'RETRACT';
+        // RETRACT, REPLACE 모드: 정정 수신 이후 원본 루머의 가치평가 기여도 제거
+        if (mode === 'RETRACT' || mode === 'REPLACE') {
+          continue;
+        }
+        // ADDITIVE 모드: 원본 루머의 기여도를 유지하며 감쇠 계산 진행
+      }
+    }
+
+    // 2. 정정 이벤트(CORRECTION) 처리
+    if (ev.eventType === 'CORRECTION') {
+      // 복수 정정 중 최신으로 선별된 정정이 아니라면 이전 정정은 무시(최신 정정 승자독식)
+      if (ev.originalEventId) {
+        const winningCorr = winningCorrectionByOriginalId.get(ev.originalEventId);
+        if (winningCorr && winningCorr.eventId !== ev.eventId) {
+          continue;
+        }
+      }
+
+      const mode = ev.correctionMode ?? 'RETRACT';
+      if (ev.originalEventId && presentRumorIds.has(ev.originalEventId)) {
+        if (mode === 'RETRACT') {
+          // RETRACT 모드: 원본 루머 무효화만 수행하고 자체 valuationSignal은 미반영
+          continue;
+        }
+        // REPLACE 모드: 원본은 무효화되었고, 정정 이벤트의 새로운 valuationSignal을 대체 반영
+        // ADDITIVE 모드: 원본도 유지되고, 정정 이벤트의 신호도 추가 가산 반영
+      }
+    }
+
+    const elapsedSeconds = Math.max(0, (simTime - ev.effectiveFrom) / 1000);
+    const halfLife = Number.isFinite(ev.halfLife) && ev.halfLife > 0 ? ev.halfLife : 60;
+    const decay = Math.pow(2, -elapsedSeconds / halfLife);
+    const confidence = typeof ev.confidence === 'number' && Number.isFinite(ev.confidence) ? ev.confidence : 1.0;
+    totalSignal += ev.valuationSignal * confidence * decay;
+  }
+
+  return totalSignal;
+}
+
+/**
+ * 순수 함수: 관측 가능한 시장 이벤트 목록으로부터 시장 전체(scope: 'market')의 유효 거시 뉴스 신호를 산출합니다.
+ * - publishedAt <= simTime && effectiveFrom <= simTime
+ * - pending / 미래 뉴스 엄격 제외
+ * - RETRACT, REPLACE, ADDITIVE 정정 모드 반영
+ * - 복수 정정 결정론적 정렬 적용
+ * - 결과는 [-1.0, 1.0] 범위로 클램핑
+ */
+export function calculateEffectiveMacroSignal(
+  events: readonly (ObservableMarketEvent | MarketEvent)[],
+  simTime: number
+): number {
+  const rawSignal = computeEffectiveEventValuationDelta(
+    events,
+    (e) => e.scope === 'market',
+    simTime
+  );
+  return Math.max(-1.0, Math.min(1.0, rawSignal));
+}

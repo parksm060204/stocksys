@@ -34,11 +34,13 @@ import {
   resolveTargetStockIds,
   getVisibleMarketEvents,
   validateMarketEvent,
+  calculateEffectiveMacroSignal,
 } from './marketEventTypes';
 import {
   MarketStateEngine,
   MarketStateSnapshot,
   RegimeObservation,
+  MarketStateEngineConfig,
   deriveDeterministicSeed,
 } from './regime';
 
@@ -115,14 +117,21 @@ export class AgentManager {
   constructor(
     seed: number = 42,
     startEpochMs: number = 1773500000000,
-    options?: { enableRegimeEngine?: boolean }
+    options?: {
+      enableRegimeEngine?: boolean;
+      regimeEngineConfig?: Partial<MarketStateEngineConfig>;
+    }
   ) {
     this.enableRegimeEngine = options?.enableRegimeEngine ?? true;
     this.clock = new SimulationClock(startEpochMs, 1.0);
     this.prng = new SimPrng(seed);
     this.fundamentalPrng = this.prng.split(100);
     // MarketStateEngine 내부에서 seed로부터 고유 namespace 파생을 1회 수행하도록 원본 seed 전달
-    this.marketStateEngine = new MarketStateEngine({}, seed, startEpochMs);
+    this.marketStateEngine = new MarketStateEngine(
+      options?.regimeEngineConfig ?? {},
+      seed,
+      startEpochMs
+    );
 
     this.registerDefaultAgents();
     this.initFundamentals();
@@ -263,9 +272,14 @@ export class AgentManager {
       return false; // Duplicate event rejected
     }
 
+    const resolvedTargetStockIds =
+      event.targetStockIds && event.targetStockIds.length > 0
+        ? [...event.targetStockIds]
+        : resolveTargetStockIds(event.scope, undefined, event.sectorId);
+
     const storedEvent: MarketEvent = {
       ...event,
-      targetStockIds: [...event.targetStockIds],
+      targetStockIds: resolvedTargetStockIds,
       themeIds: event.themeIds ? [...event.themeIds] : undefined,
       sequence: event.sequence ?? this.clock.nextSequence(),
     };
@@ -694,15 +708,22 @@ export class AgentManager {
     // ── 7. Deterministic Market Regime Evaluation (Scheduled for next step, No circular causality) ──
     if (this.enableRegimeEngine) {
       const statsList = Array.from(finalWindowStats.values());
+      let totalMarketCap = 0;
+      let weightedReturnSum = 0;
       let aggReturn = 0;
       let avgSpreadBps = 0;
       let validSpreadCount = 0;
 
       for (const st of statsList) {
         aggReturn += st.returnRate;
+        const stk = memoryDb.stocks.get(st.stockId);
+        const price = stk?.current_price ?? 50000;
+        const shares = stk?.floating_shares ?? stk?.shares_outstanding ?? 100000;
+        const mcap = Math.max(1, price * shares);
+        totalMarketCap += mcap;
+        weightedReturnSum += st.returnRate * mcap;
+
         if (st.spread !== null && st.spread > 0) {
-          const stk = memoryDb.stocks.get(st.stockId);
-          const price = stk?.current_price ?? 50000;
           const bps = (st.spread / price) * 10000;
           avgSpreadBps += bps;
           validSpreadCount++;
@@ -710,7 +731,8 @@ export class AgentManager {
       }
 
       const stockCount = Math.max(1, statsList.length);
-      const meanReturn = aggReturn / stockCount;
+      const marketCapWeightedReturn = totalMarketCap > 0 ? weightedReturnSum / totalMarketCap : aggReturn / stockCount;
+      const meanReturn = marketCapWeightedReturn;
       const meanSpreadBps = validSpreadCount > 0 ? avgSpreadBps / validSpreadCount : 20.0;
 
       // 횡단면 수익률 분산 (종목 간 편차)
@@ -752,9 +774,19 @@ export class AgentManager {
       }
       this.previousTotalDepth = currentTotalDepth;
 
-      // 실제 호가 공백(빈 장부) 누적 지속 시간 (초)
-      const hasEmptyBook = statsList.some((st) => st.spread === null || st.depthShares === 0);
-      if (hasEmptyBook) {
+      // 실제 호가 공백(빈 장부) 종목 비율 판정
+      // 중앙 설정의 emptyBookStockRatioThreshold 이상일 때만 지속시간 누적
+      const totalStockCount = statsList.length;
+      let emptyBookStockCount = 0;
+      for (const st of statsList) {
+        if (st.spread === null || st.spread <= 0 || st.depthShares === 0) {
+          emptyBookStockCount++;
+        }
+      }
+      const emptyBookRatio = totalStockCount > 0 ? emptyBookStockCount / totalStockCount : 0;
+      const ratioThreshold = this.marketStateEngine.getThresholds().emptyBookStockRatioThreshold ?? 0.3;
+
+      if (emptyBookRatio >= ratioThreshold) {
         this.emptyBookAccumulatedSeconds += dt;
       } else {
         this.emptyBookAccumulatedSeconds = 0;
@@ -768,15 +800,8 @@ export class AgentManager {
         avgUncertainty = sumUnc / this.uncertaintyMap.size;
       }
 
-      // Effective Macro News Signal (Strict barrier: publishedAt <= simTime && effectiveFrom <= simTime only)
-      let macroSignal = 0;
-      const effectiveMacroEvents = this.publishedEvents.filter(
-        (e) => e.scope === 'market' && e.effectiveFrom <= simTime && this.effectiveEventIds.has(e.eventId)
-      );
-      for (const ev of effectiveMacroEvents) {
-        macroSignal += ev.valuationSignal;
-      }
-      macroSignal = Math.max(-1.0, Math.min(1.0, macroSignal));
+      // Effective Macro News Signal (Pure function: confidence, half-life decay, RETRACT/REPLACE/ADDITIVE)
+      const macroSignal = calculateEffectiveMacroSignal(this.publishedEvents, simTime);
 
       const observation: RegimeObservation = {
         simulationTime: simTime,
@@ -890,6 +915,10 @@ export class AgentManager {
 
   public getMarketStateSnapshot(): MarketStateSnapshot {
     return this.marketStateEngine.getSnapshot();
+  }
+
+  public getEmptyBookAccumulatedSeconds(): number {
+    return this.emptyBookAccumulatedSeconds;
   }
 
   public applyDueEventEffects(simTime: number): void {

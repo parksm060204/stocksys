@@ -4127,3 +4127,31 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
   - Test 21: 10개 설정 무결성 거절 시나리오(스케줄 합계 불일치, 세션 누락, 순서 오류, 세션 중복, 비정상 세션명, 논리 모순 임계치, NaN 임계치, 범위 초과 불확실성, 음수 historyLimit, 비정상 initialRegime) 전수 검증.
   - Test 24: `enableRegimeEngine: false`(Baseline A) vs `enableRegimeEngine: true`(Regime Active B) 간 주문, 체결, 시세, 잔고, 보유량, 봇별 PRNG, 펀더멘털 PRNG가 100% 비트 단위로 동일함을 증명하는 진정한 A/B 테스트 구현.
   - 28대 테스트 전체 통과 (Exit Code 0).
+
+---
+## 2026-09-18 23:10
+
+**요청 요약:** STOCKSYS 시장 국면 1단계 최종 보완 (거시 뉴스 감쇠 순수 함수 분리 및 정정 결정론, 입력/초기 세션 검증 강화, 시장 전체 빈 장부 종목 비율화 판정, 시가총액 가중 시장수익률 계산, 25스텝 실전환 A/B 테스트 완결).
+
+**수행 결과:**
+- `lib/engine/simulation/marketEventTypes.ts`:
+  - `effectiveSignal = valuationSignal * confidence * Math.pow(2, -elapsedSeconds / halfLife)` 수식을 반영하고 `[-1, 1]` 범위로 클램핑하는 거시 뉴스 순수 함수 `calculateEffectiveMacroSignal` 구현.
+  - 공통 이벤트 평가 순수 함수 `computeEffectiveEventValuationDelta`를 분리하여 `publishedAt <= simTime`, `effectiveFrom <= simTime` 시점 차단, `RETRACT`·`REPLACE`·`ADDITIVE` 정정 모드 반영, 복수 정정 결정론적 정렬(`effectiveFrom` -> `publishedAt` -> `sequence` -> `eventId`)을 구현하여 봇 뉴스 평가와 공유.
+- `lib/engine/simulation/strategies/valueStrategy.ts`:
+  - `computeEffectiveNewsValuation`을 `computeEffectiveEventValuationDelta`로 위임하여 가치투자 봇과 거시 뉴스 평가 로직의 단일 원천화 및 결정론 호환성 보장.
+- `lib/engine/simulation/regime/regimeTypes.ts` & `lib/engine/simulation/regime/regimeConfig.ts`:
+  - `emptyBookStockRatioThreshold` (기본값 0.3, [0, 1] 범위 검증) 설정 추가.
+  - `liquidityCrisisRecoveryMinDurationSeconds` 검증 (비음수 유한수).
+- `lib/engine/simulation/regime/marketStateEngine.ts`:
+  - `initialSession` 지정 시 시뮬레이션 시간에서 계산된 세션과의 불일치 거부 및 표준 5대 세션 검증.
+  - `evaluateNextRegime`의 시간/스텝ID/선택필드 엄격 검증: 음수/소수/비유한 `decisionStepId`, `simTime < 0`, `nextStepEffectiveAt < simTime`, `obs.simulationTime !== simTime`, 음수 변동성/스프레드/빈 장부 시간, `uncertainty` [0, 1] 범위 초과, `effectiveMacroNewsSignal` [-1, 1] 범위 초과, 음수/비유한 `crossSectionalDispersion` 거절.
+  - 임계치 조회용 `getThresholds()` 메서드 추가.
+- `lib/engine/simulation/agentManager.ts`:
+  - `aggregateReturn`을 종목별 시가총액(현재가 × 상장/유통주식수) 가중 평균 수익률로 정밀 산출.
+  - 시장 전체 빈 장부 판정 시 `emptyBookRatio = emptyBookStockCount / totalStockCount >= emptyBookStockRatioThreshold` 충족 시에만 `emptyBookAccumulatedSeconds` 누적.
+  - `registerEvent` 시 빈 `targetStockIds` 자동 전체 종목 확장 처리.
+  - `getEmptyBookAccumulatedSeconds()` 접근자 추가.
+- `scripts/test-market-regime-foundation.ts`:
+  - 총 31개 테스트로 확장 (TEST 20/21 검증 범위 확장, TEST 29 거시 뉴스 순수 함수 감쇠/신뢰도/시간차단/클램핑, TEST 30 정정 정책 및 복수 정정 순서 결정론, TEST 31 시장 전체 빈 장부 비율 판정).
+  - TEST 24: 25스텝 동안 BULL 및 HIGH_VOLATILITY 실제 전환이 발생하고 전환 이력이 축적되는 상황에서 Baseline A vs Regime Active B 간 주문·체결·호가·시세·현금·보유량·봇 PRNG·펀더멘털 PRNG가 비트 단위로 동일함을 실증.
+- 검증 결과: 6개 테스트 스크립트 전수 통과, `npx tsc --noEmit` 통과, Next.js `npm run build` 성공, `git diff --check` 클린 확인.

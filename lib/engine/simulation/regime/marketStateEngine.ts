@@ -27,11 +27,13 @@ import {
   SessionScheduleConfig,
   PendingRegimeTransition,
   RegimeTransitionMetrics,
+  RegimeThresholdConfig,
 } from './regimeTypes';
 import {
   DEFAULT_REGIME_PARAMETERS,
   DEFAULT_REGIME_THRESHOLDS,
   DEFAULT_SESSION_SCHEDULE,
+  STANDARD_SESSIONS,
   validateRegimeParameters,
   validateSessionSchedule,
   validateRegimeThresholds,
@@ -102,6 +104,18 @@ export class MarketStateEngine {
     const VALID_REGIMES = new Set(['BULL', 'BEAR', 'SIDEWAYS', 'HIGH_VOLATILITY', 'LIQUIDITY_CRISIS']);
     if (config?.initialRegime && !VALID_REGIMES.has(config.initialRegime)) {
       throw new Error(`[MarketStateEngine] Invalid initialRegime: ${config.initialRegime}`);
+    }
+
+    const VALID_SESSIONS = new Set(STANDARD_SESSIONS);
+    if (config?.initialSession !== undefined) {
+      if (!VALID_SESSIONS.has(config.initialSession)) {
+        throw new Error(`[MarketStateEngine] Invalid initialSession: ${config.initialSession}`);
+      }
+      if (config.initialSession !== sessionCalc.session) {
+        throw new Error(
+          `[MarketStateEngine] initialSession mismatch: provided '${config.initialSession}', but calculated session at ${initialEpochMs} is '${sessionCalc.session}'`
+        );
+      }
     }
 
     if (config?.maxHistoryLimit !== undefined) {
@@ -374,6 +388,32 @@ export class MarketStateEngine {
       throw new Error('[MarketStateEngine] RegimeObservation must be a valid object');
     }
 
+    if (typeof simTime !== 'number' || !Number.isFinite(simTime) || simTime < 0) {
+      throw new RangeError(`[MarketStateEngine] simTime must be a non-negative finite number: got ${simTime}`);
+    }
+
+    if (
+      typeof nextStepEffectiveAt !== 'number' ||
+      !Number.isFinite(nextStepEffectiveAt) ||
+      nextStepEffectiveAt < simTime
+    ) {
+      throw new RangeError(
+        `[MarketStateEngine] nextStepEffectiveAt (${nextStepEffectiveAt}) cannot precede simTime (${simTime})`
+      );
+    }
+
+    if (typeof decisionStepId !== 'number' || !Number.isInteger(decisionStepId) || decisionStepId < 0) {
+      throw new RangeError(
+        `[MarketStateEngine] decisionStepId must be a non-negative integer: got ${decisionStepId}`
+      );
+    }
+
+    if (obs.simulationTime !== simTime) {
+      throw new Error(
+        `[MarketStateEngine] obs.simulationTime (${obs.simulationTime}) does not match simTime (${simTime})`
+      );
+    }
+
     // 관측값 유한수 엄격 검증
     const observationFields: Array<keyof RegimeObservation> = [
       'simulationTime',
@@ -390,6 +430,42 @@ export class MarketStateEngine {
       const val = obs[field];
       if (typeof val !== 'number' || !Number.isFinite(val)) {
         throw new RangeError(`[MarketStateEngine] RegimeObservation.${field} must be a finite number: got ${val}`);
+      }
+    }
+
+    if (obs.realizedVolatility < 0) {
+      throw new RangeError(
+        `[MarketStateEngine] realizedVolatility must be non-negative: got ${obs.realizedVolatility}`
+      );
+    }
+    if (obs.averageSpreadBps < 0) {
+      throw new RangeError(`[MarketStateEngine] averageSpreadBps must be non-negative: got ${obs.averageSpreadBps}`);
+    }
+    if (obs.emptyBookDurationSeconds < 0) {
+      throw new RangeError(
+        `[MarketStateEngine] emptyBookDurationSeconds must be non-negative: got ${obs.emptyBookDurationSeconds}`
+      );
+    }
+
+    if (obs.uncertainty < 0 || obs.uncertainty > 1.0) {
+      throw new RangeError(`[MarketStateEngine] uncertainty must be in [0.0, 1.0]: got ${obs.uncertainty}`);
+    }
+
+    if (obs.effectiveMacroNewsSignal < -1.0 || obs.effectiveMacroNewsSignal > 1.0) {
+      throw new RangeError(
+        `[MarketStateEngine] effectiveMacroNewsSignal must be in [-1.0, 1.0]: got ${obs.effectiveMacroNewsSignal}`
+      );
+    }
+
+    if (obs.crossSectionalDispersion !== undefined) {
+      if (
+        typeof obs.crossSectionalDispersion !== 'number' ||
+        !Number.isFinite(obs.crossSectionalDispersion) ||
+        obs.crossSectionalDispersion < 0
+      ) {
+        throw new RangeError(
+          `[MarketStateEngine] crossSectionalDispersion must be a non-negative finite number: got ${obs.crossSectionalDispersion}`
+        );
       }
     }
 
@@ -637,6 +713,10 @@ export class MarketStateEngine {
 
   public getPendingTransition(): Readonly<PendingRegimeTransition> | null {
     return this.pendingTransition ? deepFreeze(deepClone(this.pendingTransition)) : null;
+  }
+
+  public getThresholds(): Readonly<RegimeThresholdConfig> {
+    return this.config.thresholds;
   }
 
   // ─────────────────────────────────────────────────────────────────

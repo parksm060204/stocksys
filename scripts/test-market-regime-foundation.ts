@@ -48,8 +48,15 @@ import {
   RegimeObservation,
   MarketStateSnapshot,
 } from '../lib/engine/simulation/regime/regimeTypes';
+import {
+  MarketEvent,
+  ObservableMarketEvent,
+  calculateEffectiveMacroSignal,
+  computeEffectiveEventValuationDelta,
+} from '../lib/engine/simulation/marketEventTypes';
 import { AgentManager } from '../lib/engine/simulation/agentManager';
 import { LocalMarketEngineInstance } from '../lib/engine/localStandaloneServer';
+import { LocalMarketService } from '../lib/engine/marketService';
 import { memoryDb } from '../lib/memoryDb/memoryStore';
 import { SimPrng, SimulationClock } from '../lib/engine/simulation/simClock';
 import { createHash } from 'crypto';
@@ -109,7 +116,7 @@ async function runAllTests() {
       const engine = new MarketStateEngine({}, seed, startMs);
       const observations: RegimeObservation[] = [
         {
-          simulationTime: startMs + 1000,
+          simulationTime: startMs + 12000,
           aggregateReturn: 0.02,
           realizedVolatility: 0.01,
           turnoverChange: 0.15,
@@ -120,7 +127,7 @@ async function runAllTests() {
           effectiveMacroNewsSignal: 0.2,
         },
         {
-          simulationTime: startMs + 15000,
+          simulationTime: startMs + 25000,
           aggregateReturn: -0.03,
           realizedVolatility: 0.04,
           turnoverChange: 0.2,
@@ -696,29 +703,153 @@ async function runAllTests() {
   // ─────────────────────────────────────────────────────────────────
   // TEST 20: 잘못된 관측값 거절 및 상태 무변경
   // ─────────────────────────────────────────────────────────────────
-  console.log('▶ [TEST 20] 잘못된 관측값 거절 및 상태 무변경');
+  // ─────────────────────────────────────────────────────────────────
+  // TEST 20: 잘못된 관측값 및 매개변수 거절 및 상태 무변경
+  // ─────────────────────────────────────────────────────────────────
+  console.log('▶ [TEST 20] 잘못된 관측값 및 매개변수 거절 및 상태 무변경');
   {
     const engine = new MarketStateEngine({}, 42, startMs);
-    let errorThrown = false;
-    try {
-      engine.evaluateNextRegime({
-        simulationTime: startMs + 1000,
-        aggregateReturn: NaN, // 잘못된 값!
-        realizedVolatility: 0.01,
-        turnoverChange: 0,
-        averageSpreadBps: 20,
-        depthChange: 0,
-        uncertainty: 0.1,
-        emptyBookDurationSeconds: 0,
-        effectiveMacroNewsSignal: 0,
-      }, startMs + 1000, startMs + 2000, 1);
-    } catch {
-      errorThrown = true;
-    }
+    const validObs: RegimeObservation = {
+      simulationTime: startMs + 1000,
+      aggregateReturn: 0.01,
+      realizedVolatility: 0.01,
+      turnoverChange: 0,
+      averageSpreadBps: 20,
+      depthChange: 0,
+      uncertainty: 0.1,
+      emptyBookDurationSeconds: 0,
+      effectiveMacroNewsSignal: 0,
+    };
 
-    assert(errorThrown === true, 'NaN 관측값 전달 시 예외 발생');
-    assert(engine.getPendingTransition() === null, '예외 발생 후 엔진 상태 변경 없음');
-    console.log('  ✓ TEST 20 통과: 비정상 관측값 거절 및 무결성 확인 완료\n');
+    // 1. NaN 관측값
+    let errNan = false;
+    try {
+      engine.evaluateNextRegime({ ...validObs, aggregateReturn: NaN }, startMs + 1000, startMs + 2000, 1);
+    } catch {
+      errNan = true;
+    }
+    assert(errNan, 'NaN aggregateReturn 거부');
+
+    // 2. simTime 음수
+    let errSimTime = false;
+    try {
+      engine.evaluateNextRegime(validObs, -1000, startMs + 2000, 1);
+    } catch {
+      errSimTime = true;
+    }
+    assert(errSimTime, '음수 simTime 거부');
+
+    // 3. nextStepEffectiveAt < simTime
+    let errNextStep = false;
+    try {
+      engine.evaluateNextRegime(validObs, startMs + 2000, startMs + 1000, 1);
+    } catch {
+      errNextStep = true;
+    }
+    assert(errNextStep, 'nextStepEffectiveAt < simTime 거부');
+
+    // 4. decisionStepId 음수 / 소수 / 비유한
+    let errStepIdNeg = false;
+    let errStepIdFloat = false;
+    try {
+      engine.evaluateNextRegime(validObs, startMs + 1000, startMs + 2000, -1);
+    } catch {
+      errStepIdNeg = true;
+    }
+    try {
+      engine.evaluateNextRegime(validObs, startMs + 1000, startMs + 2000, 1.5);
+    } catch {
+      errStepIdFloat = true;
+    }
+    assert(errStepIdNeg, '음수 decisionStepId 거부');
+    assert(errStepIdFloat, '소수 decisionStepId 거부');
+
+    // 5. obs.simulationTime !== simTime 불일치
+    let errTimeMismatch = false;
+    try {
+      engine.evaluateNextRegime({ ...validObs, simulationTime: startMs + 500 }, startMs + 1000, startMs + 2000, 1);
+    } catch {
+      errTimeMismatch = true;
+    }
+    assert(errTimeMismatch, 'obs.simulationTime !== simTime 불일치 거부');
+
+    // 6. 음수 변동성 거절
+    let errVolNeg = false;
+    try {
+      engine.evaluateNextRegime({ ...validObs, realizedVolatility: -0.01 }, startMs + 1000, startMs + 2000, 1);
+    } catch {
+      errVolNeg = true;
+    }
+    assert(errVolNeg, '음수 realizedVolatility 거부');
+
+    // 7. 음수 스프레드 거절
+    let errSpreadNeg = false;
+    try {
+      engine.evaluateNextRegime({ ...validObs, averageSpreadBps: -5 }, startMs + 1000, startMs + 2000, 1);
+    } catch {
+      errSpreadNeg = true;
+    }
+    assert(errSpreadNeg, '음수 averageSpreadBps 거부');
+
+    // 8. 음수 빈 장부 시간 거절
+    let errEmptyNeg = false;
+    try {
+      engine.evaluateNextRegime({ ...validObs, emptyBookDurationSeconds: -1 }, startMs + 1000, startMs + 2000, 1);
+    } catch {
+      errEmptyNeg = true;
+    }
+    assert(errEmptyNeg, '음수 emptyBookDurationSeconds 거부');
+
+    // 9. uncertainty 범위 이탈 거절 (< 0, > 1.0)
+    let errUncNeg = false;
+    let errUncHigh = false;
+    try {
+      engine.evaluateNextRegime({ ...validObs, uncertainty: -0.1 }, startMs + 1000, startMs + 2000, 1);
+    } catch {
+      errUncNeg = true;
+    }
+    try {
+      engine.evaluateNextRegime({ ...validObs, uncertainty: 1.2 }, startMs + 1000, startMs + 2000, 1);
+    } catch {
+      errUncHigh = true;
+    }
+    assert(errUncNeg, '음수 uncertainty 거부');
+    assert(errUncHigh, '1.0 초과 uncertainty 거부');
+
+    // 10. effectiveMacroNewsSignal 범위 이탈 거절 (< -1.0, > 1.0)
+    let errMacroLow = false;
+    let errMacroHigh = false;
+    try {
+      engine.evaluateNextRegime({ ...validObs, effectiveMacroNewsSignal: -1.5 }, startMs + 1000, startMs + 2000, 1);
+    } catch {
+      errMacroLow = true;
+    }
+    try {
+      engine.evaluateNextRegime({ ...validObs, effectiveMacroNewsSignal: 1.5 }, startMs + 1000, startMs + 2000, 1);
+    } catch {
+      errMacroHigh = true;
+    }
+    assert(errMacroLow, '-1.0 미만 effectiveMacroNewsSignal 거부');
+    assert(errMacroHigh, '1.0 초과 effectiveMacroNewsSignal 거부');
+
+    // 11. 선택 필드 crossSectionalDispersion 음수/비유한 거절
+    let errDispNeg = false;
+    let errDispNan = false;
+    try {
+      engine.evaluateNextRegime({ ...validObs, crossSectionalDispersion: -0.05 }, startMs + 1000, startMs + 2000, 1);
+    } catch {
+      errDispNeg = true;
+    }
+    try {
+      engine.evaluateNextRegime({ ...validObs, crossSectionalDispersion: NaN }, startMs + 1000, startMs + 2000, 1);
+    } catch {
+      errDispNan = true;
+    }
+    assert(errDispNeg, '음수 crossSectionalDispersion 거부');
+    assert(errDispNan, 'NaN crossSectionalDispersion 거부');
+
+    assert(engine.getPendingTransition() === null, '모든 거절 후 엔진 내부 상태 무변경 유지');
+    console.log('  ✓ TEST 20 통과: 비정상 관측값 및 매개변수 엄격 거절 확인 완료\n');
   }
 
   // ─────────────────────────────────────────────────────────────────
@@ -887,7 +1018,54 @@ async function runAllTests() {
     }
     assert(initialRegimeErrorThrown === true, '비정상 initialRegime 거부');
 
-    console.log('  ✓ TEST 21 통과: 전체 10개 설정 무결성 거절 검증 완료\n');
+    // 11. 비정상 initialSession 거부
+    let invalidInitialSessionThrown = false;
+    try {
+      new MarketStateEngine({ initialSession: 'INVALID_SESSION' as any }, 42, startMs);
+    } catch {
+      invalidInitialSessionThrown = true;
+    }
+    assert(invalidInitialSessionThrown === true, '비정상 initialSession 거부');
+
+    // 12. initialEpochMs와 계산된 세션 불일치 initialSession 거부
+    let mismatchInitialSessionThrown = false;
+    try {
+      // startMs(1773500000000)는 PRE_OPEN으로 계산됨 -> CLOSED 지정 시 불일치 거절
+      new MarketStateEngine({ initialSession: 'CLOSED' }, 42, startMs);
+    } catch {
+      mismatchInitialSessionThrown = true;
+    }
+    assert(mismatchInitialSessionThrown === true, '계산된 세션과 불일치하는 initialSession 거부');
+
+    // 13. 선택 임계값 liquidityCrisisRecoveryMinDurationSeconds 음수 거부
+    let minRecDurThrown = false;
+    try {
+      new MarketStateEngine({
+        thresholds: {
+          ...DEFAULT_REGIME_THRESHOLDS,
+          liquidityCrisisRecoveryMinDurationSeconds: -5.0,
+        },
+      }, 42, startMs);
+    } catch {
+      minRecDurThrown = true;
+    }
+    assert(minRecDurThrown === true, '음수 liquidityCrisisRecoveryMinDurationSeconds 거부');
+
+    // 14. 선택 임계값 emptyBookStockRatioThreshold 범위 이탈 거부
+    let ratioThresholdThrown = false;
+    try {
+      new MarketStateEngine({
+        thresholds: {
+          ...DEFAULT_REGIME_THRESHOLDS,
+          emptyBookStockRatioThreshold: 1.5,
+        },
+      }, 42, startMs);
+    } catch {
+      ratioThresholdThrown = true;
+    }
+    assert(ratioThresholdThrown === true, '1.0 초과 emptyBookStockRatioThreshold 거부');
+
+    console.log('  ✓ TEST 21 통과: 전체 14개 설정 무결성 거절 검증 완료\n');
   }
 
   // ─────────────────────────────────────────────────────────────────
@@ -951,15 +1129,89 @@ async function runAllTests() {
   }
 
   // ─────────────────────────────────────────────────────────────────
-  // TEST 24: 국면 통합 전후 경제 시뮬레이션 A/B 결과 동일 (Test B)
+  // TEST 24: 국면 통합 전후 경제 시뮬레이션 A/B 결과 동일 (25스텝 실전환 검증)
   // ─────────────────────────────────────────────────────────────────
-  console.log('▶ [TEST 24] 국면 통합 전후 경제 시뮬레이션 A/B 결과 동일 (Test B)');
+  console.log('▶ [TEST 24] 국면 통합 전후 경제 시뮬레이션 A/B 결과 동일 (25스텝 실전환 검증)');
   {
-    // ── 실행 A: 국면 엔진 비활성화 모드 (Baseline A: 국면 통합 직전 기준 동작) ──
-    memoryDb.resetToSeedData();
-    const runA = new AgentManager(12345, startMs, { enableRegimeEngine: false });
-    for (let i = 0; i < 5; i++) await runA.step(1.0);
+    const testRegimeConfig = {
+      thresholds: {
+        ...DEFAULT_REGIME_THRESHOLDS,
+        minRegimeDurationSeconds: 6.0,
+        regimeCooldownSeconds: 1.0,
+        bullReturnThreshold: 0.001,
+        bullMacroSignalThreshold: 0.2,
+        bullTurnoverChangeThreshold: 0.01,
+        highVolatilityUncertaintyThreshold: 0.50,
+      },
+    };
 
+    async function runSim(enableRegime: boolean) {
+      memoryDb.resetToSeedData();
+      const manager = new AgentManager(12345, startMs, {
+        enableRegimeEngine: enableRegime,
+        regimeEngineConfig: testRegimeConfig,
+      });
+
+      for (let step = 0; step < 25; step++) {
+        const currentSimTime = manager.clock.simulationTime;
+
+        // 스텝 9: 강세장 유도 거시 뉴스 등록 및 가격 상승 이력 반영으로 양의 시장수익률 형성
+        if (step === 9) {
+          manager.registerEvent({
+            eventId: 'macro_bull_news_ab',
+            scope: 'market',
+            eventType: 'OFFICIAL',
+            targetStockIds: [],
+            valuationSignal: 0.85,
+            attentionShock: 0.6,
+            uncertaintyShock: 0.05,
+            confidence: 1.0,
+            halfLife: 100,
+            publishedAt: currentSimTime,
+            effectiveFrom: currentSimTime,
+            publisher: 'GlobalMacro',
+            title: '대규모 글로벌 양적완화 정책 발표',
+            content: '전 세계 증시 유동성 공급',
+          });
+
+          for (const stock of memoryDb.stocks.values()) {
+            memoryDb.stockPriceHistory.push({
+              id: `hist_${stock.id}_step9`,
+              stock_id: stock.id,
+              price: Math.round(stock.current_price * 1.05),
+              recorded_at: new Date(currentSimTime).toISOString(),
+            });
+          }
+        }
+
+        // 스텝 16: 고변동성/불확실성 쇼크 뉴스 등록
+        if (step === 16) {
+          manager.registerEvent({
+            eventId: 'macro_vol_news_ab',
+            scope: 'market',
+            eventType: 'OFFICIAL',
+            targetStockIds: [],
+            valuationSignal: -0.4,
+            attentionShock: 0.9,
+            uncertaintyShock: 0.8,
+            confidence: 1.0,
+            halfLife: 100,
+            publishedAt: currentSimTime,
+            effectiveFrom: currentSimTime,
+            publisher: 'CrisisWatch',
+            title: '글로벌 외환 및 금리 급변동 쇼크',
+            content: '시장 불확실성 및 변동성 폭증',
+          });
+        }
+
+        await manager.step(1.0);
+      }
+
+      return manager;
+    }
+
+    // ── 실행 A: Baseline A (enableRegimeEngine = false) ──
+    const runA = await runSim(false);
     const stocksA = Array.from(memoryDb.stocks.values()).map(s => `${s.id}:${s.current_price}:${s.volume}:${s.high}:${s.low}`).sort().join('|');
     const ordersA = Array.from(memoryDb.orders.values()).map(o => `${o.stock_id}:${o.side}:${o.price}:${o.size}:${o.filled}:${o.status}`).sort().join('|');
     const tradesA = memoryDb.trades.map(t => `${t.stock_id}:${t.price}:${t.size}`).sort().join('|');
@@ -968,11 +1220,8 @@ async function runAllTests() {
     const botPrngStatesA = Array.from(runA.agentPrngs.entries()).map(([k, p]) => `${k}:${p.getState()}`).sort().join('|');
     const fundPrngStateA = runA.fundamentalPrng.getState();
 
-    // ── 실행 B: 국면 엔진 활성화 모드 (통합 B: 국면 상태 계산은 하지만 경제 전략에는 미적용) ──
-    memoryDb.resetToSeedData();
-    const runB = new AgentManager(12345, startMs, { enableRegimeEngine: true });
-    for (let i = 0; i < 5; i++) await runB.step(1.0);
-
+    // ── 실행 B: Regime Active B (enableRegimeEngine = true) ──
+    const runB = await runSim(true);
     const stocksB = Array.from(memoryDb.stocks.values()).map(s => `${s.id}:${s.current_price}:${s.volume}:${s.high}:${s.low}`).sort().join('|');
     const ordersB = Array.from(memoryDb.orders.values()).map(o => `${o.stock_id}:${o.side}:${o.price}:${o.size}:${o.filled}:${o.status}`).sort().join('|');
     const tradesB = memoryDb.trades.map(t => `${t.stock_id}:${t.price}:${t.size}`).sort().join('|');
@@ -981,6 +1230,12 @@ async function runAllTests() {
     const botPrngStatesB = Array.from(runB.agentPrngs.entries()).map(([k, p]) => `${k}:${p.getState()}`).sort().join('|');
     const fundPrngStateB = runB.fundamentalPrng.getState();
 
+    // 전환 이력 확인
+    const historyB = runB.marketStateEngine.getRegimeHistory();
+    assert(historyB.length >= 2, `25스텝 실행 중 최소 2건 이상의 실제 국면 전환 발생 확인 (실제: ${historyB.length}건)`);
+    assert(historyB.some(r => r.toRegime === 'BULL'), 'BULL 국면 예약 및 실제 활성화 확인');
+    assert(historyB.some(r => r.toRegime === 'HIGH_VOLATILITY'), 'HIGH_VOLATILITY 국면 예약 및 실제 활성화 확인');
+
     assert(stocksA === stocksB, 'A/B 종목 현재가, 거래량, 고가, 저가 100% 일치');
     assert(ordersA === ordersB, 'A/B 주문 방향, 가격, 수량, 체결량, 상태 100% 일치');
     assert(tradesA === tradesB, 'A/B 체결 종목, 체결 가격, 체결 수량 100% 일치');
@@ -988,7 +1243,7 @@ async function runAllTests() {
     assert(holdingsA === holdingsB, 'A/B 보유 수량 및 평균 단가 100% 일치');
     assert(botPrngStatesA === botPrngStatesB, 'A/B 봇별 PRNG 결과 100% 일치');
     assert(fundPrngStateA === fundPrngStateB, 'A/B 펀더멘털 PRNG 결과 100% 일치');
-    console.log('  ✓ TEST 24 통과: 경제 시뮬레이션 A/B 동등성 검증 완료 (Baseline vs Regime Active 100% 일치)\n');
+    console.log('  ✓ TEST 24 통과: 실제 국면 전환(BULL, HIGH_VOLATILITY) 발생 하에서도 경제 시뮬레이션 100% 일치 검증 완료\n');
   }
 
   // ─────────────────────────────────────────────────────────────────
@@ -1062,8 +1317,230 @@ async function runAllTests() {
     console.log('  ✓ TEST 28 통과: marketMechanicsApplied === false 및 capabilities 메타데이터 검증 완료\n');
   }
 
+  // ─────────────────────────────────────────────────────────────────
+  // TEST 29: 거시 뉴스 순수 함수 감쇠 및 confidence 검증
+  // ─────────────────────────────────────────────────────────────────
+  console.log('▶ [TEST 29] 거시 뉴스 순수 함수 감쇠 및 confidence 검증');
+  {
+    const halfLife = 20; // 20초 반감기
+    const testEvent: ObservableMarketEvent = {
+      eventId: 'macro_test_decay',
+      scope: 'market',
+      eventType: 'OFFICIAL',
+      targetStockIds: [],
+      valuationSignal: 0.60,
+      attentionShock: 0.5,
+      uncertaintyShock: 0.1,
+      confidence: 0.80,
+      halfLife,
+      publishedAt: startMs,
+      effectiveFrom: startMs,
+      publisher: 'TestNews',
+      title: '테스트 뉴스',
+      content: '감쇠 테스트',
+    };
+
+    // 1. t = startMs (경과 0초): signal = 0.60 * 0.80 * 2^0 = 0.48
+    const sig0 = calculateEffectiveMacroSignal([testEvent], startMs);
+    assert(Math.abs(sig0 - 0.48) < 1e-6, `t=0초 신호 0.48 (실제: ${sig0})`);
+
+    // 2. t = startMs + 20초 (경과 1 반감기): signal = 0.48 * 0.5 = 0.24
+    const sig20 = calculateEffectiveMacroSignal([testEvent], startMs + 20000);
+    assert(Math.abs(sig20 - 0.24) < 1e-6, `t=20초(1반감기) 신호 0.24 (실제: ${sig20})`);
+
+    // 3. t = startMs + 40초 (경과 2 반감기): signal = 0.48 * 0.25 = 0.12
+    const sig40 = calculateEffectiveMacroSignal([testEvent], startMs + 40000);
+    assert(Math.abs(sig40 - 0.12) < 1e-6, `t=40초(2반감기) 신호 0.12 (실제: ${sig40})`);
+
+    // 4. 미래 뉴스 (publishedAt > simTime) 차단
+    const futurePubEvent: ObservableMarketEvent = { ...testEvent, eventId: 'fut_pub', publishedAt: startMs + 5000 };
+    const sigFutPub = calculateEffectiveMacroSignal([futurePubEvent], startMs);
+    assert(sigFutPub === 0, 'publishedAt > simTime인 미래 뉴스는 0 반환');
+
+    // 5. 미발효 뉴스 (effectiveFrom > simTime) 차단
+    const futureEffEvent: ObservableMarketEvent = { ...testEvent, eventId: 'fut_eff', effectiveFrom: startMs + 5000 };
+    const sigFutEff = calculateEffectiveMacroSignal([futureEffEvent], startMs);
+    assert(sigFutEff === 0, 'effectiveFrom > simTime인 미발효 뉴스는 0 반환');
+
+    // 6. [-1.0, 1.0] 클램핑 검증
+    const hugeBullEvent: ObservableMarketEvent = { ...testEvent, eventId: 'huge_bull', valuationSignal: 1.0, confidence: 1.0, halfLife: 1000 };
+    const hugeBullEvent2: ObservableMarketEvent = { ...testEvent, eventId: 'huge_bull_2', valuationSignal: 1.0, confidence: 1.0, halfLife: 1000 };
+    const sigClamped = calculateEffectiveMacroSignal([hugeBullEvent, hugeBullEvent2], startMs);
+    assert(sigClamped === 1.0, `최대 1.0 클램핑 확인 (실제: ${sigClamped})`);
+
+    console.log('  ✓ TEST 29 통과: 거시 뉴스 순수 함수 감쇠·신뢰도·시간차단·클램핑 검증 완료\n');
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // TEST 30: 거시 뉴스 정정 정책 (RETRACT, REPLACE, ADDITIVE) 및 복수 정정 순서 결정론
+  // ─────────────────────────────────────────────────────────────────
+  console.log('▶ [TEST 30] 거시 뉴스 정정 정책 및 복수 정정 순서 결정론');
+  {
+    const rumor: ObservableMarketEvent = {
+      eventId: 'macro_rumor_1',
+      scope: 'market',
+      eventType: 'RUMOR',
+      targetStockIds: [],
+      valuationSignal: 0.50,
+      attentionShock: 0.5,
+      uncertaintyShock: 0.2,
+      confidence: 1.0,
+      halfLife: 100000,
+      publishedAt: startMs,
+      effectiveFrom: startMs,
+      publisher: 'Rumor',
+      title: '거시 루머',
+      content: '금리 인하설',
+    };
+
+    // 1. RETRACT 정정: 원본 기여 제거 -> 0
+    const corrRetract: ObservableMarketEvent = {
+      eventId: 'corr_retract',
+      scope: 'market',
+      eventType: 'CORRECTION',
+      correctionMode: 'RETRACT',
+      originalEventId: 'macro_rumor_1',
+      targetStockIds: [],
+      valuationSignal: 0.0,
+      attentionShock: 0.2,
+      uncertaintyShock: 0.1,
+      confidence: 1.0,
+      halfLife: 100000,
+      publishedAt: startMs + 1000,
+      effectiveFrom: startMs + 1000,
+      publisher: 'Official',
+      title: '부인 공시',
+      content: '금리 인하 사실무근',
+    };
+    const sigRetract = calculateEffectiveMacroSignal([rumor, corrRetract], startMs + 1000);
+    assert(Math.abs(sigRetract) < 1e-6, `RETRACT 적용 시 0이어야 함 (실제: ${sigRetract})`);
+
+    // 2. REPLACE 정정: 원본 제거 후 새 신호(-0.20) 대체 반영
+    const corrReplace: ObservableMarketEvent = {
+      ...corrRetract,
+      eventId: 'corr_replace',
+      correctionMode: 'REPLACE',
+      valuationSignal: -0.20,
+    };
+    const sigReplace = calculateEffectiveMacroSignal([rumor, corrReplace], startMs + 1000);
+    assert(Math.abs(sigReplace - (-0.20)) < 0.001, `REPLACE 적용 시 -0.20이어야 함 (실제: ${sigReplace})`);
+
+    // 3. ADDITIVE 정정: 원본(+0.50) 유지 + 정정(+0.30) 가산 -> +0.80
+    const corrAdditive: ObservableMarketEvent = {
+      ...corrRetract,
+      eventId: 'corr_additive',
+      correctionMode: 'ADDITIVE',
+      valuationSignal: 0.30,
+    };
+    const sigAdditive = calculateEffectiveMacroSignal([rumor, corrAdditive], startMs + 1000);
+    assert(Math.abs(sigAdditive - 0.80) < 0.001, `ADDITIVE 적용 시 0.80이어야 함 (실제: ${sigAdditive})`);
+
+    // 4. 복수 정정 결정론: 최신 sequence 정정 승자 선정
+    const corrSeq1: ObservableMarketEvent = {
+      ...corrReplace,
+      eventId: 'corr_seq1',
+      sequence: 1,
+      publishedAt: startMs + 2000,
+      effectiveFrom: startMs + 2000,
+      valuationSignal: -0.10,
+    };
+    const corrSeq2: ObservableMarketEvent = {
+      ...corrRetract,
+      eventId: 'corr_seq2',
+      sequence: 2,
+      publishedAt: startMs + 2000,
+      effectiveFrom: startMs + 2000,
+      valuationSignal: 0.0,
+    };
+    // 입력 순서를 바꿔가며 10회 검증
+    for (let i = 0; i < 10; i++) {
+      const shuffled = i % 2 === 0 ? [rumor, corrSeq1, corrSeq2] : [corrSeq2, rumor, corrSeq1];
+      const sigMulti = calculateEffectiveMacroSignal(shuffled, startMs + 2000);
+      assert(Math.abs(sigMulti) < 1e-6, `복수 정정 시 최신 sequence 2(RETRACT) 승자 결정론 보장 (실제: ${sigMulti})`);
+    }
+
+    console.log('  ✓ TEST 30 통과: RETRACT·REPLACE·ADDITIVE 및 복수 정정 순서 결정론 검증 완료\n');
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // TEST 31: 시장 전체 빈 장부 판정 및 종목 비율 임계값 검증
+  // ─────────────────────────────────────────────────────────────────
+  console.log('▶ [TEST 31] 시장 전체 빈 장부 판정 및 종목 비율 임계값 검증');
+  {
+    // 1. 단일 종목 빈 장부로 시장 위기 미발생 (전체 26개 중 1개 = ~3.8% < 30%)
+    memoryDb.resetToSeedData();
+    const mgr = new AgentManager(42, startMs, {
+      enableRegimeEngine: true,
+      regimeEngineConfig: {
+        thresholds: {
+          ...DEFAULT_REGIME_THRESHOLDS,
+          emptyBookStockRatioThreshold: 0.30,
+          minRegimeDurationSeconds: 1.0,
+          liquidityCrisisEmptyBookDurationSeconds: 2.0,
+          liquidityCrisisEnterSpreadBps: 50,
+          liquidityCrisisExitSpreadBps: 30,
+        },
+      },
+    });
+
+    const stocks = Array.from(memoryDb.stocks.values());
+    assert(stocks.length >= 5, `테스트 시드 종목 수 5개 이상 확인 (${stocks.length}개)`);
+
+    // 정상 1스텝 실행: LP가 모든 26개 종목에 대해 정상 호가 및 spreadHistory 적재
+    await mgr.step(1.0);
+    assert(mgr.getEmptyBookAccumulatedSeconds() === 0, '정상 호가 상태에서는 누적 시간 0초');
+
+    // LP 봇의 자동 호가 재생성을 중단하여 수동 장부 제어
+    mgr.agents.delete('acc_lp_main');
+
+    // 1개 종목만 호가 완전 제거 (1/26 = 3.8% < 30%)
+    const targetStockId1 = stocks[0].id;
+    for (const [orderId, order] of memoryDb.orders.entries()) {
+      if (order.stock_id === targetStockId1) {
+        memoryDb.orders.delete(orderId);
+      }
+    }
+
+    await mgr.step(1.0);
+    const accumulated1 = mgr.getEmptyBookAccumulatedSeconds();
+    assert(accumulated1 === 0, `1개 종목 빈 장부 시 비율(3.8% < 30%) 미달로 누적 시간 0초 유지 (실제: ${accumulated1})`);
+    const snap1 = mgr.getMarketStateSnapshot();
+    assert(snap1.regime !== 'LIQUIDITY_CRISIS' && snap1.pendingRegime !== 'LIQUIDITY_CRISIS', '1개 종목 빈 장부로는 위기가 발생하지 않음');
+    console.log('  ✓ 1개 종목 빈 장부(3.8% < 30%)로는 시장 위기가 발생하지 않고 누적 시간 0 유지 확인');
+
+    // 2. 비율 임계치(30%) 이상 빈 장부 시 정상 누적
+    // 전체 26개 중 40% (11개) 종목의 호가 완전 제거 (11/26 = 42.3% >= 30%)
+    const emptyCount = Math.ceil(stocks.length * 0.4);
+    const targetEmptyStockIds = new Set(stocks.slice(0, emptyCount).map(s => s.id));
+    for (const [orderId, order] of memoryDb.orders.entries()) {
+      if (targetEmptyStockIds.has(order.stock_id)) {
+        memoryDb.orders.delete(orderId);
+      }
+    }
+
+    // 3스텝 연속 빈 장부 유지 -> 누적 시간 증가 확인
+    await mgr.step(1.0);
+    const accStep1 = mgr.getEmptyBookAccumulatedSeconds();
+    assert(accStep1 >= 1.0, `임계치(30%) 초과 빈 장부 시 1스텝 누적 확인 (실제: ${accStep1})`);
+
+    await mgr.step(1.0);
+    const accStep2 = mgr.getEmptyBookAccumulatedSeconds();
+    assert(accStep2 >= 2.0, `임계치(30%) 초과 빈 장부 시 2스텝 누적 확인 (실제: ${accStep2})`);
+
+    await mgr.step(1.0);
+    const accStep3 = mgr.getEmptyBookAccumulatedSeconds();
+    assert(accStep3 >= 3.0, `임계치(30%) 초과 빈 장부 시 3스텝 누적 확인 (실제: ${accStep3})`);
+
+    const snap2 = mgr.getMarketStateSnapshot();
+    const isCrisisOrPending = snap2.regime === 'LIQUIDITY_CRISIS' || snap2.pendingRegime === 'LIQUIDITY_CRISIS';
+    assert(isCrisisOrPending, '빈 장부 누적 시간 기준 충족 시 LIQUIDITY_CRISIS 정상 예약/발생');
+    console.log('  ✓ 빈 장부 비율 임계값(30%) 초과 시 정상 누적 및 LIQUIDITY_CRISIS 발생 확인');
+
+    console.log('  ✓ TEST 31 통과: 시장 전체 빈 장부 비율 판정 및 임계값 동작 검증 완료\n');
+  }
+
   console.log('================================================================');
-  console.log('  🎉 ALL 28 MARKET REGIME FOUNDATION TESTS PASSED (EXIT CODE 0)');
+  console.log('  🎉 ALL 31 MARKET REGIME FOUNDATION TESTS PASSED (EXIT CODE 0)');
   console.log('================================================================\n');
 }
 

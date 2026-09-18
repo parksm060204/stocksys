@@ -351,6 +351,20 @@ export function validateRegimeThresholds(th: RegimeThresholdConfig): void {
     throw new RangeError(`liquidityCrisisEmptyBookDurationSeconds must be non-negative: ${emptyBookDur}`);
   }
 
+  if (th.emptyBookStockRatioThreshold !== undefined) {
+    const ratio = assertFinite('emptyBookStockRatioThreshold', th.emptyBookStockRatioThreshold);
+    if (ratio < 0 || ratio > 1.0) {
+      throw new RangeError(`emptyBookStockRatioThreshold must be in [0.0, 1.0], got: ${ratio}`);
+    }
+  }
+
+  if (th.liquidityCrisisRecoveryMinDurationSeconds !== undefined) {
+    const minRecDur = assertFinite('liquidityCrisisRecoveryMinDurationSeconds', th.liquidityCrisisRecoveryMinDurationSeconds);
+    if (minRecDur < 0) {
+      throw new RangeError(`liquidityCrisisRecoveryMinDurationSeconds must be non-negative, got: ${minRecDur}`);
+    }
+  }
+
   // 3. 고변동성 (HIGH_VOLATILITY)
   const enterVol = assertFinite('highVolatilityEnterThreshold', th.highVolatilityEnterThreshold);
   const exitVol = assertFinite('highVolatilityExitThreshold', th.highVolatilityExitThreshold);
@@ -414,6 +428,7 @@ export const DEFAULT_REGIME_THRESHOLDS: Readonly<RegimeThresholdConfig> = deepFr
   liquidityCrisisEnterDepthDrop: -0.45,
   liquidityCrisisExitDepthDrop: -0.20,
   liquidityCrisisEmptyBookDurationSeconds: 2.0,
+  emptyBookStockRatioThreshold: 0.3,
 
   // 하위 호환
   liquidityCrisisSpreadBpsThreshold: 120.0,

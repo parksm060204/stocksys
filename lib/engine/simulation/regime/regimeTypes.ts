@@ -66,8 +66,13 @@ export interface RegimeObservation {
   readonly crossSectionalDispersion?: number;
   /** 거래대금 변화율 (전기 대비) */
   readonly turnoverChange: number;
-  /** 평균 스프레드 (bps) */
+  /** 과거 기록 기반 평균 스프레드 (bps, 대시보드/진입 참고용) */
   readonly averageSpreadBps: number;
+  /**
+   * 해당 스텝 최종 주문 장부에서 관측한 현재 유효 양측 최우선 호가 스프레드 (bps).
+   * 유효 양측 호가 부재/교차 호가/비정상 가격이면 null 또는 undefined (스프레드 회복 미확인).
+   */
+  readonly currentSpreadBps?: number | null;
   /** 호가 깊이 변화율 (전기 대비) */
   readonly depthChange: number;
   /** 시장 평균 불확실성 */
@@ -85,7 +90,10 @@ export interface RegimeTransitionMetrics {
   readonly realizedVolatility: number;
   readonly crossSectionalDispersion?: number;
   readonly turnoverChange: number;
+  /** 과거 기록 기반 평균 스프레드 (bps, 대시보드/진입 참고용) */
   readonly averageSpreadBps: number;
+  /** 현재 장부 기준 유효 양측 최우선 호가 스프레드 (bps, 관측 불가 시 null/undefined) */
+  readonly currentSpreadBps?: number | null;
   readonly depthChange: number;
   readonly uncertainty: number;
   readonly emptyBookDurationSeconds: number;

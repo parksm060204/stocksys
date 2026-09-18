@@ -26,7 +26,11 @@ export interface WindowStatistics {
   turnoverRate: number;        // 회전율 (체결 수량 / 유통주식수)
   returnRate: number;          // 구간 가격 변동률
   relativeReturn: number;      // 시장 대비 상대수익률
-  spread: number | null;       // 호가 스프레드
+  spread: number | null;       // 과거 기록 기반 평균 호가 스프레드 (대시보드용)
+  currentSpread: number | null;      // 해당 스텝 최종 장부의 유효 양측 최우선 호가 절대 스프레드
+  currentSpreadBps: number | null;   // 현재 최우선 양측 호가 스프레드 (bps, 유효 관측 불가 시 null)
+  bestBid: number | null;            // 최우선 매수 호가 (유효 미체결 잔량 보유)
+  bestAsk: number | null;            // 최우선 매도 호가 (유효 미체결 잔량 보유)
   depthShares: number;         // 10단 호가 총 주수
   depthNotional: number;       // 10단 호가 총 금액
   bidDepthShares: number;      // 현재 활성 매수 호가 총 주수
@@ -289,6 +293,8 @@ export class MarketDiagnostics {
       let depthNotional = 0;
       let bidDepthShares = 0;
       let askDepthShares = 0;
+      let bestBid: number | null = null;
+      let bestAsk: number | null = null;
       const orderIds = memoryDb.orderStockIndex.get(stock.id);
       if (orderIds) {
         for (const oid of orderIds) {
@@ -302,10 +308,32 @@ export class MarketDiagnostics {
             } else if (ord.side === 'sell') {
               askDepthShares += rem;
             }
+
+            // 현재 최우선 호가 산출: 종료/잔량 0/잘못된 가격 주문은 제외
+            const hasValidPrice = typeof ord.price === 'number' && Number.isFinite(ord.price) && ord.price > 0;
+            if (rem > 0 && hasValidPrice) {
+              if (ord.side === 'buy' && (bestBid === null || ord.price > bestBid)) {
+                bestBid = ord.price;
+              } else if (ord.side === 'sell' && (bestAsk === null || ord.price < bestAsk)) {
+                bestAsk = ord.price;
+              }
+            }
           }
         }
       }
       const hasTwoSidedBook = bidDepthShares > 0 && askDepthShares > 0;
+
+      // 현재 장부 기준 스프레드: 양측 최우선 호가가 유효하고 교차하지 않을 때만 관측값 산출.
+      // 유효 양측 호가 부재, 교차 호가(bestAsk <= bestBid), 비정상 mid는 정상 스프레드로 취급하지 않는다(null).
+      let currentSpread: number | null = null;
+      let currentSpreadBps: number | null = null;
+      if (bestBid !== null && bestAsk !== null && bestAsk > bestBid) {
+        const mid = (bestBid + bestAsk) / 2;
+        if (Number.isFinite(mid) && mid > 0) {
+          currentSpread = bestAsk - bestBid;
+          currentSpreadBps = (currentSpread / mid) * 10000;
+        }
+      }
 
       // 가격 변동률 계산
       const hist = memoryDb.stockPriceHistory.filter((h) => h.stock_id === stock.id);
@@ -333,6 +361,10 @@ export class MarketDiagnostics {
         returnRate,
         relativeReturn: 0, // 2단계에서 계산
         spread: this.getAverageSpread(stock.id),
+        currentSpread,
+        currentSpreadBps,
+        bestBid,
+        bestAsk,
         depthShares,
         depthNotional,
         bidDepthShares,

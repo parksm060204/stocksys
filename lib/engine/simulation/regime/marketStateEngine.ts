@@ -449,6 +449,18 @@ export class MarketStateEngine {
     if (obs.averageSpreadBps < 0) {
       throw new RangeError(`[MarketStateEngine] averageSpreadBps must be non-negative: got ${obs.averageSpreadBps}`);
     }
+    // 현재 장부 스프레드는 선택적 관측값: 제공 시 유한한 비음수여야 하며, null/undefined는 "관측 불가"를 의미
+    if (obs.currentSpreadBps !== undefined && obs.currentSpreadBps !== null) {
+      if (
+        typeof obs.currentSpreadBps !== 'number' ||
+        !Number.isFinite(obs.currentSpreadBps) ||
+        obs.currentSpreadBps < 0
+      ) {
+        throw new RangeError(
+          `[MarketStateEngine] currentSpreadBps must be a non-negative finite number or null: got ${obs.currentSpreadBps}`
+        );
+      }
+    }
     if (obs.emptyBookDurationSeconds < 0) {
       throw new RangeError(
         `[MarketStateEngine] emptyBookDurationSeconds must be non-negative: got ${obs.emptyBookDurationSeconds}`
@@ -529,8 +541,13 @@ export class MarketStateEngine {
     const ratioThreshold = th.emptyBookStockRatioThreshold ?? 0.3;
 
     if (this.currentRegime === 'LIQUIDITY_CRISIS') {
-      // 위기 탈출 히스테리시스: 스프레드가 회복 기준 이하로 안정되고 깊이도 회복되어야 이탈
-      const hasRecoveredSpread = obs.averageSpreadBps <= crisisExitSpread;
+      // 위기 탈출 히스테리시스: 현재 장부에서 관측한 유효 스프레드가 회복 기준 이하이고 깊이도 회복되어야 이탈.
+      // 과거 스프레드 평균(averageSpreadBps)이나 이력 부재 시 대체값(20bps)으로 이탈 조건이 충족되지 않도록,
+      // 오직 현재 장부 기준 currentSpreadBps 관측값만 사용한다.
+      // 유효 양측 호가 부재/교차 호가 등으로 관측 불가(null/undefined)하면 스프레드 회복 미확인으로 처리한다.
+      const hasObservedCurrentSpread =
+        typeof obs.currentSpreadBps === 'number' && Number.isFinite(obs.currentSpreadBps);
+      const hasRecoveredSpread = hasObservedCurrentSpread && (obs.currentSpreadBps as number) <= crisisExitSpread;
       const hasRecoveredDepth = obs.depthChange >= crisisExitDepth;
       const minCrisisDuration = th.liquidityCrisisRecoveryMinDurationSeconds ?? 10.0;
       const hasMetMinCrisisDuration = regimeDurationSeconds >= minCrisisDuration;
@@ -558,11 +575,15 @@ export class MarketStateEngine {
       // 위기 진입 경로:
       // 경로 A: 기존 스프레드 확대 + 호가 깊이 급감
       const isSpreadDepthCrisis = isCrisisSpread && isCrisisDepthDrop;
-      // 경로 B: 설정된 종목 비율 이상에서 양측 호가가 없고 emptyBookDurationSeconds가 기준 이상 지속
-      //        (스프레드 이력이 없거나 평균 스프레드가 대체값(20bps) 등 낮은 경우에도 위기 진입 가능)
+      // 경로 B: 설정된 종목 비율 이상에서 양측 호가가 없고 emptyBookDurationSeconds가 기준 이상 지속.
+      //        emptyBookStockRatio가 실제 유한한 관측값이고 임계값 이상일 때만 진입을 허용한다.
+      //        값이 누락(null/undefined)되거나 비정상이면 비율을 확인하지 못한 것이므로 충족으로 간주하지 않는다.
+      const hasObservedEmptyBookRatio =
+        typeof obs.emptyBookStockRatio === 'number' && Number.isFinite(obs.emptyBookStockRatio);
       const isBookDroughtCrisis =
         isCrisisEmptyBook &&
-        (obs.emptyBookStockRatio === undefined || obs.emptyBookStockRatio >= ratioThreshold);
+        hasObservedEmptyBookRatio &&
+        (obs.emptyBookStockRatio as number) >= ratioThreshold;
 
       if (isSpreadDepthCrisis || isBookDroughtCrisis) {
         candidateRegime = 'LIQUIDITY_CRISIS';
@@ -647,6 +668,7 @@ export class MarketStateEngine {
       crossSectionalDispersion: obs.crossSectionalDispersion,
       turnoverChange: obs.turnoverChange,
       averageSpreadBps: obs.averageSpreadBps,
+      currentSpreadBps: obs.currentSpreadBps,
       depthChange: obs.depthChange,
       uncertainty: obs.uncertainty,
       emptyBookDurationSeconds: obs.emptyBookDurationSeconds,

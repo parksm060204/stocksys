@@ -717,6 +717,9 @@ export class AgentManager {
       let aggReturn = 0;
       let avgSpreadBps = 0;
       let validSpreadCount = 0;
+      // 현재 장부(해당 스텝 최종 최우선 양측 호가) 기준 스프레드 집계
+      let currentSpreadBpsSum = 0;
+      let validCurrentSpreadCount = 0;
 
       for (const st of statsList) {
         aggReturn += st.returnRate;
@@ -731,12 +734,23 @@ export class AgentManager {
           avgSpreadBps += bps;
           validSpreadCount++;
         }
+
+        if (
+          st.currentSpreadBps !== null &&
+          st.currentSpreadBps !== undefined &&
+          Number.isFinite(st.currentSpreadBps)
+        ) {
+          currentSpreadBpsSum += st.currentSpreadBps;
+          validCurrentSpreadCount++;
+        }
       }
 
       const stockCount = Math.max(1, statsList.length);
       const marketCapWeightedReturn = totalMarketCap > 0 ? weightedReturnSum / totalMarketCap : aggReturn / stockCount;
       const meanReturn = marketCapWeightedReturn;
       const meanSpreadBps = validSpreadCount > 0 ? avgSpreadBps / validSpreadCount : 20.0;
+      // 현재 장부에서 유효 스프레드를 하나도 관측하지 못하면 대체값을 쓰지 않고 null(관측 불가)로 둔다.
+      const meanCurrentSpreadBps = validCurrentSpreadCount > 0 ? currentSpreadBpsSum / validCurrentSpreadCount : null;
 
       // 횡단면 수익률 분산 (종목 간 동일 가중 편차: 산술 평균 기준 순수 함수 적용)
       const crossSectionalDispersion = calculateCrossSectionalDispersion(statsList.map((st) => st.returnRate));
@@ -814,6 +828,7 @@ export class AgentManager {
         crossSectionalDispersion,
         turnoverChange,
         averageSpreadBps: meanSpreadBps,
+        currentSpreadBps: meanCurrentSpreadBps,
         depthChange,
         uncertainty: avgUncertainty,
         emptyBookDurationSeconds,

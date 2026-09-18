@@ -4222,3 +4222,25 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
   - TEST 20: `emptyBookStockRatio`의 비정상 값(음수, 1.0 초과, NaN) 거절 및 내부 상태 불변 검증 추가.
   - TEST 33 신설: 기본 설정(`DEFAULT_REGIME_THRESHOLDS` 원본 그대로 적용) 하에서 5대 시나리오(사례 ⑤ 30% 미만 시 위기 미진입, 사례 ① & ② 30% 이상 공백 및 스프레드 20bps 상황에서 지속시간 충족 시 위기 예약 및 활성화, 사례 ③ 공백 지속 시 이탈 차단, 사례 ④ 양측 호가 복구 시 정상 이탈) 및 주문·인덱스 1:1 정합성, 동일 시드(42) 비트 단위 재현성 실증 (총 33개 테스트 전수 통과).
 - 검증 결과: 8개 테스트 스크립트 전수 통과(Exit Code 0), `npx tsc --noEmit` 통과(Exit Code 0), Next.js `npm run build` 성공(Exit Code 0), `git diff --check` 클린(Exit Code 0).
+
+---
+## 2026-09-19 02:30
+
+**요청 요약:** STOCKSYS 시장 국면 1단계의 유동성 위기 복구 판정을 현재 장부 기준으로 수정. 위기 이탈이 과거 스프레드 평균(이력 없으면 20bps 대체값)으로 충족되던 결함과, 빈 장부 경로 진입이 `emptyBookStockRatio === undefined`를 허용하던 결함을 바로잡고 회귀 테스트를 보강.
+
+**수행 결과:**
+- `lib/engine/simulation/marketDiagnostics.ts`:
+  - `WindowStatistics`에 현재 장부 기준 지표 `currentSpread`(절대), `currentSpreadBps`(bps), `bestBid`, `bestAsk` 추가. 기존 `spread`는 과거 평균(대시보드용)으로 유지하여 국면 이탈용 지표와 이름·타입 분리.
+  - `computeWindowStatistics`의 최종 주문 장부 순회에서 종료/잔량 0/잘못된 가격 주문을 제외하고 종목별 최우선 매수·매도 호가를 산출. 양측 유효 잔량이 있고 `bestAsk > bestBid`인 경우에만 스프레드(bps, mid 기준) 계산. 교차 호가·유효 양측 호가 부재 시 `null`.
+- `lib/engine/simulation/regime/regimeTypes.ts`:
+  - `RegimeObservation`·`RegimeTransitionMetrics`에 `currentSpreadBps?: number | null` 추가(관측 불가 시 null/undefined).
+- `lib/engine/simulation/regime/marketStateEngine.ts`:
+  - 위기 이탈의 `hasRecoveredSpread`를 `averageSpreadBps`가 아니라 관측된 `currentSpreadBps <= 65bps`만으로 판정. null/undefined면 스프레드 회복 미확인으로 위기 유지.
+  - 빈 장부 경로 진입을 `emptyBookStockRatio`가 유한한 관측값이고 임계값 이상일 때만 허용(undefined 허용 제거).
+  - `currentSpreadBps` 유한·비음수 검증 및 전환 메트릭 반영.
+- `lib/engine/simulation/agentManager.ts`:
+  - 국면 관측 DTO 생성 시 현재 장부 유효 스프레드 평균(`meanCurrentSpreadBps`)을 계산. 유효 관측이 없으면 대체값 없이 `null`로 전달.
+- `scripts/test-market-regime-foundation.ts`:
+  - TEST 33을 A~D 사례로 재구성. A(비율 관측값 누락 시 빈 장부 경로 위기 예약 차단, 비율 0.42 대조군 예약), B(위기 중 ±1% 복구 시 현재 스프레드 약 200bps로 위기 유지, 20bps 대체값으로 이탈 금지), C(±0.2% 약 40bps로 전 주문 안전 교체 시 이탈 예약 후 다음 스텝 활성화), D(유효 양측 호가 부재/교차 호가는 스프레드 회복 미판정).
+  - 각 사례에서 최우선 호가, 현재 장부 스프레드, 공백 비율, 지속시간, 현재/대기 국면을 명시 검증하고, 주문 교체 시 `orders`·`orderStockIndex` 양방향 1:1 정합성 검증. 일반 봇 제거 후 수동 장부로 결정론적 구성.
+- 검증 결과: 시장 국면 포함 13개 관련 테스트 스크립트 전수 통과(Exit Code 0), `npx tsc --noEmit` 통과(Exit Code 0), Next.js `npm run build` 성공(Exit Code 0), `git diff --check` 클린(Exit Code 0).

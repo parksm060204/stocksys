@@ -1974,9 +1974,17 @@ async function runAllTests() {
   }
 
   // ─────────────────────────────────────────────────────────────────
-  // TEST 33: 기본 설정(DEFAULT_REGIME_THRESHOLDS) 기반 유동성 위기 진입·유지·이탈 5대 사례 결정론적 검증
+  // TEST 33: 기본 설정(DEFAULT_REGIME_THRESHOLDS) 기반 유동성 위기 진입·유지·이탈 및
+  //          현재 장부 기준 스프레드 판정 결정론적 검증
+  //   - 이탈 판정은 과거 스프레드 평균이 아니라 해당 스텝 최종 장부의 현재 최우선 양측 호가로
+  //     계산한 currentSpreadBps만 사용한다. (스프레드 이력 부재 시 대체값 20bps로 이탈 금지)
+  //   - 빈 장부 경로 진입은 emptyBookStockRatio가 실제 관측값이고 임계값 이상일 때만 허용한다.
+  //   A: 비율 관측값 누락 시 빈 장부 경로 위기 예약 금지 (엔진 단위)
+  //   B: 위기 중 ±1%(약 200bps) 양측 호가 복구 시 위기 유지 (20bps 대체값으로 이탈 금지)
+  //   C: ±0.2%(약 40bps < 65bps)로 교체 시 이탈 예약 후 다음 스텝 활성화
+  //   D: 유효 양측 호가 부재/교차 호가는 스프레드 회복으로 판정하지 않음
   // ─────────────────────────────────────────────────────────────────
-  console.log('▶ [TEST 33] 기본 설정(DEFAULT_REGIME_THRESHOLDS) 기반 유동성 위기 진입·유지·이탈 결정론적 검증');
+  console.log('▶ [TEST 33] 기본 설정 기반 유동성 위기 진입·유지·이탈 및 현재 장부 스프레드 판정 검증');
   {
     // A. 임계값을 낮추지 않은 기본 설정으로 AgentManager 인스턴스 생성
     // DEFAULT_REGIME_THRESHOLDS:
@@ -1989,6 +1997,99 @@ async function runAllTests() {
     // liquidityCrisisExitSpreadBps: 65.0
     // liquidityCrisisEnterDepthDrop: -0.45
     // liquidityCrisisExitDepthDrop: -0.20
+
+    // ── Case A (엔진 단위): 동일한 공백 지속시간에서 비율 관측값 누락 시 빈 장부 경로 진입 금지 ──
+    {
+      const engineMissingRatio = new MarketStateEngine({}, 42, startMs);
+      const probeTime = startMs + 20000;
+      const baseObs: RegimeObservation = {
+        simulationTime: probeTime,
+        aggregateReturn: 0,
+        realizedVolatility: 0.005,
+        turnoverChange: 0,
+        averageSpreadBps: 20,
+        currentSpreadBps: 20,
+        depthChange: 0,
+        uncertainty: 0.1,
+        emptyBookDurationSeconds: 2.0,
+        effectiveMacroNewsSignal: 0,
+      };
+      const missingRatioResult = engineMissingRatio.evaluateNextRegime(baseObs, probeTime, probeTime, 1);
+      assert(missingRatioResult === null, `A: emptyBookStockRatio 관측값 누락 시 위기 예약 금지 (실제: ${missingRatioResult})`);
+      assert(engineMissingRatio.getPendingTransition() === null, 'A: 비율 누락 시 pendingTransition 부재');
+
+      const engineObservedRatio = new MarketStateEngine({}, 42, startMs);
+      const observedRatioResult = engineObservedRatio.evaluateNextRegime(
+        { ...baseObs, emptyBookStockRatio: 0.42 },
+        probeTime,
+        probeTime,
+        1
+      );
+      assert(observedRatioResult === 'LIQUIDITY_CRISIS', `A: 동일 조건에서 비율 관측값(0.42 >= 0.30) 충족 시 위기 예약 (실제: ${observedRatioResult})`);
+      assert(
+        engineObservedRatio.getPendingTransition() !== null && engineObservedRatio.getPendingTransition()!.regime === 'LIQUIDITY_CRISIS',
+        'A: 대조군 pendingTransition === LIQUIDITY_CRISIS'
+      );
+      console.log('  ✓ A: 비율 누락 → 위기 예약 차단, 비율 관측 0.42 → 위기 예약 확인');
+    }
+
+    // ── Case D (엔진 단위): 현재 장부 스프레드 관측 불가(null) 시 스프레드 회복 미확인 → 이탈 금지 ──
+    {
+      const engineD = new MarketStateEngine({}, 42, startMs);
+      const entryTime = startMs + 20000;
+      engineD.evaluateNextRegime(
+        {
+          simulationTime: entryTime,
+          aggregateReturn: 0,
+          realizedVolatility: 0.005,
+          turnoverChange: 0,
+          averageSpreadBps: 200,
+          currentSpreadBps: 200,
+          depthChange: -0.6,
+          uncertainty: 0.1,
+          emptyBookDurationSeconds: 0,
+          effectiveMacroNewsSignal: 0,
+        },
+        entryTime,
+        entryTime + 1000,
+        1
+      );
+      const activated = engineD.activatePendingRegime(entryTime + 1000, 2);
+      assert(activated, 'D: pending 위기 국면 활성화 성공');
+      engineD.publishSnapshot(entryTime + 1000);
+      assert(engineD.getSnapshot().regime === 'LIQUIDITY_CRISIS', 'D: 사전 위기 진입 확인');
+
+      const exitTime = entryTime + 30000;
+      const baseRecoveryObs: RegimeObservation = {
+        simulationTime: exitTime,
+        aggregateReturn: 0,
+        realizedVolatility: 0.005,
+        turnoverChange: 0,
+        averageSpreadBps: 20,
+        depthChange: 0,
+        uncertainty: 0.1,
+        emptyBookDurationSeconds: 0,
+        emptyBookStockRatio: 0,
+        effectiveMacroNewsSignal: 0,
+      };
+      const unobservableResult = engineD.evaluateNextRegime(
+        { ...baseRecoveryObs, currentSpreadBps: null },
+        exitTime,
+        exitTime,
+        3
+      );
+      assert(unobservableResult === null, `D: currentSpreadBps null(관측 불가) → 스프레드 회복 미확인으로 위기 유지 (실제: ${unobservableResult})`);
+      assert(engineD.getPendingTransition() === null, 'D: 관측 불가 시 이탈 pending 부재');
+
+      const observableResult = engineD.evaluateNextRegime(
+        { ...baseRecoveryObs, currentSpreadBps: 40 },
+        exitTime,
+        exitTime,
+        3
+      );
+      assert(observableResult === 'SIDEWAYS', `D: 유효 스프레드 40bps < 65bps 관측 시 이탈 예약 (실제: ${observableResult})`);
+      console.log('  ✓ D(엔진): currentSpreadBps null → 이탈 차단, 40bps 관측 → 이탈 예약 확인');
+    }
 
     async function runDeterministicCrisisScenario() {
       memoryDb.resetToSeedData();
@@ -2011,7 +2112,7 @@ async function runAllTests() {
 
       // 모든 종목에 대해 정상적인 2단 매수/매도 호가를 생성하여 양측 호가 장부 구성
       let orderSeq = 1;
-      function addTwoSidedOrders(stockId: string, price: number) {
+      function addTwoSidedOrders(stockId: string, price: number, spreadPct: number = 0.01) {
         const bId = `ord_t33_b_${stockId}_${orderSeq++}`;
         const aId = `ord_t33_a_${stockId}_${orderSeq++}`;
         memoryDb.orders.set(bId, {
@@ -2020,7 +2121,7 @@ async function runAllTests() {
           stock_id: stockId,
           side: 'buy',
           order_type: 'limit',
-          price: Math.round(price * 0.99),
+          price: Math.max(1, Math.round(price * (1 - spreadPct))),
           size: 100,
           filled: 0,
           status: 'open',
@@ -2033,7 +2134,7 @@ async function runAllTests() {
           stock_id: stockId,
           side: 'sell',
           order_type: 'limit',
-          price: Math.round(price * 1.01),
+          price: Math.max(1, Math.round(price * (1 + spreadPct))),
           size: 100,
           filled: 0,
           status: 'open',
@@ -2044,12 +2145,21 @@ async function runAllTests() {
         memoryDb.addOrderToIndex(memoryDb.orders.get(aId)!);
       }
 
-      // 기존 주문 클리어 후 깨끗한 양측 장부 생성
+      function removeOrdersForStock(stockId: string) {
+        const oIds = Array.from(memoryDb.orderStockIndex.get(stockId) ?? []);
+        for (const oId of oIds) safeCancelAndDeleteOrder(oId);
+      }
+
+      function readBook(stockId: string) {
+        return mgr.diagnostics.computeWindowStatistics(mgr.clock.simulationTime).get(stockId)!;
+      }
+
+      // 기존 주문 클리어 후 깨끗한 양측 장부 생성 (±1% ≈ 약 200bps)
       memoryDb.orders.clear();
       memoryDb.orderStockIndex.clear();
       memoryDb.orderUserIndex.clear();
       for (const stk of stocks) {
-        addTwoSidedOrders(stk.id, stk.current_price);
+        addTwoSidedOrders(stk.id, stk.current_price, 0.01);
       }
       verifyOrderIndexIntegrity();
 
@@ -2086,8 +2196,7 @@ async function runAllTests() {
       const emptyCount = Math.ceil(stocks.length * 0.4); // 11개
       const targetEmptyStockIds = new Set(stocks.slice(0, emptyCount).map(s => s.id));
       for (const sId of targetEmptyStockIds) {
-        const oIds = Array.from(memoryDb.orderStockIndex.get(sId) ?? []);
-        for (const oId of oIds) safeCancelAndDeleteOrder(oId);
+        removeOrdersForStock(sId);
       }
       verifyOrderIndexIntegrity();
 
@@ -2105,9 +2214,18 @@ async function runAllTests() {
       await mgr.step(1.0);
       const lastObsCase2 = mgr.getLastObservation();
       assert(lastObsCase2 !== null, '관측값 존재');
-      assert(lastObsCase2!.averageSpreadBps === 20.0, `스프레드 이력 부재 시 관측 스프레드는 기본 대체값 20.0bps (실제: ${lastObsCase2!.averageSpreadBps})`);
+      assert(lastObsCase2!.averageSpreadBps === 20.0, `스프레드 이력 부재 시 과거 평균 스프레드는 기본 대체값 20.0bps (실제: ${lastObsCase2!.averageSpreadBps})`);
       assert(lastObsCase2!.emptyBookDurationSeconds >= 2.0, `지속시간 2.0초 이상 충족 (실제: ${lastObsCase2!.emptyBookDurationSeconds})`);
       assert(lastObsCase2!.emptyBookStockRatio !== undefined && lastObsCase2!.emptyBookStockRatio >= 0.3, `공백 비율 30% 이상 충족 (실제: ${lastObsCase2!.emptyBookStockRatio})`);
+      // 현재 장부 기준 스프레드는 비어있지 않은 종목들의 ±1% 호가에서 직접 관측됨 (과거 평균 대체값과 별개)
+      assert(
+        lastObsCase2!.currentSpreadBps !== null && lastObsCase2!.currentSpreadBps! > 120,
+        `현재 장부 기준 스프레드는 ±1% 실호가에서 약 200bps로 관측되어야 함 (실제: ${lastObsCase2!.currentSpreadBps})`
+      );
+      const nonEmptyStockId = stocks[emptyCount].id;
+      const nonEmptyBook = readBook(nonEmptyStockId);
+      assert(nonEmptyBook.bestBid !== null && nonEmptyBook.bestAsk !== null && nonEmptyBook.bestAsk! > nonEmptyBook.bestBid!, `비어있지 않은 종목 ${nonEmptyStockId}의 유효 양측 최우선 호가 존재`);
+      console.log(`  ✓ 진입 관측: 공백비율=${lastObsCase2!.emptyBookStockRatio!.toFixed(3)}, 지속=${lastObsCase2!.emptyBookDurationSeconds}s, 과거평균스프레드=${lastObsCase2!.averageSpreadBps}bps(대체값), 현재장부스프레드=${lastObsCase2!.currentSpreadBps!.toFixed(1)}bps, bestBid=${nonEmptyBook.bestBid}, bestAsk=${nonEmptyBook.bestAsk}`);
 
       const snapCase2Pending = mgr.getMarketStateSnapshot();
       assert(snapCase2Pending.pendingRegime === 'LIQUIDITY_CRISIS', `스프레드가 20bps여도 공백 지속 조건 충족으로 LIQUIDITY_CRISIS 예약 (실제: ${snapCase2Pending.pendingRegime})`);
@@ -2128,42 +2246,129 @@ async function runAllTests() {
       }
       const snapCase3 = mgr.getMarketStateSnapshot();
       const lastObsCase3 = mgr.getLastObservation();
-      assert(snapCase3.regimeDurationSeconds >= 12.0, `최소 위기 지속시간 12초 초과 (실제: ${snapCase3.regimeDurationSeconds}s)`);
-      assert(lastObsCase3!.averageSpreadBps <= 65.0, `스프레드는 회복 기준 이하 (20bps <= 65bps)`);
+      assert(snapCase3.regime !== 'SIDEWAYS' && snapCase3.regime === 'LIQUIDITY_CRISIS', `장부 공백 지속 시 위기 유지 (실제: ${snapCase3.regime})`);
+      assert(snapCase3.regimeDurationSeconds >= 12.0, `최소 위기 지속시간 12초 초과 (실제: ${snapCase3.regimeDurationSeconds.toFixed(1)}s)`);
+      assert(lastObsCase3!.averageSpreadBps === 20.0, `과거 평균 스프레드는 여전히 대체값 20bps (실제: ${lastObsCase3!.averageSpreadBps})`);
+      assert(lastObsCase3!.currentSpreadBps !== null && lastObsCase3!.currentSpreadBps! > 65, `현재 장부 스프레드는 아직 넓음(약 200bps > 65bps, 실제: ${lastObsCase3!.currentSpreadBps})`);
       assert(lastObsCase3!.emptyBookStockRatio! >= 0.3, `공백 비율은 여전히 30% 이상 (실제: ${lastObsCase3!.emptyBookStockRatio})`);
-      assert(snapCase3.regime === 'LIQUIDITY_CRISIS', '장부 공백 지속 시 위기에서 이탈하지 않고 유지');
-      assert(snapCase3.pendingRegime !== 'SIDEWAYS' && snapCase3.pendingRegime !== 'HIGH_VOLATILITY', '이탈 pending 예약 부재 확인');
+      assert(lastObsCase3!.emptyBookDurationSeconds >= 2.0, `공백 지속시간 유지 (실제: ${lastObsCase3!.emptyBookDurationSeconds}s)`);
+      assert(snapCase3.pendingRegime === null, `공백 지속 시 이탈 pending 예약 부재 (실제: ${snapCase3.pendingRegime})`);
+      console.log(`  ✓ 유지 관측: 국면=${snapCase3.regime}, 대기=${snapCase3.pendingRegime}, 공백비율=${lastObsCase3!.emptyBookStockRatio!.toFixed(3)}, 지속=${lastObsCase3!.emptyBookDurationSeconds}s, 현재장부스프레드=${lastObsCase3!.currentSpreadBps!.toFixed(1)}bps`);
 
       // ─────────────────────────────────────────────────────────────
-      // 사례 ④: 양측 호가가 복구되고 이탈 조건을 충족하면 정상적으로 이탈함
+      // 사례 B: 위기 상태에서 양측 호가를 복구하되 ±1%(약 200bps)로 배치하면 위기를 유지한다.
+      //   과거 스프레드 이력이 없어 과거 평균이 대체값 20bps이더라도, 현재 장부에서 관측한
+      //   스프레드(약 200bps)가 이탈 기준 65bps를 초과하므로 이탈해서는 안 된다.
       // ─────────────────────────────────────────────────────────────
-      // 비어있던 11개 종목에 양측 호가를 다시 안전하게 복원
       for (const sId of targetEmptyStockIds) {
         const stk = memoryDb.stocks.get(sId);
-        if (stk) addTwoSidedOrders(stk.id, stk.current_price);
+        if (stk) addTwoSidedOrders(stk.id, stk.current_price, 0.01);
       }
       verifyOrderIndexIntegrity();
 
-      // 1스텝 실행: 이제 공백 비율 = 0.0% (< 30%), emptyBookDurationSeconds = 0, 스프레드 20bps <= 65bps, 깊이 회복
       await mgr.step(1.0);
-      const lastObsCase4 = mgr.getLastObservation();
-      assert(lastObsCase4!.emptyBookStockRatio === 0, `양측 호가 복구 후 공백 비율은 0 (실제: ${lastObsCase4!.emptyBookStockRatio})`);
-      assert(lastObsCase4!.emptyBookDurationSeconds === 0, `공백 지속시간 0초로 리셋 확인 (실제: ${lastObsCase4!.emptyBookDurationSeconds})`);
+      const lastObsCaseB = mgr.getLastObservation();
+      assert(lastObsCaseB!.emptyBookStockRatio === 0, `B: 양측 호가 복구 후 공백 비율 0 (실제: ${lastObsCaseB!.emptyBookStockRatio})`);
+      assert(lastObsCaseB!.emptyBookDurationSeconds === 0, `B: 공백 지속시간 0초 리셋 (실제: ${lastObsCaseB!.emptyBookDurationSeconds})`);
+      assert(lastObsCaseB!.averageSpreadBps === 20.0, `B: 과거 평균 스프레드 이력 부재로 대체값 20bps (실제: ${lastObsCaseB!.averageSpreadBps})`);
+      assert(
+        lastObsCaseB!.currentSpreadBps !== null && lastObsCaseB!.currentSpreadBps! > 65,
+        `B: 현재 장부 스프레드 약 200bps > 65bps여야 함 (실제: ${lastObsCaseB!.currentSpreadBps})`
+      );
+      const restoredStockId = stocks[0].id;
+      const restoredBook = readBook(restoredStockId);
+      assert(
+        restoredBook.bestBid !== null && restoredBook.bestAsk !== null && restoredBook.bestAsk! > restoredBook.bestBid!,
+        `B: 복구 종목 ${restoredStockId} 유효 양측 최우선 호가 (bestBid=${restoredBook.bestBid}, bestAsk=${restoredBook.bestAsk})`
+      );
+      const snapCaseB = mgr.getMarketStateSnapshot();
+      assert(snapCaseB.regime === 'LIQUIDITY_CRISIS', `B: 현재 스프레드가 넓어 위기 유지 (실제: ${snapCaseB.regime})`);
+      assert(snapCaseB.pendingRegime === null, `B: 20bps 대체값으로 인한 이탈 예약이 없어야 함 (실제: ${snapCaseB.pendingRegime})`);
+      console.log(`  ✓ B 관측: 국면=${snapCaseB.regime}, 대기=${snapCaseB.pendingRegime}, 공백비율=${lastObsCaseB!.emptyBookStockRatio}, 지속=${lastObsCaseB!.emptyBookDurationSeconds}s, 과거평균스프레드=${lastObsCaseB!.averageSpreadBps}bps(대체값), 현재장부스프레드=${lastObsCaseB!.currentSpreadBps!.toFixed(1)}bps, bestBid=${restoredBook.bestBid}, bestAsk=${restoredBook.bestAsk}`);
 
-      const snapCase4Pending = mgr.getMarketStateSnapshot();
-      assert(snapCase4Pending.pendingRegime === 'SIDEWAYS', `양측 호가 복구 및 이탈 조건 충족 시 SIDEWAYS 정상 예약 (실제: ${snapCase4Pending.pendingRegime})`);
+      // ─────────────────────────────────────────────────────────────
+      // 사례 C: 위 주문을 안전하게 취소하고 ±0.2%(약 40bps < 65bps) 양측 호가로 교체하면
+      //   공백 비율·지속 시간·깊이·최소 유지 시간 조건도 충족되어 다음 스텝 이탈을 예약하고
+      //   그다음 스텝에 활성화된다.
+      // ─────────────────────────────────────────────────────────────
+      for (const stk of stocks) {
+        removeOrdersForStock(stk.id);
+        addTwoSidedOrders(stk.id, stk.current_price, 0.002);
+      }
+      verifyOrderIndexIntegrity();
 
-      // 다음 스텝 실행: SIDEWAYS 활성화
       await mgr.step(1.0);
-      const snapCase4Active = mgr.getMarketStateSnapshot();
-      assert(snapCase4Active.regime === 'SIDEWAYS', `다음 스텝 시작 시 SIDEWAYS로 정상 복귀 완료 (실제: ${snapCase4Active.regime})`);
+      const lastObsCaseC = mgr.getLastObservation();
+      assert(
+        lastObsCaseC!.currentSpreadBps !== null && lastObsCaseC!.currentSpreadBps! > 0 && lastObsCaseC!.currentSpreadBps! < 65,
+        `C: 현재 장부 스프레드 0 < x < 65bps (실제: ${lastObsCaseC!.currentSpreadBps})`
+      );
+      assert(
+        lastObsCaseC!.emptyBookStockRatio === 0 && lastObsCaseC!.emptyBookDurationSeconds === 0,
+        `C: 공백 비율/지속시간 복구 (실제: ${lastObsCaseC!.emptyBookStockRatio}, ${lastObsCaseC!.emptyBookDurationSeconds})`
+      );
+      assert(lastObsCaseC!.depthChange >= -0.20, `C: 호가 깊이 회복 (depthChange=${lastObsCaseC!.depthChange.toFixed(4)} >= -0.20)`);
+      const narrowBook = readBook(stocks[0].id);
+      assert(
+        narrowBook.bestBid !== null && narrowBook.bestAsk !== null && narrowBook.bestAsk! > narrowBook.bestBid! &&
+          narrowBook.currentSpreadBps !== null && narrowBook.currentSpreadBps! < 65,
+        `C: 좁은 양측 호가 확인 (bestBid=${narrowBook.bestBid}, bestAsk=${narrowBook.bestAsk}, ${narrowBook.currentSpreadBps?.toFixed(1)}bps)`
+      );
+      const snapCaseCPending = mgr.getMarketStateSnapshot();
+      assert(snapCaseCPending.regime === 'LIQUIDITY_CRISIS', `C: 예약 시점에는 아직 위기 국면 (실제: ${snapCaseCPending.regime})`);
+      assert(
+        snapCaseCPending.pendingRegime !== null && snapCaseCPending.pendingRegime !== 'LIQUIDITY_CRISIS',
+        `C: 비위기 국면 이탈 예약 (실제: ${snapCaseCPending.pendingRegime})`
+      );
+      console.log(`  ✓ C 관측: 국면=${snapCaseCPending.regime}, 대기=${snapCaseCPending.pendingRegime}, 공백비율=${lastObsCaseC!.emptyBookStockRatio}, 지속=${lastObsCaseC!.emptyBookDurationSeconds}s, 현재장부스프레드=${lastObsCaseC!.currentSpreadBps!.toFixed(1)}bps, bestBid=${narrowBook.bestBid}, bestAsk=${narrowBook.bestAsk}`);
+
+      // 다음 스텝 실행: 예약된 이탈 국면 활성화
+      await mgr.step(1.0);
+      const snapCaseCActive = mgr.getMarketStateSnapshot();
+      assert(
+        snapCaseCActive.regime === snapCaseCPending.pendingRegime,
+        `C: 다음 스텝에서 예약 국면 활성화 (기대 ${snapCaseCPending.pendingRegime}, 실제 ${snapCaseCActive.regime})`
+      );
+      assert(snapCaseCActive.regime !== 'LIQUIDITY_CRISIS', `C: 위기 이탈 완료 (실제: ${snapCaseCActive.regime})`);
+      console.log(`  ✓ C 활성화: 국면=${snapCaseCActive.regime} (위기 이탈 완료)`);
+
+      // ─────────────────────────────────────────────────────────────
+      // 사례 D (장부 단위): 유효한 양측 호가가 없거나 교차 호가뿐이면
+      //   현재 스프레드를 관측할 수 없으므로 정상 스프레드로 판정하지 않는다(null).
+      // ─────────────────────────────────────────────────────────────
+      const emptyProbeId = stocks[stocks.length - 1].id;
+      removeOrdersForStock(emptyProbeId);
+      const crossedProbeId = stocks[stocks.length - 2].id;
+      removeOrdersForStock(crossedProbeId);
+      {
+        const crossPrice = memoryDb.stocks.get(crossedProbeId)!.current_price;
+        const cbId = `ord_t33_cross_b_${orderSeq++}`;
+        const caId = `ord_t33_cross_a_${orderSeq++}`;
+        memoryDb.orders.set(cbId, { id: cbId, user_id: 'usr_t33_maker', stock_id: crossedProbeId, side: 'buy', order_type: 'limit', price: Math.max(1, Math.round(crossPrice * 1.01)), size: 100, filled: 0, status: 'open', is_lp: true, created_at: new Date(testStartMs).toISOString() });
+        memoryDb.orders.set(caId, { id: caId, user_id: 'usr_t33_maker', stock_id: crossedProbeId, side: 'sell', order_type: 'limit', price: Math.max(1, Math.round(crossPrice * 0.99)), size: 100, filled: 0, status: 'open', is_lp: true, created_at: new Date(testStartMs).toISOString() });
+        memoryDb.addOrderToIndex(memoryDb.orders.get(cbId)!);
+        memoryDb.addOrderToIndex(memoryDb.orders.get(caId)!);
+      }
+      verifyOrderIndexIntegrity();
+
+      const emptyProbeBook = readBook(emptyProbeId);
+      assert(emptyProbeBook.bestBid === null && emptyProbeBook.bestAsk === null, `D: 유효 양측 호가 부재 시 bestBid/bestAsk null (실제: ${emptyProbeBook.bestBid}/${emptyProbeBook.bestAsk})`);
+      assert(emptyProbeBook.currentSpread === null && emptyProbeBook.currentSpreadBps === null, `D: 유효 양측 호가 부재 시 현재 스프레드 null (실제: ${emptyProbeBook.currentSpreadBps})`);
+
+      const crossedProbeBook = readBook(crossedProbeId);
+      assert(
+        crossedProbeBook.bestBid !== null && crossedProbeBook.bestAsk !== null && crossedProbeBook.bestBid! > crossedProbeBook.bestAsk!,
+        `D: 교차 호가 구성 (bestBid=${crossedProbeBook.bestBid} > bestAsk=${crossedProbeBook.bestAsk})`
+      );
+      assert(crossedProbeBook.currentSpread === null && crossedProbeBook.currentSpreadBps === null, `D: 교차 호가는 정상 스프레드로 취급하지 않음(null, 실제: ${crossedProbeBook.currentSpreadBps})`);
+      console.log(`  ✓ D 관측: 빈 장부 스프레드=${emptyProbeBook.currentSpreadBps}, 교차 호가(bestBid=${crossedProbeBook.bestBid} > bestAsk=${crossedProbeBook.bestAsk}) 스프레드=${crossedProbeBook.currentSpreadBps}`);
 
       verifyOrderIndexIntegrity();
 
       return {
-        finalRegime: snapCase4Active.regime,
-        finalStateVersion: snapCase4Active.stateVersion,
-        finalSimTime: snapCase4Active.simulationTime,
+        finalRegime: snapCaseCActive.regime,
+        finalStateVersion: snapCaseCActive.stateVersion,
+        finalSimTime: snapCaseCActive.simulationTime,
         regimeHistoryLength: mgr.marketStateEngine.getRegimeHistory().length,
       };
     }
@@ -2180,7 +2385,7 @@ async function runAllTests() {
     assert(run1Result.regimeHistoryLength === run2Result.regimeHistoryLength, '재실행 시 국면 전이 이력 개수 100% 일치');
     console.log('  ✓ Run 2 완료: 동일 시드 기반 비트 단위 완전 결정론적 재현성 검증 완료');
 
-    console.log('  ✓ TEST 33 통과: 기본 설정 기반 유동성 위기 진입·유지·이탈 5대 사례 결정론적 검증 완료\n');
+    console.log('  ✓ TEST 33 통과: 기본 설정 기반 유동성 위기 진입·유지·이탈(A~D) 및 현재 장부 스프레드 판정 결정론적 검증 완료\n');
   }
 
   console.log('================================================================');

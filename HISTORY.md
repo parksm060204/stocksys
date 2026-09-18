@@ -4177,3 +4177,23 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
   - TEST 31: `safeCancelAndDeleteOrder` 안전 취소/삭제 헬퍼 적용, `memoryDb.orders`와 `orderStockIndex` 간 1:1 양방향 정합성 검증, 삭제 주문 인덱스 잔존 부재 및 타 종목 주문 보존 실증.
   - TEST 32 (신설): 상장주식수 기준 시가총액 단일 권위 순수 함수 검증 및 대형주(10배 가중치) vs 소형주 기여도 차등화와 `AgentManager` 통합 경로 검증 추가 (총 32개 테스트 전수 통과).
 - 검증 결과: 8개 테스트 스크립트 전수 통과, `npx tsc --noEmit` 통과(Exit Code 0), `npm run build` 성공(Exit Code 0), `git diff --check` 클린(Exit Code 0).
+
+---
+## 2026-09-19 00:35
+
+**요청 요약:** 시장 국면 1단계 P1(단측 호가 빈 장부 판정 누락 보완 및 양측→단측 전환 테스트 추가) 및 P2(횡단면 수익률 분산 기준 평균을 산술 평균으로 통일하여 왜곡 제거).
+
+**수행 결과:**
+- `lib/engine/simulation/marketDiagnostics.ts`:
+  - `WindowStatistics` 인터페이스에 `bidDepthShares: number`, `askDepthShares: number`, `hasTwoSidedBook: boolean` 필드 추가.
+  - `computeWindowStatistics()`에서 활성 주문 집계 시 `side === 'buy'`와 `'sell'`을 구분하여 `bidDepthShares`, `askDepthShares` 및 양측 유효 호가 존재 여부 `hasTwoSidedBook = bidDepthShares > 0 && askDepthShares > 0`을 계산 및 반환하도록 보완.
+- `lib/engine/simulation/regime/regimeTypes.ts`:
+  - 종목 간 동일 가중 횡단면 수익률 분산 순수 함수 `calculateCrossSectionalDispersion(returns: number[]): number` 구현 및 export (동일 가중 산술 평균 기준 편차 제곱합 산출).
+- `lib/engine/simulation/agentManager.ts`:
+  - 횡단면 수익률 분산(`crossSectionalDispersion`) 산출 시 기존 시가총액 가중 평균 대신 `calculateCrossSectionalDispersion(statsList.map(st => st.returnRate))` 순수 함수를 호출하여 동일 가중 산술 평균 기준으로 일치 (대형주 +10%, 소형주 -10% 시 시총 가중 왜곡 약 12.9%가 아닌 정확한 동일 가중 표준편차 10.0%로 산출).
+  - 빈 장부 종목 판정 시 과거 평균 스프레드/단순 총 깊이 대신 현재 장부의 실제 양측 호가 유효성 `isTwoSided = st.hasTwoSidedBook && st.bidDepthShares > 0 && st.askDepthShares > 0`으로 판정하도록 수정하여, 매수만 남거나 매도만 남은 단측 호가(One-Sided Book)를 공백으로 정확하게 집계.
+  - `public lastObservation` 필드 및 `getLastObservation()` 접근자 추가.
+- `scripts/test-market-regime-foundation.ts`:
+  - TEST 31: 정상 양측 호가 → 단측(One-Sided: 매수만 잔여, 매도만 잔여) 전환 검증 추가. 과거 스프레드와 잔여 깊이가 양수여도 구버전 로직은 놓치고 신규 로직은 양측 호가 부재를 정상 감지함을 실증하고, 단측 호가 40% 전환 시 빈 장부 누적 시간 증가 및 `LIQUIDITY_CRISIS` 예약/발생 검증.
+  - TEST 32: `calculateCrossSectionalDispersion` 순수 함수 검증(대형주 +10%, 소형주 -10% 시 10.0% 산출) 및 `AgentManager` 실측 관측치와 `MarketStateEngine.pendingTransition.metrics`에서 동일 가중 10.0% 정확 일치 검증 (구버전 시총 가중 왜곡 12.92% 배제 실증).
+- 검증 결과: 8개 테스트 스크립트 전수 통과, `npx tsc --noEmit` 통과(Exit Code 0), Next.js `npm run build` 성공(Exit Code 0), `git diff --check` 클린(Exit Code 0).

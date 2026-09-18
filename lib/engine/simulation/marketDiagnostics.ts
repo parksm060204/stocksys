@@ -29,6 +29,9 @@ export interface WindowStatistics {
   spread: number | null;       // 호가 스프레드
   depthShares: number;         // 10단 호가 총 주수
   depthNotional: number;       // 10단 호가 총 금액
+  bidDepthShares: number;      // 현재 활성 매수 호가 총 주수
+  askDepthShares: number;      // 현재 활성 매도 호가 총 주수
+  hasTwoSidedBook: boolean;    // 현재 매수·매도 양측 호가가 모두 유효하게 존재하는지 여부
   relativeTurnover: number;    // 시장 대비 상대 거래대금 비중
   buyTakerVolume: number;      // Taker 매수 체결량
   sellTakerVolume: number;     // Taker 매도 체결량
@@ -281,9 +284,11 @@ export class MarketDiagnostics {
         else buyTakerVol += Math.round(t.size / 2); // Split if ambiguous
       }
 
-      // 호가 뎁스 계산
+      // 호가 뎁스 및 양측 호가(Two-Sided Book) 존재 여부 계산
       let depthShares = 0;
       let depthNotional = 0;
+      let bidDepthShares = 0;
+      let askDepthShares = 0;
       const orderIds = memoryDb.orderStockIndex.get(stock.id);
       if (orderIds) {
         for (const oid of orderIds) {
@@ -292,9 +297,15 @@ export class MarketDiagnostics {
             const rem = Math.max(0, ord.size - (ord.filled || 0));
             depthShares += rem;
             depthNotional += rem * ord.price;
+            if (ord.side === 'buy') {
+              bidDepthShares += rem;
+            } else if (ord.side === 'sell') {
+              askDepthShares += rem;
+            }
           }
         }
       }
+      const hasTwoSidedBook = bidDepthShares > 0 && askDepthShares > 0;
 
       // 가격 변동률 계산
       const hist = memoryDb.stockPriceHistory.filter((h) => h.stock_id === stock.id);
@@ -324,6 +335,9 @@ export class MarketDiagnostics {
         spread: this.getAverageSpread(stock.id),
         depthShares,
         depthNotional,
+        bidDepthShares,
+        askDepthShares,
+        hasTwoSidedBook,
         relativeTurnover: 0, // 2단계에서 계산
         buyTakerVolume: buyTakerVol,
         sellTakerVolume: sellTakerVol,

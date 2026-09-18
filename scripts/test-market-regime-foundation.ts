@@ -51,6 +51,7 @@ import {
   MarketStateSnapshot,
   getAuthoritativeShares,
   calculateAuthoritativeMarketCap,
+  calculateCrossSectionalDispersion,
   FALLBACK_SHARES,
 } from '../lib/engine/simulation/regime/regimeTypes';
 import {
@@ -1646,51 +1647,79 @@ async function runAllTests() {
     console.log('  ✓ 1개 종목 빈 장부(3.8% < 30%)로는 시장 위기가 발생하지 않고 누적 시간 0 유지 확인');
     console.log('  ✓ 안전 취소 헬퍼 동작 및 1:1 인덱스 정합성, 타 종목 주문 보존 확인');
 
-    // 2. 비율 임계치(30%) 이상 빈 장부 시 정상 누적
-    // 전체 26개 중 40% (11개) 종목의 호가 안전 제거 (11/26 = 42.3% >= 30%)
+    // 2. 정상 양측 → 단측(One-Sided) 전환 및 비율 임계치(30%) 이상 빈 장부 판정 검증 (P1 보완)
+    // 1번 인덱스부터 40% (11개) 종목의 매도 호가만 제거하여 매수 호가만 남은 단측 장부로 전환 (11/26 = 42.3% >= 30%)
     const emptyCount = Math.ceil(stocks.length * 0.4);
-    const targetEmptyStockIds = new Set(stocks.slice(0, emptyCount).map(s => s.id));
-    const ordersToDelete = Array.from(memoryDb.orders.values())
-      .filter(o => targetEmptyStockIds.has(o.stock_id))
-      .map(o => o.id);
+    const targetEmptyStockIds = new Set(stocks.slice(1, 1 + emptyCount).map(s => s.id));
 
-    for (const orderId of ordersToDelete) {
+    // 타깃 종목들의 'sell' 주문만 안전 취소/삭제 (매수 호가는 유지하여 depthShares > 0, 과거 spread > 0 유지)
+    const sellOrdersToDelete = Array.from(memoryDb.orders.values())
+      .filter(o => targetEmptyStockIds.has(o.stock_id) && o.side === 'sell')
+      .map(o => o.id);
+    assert(sellOrdersToDelete.length > 0, '타깃 종목들에 매도 주문이 존재해야 함');
+
+    for (const orderId of sellOrdersToDelete) {
       safeCancelAndDeleteOrder(orderId);
     }
 
-    // 제거 후 인덱스 정합성 재검증 및 stale index 부재 실증
-    verifyOrderIndexIntegrity();
+    // 통계 산출 함수를 직접 호출하여 단측 호가 상태 검증
+    const intermediateStats = mgr.diagnostics.computeWindowStatistics(mgr.clock.simulationTime);
     for (const sId of targetEmptyStockIds) {
-      const idx = memoryDb.orderStockIndex.get(sId);
-      assert(!idx || idx.size === 0, `빈 장부 대상 종목 ${sId}의 인덱스에 잔여 주문 없음`);
-    }
-    // 빈 장부 판정이 stale index 때문이 아니라 실제 orders 맵 상 유효 주문 부재로 발생함을 증명
-    for (const sId of targetEmptyStockIds) {
-      const actualOrders = Array.from(memoryDb.orders.values()).filter(o => o.stock_id === sId);
-      assert(actualOrders.length === 0, `실제 유효 주문 부재 확인: 종목 ${sId}`);
-    }
+      const st = intermediateStats.get(sId);
+      assert(st !== undefined, `단측 호가 전환 종목 ${sId} 통계 존재`);
+      assert(st!.bidDepthShares > 0, `매수 호가가 잔여하여 bidDepthShares > 0 (실제: ${st!.bidDepthShares})`);
+      assert(st!.askDepthShares === 0, `매도 호가만 삭제되어 askDepthShares === 0`);
+      assert(st!.hasTwoSidedBook === false, `단측 상태이므로 hasTwoSidedBook === false여야 함`);
+      assert(st!.spread !== null && st!.spread > 0, `과거 체결 스프레드 기록 잔존 (spread: ${st!.spread})`);
+      assert(st!.depthShares > 0, `매수 잔여 주문으로 depthShares > 0 (실제: ${st!.depthShares})`);
 
-    // 3스텝 연속 빈 장부 유지 -> 누적 시간 증가 확인
+      // 구버전 결함 실증: 구버전 로직은 과거 스프레드와 잔여 깊이 때문에 단측 호가를 정상 장부로 오판단
+      const oldFlawedCondition = st!.spread === null || st!.spread <= 0 || st!.depthShares === 0;
+      assert(oldFlawedCondition === false, '구버전 로직은 단측 호가를 빈 장부로 놓치는 결함이 있음을 실증');
+
+      // 신규 버전 정합성 실증: 양측 호가 유효성(hasTwoSidedBook) 판정으로 단측 호가를 빈 장부로 정확히 집계
+      const newCorrectCondition = !st!.hasTwoSidedBook || st!.bidDepthShares === 0 || st!.askDepthShares === 0;
+      assert(newCorrectCondition === true, '신규 로직은 단측 호가를 공백(빈 장부)으로 정확히 판정함');
+    }
+    console.log('  ✓ 정상 양측 → 단측(One-Sided: 매수만 잔여) 전환 시 과거 스프레드 및 깊이 양수에도 공백 정상 판정 검증');
+
+    // 반대 케이스: 매수만 제거하고 매도만 남은 단측 호가 판정 정합성 검증 (종목 1개 대상)
+    const testOneStockId = stocks[1 + emptyCount].id; // 13번째 종목 (인덱스 12)
+    const buyOrdersToDelete = Array.from(memoryDb.orders.values())
+      .filter(o => o.stock_id === testOneStockId && o.side === 'buy')
+      .map(o => o.id);
+    for (const orderId of buyOrdersToDelete) {
+      safeCancelAndDeleteOrder(orderId);
+    }
+    const oneStats = mgr.diagnostics.computeWindowStatistics(mgr.clock.simulationTime).get(testOneStockId);
+    assert(oneStats !== undefined && oneStats.bidDepthShares === 0 && oneStats.askDepthShares > 0, '매도만 잔여한 단측 호가 상태');
+    assert(oneStats!.hasTwoSidedBook === false, '매도만 잔여한 경우도 hasTwoSidedBook === false로 공백 판정');
+    console.log('  ✓ 정상 양측 → 단측(One-Sided: 매도만 잔여) 전환 시 공백 정상 판정 검증');
+
+    // 인덱스 정합성 재검증
+    verifyOrderIndexIntegrity();
+
+    // 단측 호가 종목들이 40% (11/26 >= 30%) 포함된 상태에서 3스텝 연속 실행 -> 빈 장부 누적 시간 증가 확인
     await mgr.step(1.0);
     const accStep1 = mgr.getEmptyBookAccumulatedSeconds();
-    assert(accStep1 >= 1.0, `임계치(30%) 초과 빈 장부 시 1스텝 누적 확인 (실제: ${accStep1})`);
+    assert(accStep1 >= 1.0, `단측 호가 40% 포함 시 1스텝 누적 확인 (실제: ${accStep1})`);
 
     await mgr.step(1.0);
     const accStep2 = mgr.getEmptyBookAccumulatedSeconds();
-    assert(accStep2 >= 2.0, `임계치(30%) 초과 빈 장부 시 2스텝 누적 확인 (실제: ${accStep2})`);
+    assert(accStep2 >= 2.0, `단측 호가 40% 포함 시 2스텝 누적 확인 (실제: ${accStep2})`);
 
     await mgr.step(1.0);
     const accStep3 = mgr.getEmptyBookAccumulatedSeconds();
-    assert(accStep3 >= 3.0, `임계치(30%) 초과 빈 장부 시 3스텝 누적 확인 (실제: ${accStep3})`);
+    assert(accStep3 >= 3.0, `단측 호가 40% 포함 시 3스텝 누적 확인 (실제: ${accStep3})`);
 
     const snap2 = mgr.getMarketStateSnapshot();
     const isCrisisOrPending = snap2.regime === 'LIQUIDITY_CRISIS' || snap2.pendingRegime === 'LIQUIDITY_CRISIS';
-    assert(isCrisisOrPending, '빈 장부 누적 시간 기준 충족 시 LIQUIDITY_CRISIS 정상 예약/발생');
-    console.log('  ✓ 빈 장부 비율 임계값(30%) 초과 시 정상 누적 및 LIQUIDITY_CRISIS 발생 확인');
+    assert(isCrisisOrPending, '단측 호가 빈 장부 누적 시간 기준 충족 시 LIQUIDITY_CRISIS 정상 예약/발생');
+    console.log('  ✓ 단측 호가 비율 임계값(30%) 초과 시 정상 누적 및 LIQUIDITY_CRISIS 발생 확인');
 
     // 최종 인덱스 정합성 확인
     verifyOrderIndexIntegrity();
-    console.log('  ✓ TEST 31 통과: 시장 전체 빈 장부 비율 판정 및 주문·인덱스 1:1 완전 정합성 검증 완료\n');
+    console.log('  ✓ TEST 31 통과: 양측 호가 기준 공백 판정, 정상 양측→단측 전환 및 주문·인덱스 1:1 정합성 검증 완료\n');
   }
 
   // ─────────────────────────────────────────────────────────────────
@@ -1894,7 +1923,31 @@ async function runAllTests() {
     assert(snap.pendingRegime === 'BULL', `상장주식수 기준 대형주 가중(+8.18% > 0.02)으로 BULL이 예약되어야 함 (실제: ${snap.pendingRegime})`);
     console.log(`  ✓ AgentManager 실측 국면 예약: pendingRegime === '${snap.pendingRegime}' (상장주식수 단일 권위 정상 판정)`);
 
-    console.log('  ✓ TEST 32 통과: 상장주식수 기준 시가총액 단일 권위 및 대형주/소형주 가중수익률 기여도 검증 완료\n');
+    // 5. 횡단면 수익률 분산의 산술 평균 기준 산출 검증 (P2 보완)
+    // 순수 함수 검증: 대형주 +10%, 소형주 -10% 시 산술 평균(0%) 기준 동일 가중 표준편차는 정확히 10.0% (0.10)
+    assert(Math.abs(calculateCrossSectionalDispersion([0.10, -0.10]) - 0.10) < 1e-6, '대형주 +10%, 소형주 -10% 시 산술 평균 기준 분산은 정확히 10.0%(0.10)이어야 함');
+    assert(Math.abs(calculateCrossSectionalDispersion([0.05, 0.05, 0.05])) < 1e-12, '동일 수익률 분산은 0');
+    assert(calculateCrossSectionalDispersion([]) === 0, '빈 배열 분산은 0');
+
+    // 시총 가중 왜곡(12.92%)과 산술 평균(10.0%) 간의 차이 실증:
+    const flawedCapWeightedDiffSqSum = Math.pow(0.10 - expectedWeightedReturn, 2) + Math.pow(-0.10 - expectedWeightedReturn, 2);
+    const flawedDispersion = Math.sqrt(flawedCapWeightedDiffSqSum / 2);
+    assert(flawedDispersion > 0.129 && flawedDispersion < 0.130, `구버전 시총 가중 기준 분산은 약 12.9%로 왜곡됨 (실제: ${(flawedDispersion * 100).toFixed(2)}%)`);
+
+    // AgentManager 관측값 및 국면 엔진 메트릭 검증:
+    const lastObs = mgr.getLastObservation();
+    assert(lastObs !== null, 'AgentManager 실측 관측값(lastObservation) 존재');
+    const csdObs = lastObs!.crossSectionalDispersion;
+    assert(typeof csdObs === 'number' && Math.abs(csdObs - 0.10) < 1e-6, `AgentManager 관측치의 crossSectionalDispersion은 시총 가중 왜곡(12.9%)이 아닌 동일 가중 표준편차 10.0% (0.10)이어야 함 (실제: ${csdObs})`);
+    console.log(`  ✓ AgentManager 실측 관측치 crossSectionalDispersion: ${csdObs} (10.0% 정확 일치)`);
+
+    const pending = mgr.marketStateEngine.getPendingTransition();
+    assert(pending !== null, 'pendingTransition 존재');
+    const csdMetric = pending!.metrics.crossSectionalDispersion;
+    assert(typeof csdMetric === 'number' && Math.abs(csdMetric - 0.10) < 1e-6, `전환 메트릭의 crossSectionalDispersion 역시 10.0% (0.10)이어야 함 (실제: ${csdMetric})`);
+    console.log(`  ✓ MarketStateEngine pendingTransition metrics crossSectionalDispersion: ${csdMetric} (10.0% 정확 일치, 시총 가중 왜곡 12.9% 배제 완료)`);
+
+    console.log('  ✓ TEST 32 통과: 상장주식수 기준 시가총액 단일 권위 및 동일 가중 횡단면 분산 정합성 검증 완료\n');
   }
 
   console.log('================================================================');

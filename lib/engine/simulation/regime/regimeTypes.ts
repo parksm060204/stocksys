@@ -268,3 +268,20 @@ export function calculateAuthoritativeMarketCap(stock?: {
   const authoritativeShares = getAuthoritativeShares(stock);
   return Math.max(1, stock.current_price * authoritativeShares);
 }
+
+/**
+ * 종목 간 동일 가중 횡단면 수익률 분산 (Equal-weighted Cross-Sectional Dispersion)
+ * - 각 종목 수익률에서 동일 가중 산술 평균을 차감하여 표준편차를 산출하는 순수 함수
+ * - returns가 비어있으면 0 반환
+ */
+export function calculateCrossSectionalDispersion(returns: number[]): number {
+  if (!returns || returns.length === 0) return 0;
+  const n = returns.length;
+  const mean = returns.reduce((acc, r) => acc + r, 0) / n;
+  let varSum = 0;
+  for (const r of returns) {
+    const diff = r - mean;
+    varSum += diff * diff;
+  }
+  return Math.sqrt(varSum / n);
+}

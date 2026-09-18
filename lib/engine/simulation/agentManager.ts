@@ -43,6 +43,7 @@ import {
   MarketStateEngineConfig,
   deriveDeterministicSeed,
   calculateAuthoritativeMarketCap,
+  calculateCrossSectionalDispersion,
 } from './regime';
 
 export class AgentManager {
@@ -114,6 +115,7 @@ export class AgentManager {
   private previousTotalDepth: number | null = null;
   private emptyBookAccumulatedSeconds: number = 0;
   private marketIndexReturns: number[] = [];
+  public lastObservation: RegimeObservation | null = null;
 
   constructor(
     seed: number = 42,
@@ -735,13 +737,8 @@ export class AgentManager {
       const meanReturn = marketCapWeightedReturn;
       const meanSpreadBps = validSpreadCount > 0 ? avgSpreadBps / validSpreadCount : 20.0;
 
-      // 횡단면 수익률 분산 (종목 간 편차)
-      let varSum = 0;
-      for (const st of statsList) {
-        const diff = st.returnRate - meanReturn;
-        varSum += diff * diff;
-      }
-      const crossSectionalDispersion = Math.sqrt(varSum / stockCount);
+      // 횡단면 수익률 분산 (종목 간 동일 가중 편차: 산술 평균 기준 순수 함수 적용)
+      const crossSectionalDispersion = calculateCrossSectionalDispersion(statsList.map((st) => st.returnRate));
 
       // 시장 지수 시계열 실현 변동성 (Time-series realized volatility)
       this.marketIndexReturns.push(meanReturn);
@@ -774,12 +771,17 @@ export class AgentManager {
       }
       this.previousTotalDepth = currentTotalDepth;
 
-      // 실제 호가 공백(빈 장부) 종목 비율 판정
+      // 실제 호가 공백(빈 장부) 종목 비율 판정: 현재 장부의 실제 양측 호가(Two-Sided Book) 존재 여부로 판정
+      // 매수 또는 매도 한쪽만 남아있는 단측 호가(One-Sided Book) 역시 공백으로 집계
       // 중앙 설정의 emptyBookStockRatioThreshold 이상일 때만 지속시간 누적
       const totalStockCount = statsList.length;
       let emptyBookStockCount = 0;
       for (const st of statsList) {
-        if (st.spread === null || st.spread <= 0 || st.depthShares === 0) {
+        const isTwoSided =
+          typeof st.hasTwoSidedBook === 'boolean'
+            ? st.hasTwoSidedBook && (st.bidDepthShares ?? 0) > 0 && (st.askDepthShares ?? 0) > 0
+            : st.spread !== null && st.spread > 0 && (st.depthShares ?? 0) > 0;
+        if (!isTwoSided) {
           emptyBookStockCount++;
         }
       }
@@ -815,6 +817,7 @@ export class AgentManager {
         emptyBookDurationSeconds,
         effectiveMacroNewsSignal: macroSignal,
       };
+      this.lastObservation = observation;
 
       // 세션 경계 처리
       this.marketStateEngine.advanceSession(simTime);
@@ -907,6 +910,7 @@ export class AgentManager {
     this.idempotencyTracker.reset();
     this.attentionMap.clear();
     this.uncertaintyMap.clear();
+    this.lastObservation = null;
 
     this.registerDefaultAgents();
     this.initFundamentals();
@@ -915,6 +919,10 @@ export class AgentManager {
 
   public getMarketStateSnapshot(): MarketStateSnapshot {
     return this.marketStateEngine.getSnapshot();
+  }
+
+  public getLastObservation(): RegimeObservation | null {
+    return this.lastObservation;
   }
 
   public getEmptyBookAccumulatedSeconds(): number {

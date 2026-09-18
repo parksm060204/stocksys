@@ -68,12 +68,14 @@ export function filterValidOrderbookLevels(
 
   const result: OrderbookLevel[] = [];
   for (const [price, totalSize] of priceMap.entries()) {
-    if (Number.isFinite(totalSize) && totalSize > 0) {
-      result.push({
-        price,
-        totalSize: Math.round(totalSize),
-      });
+    const roundedSize = Math.round(totalSize);
+    if (!Number.isFinite(roundedSize) || roundedSize <= 0) {
+      continue;
     }
+    result.push({
+      price,
+      totalSize: roundedSize,
+    });
   }
 
   if (side === 'ask') {

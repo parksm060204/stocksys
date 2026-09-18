@@ -756,6 +756,87 @@ export class MemoryDbClient {
       };
     }
 
+    if (fnName === 'get_authoritative_orderbook') {
+      const stockId = params?.p_stock_id || params?.stock_id;
+      const depth = Math.max(1, Math.min(50, Number(params?.p_depth || params?.depth || 10)));
+      if (!stockId) {
+        return { data: null, error: { message: 'stock_id is required' } };
+      }
+
+      const fetchStart = Date.now();
+      const orderIds = db.orderStockIndex.get(stockId);
+      const bidLevelsMap = new Map<number, { size: number; count: number }>();
+      const askLevelsMap = new Map<number, { size: number; count: number }>();
+
+      if (orderIds) {
+        for (const orderId of orderIds) {
+          const ord = db.orders.get(orderId);
+          if (!ord) continue;
+          if (ord.status !== 'open' && ord.status !== 'partial') continue;
+          const remaining = Math.max(0, ord.size - (ord.filled || 0));
+          if (remaining <= 0 || !Number.isFinite(ord.price) || ord.price <= 0) continue;
+
+          const targetMap = ord.side === 'buy' ? bidLevelsMap : askLevelsMap;
+          const cur = targetMap.get(ord.price) ?? { size: 0, count: 0 };
+          cur.size += remaining;
+          cur.count += 1;
+          targetMap.set(ord.price, cur);
+        }
+      }
+
+      // 가격별 정렬 및 상위 depth개 고유 가격 레벨 추출 (반올림 후 0수량 제외)
+      const sortedBids = Array.from(bidLevelsMap.entries())
+        .map(([price, val]) => ({
+          price,
+          totalSize: Math.round(val.size),
+          actualDbSize: val.size,
+          isSynthetic: false,
+          orderCount: val.count,
+        }))
+        .filter((l) => l.totalSize > 0)
+        .sort((a, b) => b.price - a.price)
+        .slice(0, depth);
+
+      const sortedAsks = Array.from(askLevelsMap.entries())
+        .map(([price, val]) => ({
+          price,
+          totalSize: Math.round(val.size),
+          actualDbSize: val.size,
+          isSynthetic: false,
+          orderCount: val.count,
+        }))
+        .filter((l) => l.totalSize > 0)
+        .sort((a, b) => a.price - b.price)
+        .slice(0, depth);
+
+      // 단일 스냅샷 내 동일 시점 체결 내역 (최신 50건)
+      const trades = (db.tradeStockIndex.get(stockId) || [])
+        .slice(-50)
+        .reverse()
+        .map((t) => ({
+          id: t.id,
+          stock_id: t.stock_id,
+          price: Number(t.price),
+          size: Number(t.size),
+          buyer_is_bot: t.buyer_is_bot,
+          seller_is_bot: t.seller_is_bot,
+          created_at: t.created_at,
+        }));
+
+      const now = Date.now();
+      return {
+        data: {
+          stockId,
+          timestamp: now,
+          fetchDurationMs: now - fetchStart,
+          bids: sortedBids,
+          asks: sortedAsks,
+          trades,
+        },
+        error: null,
+      };
+    }
+
     return { data: null, error: null };
   }
 

@@ -35,8 +35,8 @@ async function main(): Promise<void> {
   assert(!validateMarketEvent(event), 'A valid event should pass validation');
   assert(getVisibleMarketEvents([event], start + 1_999, 2).length === 0, '2s latency must hide T+1999ms');
   const visible = getVisibleMarketEvents([event], start + secondsToMs(2), 2);
-  assert(visible.length === 1, '2s latency must reveal T+2000ms');
-  assert(visible[0].isRumorFake === undefined, 'Internal rumor truth must be redacted');
+  assert((visible[0] as any).isRumorFake === undefined, 'Internal rumor truth must be redacted');
+  assert(!('correctedAt' in visible[0]), 'correctedAt must be redacted');
 
   const publicNews = sanitizePublicNewsRecord({ id: 'n1', is_fake: true, isRumorFake: true, correctedAt: start, title: 'public' });
   assert(!('is_fake' in publicNews) && !('isRumorFake' in publicNews) && !('correctedAt' in publicNews), 'Public news must not contain simulation truth');

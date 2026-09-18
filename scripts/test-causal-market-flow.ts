@@ -332,7 +332,7 @@ async function runScenarioE(mgr: AgentManager): Promise<void> {
   if (!obsRumor) throw new Error('obsRumor must not be null');
   const rumorInObs = obsRumor.recentEvents?.find((e) => e.eventId === 'ev_rumor_001');
   assert(rumorInObs !== undefined, 'Agent observes rumor event');
-  assert(rumorInObs?.isRumorFake === undefined, 'isRumorFake is strictly hidden from bot observation');
+  assert((rumorInObs as any)?.isRumorFake === undefined, 'isRumorFake is strictly hidden from bot observation');
 
   // 반면 시뮬레이션 엔진 내부에는 진실(isRumorFake: true)이 보존됨
   const internalRumor = mgr.events.find((e) => e.eventId === 'ev_rumor_001')!;
@@ -359,9 +359,16 @@ async function runScenarioE(mgr: AgentManager): Promise<void> {
 
   mgr.publishEvent(correctionEvent);
 
-  // 원본 루머에 correctedAt 태그 부착 확인 (전역 confidence 강제 0 변조 대신 개별 봇 관측 시 무효화)
+  // 미래 정정 등록 직후에는 원본 루머가 조기 변조되지 않음 검증 (조기 mutation 방지)
   const origRumorInStore = mgr.events.find((e) => e.eventId === 'ev_rumor_001')!;
-  assert((origRumorInStore as any).correctedAt !== undefined, 'Correction must stamp original rumor with correctedAt');
+  assert((origRumorInStore as any).correctedAt === undefined, 'Correction must NOT prematurely stamp original rumor before publishedAt');
+
+  // 정정 공개 시점 도달 (5초 후)
+  mgr.clock.advance(5);
+  mgr.processDuePublications(mgr.clock.simulationTime);
+
+  // 정정 공개 시점에 비로소 correctedAt 태그 부착 확인 (전역 confidence 강제 0 변조 대신 개별 봇 관측 시 무효화)
+  assert((origRumorInStore as any).correctedAt !== undefined, 'Correction must stamp original rumor with correctedAt upon publishedAt');
   assert(origRumorInStore.confidence === 0.50, 'Original rumor global confidence must remain intact for latency isolation');
 
   // 정정이 가격을 강제로 되돌리지 않음을 검증 (자연스러운 체결 조정 원칙)

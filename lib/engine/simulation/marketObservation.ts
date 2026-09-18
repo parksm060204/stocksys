@@ -8,7 +8,7 @@
 
 import { memoryDb, OrderRecord, TradeRecord } from '../../memoryDb/memoryStore';
 import { calculateReservedCash, calculateReservedQty, OpenOrderForRisk } from '../orderRisk';
-import { MarketEvent, getEffectiveMarketEvents } from './marketEventTypes';
+import { ObservableMarketEvent, getEffectiveMarketEvents } from './marketEventTypes';
 import { WindowStatistics } from './marketDiagnostics';
 
 export interface BookLevel {
@@ -51,8 +51,8 @@ export interface MarketObservation {
   // 뉴스 및 동적 시장 상태
   attentionScore?: number;      // 0.0 ~ 1.0 (Bounded attention)
   uncertaintyScore?: number;    // 0.0 ~ 1.0 (Uncertainty shock)
-  recentEvents?: MarketEvent[]; // Visible events for this agent
-  effectiveEvents?: MarketEvent[]; // Visible AND economically effective events (effectiveFrom <= simulationTime)
+  recentEvents?: ObservableMarketEvent[]; // Visible events for this agent (strictly sanitized allowlist DTO)
+  effectiveEvents?: ObservableMarketEvent[]; // Visible AND economically effective events (effectiveFrom <= simulationTime)
   windowStats?: WindowStatistics;
   // Single-authority account state
   account: {
@@ -74,7 +74,7 @@ export function buildMarketObservation(
   lookbackWindow: number = 20,
   attentionMap?: Map<string, number>,
   uncertaintyMap?: Map<string, number>,
-  visibleEvents?: MarketEvent[],
+  visibleEvents?: ObservableMarketEvent[],
   windowStats?: WindowStatistics
 ): MarketObservation | null {
   const stock = memoryDb.stocks.get(stockId);

@@ -15,7 +15,19 @@ import { secondsToMs } from './simClock';
 export type EventScope = 'market' | 'sector' | 'stock';
 export type EventCategory = 'OFFICIAL' | 'RUMOR' | 'CORRECTION';
 
-export interface MarketEvent {
+/**
+ * 정정 이벤트 처리 정책 모드
+ * - RETRACT: 원본 루머 신뢰도/가치기여도만 무효화 (기존 기본값)
+ * - REPLACE: 원본 루머를 무효화하고, 정정 이벤트의 새로운 valuationSignal로 대체 반영
+ * - ADDITIVE: 원본 루머를 유지하면서 정정 이벤트의 신호를 추가 정보로 가산 반영
+ */
+export type CorrectionMode = 'RETRACT' | 'REPLACE' | 'ADDITIVE';
+
+/**
+ * 봇 및 외부 관측자에게 허용된 공용 시장 이벤트 DTO (Allowlist 기반)
+ * - isRumorFake, is_fake, correctedAt 등 내부 truth 필드가 완전히 차단됩니다.
+ */
+export interface ObservableMarketEvent {
   eventId: string;
   sourceEventId?: string;
   publishedAt: number;        // canonical simulation timestamp (epoch ms)
@@ -25,19 +37,54 @@ export interface MarketEvent {
   sectorId?: string;          // Canonical sector ID ('semiconductor', 'auto', 'energy', etc.)
   themeIds?: string[];
   eventType: EventCategory;
+  correctionMode?: CorrectionMode; // Policy for CORRECTION event (default: 'RETRACT')
   valuationSignal: number;    // Directional signal: -1.0 (strong bear) to +1.0 (strong bull)
   attentionShock: number;     // Non-directional attention shock: 0.0 to 1.0 (bad news also shocks attention)
   uncertaintyShock: number;   // Uncertainty shock: 0.0 to 1.0 (widens LP spread, reduces depth)
   confidence: number;         // 0.0 to 1.0
   halfLife: number;           // Decay half-life in simulation seconds (duration)
   originalEventId?: string;   // Pointer to original rumor event for CORRECTION
-  isRumorFake?: boolean;      // Internal simulation truth (bots cannot peek before correction)
-  correctedAt?: number;       // Internal timestamp of the correction publication
   sequence?: number;          // Monotonic tie-breaker for equal timestamps
   // Display metadata for UI & terminal
   publisher: string;
   title: string;
   content: string;
+}
+
+/**
+ * 엔진 내부 시장 이벤트 (내부 진실 및 정정 추적 상태 포함)
+ */
+export interface MarketEvent extends ObservableMarketEvent {
+  isRumorFake?: boolean;      // Internal simulation truth (bots cannot peek before correction)
+  correctedAt?: number;       // Internal timestamp of the correction publication
+}
+
+/**
+ * 내부 MarketEvent로부터 봇 관측 허용 필드만 복사한 ObservableMarketEvent DTO 생성
+ */
+export function toObservableMarketEvent(event: MarketEvent): ObservableMarketEvent {
+  return {
+    eventId: event.eventId,
+    sourceEventId: event.sourceEventId,
+    publishedAt: event.publishedAt,
+    effectiveFrom: event.effectiveFrom,
+    scope: event.scope,
+    targetStockIds: [...event.targetStockIds],
+    sectorId: event.sectorId,
+    themeIds: event.themeIds ? [...event.themeIds] : undefined,
+    eventType: event.eventType,
+    correctionMode: event.correctionMode,
+    valuationSignal: event.valuationSignal,
+    attentionShock: event.attentionShock,
+    uncertaintyShock: event.uncertaintyShock,
+    confidence: event.confidence,
+    halfLife: event.halfLife,
+    originalEventId: event.originalEventId,
+    sequence: event.sequence,
+    publisher: event.publisher,
+    title: event.title,
+    content: event.content,
+  };
 }
 
 export function validateMarketEvent(event: MarketEvent): string | null {
@@ -80,20 +127,17 @@ export function validateMarketEvent(event: MarketEvent): string | null {
   return null;
 }
 
-/** Returns the events an agent can observe at a canonical epoch-ms timestamp. */
+/** Returns the events an agent can observe at a canonical epoch-ms timestamp as ObservableMarketEvent DTOs. */
 export function getVisibleMarketEvents(
   events: MarketEvent[],
   simulationTimeMs: number,
   infoLatencySeconds: number
-): MarketEvent[] {
+): ObservableMarketEvent[] {
   if (!Number.isFinite(simulationTimeMs)) return [];
   const latencyMs = secondsToMs(infoLatencySeconds);
   return events
     .filter((event) => event.publishedAt <= simulationTimeMs - latencyMs)
-    .map((event) => {
-      const { isRumorFake, ...sanitized } = event;
-      return sanitized as MarketEvent;
-    });
+    .map((event) => toObservableMarketEvent(event));
 }
 
 /**
@@ -101,9 +145,9 @@ export function getVisibleMarketEvents(
  * Guarantees that news is known (visible) but economic valuation/shock is withheld until effectiveFrom.
  */
 export function getEffectiveMarketEvents(
-  visibleEvents: MarketEvent[],
+  visibleEvents: ObservableMarketEvent[],
   observationTimeMs: number
-): MarketEvent[] {
+): ObservableMarketEvent[] {
   if (!Number.isFinite(observationTimeMs)) return [];
   return visibleEvents.filter((event) => event.effectiveFrom <= observationTimeMs);
 }

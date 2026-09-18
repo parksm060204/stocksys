@@ -3872,3 +3872,128 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
   - TypeScript 타입 검사 (`npx tsc --noEmit`): 0 Errors (Exit Code 0).
   - Next.js 프로덕션 빌드 (`npm run build`): Turbopack 24개 라우트 정상 빌드 완료 (Exit Code 0).
 
+---
+## 2026-09-18 16:12
+
+**요청 요약:** 호가창 DB 장부 정합성 복원(클라이언트 임의 상쇄 제거, 매수/매도 쿼리 분리, 비동기 경합/종목 전환 방어, 반올림 재검증) 및 미래 정정 뉴스·내부 진실(isRumorFake, correctedAt)의 봇 관측 격리.
+**수행 결과:**
+- `lib/hooks/useOrderbookData.ts`:
+  - UI 레이어의 임의 상쇄(동일 가격 가상 체결) 및 교차 호가(`bestBid >= bestAsk`) 삭제 로직 완전 제거, DB 실존 주문 장부 권위 준수.
+  - 매도(ASC)와 매수(DESC) 주문을 독립된 쿼리로 병렬(`Promise.all`) 조회하여 일측 대량 주문 시에도 반대측 최우선 호가가 누락되지 않도록 개선.
+  - `requestGenerationRef` 및 완료 기반 재귀 폴링(`setTimeout`)을 도입하여 비동기 응답 역전(Race Condition) 및 언마운트 상태 변조 완전 방어.
+  - `prevStockIdRef`를 통해 종목 전환 시 이전 호가를 즉시 초기화하고 지연된 이전 종목 응답은 세대 불일치로 즉시 폐기.
+  - 교차 호가 감지 시 쓰로틀된 진단 경고(`[OrderbookIntegrity] Crossed book detected`) 기록 및 `connectionState`('loading' | 'live' | 'stale' | 'error') 관리 도입.
+- `lib/utils/orderbookSelector.ts`:
+  - `filterValidOrderbookLevels`: `Math.round(totalSize)` 적용 후 `roundedSize <= 0` 여부를 재검증하여 `0.1` 등이 반올림 후 0 수량 행으로 포함되는 문제 차단.
+- `app/components/Orderbook.tsx` & `app/components/v2/OrderbookV2.tsx`:
+  - `connectionState` 연동을 통해 연결 상태(LIVE DB / STALE / CONNECTING / DISCONNECTED)를 배지에 정교하게 반영.
+- `lib/engine/simulation/marketEventTypes.ts`:
+  - 봇 및 외부 관측자용 Allowlist DTO인 `ObservableMarketEvent` 및 `toObservableMarketEvent` 팩토리 함수 도입.
+  - `getVisibleMarketEvents` 반환 타입을 `ObservableMarketEvent[]`로 변경하여 `isRumorFake`, `is_fake`, `correctedAt` 등 내부 진실 필드를 봇 시야에서 완전 박탈.
+  - `sanitizePublicNewsRecord`에서 공개 뉴스 API의 진실 필드 노출 차단 보장.
+- `lib/engine/simulation/marketObservation.ts`:
+  - `MarketObservation`의 `recentEvents` 및 `effectiveEvents` 타입을 `ObservableMarketEvent[]`로 변경하여 타입 및 런타임 진실 유출 차단.
+- `lib/engine/simulation/strategies/valueStrategy.ts`:
+  - 정정 이벤트 처리 정책 정립: 유효한 원본 루머를 취소하는 정정 이벤트는 원본 신뢰도 무효화(중립 기준선 복귀)를 기본 효과로 적용하고, 정정의 `valuationSignal`을 중복 가산하지 않아 시장 신호가 음수로 과도하게 덤핑되는 이중 계산 방지.
+- 종합 테스트 및 빌드 검증:
+  - 신규 정합성 종합 테스트 `scripts/test-orderbook-and-news-integrity.ts` (TEST A~F 전체 PASS, Exit Code 0).
+  - 기존 12종 핵심 회귀 테스트 전체 순차 검증 완료 (Exit Code 0).
+  - TypeScript 타입 검사 (`npx tsc --noEmit`): 에러 0건 (Exit Code 0).
+  - 프로덕션 빌드 (`npm run build`): Turbopack 24개 라우트 빌드 성공 (Exit Code 0).
+
+---
+## 2026-09-18 16:55
+
+**요청 요약:** 코드 리뷰 피드백에 따른 4대 보완 과제(동일 가격 대량 주문 잔량 정합성 복원 및 서버 권위 단일 스냅샷 집계 RPC, 정정 뉴스 정책 데이터화(CorrectionMode), 미래 정정 등록 시 원본 객체 조기 변조 완전 제거, 실제 React 렌더링 및 폴링 복구 경로 검증) 구현 및 실증 완료.
+**수행 결과:**
+- `lib/memoryDb/memoryDbClient.ts`:
+  - `get_authoritative_orderbook(p_stock_id, p_depth)` RPC 신규 구현: 서버 메모리 DB 인덱스(`orderStockIndex`)를 순회하여, 동일 가격 주문이 수백~수천 건이더라도 모든 잔량을 100% 완전 누락 없이 합산하고 상위 `p_depth`(기본 10)개 고유 가격 레벨 및 체결 내역을 단일 스냅샷(`timestamp`, `fetchDurationMs`)으로 원자적 반환.
+- `lib/hooks/useOrderbookData.ts`:
+  - `fetchFromDB`에서 `supabase.rpc('get_authoritative_orderbook')`를 최우선으로 호출하여 단일 스냅샷으로 원자적 갱신(조회 시점 차이 T와 T+Δ로 인한 인위적인 crossed book 원천 제거).
+  - 단발성 비동기 시점 차이로 인한 가짜 경고를 방지하고, 3회 이상 연속(`consecutiveCount >= 3`) 관측될 때만 실제 지속 교차 호가(`[OrderbookIntegrity] Sustained crossed book detected`) 경고를 로깅하도록 진단 로직 개선.
+  - fallback 분리 쿼리에 대한 한계(방향별 200건 한계) 명시.
+- `lib/engine/simulation/marketEventTypes.ts`:
+  - `CorrectionMode = 'RETRACT' | 'REPLACE' | 'ADDITIVE'` 정책 타입 정의 및 `ObservableMarketEvent` / `MarketEvent` 필드 추가, allowlist DTO 복사 연동.
+- `lib/engine/simulation/strategies/valueStrategy.ts`:
+  - `CorrectionMode` 3대 정책 분기 구현: `RETRACT`(기본값, 정정 수신 이후 미래 의사결정에서 원본 루머의 가치평가 기여도 제거 및 정정 신호 0), `REPLACE`(원본 기여도 제거 + 정정의 새로운 `valuationSignal` 대체 반영), `ADDITIVE`(원본 유지 + 정정 신호 추가 가산).
+- `lib/engine/simulation/agentManager.ts`:
+  - `registerEvent`에서 미래 정정 등록 시 원본 루머의 `orig.correctedAt`을 조기 변조하던 코드를 완전 삭제하여, 미래 정정이 등록되더라도 발행 전까지는 원본 루머 객체가 불변 유지되도록 보장.
+  - `processDuePublications`에서 실제 `simTime >= publishedAt`에 도달하여 정정이 공식 발행되는 시점에만 `orig.correctedAt` 태그가 부착되도록 시점 분리 완료.
+- `app/components/Orderbook.tsx` & `app/components/v2/OrderbookV2.tsx`:
+  - 테스트 및 SSR hydration 주입을 위한 optional props(`initialBids`, `initialAsks`, `connectionState`) 지원 및 타입 안전성 확보.
+- `scripts/test-orderbook-react-render.tsx`:
+  - 신규 종합 실증 스크립트 작성 및 5대 스위트 전체 PASS (Exit Code 0):
+    1) [TEST 1] 동일 가격 250건 주문(총 2,500주)이 200건 제한에 잘리지 않고 100% 완전 합산됨을 입증.
+    2) [TEST 2] `CorrectionMode` 3종(`RETRACT`, `REPLACE`, `ADDITIVE`)에 따른 가치평가 의사결정(HOLD, SELL, BUY) 실증.
+    3) [TEST 3] 미래 정정 등록 직후 및 발행 전까지 원본 루머의 `correctedAt === undefined` 유지 및 발행 시점에만 설정됨을 실증.
+    4) [TEST 4] React 컴포넌트 실제 DOM 렌더링 검증: 0수량 행 DOM 부재, 전량 체결 시 해당 가격 행 DOM 완전 소멸, 배지 전이(`CONNECTING`, `LIVE DB`, `STALE`, `DISCONNECTED`), V2 렌더링 실증.
+    5) [TEST 5] 폴링 `finally` 복구 경로 검증: ask 실패, bid 실패, 양쪽 실패, 세대 불일치 상황에서도 지속 스케줄링 및 언마운트 시 타이머 정리 실증.
+- 종합 회귀 및 빌드 검증:
+  - `test-causal-market-flow.ts` Scenario E의 지연 발행 시점 검증 정비 및 전체 시나리오(A~H) PASS (Exit Code 0).
+  - `test-order-security-and-atomic.ts` (TEST 1~14 전체 PASS, Exit Code 0).
+  - `test-orderbook-and-news-integrity.ts` (TEST A~F 전체 PASS, Exit Code 0).
+  - `test-news-lifecycle-and-causal-flow.ts`, `test-time-concurrency-news.ts`, `test-orderbook-zero-suppression.ts` 전체 PASS (Exit Code 0).
+  - TypeScript 타입 검사 (`npx tsc --noEmit`): 0 Errors (Exit Code 0).
+  - Next.js 프로덕션 빌드 (`npm run build`): Turbopack 24개 라우트 정상 빌드 완료 (Exit Code 0).
+
+---
+## 2026-09-18 17:25
+
+**요청 요약:** 프로덕션 배포 전 3대 필수 확인 사항(1. `get_authoritative_orderbook` 실행 모드별 지원 및 외부 DB용 DDL/에러가드/스냅샷 원자성 범위, 2. 정정 뉴스 수치 계산 순수 함수 분리 및 7대 정량 단위 테스트, 3. jsdom 기반 실제 React 컴포넌트 마운트/언마운트/라이프사이클/배지 전이 검증) 완결 및 누락 회귀 테스트 8종 전체 순차 실증.
+**수행 결과:**
+- `lib/engine/simulation/strategies/valueStrategy.ts`:
+  - 신호 계산 순수 함수 `computeEffectiveNewsValuation(events, stockId, simulationTime)` 분리 및 중복 이벤트 수신 방어 멱등성 보장.
+  - `evaluateValueStrategy` 내부에서 해당 순수 함수를 호출하도록 리팩토링.
+- `docs/sql/02_get_authoritative_orderbook.sql`:
+  - 외부 Supabase / PostgreSQL 환경 배포를 위한 단일 SQL statement 원자적 집계 DDL 함수 신규 작성 (`jsonb_build_object`, 100% 완전 잔량 합산, RLS/GRANT 포함).
+- `lib/hooks/useOrderbookData.ts`:
+  - RPC 실패 시 빈 호가창 오인 방지: 치명적 DB 오류 또는 네트워크 단절 시 `rpcRes.error` 발생 시 즉시 `throw`하여 `stale`/`error` 상태로 전환하는 에러 가드 적용.
+  - 스냅샷 원자성 범위 명문화: Local Standalone 단일 프로세스에서의 동기식 읽기 스냅샷과 외부 DB 모드에서의 단일 SQL 트랜잭션 스냅샷 범위 분리 문서화.
+- `scripts/test-orderbook-react-render.tsx`:
+  - `jsdom` 기반 가상 DOM 환경 초기화 및 실제 React 마운트/언마운트 라이프사이클 5대 스위트 실증:
+    1) [SUITE 1 - 정정 신호 수치 단위 테스트] `computeEffectiveNewsValuation` 7대 정량 수치(RETRACT 0, REPLACE -0.20, ADDITIVE +0.40, 정정 미관측 0.30 유지, 고아 정정 -0.15, 반감기 감쇠 0.10, 중복 수신 멱등성) 수학적 일치 실증 (ALL PASS).
+    2) [SUITE 2 - 실제 React DOM 마운트] `createRoot` 및 `act` 환경에서 0수량 행 부재, 전량 체결 시 DOM 노드 즉시 소멸, 4대 배지 전이(`CONNECTING`, `LIVE DB`, `STALE`, `DISCONNECTED`), `root.unmount()` 라이프사이클 실증 (ALL PASS).
+    3) [SUITE 3 - 대량 주문 합산] 동일 가격 250건(총 2,500주) 주문의 100% 완전 잔량 합산 실증 (ALL PASS).
+    4) [SUITE 4 - 미래 정정 객체 격리] 미래 정정 등록 직후 원본 객체 조기 변조 부재 실증 (ALL PASS).
+    5) [SUITE 5 - 폴링 복구 및 라이프사이클 방어] 언마운트 후 pending Promise 완료 시 `setState` 차단 및 에러 복구 실증 (ALL PASS).
+- 누락 핵심 회귀 테스트 8종 전체 순차 실행 (ALL PASS, Exit Code 0):
+  1) `scripts/test-agent-based-market.ts`: 13개 ABM 스위트 PASS
+  2) `scripts/test-concurrency-and-stale-ref.ts`: 동시성 및 stale ref 검증 PASS
+  3) `scripts/test-transaction-isolation.ts`: 크로스 종목 롤백 및 다중 종목 초과지출 방지 PASS
+  4) `scripts/test-order-risk-and-settlement.ts`: TEST A ~ TEST N 전체 PASS
+  5) `scripts/test-market-flow-dashboard-api.ts`: 시계열 흐름 및 주도주 랭킹 PASS
+  6) `scripts/test-market-flow-verification.ts`: 다중 시드(seed=42, 137) PASS
+  7) `scripts/test-comprehensive-audit-fixes.ts`: 슬라이딩 윈도우 및 인덱스 정합성 PASS
+  8) `scripts/settlement/run_settlement_verification.ts`: 동시성 병렬, 마진콜 청산, 롤오버 원자성 PASS
+- 빌드 및 타입 검사:
+  - TypeScript 타입 검사 (`npx tsc --noEmit`): 0 Errors (Exit Code 0).
+  - Next.js 프로덕션 빌드 (`npm run build`): Turbopack 24개 라우트 컴파일 및 최적화 성공 (Exit Code 0).
+
+---
+## 2026-09-18 17:42
+
+**요청 요약:** NextAuth `CLIENT_FETCH_ERROR` (`Unexpected token '<', "<!DOCTYPE "... is not valid JSON`) 콘솔 에러 원인 분석 및 완전 해결.
+**수행 결과:**
+- `app/api/auth/[...nextauth]/route.ts`:
+  - `NextAuthOptions` 타입을 `import type { NextAuthOptions }` (type-only import)로 수정하여 ESM 런타임 named export 부재로 인한 500 에러 원천 차단.
+  - `safeAuthHandler` 방어 래퍼 도입:
+    - Next.js 15/16 App Router 호환성을 위해 `req.nextUrl`이 없는 경우 표준 URL 인스턴스 주입(`new URL(req.url)`).
+    - NextAuth 내부 핸들러에서 예외(`cookies was called outside a request scope`, DB 다운, 라우트 매칭 등)가 발생하거나 4xx/5xx HTML 에러 페이지가 생성되더라도 최상위로 HTML이 유출되지 않도록 전면 차단.
+    - 세션 조회(`/api/auth/session`) 실패 시 안전한 200 JSON `null`을 반환하여 클라이언트 파싱 에러를 방지하고 `useAuth`의 게스트 로그인(`GUEST_USER_ID`)으로 정상 폴백 보장.
+- `scripts/test-nextauth-safe-handler.ts`:
+  - 신규 검증 스크립트 작성 및 3대 시나리오(표준 세션 조회, 내부 핸들러 예외 발생 시 JSON fallback, 비정상 액션 에러 JSON 반환) 실증 완료 (ALL PASS, Exit Code 0).
+- 타입 및 빌드 검증:
+  - `npx tsc --noEmit`: 0 Errors (Exit Code 0).
+  - `npm run build`: Turbopack 24개 라우트 정상 빌드 완료 (Exit Code 0).
+
+---
+## 2026-09-18 20:52
+
+**요청 요약:** 호가창 DB 장부 정합성 복원, 서버 권위 RPC 및 외부 DB DDL 작성, 정정 뉴스 격리 및 수치 계산 순수 함수 분리, React 실제 마운트 검증, NextAuth 클라이언트 에러 해결 등 누적된 배포 후보 코드 전체의 Git 커밋 및 원격 저장소 푸시.
+**수행 결과:**
+- 변경 및 신규 파일 전체 스테이징 및 배포:
+  - 호가창 및 DB 권위 RPC: `lib/hooks/useOrderbookData.ts`, `lib/memoryDb/memoryDbClient.ts`, `lib/utils/orderbookSelector.ts`, `app/components/Orderbook.tsx`, `app/components/v2/OrderbookV2.tsx`, `docs/sql/02_get_authoritative_orderbook.sql`
+  - 뉴스 및 에이전트 정합성: `lib/engine/simulation/agentManager.ts`, `lib/engine/simulation/marketEventTypes.ts`, `lib/engine/simulation/marketObservation.ts`, `lib/engine/simulation/strategies/valueStrategy.ts`
+  - NextAuth 호환성 안전 래퍼: `app/api/auth/[...nextauth]/route.ts`
+  - 통합 및 단위 테스트 스위트: `scripts/test-orderbook-and-news-integrity.ts`, `scripts/test-orderbook-react-render.tsx`, `scripts/test-nextauth-safe-handler.ts`, `scripts/test-causal-market-flow.ts`, `scripts/test-time-concurrency-news.ts`
+- `git add`, `git commit` 및 `git push origin main` 실행 완료.

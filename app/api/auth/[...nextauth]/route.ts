@@ -1,4 +1,4 @@
-import NextAuth, { NextAuthOptions } from "next-auth";
+import NextAuth, { type NextAuthOptions } from "next-auth";
 import GoogleProvider from "next-auth/providers/google";
 
 const providers = [];
@@ -57,5 +57,52 @@ export const authOptions: NextAuthOptions = {
   secret: process.env.NEXTAUTH_SECRET || (process.env.NODE_ENV === 'development' ? 'stocksys-dev-local-secret' : undefined),
 };
 
-const handler = NextAuth(authOptions);
-export { handler as GET, handler as POST };
+const nextAuthHandler = NextAuth(authOptions);
+
+/**
+ * Next.js 15/16 App Router 호환 안전 래퍼:
+ * 내부 핸들러에서 예외가 발생하거나 HTML 에러 페이지가 반환되더라도,
+ * NextAuth 클라이언트가 JSON 파싱 실패(`Unexpected token '<'`)를 겪지 않도록
+ * 반드시 유효한 JSON(null session 또는 error json)을 보장합니다.
+ */
+async function safeAuthHandler(req: Request, context: any) {
+  try {
+    // Next.js 15/16 App Router 호환성: req.nextUrl이 없는 일반 Request인 경우 URL 객체 주입
+    const reqWithNextUrl = req as any;
+    if (!reqWithNextUrl.nextUrl && req.url) {
+      try {
+        reqWithNextUrl.nextUrl = new URL(req.url);
+      } catch {
+        // ignore url parsing error
+      }
+    }
+
+    const res = await nextAuthHandler(reqWithNextUrl, context);
+    // 만약 NextAuth 응답이 HTML(에러 페이지)인 경우 JSON으로 치환하여 CLIENT_FETCH_ERROR 방어
+    const contentType = res?.headers?.get('content-type') || '';
+    if (res && res.status >= 400 && contentType.includes('text/html')) {
+      console.warn(`[NextAuth] Caught HTML error response (${res.status}), returning fallback JSON.`);
+      return Response.json(
+        { error: 'AuthenticationError', message: 'An error occurred during authentication.' },
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+    return res;
+  } catch (error) {
+    console.error('[NextAuth] Unexpected route handler error (safely handled):', error);
+    const url = req.url || '';
+    // 세션 요청은 빈 세션(null)을 반환하여 클라이언트가 게스트 모드로 정상 폴백하도록 허용
+    if (url.includes('/api/auth/session')) {
+      return Response.json(null, {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    return Response.json(
+      { error: 'InternalAuthenticationError', message: (error as Error)?.message || String(error) },
+      { status: 200, headers: { 'Content-Type': 'application/json' } }
+    );
+  }
+}
+
+export { safeAuthHandler as GET, safeAuthHandler as POST };

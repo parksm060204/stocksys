@@ -33,6 +33,8 @@ interface DBTrade {
 }
 
 // ─── 공통 리턴 타입 ──────────────────────────────────────────────────────────
+export type OrderbookConnectionState = 'loading' | 'live' | 'stale' | 'error';
+
 export interface OrderbookLevel {
   price: number;
   totalSize: number;
@@ -55,13 +57,52 @@ interface UseOrderbookDataResult {
   trades: TradeRecord[];
   price: number;
   source: 'db' | 'hybrid' | 'simulation';
+  connectionState: OrderbookConnectionState;
 }
 
 // ─── 틱 사이즈 (중복 정의 방지용 re-export) ─────────────────────────────────
 export { getTickSize } from './useStockBotSimulation';
 
+// 교차 호가 진단 추적 (단발성 시점 차이 경고 방지 및 연속 관측 횟수 추적)
+interface CrossedDiagnostics {
+  count: number;
+  lastWarnedAt: number;
+}
+const crossedDiagnosticsMap = new Map<string, CrossedDiagnostics>();
+
+function recordAndDiagnoseCrossedBook(
+  stockId: string,
+  bestBid: number,
+  bestAsk: number,
+  snapshotTime: number,
+  durationMs?: number
+) {
+  const diag = crossedDiagnosticsMap.get(stockId) ?? { count: 0, lastWarnedAt: 0 };
+  diag.count += 1;
+  crossedDiagnosticsMap.set(stockId, diag);
+
+  const now = Date.now();
+  // 단발성 비동기 시점 차이(T와 T+Δ)로 인한 오판을 방지하고,
+  // 3회 이상 연속으로 교차 상태가 지속 관측될 때만 실제 엔진 매칭 지연 상태로 진단하여 경고
+  if (diag.count >= 3 && now - diag.lastWarnedAt > 10_000) {
+    diag.lastWarnedAt = now;
+    console.warn(
+      `[OrderbookIntegrity] Sustained crossed book detected\n` +
+      `stockId=${stockId}\nbestBid=${bestBid}\nbestAsk=${bestAsk}\n` +
+      `consecutiveCount=${diag.count}\nsnapshotTime=${snapshotTime}\nfetchDurationMs=${durationMs ?? 0}`
+    );
+  }
+}
+
+function resetCrossedBookDiagnostics(stockId: string) {
+  const diag = crossedDiagnosticsMap.get(stockId);
+  if (diag && diag.count > 0) {
+    diag.count = 0;
+  }
+}
+
 /**
- * useOrderbookData — 100% DB 체결 데이터 기반
+ * useOrderbookData — 100% DB 권위 있는 주문 장부 및 체결 데이터 기반 훅
  */
 export function useOrderbookData(
   stockId: string,
@@ -73,8 +114,13 @@ export function useOrderbookData(
   const [asks, setAsks] = useState<OrderbookLevel[]>([]);
   const [trades, setTrades] = useState<TradeRecord[]>([]);
   const [price, setPrice] = useState(currentPrice);
+  const [connectionState, setConnectionState] = useState<OrderbookConnectionState>('loading');
+
   const mountedRef = useRef(true);
   const currentPriceRef = useRef(currentPrice);
+  const activeStockIdRef = useRef(stockId);
+  const prevStockIdRef = useRef(stockId);
+  const requestGenerationRef = useRef(0);
 
   useEffect(() => {
     currentPriceRef.current = currentPrice;
@@ -82,139 +128,81 @@ export function useOrderbookData(
 
   useEffect(() => {
     mountedRef.current = true;
-    return () => { mountedRef.current = false; };
+    return () => {
+      mountedRef.current = false;
+    };
   }, []);
 
-  // ─── DB 폴링 및 실시간 동적 호가 매칭 ────────────────────────────────────
-  const fetchFromDB = useCallback(async () => {
-    if (!stockId || stockId === '__none__') return;
+  // ── 종목 변경 시 즉각적인 이전 호가 초기화 ──
+  useEffect(() => {
+    if (prevStockIdRef.current !== stockId) {
+      prevStockIdRef.current = stockId;
+      activeStockIdRef.current = stockId;
+      requestGenerationRef.current++;
+
+      // 이전 종목 상태를 즉시 클리어하여 화면 잔류 방지
+      setBids([]);
+      setAsks([]);
+      setTrades([]);
+      setPrice(currentPrice);
+      setConnectionState('loading');
+    }
+  }, [stockId, currentPrice]);
+
+  // ─── DB 폴링 및 권위 있는 호가 집계 ────────────────────────────────────
+  const fetchFromDB = useCallback(async (targetStockId: string, generation: number) => {
+    if (!targetStockId || targetStockId === '__none__') return;
     const supabase = createClient();
 
     try {
-      // 1. 미체결 주문 조회 (호가창)
-      const { data: orders, error: ordersError } = await supabase
-        .from('orders')
-        .select('id,stock_id,side,price,size,filled,status,is_lp')
-        .eq('stock_id', stockId)
-        .in('status', ['open', 'partial'])
-        .order('price', { ascending: false })
-        .limit(200);
+      // 1. 단일 스냅샷 기반의 서버 권위 호가 집계 RPC 호출 (100% 완전 잔량 합산 및 매수/매도 시점 일치 보장)
+      const rpcRes = await supabase.rpc('get_authoritative_orderbook', {
+        p_stock_id: targetStockId,
+        p_depth: 10,
+      });
 
-      if (ordersError) throw ordersError;
-
-      // 2. 최근 체결 조회
-      const { data: dbTrades, error: tradesError } = await supabase
-        .from('trades')
-        .select('id,stock_id,price,size,buyer_is_bot,seller_is_bot,created_at')
-        .eq('stock_id', stockId)
-        .order('created_at', { ascending: false })
-        .limit(50);
-
-      if (tradesError) throw tradesError;
-
-      const hasOrders = orders && orders.length > 0;
-      const hasTrades = dbTrades && dbTrades.length > 0;
-
-      // 최신 체결가 추정
-      let latestPrice = currentPriceRef.current;
-      if (hasTrades && dbTrades && dbTrades[0]) {
-        latestPrice = Number(dbTrades[0].price);
+      if (
+        !mountedRef.current ||
+        generation !== requestGenerationRef.current ||
+        activeStockIdRef.current !== targetStockId
+      ) {
+        return;
       }
 
-      // ── 호가창 구성 (실제 DB 매수/매도 지정가 주문 기반) ──
-      const bidMap = new Map<number, number>();
-      const askMap = new Map<number, number>();
+      if (!rpcRes.error && rpcRes.data && Array.isArray(rpcRes.data.bids) && Array.isArray(rpcRes.data.asks)) {
+        const data = rpcRes.data;
+        const newBids: OrderbookLevel[] = data.bids;
+        const newAsks: OrderbookLevel[] = data.asks;
+        const dbTrades: DBTrade[] = data.trades || [];
 
-      if (hasOrders) {
-        for (const o of orders as DBOrder[]) {
-          const remaining = Math.max(0, Number(o.size) - Number(o.filled));
-          if (remaining <= 0) continue;
-          const alignedP = alignToTickSize(Number(o.price));
-
-          if (o.side === 'buy') {
-            bidMap.set(alignedP, (bidMap.get(alignedP) ?? 0) + remaining);
-          } else {
-            askMap.set(alignedP, (askMap.get(alignedP) ?? 0) + remaining);
-          }
+        // 최신 체결가
+        let latestPrice = currentPriceRef.current;
+        if (dbTrades.length > 0 && dbTrades[0]) {
+          latestPrice = Number(dbTrades[0].price);
         }
-      }
 
-      // ── 1. 동일 가격 매수/매도 벽 자동 상쇄 체결 (동시 존재 방지) ──
-      for (const [p, bVol] of Array.from(bidMap.entries())) {
-        if (askMap.has(p)) {
-          const aVol = askMap.get(p)!;
-          const matchVol = Math.min(bVol, aVol);
-          if (bVol > aVol) {
-            bidMap.set(p, bVol - matchVol);
-            askMap.delete(p);
-          } else if (aVol > bVol) {
-            askMap.set(p, aVol - matchVol);
-            bidMap.delete(p);
-          } else {
-            bidMap.delete(p);
-            askMap.delete(p);
-          }
+        // 교차 호가 진단 (단일 스냅샷 기반: Local Standalone에서는 동기식 집계 스냅샷, 외부 DB에서는 단일 SQL 스냅샷)
+        const bestAsk = newAsks[0]?.price;
+        const bestBid = newBids[0]?.price;
+        if (bestBid !== undefined && bestAsk !== undefined && bestBid >= bestAsk) {
+          recordAndDiagnoseCrossedBook(targetStockId, bestBid, bestAsk, data.timestamp, data.fetchDurationMs);
+        } else {
+          resetCrossedBookDiagnostics(targetStockId);
         }
-      }
 
-      // ── 2. 매수 1호가 >= 매도 1호가 교차 오버랩 제거 ──
-      const sortedAskPrices = Array.from(askMap.keys()).sort((a, b) => a - b);
-      if (sortedAskPrices.length > 0) {
-        const bestAsk = sortedAskPrices[0];
-        for (const [bp] of Array.from(bidMap.entries())) {
-          if (bp >= bestAsk) {
-            bidMap.delete(bp);
-          }
-        }
-      }
-
-      // ── 3. 실제 유효 주문이 존재하는 가격 행만 추출 (0 수량 및 인위적 빈 간격 생성 금지) ──
-      const newAsks: OrderbookLevel[] = [];
-      for (const [p, dbVol] of askMap.entries()) {
-        if (Number.isFinite(p) && p > 0 && Number.isFinite(dbVol) && dbVol > 0) {
-          newAsks.push({
-            price: p,
-            totalSize: Math.round(dbVol),
-            isSynthetic: false,
-            actualDbSize: dbVol,
-          });
-        }
-      }
-      // 매도 호가: 가격 오름차순 (최우선 매도호가가 앞쪽)
-      newAsks.sort((a, b) => a.price - b.price);
-
-      const newBids: OrderbookLevel[] = [];
-      for (const [p, dbVol] of bidMap.entries()) {
-        if (Number.isFinite(p) && p > 0 && Number.isFinite(dbVol) && dbVol > 0) {
-          newBids.push({
-            price: p,
-            totalSize: Math.round(dbVol),
-            isSynthetic: false,
-            actualDbSize: dbVol,
-          });
-        }
-      }
-      // 매수 호가: 가격 내림차순 (최우선 매수호가가 앞쪽)
-      newBids.sort((a, b) => b.price - a.price);
-
-      // ── 체결 피드 구성 (100% DB trades 테이블 데이터) ──
-      if (hasTrades && mountedRef.current) {
+        // 체결 피드 생성
         let lastPrice = currentPriceRef.current;
-        const newTrades: TradeRecord[] = (dbTrades as DBTrade[]).map((t, index) => {
+        const newTrades: TradeRecord[] = dbTrades.map((t, index) => {
           const tPrice = Number(t.price);
           let side: 'BUY' | 'SELL';
-
-          if (t.seller_is_bot && !t.buyer_is_bot) {
-            side = 'SELL';
-          } else if (t.buyer_is_bot && !t.seller_is_bot) {
-            side = 'BUY';
-          } else {
+          if (t.seller_is_bot && !t.buyer_is_bot) side = 'SELL';
+          else if (t.buyer_is_bot && !t.seller_is_bot) side = 'BUY';
+          else {
             if (tPrice > lastPrice) side = 'BUY';
             else if (tPrice < lastPrice) side = 'SELL';
             else side = index % 2 === 0 ? 'BUY' : 'SELL';
           }
           lastPrice = tPrice;
-
           return {
             tradeId: t.id,
             price: tPrice,
@@ -224,25 +212,231 @@ export function useOrderbookData(
             timestamp: new Date(t.created_at).getTime(),
           };
         });
-        setTrades(newTrades);
-      }
 
-      if (mountedRef.current) {
         setBids(newBids);
         setAsks(newAsks);
+        setTrades(newTrades);
         setPrice(latestPrice > 0 ? latestPrice : currentPriceRef.current);
+        setConnectionState('live');
+        return;
       }
-    } catch {
-      // ignore fetch errors
-    }
-  }, [stockId]);
 
-  // ─── DB 폴링 루프 ──────────────────────────────────────────────────────────
+      // RPC 에러가 치명적인 DB 오류/네트워크 단절인 경우 빈 호가창으로 오인하지 않고 에러 상태로 처리
+      if (rpcRes.error) {
+        const errMsg = String(rpcRes.error.message || rpcRes.error);
+        const isRpcNotFound = errMsg.includes('not found') || errMsg.includes('does not exist') || errMsg.includes('누락');
+        if (!isRpcNotFound) {
+          throw rpcRes.error;
+        }
+      }
+
+      // ── Fallback: RPC를 지원하지 않는 레거시 환경 전용 분리 쿼리 수행 ──
+      // 주의: Local Standalone 단일 프로세스에서는 동기식 집계를 통해 동일 읽기 구간의 스냅샷을 보장합니다.
+      // 외부 DB 모드에서는 docs/sql/02_get_authoritative_orderbook.sql 단일 SQL statement 또는 읽기 트랜잭션이 필수입니다.
+      const fetchAsks = () =>
+        supabase
+          .from('orders')
+          .select('id,stock_id,side,price,size,filled,status,is_lp')
+          .eq('stock_id', targetStockId)
+          .eq('side', 'sell')
+          .in('status', ['open', 'partial'])
+          .order('price', { ascending: true })
+          .limit(200);
+
+      const fetchBids = () =>
+        supabase
+          .from('orders')
+          .select('id,stock_id,side,price,size,filled,status,is_lp')
+          .eq('stock_id', targetStockId)
+          .eq('side', 'buy')
+          .in('status', ['open', 'partial'])
+          .order('price', { ascending: false })
+          .limit(200);
+
+      const fetchTrades = () =>
+        supabase
+          .from('trades')
+          .select('id,stock_id,price,size,buyer_is_bot,seller_is_bot,created_at')
+          .eq('stock_id', targetStockId)
+          .order('created_at', { ascending: false })
+          .limit(50);
+
+      const [asksResult, bidsResult, tradesResult] = await Promise.all([
+        fetchAsks(),
+        fetchBids(),
+        fetchTrades(),
+      ]);
+
+      if (asksResult.error) throw asksResult.error;
+      if (bidsResult.error) throw bidsResult.error;
+      if (tradesResult.error) throw tradesResult.error;
+
+      // 비동기 응답 역전 및 언마운트/종목 변경 방어 검증
+      if (
+        !mountedRef.current ||
+        generation !== requestGenerationRef.current ||
+        activeStockIdRef.current !== targetStockId
+      ) {
+        return;
+      }
+
+      const rawAsks = (asksResult.data as DBOrder[]) || [];
+      const rawBids = (bidsResult.data as DBOrder[]) || [];
+      const dbTrades = (tradesResult.data as DBTrade[]) || [];
+
+      // 최신 체결가
+      let latestPrice = currentPriceRef.current;
+      if (dbTrades.length > 0 && dbTrades[0]) {
+        latestPrice = Number(dbTrades[0].price);
+      }
+
+      // ── 호가 집계: 동일 가격·동일 방향 주문 잔량 합산 (반대 방향 임의 상쇄 완전 금지) ──
+      const askMap = new Map<number, number>();
+      for (const o of rawAsks) {
+        const remaining = Math.max(0, Number(o.size) - Number(o.filled));
+        const price = Number(o.price);
+        if (
+          (o.status === 'open' || o.status === 'partial') &&
+          Number.isFinite(price) &&
+          price > 0 &&
+          Number.isFinite(remaining) &&
+          remaining > 0
+        ) {
+          const alignedP = alignToTickSize(price);
+          askMap.set(alignedP, (askMap.get(alignedP) ?? 0) + remaining);
+        }
+      }
+
+      const bidMap = new Map<number, number>();
+      for (const o of rawBids) {
+        const remaining = Math.max(0, Number(o.size) - Number(o.filled));
+        const price = Number(o.price);
+        if (
+          (o.status === 'open' || o.status === 'partial') &&
+          Number.isFinite(price) &&
+          price > 0 &&
+          Number.isFinite(remaining) &&
+          remaining > 0
+        ) {
+          const alignedP = alignToTickSize(price);
+          bidMap.set(alignedP, (bidMap.get(alignedP) ?? 0) + remaining);
+        }
+      }
+
+      // ── 반올림 후 0수량 재검증 및 유효 호가 생성 ──
+      const newAsks: OrderbookLevel[] = [];
+      for (const [p, dbVol] of askMap.entries()) {
+        const roundedSize = Math.round(dbVol);
+        if (Number.isFinite(p) && p > 0 && Number.isFinite(roundedSize) && roundedSize > 0) {
+          newAsks.push({
+            price: p,
+            totalSize: roundedSize,
+            isSynthetic: false,
+            actualDbSize: dbVol,
+          });
+        }
+      }
+      newAsks.sort((a, b) => a.price - b.price); // 매도 오름차순 (최우선 매도호가가 앞쪽)
+
+      const newBids: OrderbookLevel[] = [];
+      for (const [p, dbVol] of bidMap.entries()) {
+        const roundedSize = Math.round(dbVol);
+        if (Number.isFinite(p) && p > 0 && Number.isFinite(roundedSize) && roundedSize > 0) {
+          newBids.push({
+            price: p,
+            totalSize: roundedSize,
+            isSynthetic: false,
+            actualDbSize: dbVol,
+          });
+        }
+      }
+      newBids.sort((a, b) => b.price - a.price); // 매수 내림차순 (최우선 매수호가가 앞쪽)
+
+      // ── 교차 호가 감지 (진단 경고 및 연속 횟수 추적) ──
+      const bestAsk = newAsks[0]?.price;
+      const bestBid = newBids[0]?.price;
+      if (bestBid !== undefined && bestAsk !== undefined && bestBid >= bestAsk) {
+        recordAndDiagnoseCrossedBook(targetStockId, bestBid, bestAsk, Date.now());
+      } else {
+        resetCrossedBookDiagnostics(targetStockId);
+      }
+
+      // ── 체결 피드 구성 (100% DB trades 테이블 데이터) ──
+      let lastPrice = currentPriceRef.current;
+      const newTrades: TradeRecord[] = dbTrades.map((t, index) => {
+        const tPrice = Number(t.price);
+        let side: 'BUY' | 'SELL';
+
+        if (t.seller_is_bot && !t.buyer_is_bot) {
+          side = 'SELL';
+        } else if (t.buyer_is_bot && !t.seller_is_bot) {
+          side = 'BUY';
+        } else {
+          if (tPrice > lastPrice) side = 'BUY';
+          else if (tPrice < lastPrice) side = 'SELL';
+          else side = index % 2 === 0 ? 'BUY' : 'SELL';
+        }
+        lastPrice = tPrice;
+
+        return {
+          tradeId: t.id,
+          price: tPrice,
+          quantity: Number(t.size),
+          side,
+          isLiquidation: false,
+          timestamp: new Date(t.created_at).getTime(),
+        };
+      });
+
+      if (
+        mountedRef.current &&
+        generation === requestGenerationRef.current &&
+        activeStockIdRef.current === targetStockId
+      ) {
+        setBids(newBids);
+        setAsks(newAsks);
+        setTrades(newTrades);
+        setPrice(latestPrice > 0 ? latestPrice : currentPriceRef.current);
+        setConnectionState('live');
+      }
+    } catch (err) {
+      if (
+        !mountedRef.current ||
+        generation !== requestGenerationRef.current ||
+        activeStockIdRef.current !== targetStockId
+      ) {
+        return;
+      }
+      console.warn(`[useOrderbookData] DB fetch error for stock ${targetStockId}:`, (err as any)?.message || err);
+      setConnectionState((prev) => (prev === 'live' || bids.length > 0 || asks.length > 0 ? 'stale' : 'error'));
+    }
+  }, [bids.length, asks.length]);
+
+  // ─── 완료 기반 재귀 폴링 루프 (요청 중첩 및 경합 방지) ──────────────────
   useEffect(() => {
     if (!stockId || stockId === '__none__') return;
-    fetchFromDB();
-    const id = setInterval(fetchFromDB, intervalMs);
-    return () => clearInterval(id);
+    activeStockIdRef.current = stockId;
+
+    let timeoutId: NodeJS.Timeout | null = null;
+    let isCancelled = false;
+
+    const poll = async () => {
+      const generation = ++requestGenerationRef.current;
+      try {
+        await fetchFromDB(stockId, generation);
+      } finally {
+        if (!isCancelled && mountedRef.current && activeStockIdRef.current === stockId) {
+          timeoutId = setTimeout(poll, intervalMs);
+        }
+      }
+    };
+
+    poll();
+
+    return () => {
+      isCancelled = true;
+      if (timeoutId) clearTimeout(timeoutId);
+    };
   }, [fetchFromDB, intervalMs, stockId]);
 
   // 실제 DB 호가와 합성(Synthetic) 호가 비중에 따른 투명한 source 산출
@@ -257,8 +451,8 @@ export function useOrderbookData(
       ? 'simulation'
       : 'hybrid';
 
-  return { bids, asks, trades, price, source };
+  return { bids, asks, trades, price, source, connectionState };
 }
 
-// ─── 시뮬레이션 시뮬레이션 결과를 SimOrderbookLevel 호환성 유지 ──────────────────
+// ─── 시뮬레이션 결과를 SimOrderbookLevel 호환성 유지 ──────────────────
 export type { SimOrderbookLevel, SimTrade };

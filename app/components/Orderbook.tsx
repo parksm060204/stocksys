@@ -1,7 +1,7 @@
 'use client';
 
 import { memo, useEffect, useRef, useState } from 'react';
-import { useOrderbookData } from '@/lib/hooks/useOrderbookData';
+import { useOrderbookData, type OrderbookConnectionState } from '@/lib/hooks/useOrderbookData';
 import {
   filterValidOrderbookLevels,
   calculateMaxVisibleQuantity,
@@ -240,25 +240,35 @@ export default function Orderbook({
   currentPrice,
   stockId,
   openPrice,
+  initialBids,
+  initialAsks,
+  connectionState: connectionStateProp,
 }: {
   ticker: string;
   currentPrice: number;
   stockId?: string;
   openPrice?: number;
+  initialBids?: OrderbookLevel[];
+  initialAsks?: OrderbookLevel[];
+  connectionState?: OrderbookConnectionState;
 }) {
-  const { bids, asks, trades, price, source } = useOrderbookData(
+  const { bids, asks, trades, price, source, connectionState: hookConnectionState } = useOrderbookData(
     stockId ?? '__none__',
     ticker,
     currentPrice,
     800,
   );
+  const connectionState = connectionStateProp ?? hookConnectionState;
+  const rawBids = initialBids ?? bids;
+  const rawAsks = initialAsks ?? asks;
+
   const liveCurrentPrice = price > 0 ? price : currentPrice;
   const lastTradedPrice = trades[0]?.price ?? liveCurrentPrice;
   const effectiveOpenPrice = openPrice && openPrice > 0 ? openPrice : liveCurrentPrice;
 
   // 실제 미체결 잔량이 존재하는 호가만 정제 및 정렬 (최대 10호가)
-  const visibleAsks = filterValidOrderbookLevels(asks, 'ask').slice(0, 10);
-  const visibleBids = filterValidOrderbookLevels(bids, 'bid').slice(0, 10);
+  const visibleAsks = filterValidOrderbookLevels(rawAsks, 'ask').slice(0, 10);
+  const visibleBids = filterValidOrderbookLevels(rawBids, 'bid').slice(0, 10);
 
   const maxSize = calculateMaxVisibleQuantity(visibleAsks, visibleBids);
   const totalAskSize = visibleAsks.reduce((acc, a) => acc + a.totalSize, 0);
@@ -273,7 +283,15 @@ export default function Orderbook({
           <span className="text-[12px] font-black text-tx tracking-tight flex items-center gap-1.5 font-sans">
             <span>호가창</span>
             <span className="text-[9.5px] font-mono text-muted font-normal uppercase">10 Depths</span>
-            <span className="w-2 h-2 rounded-full bg-up animate-pulse shadow-[0_0_8px_#F04452]" />
+            <span
+              className={`w-2 h-2 rounded-full ${
+                connectionState === 'error'
+                  ? 'bg-rose-500 shadow-[0_0_8px_#F43F5E]'
+                  : connectionState === 'stale'
+                  ? 'bg-amber-500 shadow-[0_0_8px_#F59E0B]'
+                  : 'bg-up animate-pulse shadow-[0_0_8px_#F04452]'
+              }`}
+            />
           </span>
 
           {/* 현재가 실시간 외부 뱃지 */}
@@ -285,8 +303,28 @@ export default function Orderbook({
           </div>
         </div>
 
-        <span className={`text-[9.5px] font-mono font-bold px-2 py-0.5 rounded-full border ${source === 'db' ? 'text-up bg-up/10 border-[#F04452]/30' : 'text-emerald-500 bg-emerald-500/10 border-emerald-500/30'}`}>
-          {source === 'db' ? 'LIVE DB' : 'LIVE FEED'}
+        <span
+          className={`text-[9.5px] font-mono font-bold px-2 py-0.5 rounded-full border ${
+            connectionState === 'error'
+              ? 'text-rose-500 bg-rose-500/10 border-rose-500/30'
+              : connectionState === 'stale'
+              ? 'text-amber-500 bg-amber-500/10 border-amber-500/30'
+              : connectionState === 'loading'
+              ? 'text-sky-500 bg-sky-500/10 border-sky-500/30'
+              : source === 'db'
+              ? 'text-up bg-up/10 border-[#F04452]/30'
+              : 'text-emerald-500 bg-emerald-500/10 border-emerald-500/30'
+          }`}
+        >
+          {connectionState === 'error'
+            ? 'DISCONNECTED'
+            : connectionState === 'stale'
+            ? 'STALE'
+            : connectionState === 'loading'
+            ? 'CONNECTING'
+            : source === 'db'
+            ? 'LIVE DB'
+            : 'LIVE FEED'}
         </span>
       </div>
 

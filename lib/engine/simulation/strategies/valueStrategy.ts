@@ -12,6 +12,84 @@ import { MarketObservation } from '../marketObservation';
 import { AgentAccount, AgentOrderIntent, ValueStrategyConfig } from '../agentTypes';
 import { millisecondsToSeconds, SimPrng } from '../simClock';
 
+/**
+ * 순수 함수: 관측 가능한 시장 이벤트 목록으로부터 특정 종목의 유효 뉴스 가치평가 신호(delta)를 산출합니다.
+ * - CorrectionMode (RETRACT, REPLACE, ADDITIVE) 정책 반영
+ * - 반감기(decay) 적용
+ * - 중복 수신된 이벤트 멱등성 보장 (eventId 기반)
+ */
+export function computeEffectiveNewsValuation(
+  events: import('../marketEventTypes').ObservableMarketEvent[],
+  stockId: string,
+  simulationTime: number
+): number {
+  if (!events || events.length === 0) return 0;
+
+  // 1. 이벤트 중복 방지 (멱등성 보장)
+  const uniqueEventsMap = new Map<string, import('../marketEventTypes').ObservableMarketEvent>();
+  for (const ev of events) {
+    if (!uniqueEventsMap.has(ev.eventId)) {
+      uniqueEventsMap.set(ev.eventId, ev);
+    }
+  }
+  const uniqueEvents = Array.from(uniqueEventsMap.values());
+
+  // 2. 유효 시점 필터링 (effectiveFrom <= simulationTime)
+  const effectiveEvents = uniqueEvents.filter((e) => e.effectiveFrom <= simulationTime);
+  if (effectiveEvents.length === 0) return 0;
+
+  // 3. 정정 이벤트 및 루머 매핑
+  const correctionByOriginalId = new Map<string, import('../marketEventTypes').ObservableMarketEvent>();
+  const presentRumorIds = new Set<string>();
+
+  for (const ev of effectiveEvents) {
+    if (ev.eventType === 'RUMOR') {
+      presentRumorIds.add(ev.eventId);
+    }
+    if (ev.eventType === 'CORRECTION' && ev.originalEventId) {
+      correctionByOriginalId.set(ev.originalEventId, ev);
+    }
+  }
+
+  let newsValuationDelta = 0;
+
+  for (const ev of effectiveEvents) {
+    if (!ev.targetStockIds.includes(stockId)) continue;
+
+    // 1. 원본 루머 처리
+    if (ev.eventType === 'RUMOR') {
+      const correction = correctionByOriginalId.get(ev.eventId);
+      if (correction) {
+        const mode = correction.correctionMode ?? 'RETRACT';
+        // RETRACT, REPLACE 모드: 정정 수신 이후 미래 의사결정에서 원본 루머의 가치평가 기여도 제거
+        if (mode === 'RETRACT' || mode === 'REPLACE') {
+          continue;
+        }
+        // ADDITIVE 모드: 원본 루머의 가치평가 기여도를 그대로 유지하며 아래에서 감쇠 계산 진행
+      }
+    }
+
+    // 2. 정정 이벤트(CORRECTION) 처리
+    if (ev.eventType === 'CORRECTION') {
+      const mode = ev.correctionMode ?? 'RETRACT';
+      if (ev.originalEventId && presentRumorIds.has(ev.originalEventId)) {
+        if (mode === 'RETRACT') {
+          // RETRACT 모드: 원본 루머 무효화만 수행하고 자체 valuationSignal은 미반영 (이중 계산 방지)
+          continue;
+        }
+        // REPLACE 모드: 원본은 무효화되었고, 정정 이벤트의 새로운 valuationSignal을 대체 반영
+        // ADDITIVE 모드: 원본도 유지되고, 정정 이벤트의 신호도 추가 가산 반영
+      }
+    }
+
+    const elapsed = millisecondsToSeconds(Math.max(0, simulationTime - ev.effectiveFrom));
+    const decay = Math.pow(2, -elapsed / ev.halfLife);
+    newsValuationDelta += ev.valuationSignal * ev.confidence * decay;
+  }
+
+  return newsValuationDelta;
+}
+
 export function evaluateValueStrategy(
   obs: MarketObservation,
   agent: AgentAccount,
@@ -20,29 +98,8 @@ export function evaluateValueStrategy(
   prng: SimPrng
 ): AgentOrderIntent {
   // 1. Latent fundamental observation with agent-specific estimation error & observable news signals
-  let newsValuationDelta = 0;
-  // Economic signals can strictly ONLY come from events where effectiveFrom <= simulationTime
-  const effectiveEvents = obs.effectiveEvents ?? (obs.recentEvents || []).filter((e) => e.effectiveFrom <= obs.simulationTime);
-
-  if (effectiveEvents.length > 0) {
-    // Build the set of rumor eventIds this agent has already seen corrected (via its visible and effective CORRECTION events)
-    const agentCorrectedIds = new Set<string>();
-    for (const ev of effectiveEvents) {
-      if (ev.eventType === 'CORRECTION' && ev.originalEventId) {
-        agentCorrectedIds.add(ev.originalEventId);
-      }
-    }
-
-    for (const ev of effectiveEvents) {
-      if (ev.targetStockIds.includes(obs.stockId)) {
-        // If this agent has already received an effective CORRECTION that nullifies this rumor, treat confidence as 0
-        const effectiveConfidence = agentCorrectedIds.has(ev.eventId) ? 0 : ev.confidence;
-        const elapsed = millisecondsToSeconds(Math.max(0, obs.simulationTime - ev.effectiveFrom));
-        const decay = Math.pow(2, -elapsed / ev.halfLife);
-        newsValuationDelta += ev.valuationSignal * effectiveConfidence * decay;
-      }
-    }
-  }
+  const rawEvents = obs.effectiveEvents ?? obs.recentEvents ?? [];
+  const newsValuationDelta = computeEffectiveNewsValuation(rawEvents, obs.stockId, obs.simulationTime);
 
   // Cap combined news shock to reasonable range (-50% ~ +50%)
   const clampedShock = Math.max(-0.5, Math.min(0.5, newsValuationDelta));

@@ -248,18 +248,8 @@ export class AgentManager {
       sequence: event.sequence ?? this.clock.nextSequence(),
     };
 
-    // If this is a CORRECTION, tag the original rumor with correctedAt time.
-    // Confidence is NOT globally zeroed: agents will discover the correction
-    // strictly when their personal infoLatency allows them to observe it.
-    if (event.eventType === 'CORRECTION' && event.originalEventId) {
-      const orig =
-        this.pendingEvents.find((e) => e.eventId === storedEvent.originalEventId) ||
-        this.publishedEvents.find((e) => e.eventId === storedEvent.originalEventId);
-      if (orig) {
-        orig.correctedAt = storedEvent.publishedAt;
-      }
-    }
-
+    // Future corrections are strictly kept in pendingEvents without mutating the original rumor.
+    // The original event's correctedAt is ONLY recorded when publishedAt is reached in processDuePublications.
     this.pendingEvents.push(storedEvent);
     this.pendingEvents.sort((a, b) =>
       a.publishedAt - b.publishedAt || a.effectiveFrom - b.effectiveFrom || (a.sequence ?? 0) - (b.sequence ?? 0)
@@ -312,6 +302,15 @@ export class AgentManager {
       if (this.publishedEventIds.has(event.eventId)) continue;
       this.publishedEventIds.add(event.eventId);
       this.publishedEvents.push(event);
+
+      // If this is a CORRECTION, tag the published original rumor with correctedAt time
+      // strictly now that this correction has reached publishedAt.
+      if (event.eventType === 'CORRECTION' && event.originalEventId) {
+        const orig = this.publishedEvents.find((e) => e.eventId === event.originalEventId);
+        if (orig) {
+          orig.correctedAt = event.publishedAt;
+        }
+      }
 
       // Synchronize to memoryDb.marketNews for UI display (created_at and simulation_time use publishedAt)
       const newsRecord: MarketNewsRecord = {

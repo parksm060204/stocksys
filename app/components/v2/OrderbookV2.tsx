@@ -11,7 +11,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import { useOrderbookData } from "@/lib/hooks/useOrderbookData";
+import { useOrderbookData, type OrderbookConnectionState } from "@/lib/hooks/useOrderbookData";
 import {
   filterValidOrderbookLevels,
   calculateMaxVisibleQuantity,
@@ -22,18 +22,27 @@ export default function OrderbookV2({
   ticker,
   currentPrice,
   stockId,
+  initialBids,
+  initialAsks,
+  connectionState: connectionStateProp,
 }: {
   ticker: string;
   currentPrice: number;
   stockId?: string;
+  initialBids?: OrderbookLevel[];
+  initialAsks?: OrderbookLevel[];
+  connectionState?: OrderbookConnectionState;
 }) {
   /* ── 백엔드 연동 (원본 훅 그대로) ── */
-  const { bids, asks, price: livePrice, source } = useOrderbookData(
+  const { bids, asks, price: livePrice, source, connectionState: hookConnectionState } = useOrderbookData(
     stockId ?? "__none__",
     ticker,
     currentPrice,
     800
   );
+  const connectionState = connectionStateProp ?? hookConnectionState;
+  const rawBids = initialBids ?? bids;
+  const rawAsks = initialAsks ?? asks;
 
   const [flashType, setFlashType] = useState<"up" | "down" | null>(null);
   const prevPriceRef = useRef<number>(currentPrice);
@@ -48,8 +57,8 @@ export default function OrderbookV2({
     }
   }, [livePrice, currentPrice]);
 
-  const visibleAsks = filterValidOrderbookLevels(asks, "ask").slice(0, 10);
-  const visibleBids = filterValidOrderbookLevels(bids, "bid").slice(0, 10);
+  const visibleAsks = filterValidOrderbookLevels(rawAsks, "ask").slice(0, 10);
+  const visibleBids = filterValidOrderbookLevels(rawBids, "bid").slice(0, 10);
 
   const maxSize = calculateMaxVisibleQuantity(visibleAsks, visibleBids);
   const totalAskSize = visibleAsks.reduce((a, c) => a + c.totalSize, 0);
@@ -134,7 +143,11 @@ export default function OrderbookV2({
           </span>
           <span
             className={`w-1.5 h-1.5 rounded-full animate-pulse ${
-              flashType === "up"
+              connectionState === "error"
+                ? "bg-rose-500"
+                : connectionState === "stale"
+                ? "bg-amber-500"
+                : flashType === "up"
                 ? "bg-up"
                 : flashType === "down"
                 ? "bg-down"
@@ -144,12 +157,26 @@ export default function OrderbookV2({
         </div>
         <span
           className={`text-[10px] font-bold px-1.5 py-px rounded tracking-widest ${
-            source === "db"
+            connectionState === "error"
+              ? "text-rose-400 bg-rose-400/10"
+              : connectionState === "stale"
+              ? "text-amber-400 bg-amber-400/10"
+              : connectionState === "loading"
+              ? "text-sky-400 bg-sky-400/10"
+              : source === "db"
               ? "text-emerald-400 bg-emerald-400/10"
               : "text-amber-400 bg-amber-400/10"
           }`}
         >
-          {source === "db" ? "LIVE" : "SIM"}
+          {connectionState === "error"
+            ? "ERR"
+            : connectionState === "stale"
+            ? "STALE"
+            : connectionState === "loading"
+            ? "LOAD"
+            : source === "db"
+            ? "LIVE"
+            : "SIM"}
         </span>
       </div>
 

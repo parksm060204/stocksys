@@ -41,6 +41,7 @@ import {
   deepClone,
   deriveDeterministicSeed,
 } from './regimeConfig';
+import { ActiveRegimeState } from './regimeEffects';
 
 export class MarketStateEngine {
   private readonly config: MarketStateEngineConfig;
@@ -134,6 +135,12 @@ export class MarketStateEngine {
       }
     }
 
+    if (config?.regimeEffectsEnabled !== undefined && typeof config.regimeEffectsEnabled !== 'boolean') {
+      throw new TypeError(
+        `[MarketStateEngine] regimeEffectsEnabled must be a boolean: ${config.regimeEffectsEnabled}`
+      );
+    }
+
     const initialRegime = config?.initialRegime ?? 'SIDEWAYS';
     const initialSession = config?.initialSession ?? sessionCalc.session;
     const maxHistoryLimit = config?.maxHistoryLimit ?? 200;
@@ -144,6 +151,7 @@ export class MarketStateEngine {
       sessionSchedule,
       thresholds,
       maxHistoryLimit,
+      regimeEffectsEnabled: config?.regimeEffectsEnabled === true,
     });
     this.maxHistoryLimit = maxHistoryLimit;
 
@@ -736,12 +744,12 @@ export class MarketStateEngine {
       parameters: params,
 
       implementationStage: 1,
-      marketMechanicsApplied: false,
+      marketMechanicsApplied: this.config.regimeEffectsEnabled === true,
       capabilities: {
         regimeDetection: true,
         sessionTracking: true,
-        botBehaviorAdjustment: false,
-        lpAdjustment: false,
+        botBehaviorAdjustment: this.config.regimeEffectsEnabled === true,
+        lpAdjustment: this.config.regimeEffectsEnabled === true,
         auctionMatching: false,
         sessionOrderRestriction: false,
       },
@@ -764,6 +772,22 @@ export class MarketStateEngine {
 
   public getRegimeParameters(): Readonly<MarketRegimeParameters> {
     return DEFAULT_REGIME_PARAMETERS[this.currentRegime];
+  }
+
+  /**
+   * 스텝 시작 시 pending 국면 활성화가 끝난 뒤, 해당 스텝에 적용할
+   * 활성 국면·전환 ID·파라미터를 불변 컨텍스트로 반환합니다.
+   * - 같은 스텝의 모든 봇과 LP가 동일한 컨텍스트를 사용하도록 1회만 호출합니다.
+   * - 아직 게시 스냅샷이 갱신되지 않았더라도 내부 활성 국면을 정확히 반영하므로
+   *   국면 적용이 한 스텝 더 늦어지지 않습니다.
+   * - 읽기 전용이며 상태·PRNG·이력에 부작용이 없습니다.
+   */
+  public getAppliedContext(): Readonly<ActiveRegimeState> {
+    return deepFreeze({
+      regime: this.currentRegime,
+      transitionId: this.transitionId,
+      parameters: DEFAULT_REGIME_PARAMETERS[this.currentRegime],
+    });
   }
 
   public getRegimeHistory(): readonly RegimeTransitionRecord[] {

@@ -171,9 +171,10 @@ export interface MarketStateSnapshot {
   readonly transitionReason: RegimeTransitionReason | null;
   readonly parameters: Readonly<MarketRegimeParameters>;
 
-  /** 1단계 구현 메타데이터 */
+  /** 구현 메타데이터 */
   readonly implementationStage: 1;
-  readonly marketMechanicsApplied: false;
+  /** 국면 효과(봇·LP 행동 반영)가 실제 적용 중인지 여부 (Stage 2, 설정 미활성 시 false) */
+  readonly marketMechanicsApplied: boolean;
   readonly capabilities: Readonly<MarketStateCapabilities>;
 }
 
@@ -244,6 +245,12 @@ export interface MarketStateEngineConfig {
   readonly sessionSchedule: SessionScheduleConfig;
   readonly thresholds: RegimeThresholdConfig;
   readonly maxHistoryLimit?: number;
+  /**
+   * 국면 효과(봇 주문·LP 호가 반영) 활성화 여부 (Stage 2).
+   * - 기본값 false: 관측·판정만 수행하고 주문/호가에는 영향을 주지 않는다.
+   * - true: 스냅샷 capabilities의 botBehaviorAdjustment/lpAdjustment 및 marketMechanicsApplied가 true로 게시된다.
+   */
+  readonly regimeEffectsEnabled?: boolean;
 }
 
 /** 기본 주식수 폴백 (100,000주) */

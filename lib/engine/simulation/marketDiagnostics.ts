@@ -128,6 +128,24 @@ export interface CausalTraceLog {
   details: string;
   isCausalConnected?: boolean;
   correlationOnly?: boolean;
+  /** 적용된 시장 국면 (Stage 2 관측 메타데이터) */
+  regime?: string;
+  /** 적용된 국면 전환 ID (스텝에 고정된 컨텍스트) */
+  regimeTransitionId?: number;
+  /** 국면 효과(봇·LP 행동 반영) 활성화 여부 */
+  regimeEffectsEnabled?: boolean;
+  /** 해당 스텝에 적용된 주요 국면 배수 */
+  appliedMultipliers?: Record<string, number>;
+}
+
+/** 스텝별 국면 효과 적용 컨텍스트 진단 레코드 (읽기 전용 스냅샷) */
+export interface RegimeApplicationRecord {
+  simulationTime: number;
+  stepId: number;
+  regime: string;
+  transitionId: number;
+  effectsEnabled: boolean;
+  multipliers: Record<string, number>;
 }
 
 export class MarketDiagnostics {
@@ -240,6 +258,23 @@ export class MarketDiagnostics {
 
   public getCausalTraces(limit: number = 50): CausalTraceLog[] {
     return this.causalLogs.slice(-limit);
+  }
+
+  private lastRegimeApplication: RegimeApplicationRecord | null = null;
+
+  /**
+   * 스텝별 국면 효과 적용 컨텍스트를 기록한다.
+   * - 적용 국면, 전환 ID, 효과 ON/OFF, 주요 배수를 진단용으로 남긴다.
+   * - LP 갱신/주문 판단 시 이 컨텍스트를 참조할 수 있도록 조회 API를 제공한다.
+   */
+  public recordRegimeApplication(record: RegimeApplicationRecord): void {
+    this.lastRegimeApplication = { ...record, multipliers: { ...record.multipliers } };
+  }
+
+  public getLastRegimeApplication(): RegimeApplicationRecord | null {
+    return this.lastRegimeApplication
+      ? { ...this.lastRegimeApplication, multipliers: { ...this.lastRegimeApplication.multipliers } }
+      : null;
   }
 
   /**
@@ -833,6 +868,7 @@ export class MarketDiagnostics {
     this.leaderBoard = [];
     this.smoothedLeaderScores.clear();
     this.lastLeaderBoardAsOfTime = -1;
+    this.lastRegimeApplication = null;
     this.recordedMarkerEventIds.clear();
     this.timeSeriesHistory = [];
     this.lastSnapshotSimTime = 0;

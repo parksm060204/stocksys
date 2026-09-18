@@ -12,17 +12,26 @@
 import { MarketObservation } from '../marketObservation';
 import { AgentAccount, AgentOrderIntent, LpStrategyConfig } from '../agentTypes';
 import { OrderRecord } from '../../../memoryDb/memoryStore';
+import {
+  LpEffectParams,
+  NEUTRAL_LP_EFFECT_PARAMS,
+  applyUncertaintyMultiplier,
+} from '../regime/regimeEffects';
 
 export interface LpQuotePlan {
   cancels: OrderRecord[];
   newOrders: { side: 'buy' | 'sell'; price: number; size: number }[];
 }
 
+const DEPTH_MATCH_TOLERANCE = 0.1; // 목표 잔여 수량 대비 허용 오차 10%
+
 export function evaluateLpStrategy(
   obs: MarketObservation,
   agent: AgentAccount,
-  config: LpStrategyConfig
+  config: LpStrategyConfig,
+  effectParams?: LpEffectParams
 ): LpQuotePlan {
+  const effects = effectParams ?? NEUTRAL_LP_EFFECT_PARAMS;
   const cancels: OrderRecord[] = [];
   const newOrders: { side: 'buy' | 'sell'; price: number; size: number }[] = [];
 
@@ -44,7 +53,8 @@ export function evaluateLpStrategy(
   // 3. Dynamic spread & depth calculation using stock structural profile & uncertainty shock
   const baseSpreadBps = obs.structural?.baseSpreadBps ?? config.baseSpreadBps;
   const baseDepthShares = obs.structural?.baseDepthShares ?? config.baseLevelSize;
-  const uncertainty = Math.max(0, Math.min(1.0, obs.uncertaintyScore ?? 0));
+  // 국면 uncertaintyMultiplier: 원본 불확실성 상태는 덮어쓰지 않고 유효 불확실성에만 1회 적용
+  const uncertainty = applyUncertaintyMultiplier(obs.uncertaintyScore ?? 0, effects.uncertaintyMultiplier);
 
   // Base spread scales with stock profile, volatility, and uncertainty shock
   const baseSpread = midPrice * (baseSpreadBps / 10000);
@@ -53,11 +63,25 @@ export function evaluateLpStrategy(
   const invRiskRatio = Math.min(1.0, Math.abs(q) / config.inventoryLimit);
   const invRiskPremium = midPrice * (invRiskRatio * config.inventoryRiskBeta);
 
-  const totalSpread = Math.max(tickSize * 2, (baseSpread * uncertaintySpreadMultiplier) + volPremium + invRiskPremium);
+  // 국면 lpSpreadMultiplier: 구조적 스프레드·불확실성·변동성·재고 위험이 반영된 목표 스프레드에 1회 적용.
+  // 최소 호가 간격(tickSize*2) 하한은 배수 적용 후에도 보존한다.
+  const rawTotalSpread = (baseSpread * uncertaintySpreadMultiplier) + volPremium + invRiskPremium;
+  const totalSpread = Math.max(tickSize * 2, rawTotalSpread * effects.lpSpreadMultiplier);
   const halfSpread = totalSpread / 2;
 
   // Uncertainty contracts quote depth to protect LP from adverse selection
   const depthScale = Math.max(0.2, 1.0 - uncertainty * 0.7);
+  // 국면 lpDepthMultiplier: 종목 구조적 깊이에 1회 적용 (이후 계좌 예산으로 제한)
+  const effectiveBaseDepth = baseDepthShares * effects.lpDepthMultiplier;
+
+  // 기존 호가 잔여 수량(size - filled)이 목표 깊이와 유의하게 다르면 취소·재호가 대상으로 본다.
+  const isDepthMatching = (ord: OrderRecord, desiredSize: number): boolean => {
+    if (!effects.enforceDepthTarget) return true; // 효과 OFF: 기존 가격 일치 유지 로직 보존
+    const remaining = Math.max(0, ord.size - (ord.filled || 0));
+    if (remaining <= 0) return false;
+    const tol = Math.max(1, desiredSize * DEPTH_MATCH_TOLERANCE);
+    return Math.abs(remaining - desiredSize) <= tol;
+  };
 
   // 4. Determine desired quote levels
   const desiredBids: { price: number; size: number }[] = [];
@@ -71,8 +95,8 @@ export function evaluateLpStrategy(
     const alignedAsk = Math.ceil(rawAsk / tickSize) * tickSize;
 
     if (alignedBid > 0 && alignedBid < alignedAsk) {
-      // Scale size with level and uncertainty depth scale
-      const levelSize = Math.max(1, Math.round(baseDepthShares * depthScale * (1 + (level - 1) * 0.15)));
+      // Scale size with level and uncertainty depth scale (국면 깊이 배수 반영)
+      const levelSize = Math.max(1, Math.round(effectiveBaseDepth * depthScale * (1 + (level - 1) * 0.15)));
       desiredBids.push({ price: alignedBid, size: levelSize });
       desiredAsks.push({ price: alignedAsk, size: levelSize });
     }
@@ -97,7 +121,11 @@ export function evaluateLpStrategy(
   for (const des of desiredBids) {
     // Check if an existing open order already sits at this price level
     const matchingResting = existingBids.find(
-      (o) => !retainedOrderIds.has(o.id) && o.price === des.price && (o.status === 'open' || o.status === 'partial')
+      (o) =>
+        !retainedOrderIds.has(o.id) &&
+        o.price === des.price &&
+        (o.status === 'open' || o.status === 'partial') &&
+        isDepthMatching(o, des.size)
     );
 
     if (matchingResting) {
@@ -128,7 +156,11 @@ export function evaluateLpStrategy(
 
   for (const des of desiredAsks) {
     const matchingResting = existingAsks.find(
-      (o) => !retainedOrderIds.has(o.id) && o.price === des.price && (o.status === 'open' || o.status === 'partial')
+      (o) =>
+        !retainedOrderIds.has(o.id) &&
+        o.price === des.price &&
+        (o.status === 'open' || o.status === 'partial') &&
+        isDepthMatching(o, des.size)
     );
 
     if (matchingResting) {

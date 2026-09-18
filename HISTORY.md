@@ -4246,6 +4246,22 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 - 검증 결과: 시장 국면 포함 13개 관련 테스트 스크립트 전수 통과(Exit Code 0), `npx tsc --noEmit` 통과(Exit Code 0), Next.js `npm run build` 성공(Exit Code 0), `git diff --check` 클린(Exit Code 0).
 
 ---
+## 2026-09-19 05:00
+
+**요청 요약:** STOCKSYS 시장 국면 2단계 — 활성 국면이 봇 주문 판단과 LP 호가 공급에 영향을 주고 실제 매칭·체결에 반영되도록 구현(효과 전용 설정, 스텝별 불변 컨텍스트, 순수 파라미터 변환, 봇 방향별 발생/민감도/규모/위험/현금, 뉴스 감쇠, LP 스프레드·깊이, 관측·추적, 3단계 검증).
+
+**수행 결과:**
+- `lib/engine/simulation/regime/regimeEffects.ts` (신규): 원본을 변이하지 않는 순수 파라미터 변환 계층. `AppliedRegimeContext`, `resolveBotEffectParams`, `resolveLpEffectParams`, `computeDirectionalArrivalProbabilities`, `applyOrderSizeMultiplier`, `applyRiskToleranceToTarget`, `applyUncertaintyMultiplier` 제공. 효과 OFF는 중립값(곱셈 1.0, cashPreference 0).
+- `regimeTypes.ts`/`marketStateEngine.ts`: `MarketStateEngineConfig.regimeEffectsEnabled` 추가(기본 false), `getAppliedContext()`(활성 국면·전환 ID·파라미터 불변 반환) 추가, 스냅샷 `capabilities.botBehaviorAdjustment/lpAdjustment` 및 `marketMechanicsApplied`를 설정값과 연동(미구현 동시호가/세션제한은 계속 false).
+- `agentManager.ts`: 스텝 시작 시 pending 활성화 후 국면 컨텍스트를 1회 고정해 모든 봇·LP가 공유. `enableRegimeEffects` 옵션(기본 false). 효과 ON 시 방향별 발생확률 `pCandidate=max(pBuy,pSell)` 게이트 + 전략 방향별 제출 필터(취소·위험관리는 미차단), 가치·추세 민감도, 주문 규모/위험/현금 선호를 전략에 전달. LP는 효과 ON에서 취소 확정 후 최신 장부·가용 자산을 재조회하여 신규 호가 계산, 부분체결은 size-filled로 비교. 효과 OFF는 기존 단일 계획 경로를 그대로 사용.
+- `valueStrategy.ts`/`trendStrategy.ts`: `valueSensitivity`·`trendSensitivity`를 신호 반응에 적용, `orderSizeMultiplier`를 희망 수량에 1회 적용 후 주문상한/참여율/노출/가용현금으로 최종 제한, `riskToleranceMultiplier`를 목표 노출에 적용하되 `maxPosition` 불변, `cashPreference`를 매수 가용현금 목표 현금 비중으로 적용(예약 현금 중복 차감 없음).
+- `lpStrategy.ts`: `uncertaintyMultiplier`를 유효 불확실성에 적용, 구조적 스프레드·변동성·재고 위험 기반 목표 스프레드에 `lpSpreadMultiplier` 1회 적용(최소 tick 하한 보존), 구조적 깊이에 `lpDepthMultiplier` 적용, 깊이 목표 불일치 시 취소·재호가(타 사용자 주문 취소 금지, 가격 동일·잔여 유사 시 유지).
+- `marketEventTypes.ts`: `computeEffectiveEventValuationDelta`에 전략 평가용 `halfLifeMultiplier`(기본 1.0) 추가. 원본 이벤트 시간·반감기·신뢰도 불변, 국면 탐지용 신호는 원본 감쇠 유지.
+- `marketDiagnostics.ts`: 스텝별 `RegimeApplicationRecord`(적용 국면, 전환 ID, 효과 ON/OFF, 주요 배수) 기록 API 및 causal trace 메타데이터 추가. `localStandaloneServer.ts`: `ENABLE_REGIME_EFFECTS=true` 실행 설정 및 헤드리스 러너 옵션 추가.
+- `scripts/test-regime-effects-stage2.ts` (신규): 효과 OFF 회귀(엔진 OFF vs 효과 OFF 경제 결과 100% 동일), 적용 시점(N 예약→N+1), 배수 비누적, 방향별 확률, 가치·추세 민감도, 주문/위험/현금 한도, LP 깊이·부분체결·타 사용자 취소 방지, 효과 ON 결정론, 3개 시드(101/202/303) OFF/ON 구간별 지표 및 상태 불변식 검증.
+- 검증 결과: 시장 국면 포함 16개 관련 테스트 스크립트 전수 통과(Exit Code 0), `npx tsc --noEmit` 통과(Exit Code 0), Next.js `npm run build` 성공(Exit Code 0), `git diff --check` 클린(Exit Code 0).
+
+---
 ## 2026-09-19 03:10
 
 **요청 요약:** 리뷰 P2 보완 — 교차 호가가 시장 복구 비율을 높여 보이지 않도록, 유효하지 않은 장부를 복구된 장부로 세지 않게 시장 지표를 보완하고 교차 종목 비율이 높을 때의 회귀 테스트 추가.

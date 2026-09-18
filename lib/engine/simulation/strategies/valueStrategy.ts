@@ -13,6 +13,13 @@ import { AgentAccount, AgentOrderIntent, ValueStrategyConfig } from '../agentTyp
 import { millisecondsToSeconds, SimPrng } from '../simClock';
 
 import { computeEffectiveEventValuationDelta, ObservableMarketEvent } from '../marketEventTypes';
+import {
+  BotEffectParams,
+  NEUTRAL_BOT_EFFECT_PARAMS,
+  applyOrderSizeMultiplier,
+  applyRiskToleranceToTarget,
+  clamp01,
+} from '../regime/regimeEffects';
 
 /**
  * 순수 함수: 관측 가능한 시장 이벤트 목록으로부터 특정 종목의 유효 뉴스 가치평가 신호(delta)를 산출합니다.
@@ -31,13 +38,15 @@ import { computeEffectiveEventValuationDelta, ObservableMarketEvent } from '../m
 export function computeEffectiveNewsValuation(
   events: ObservableMarketEvent[],
   stockId: string,
-  simulationTime: number
+  simulationTime: number,
+  halfLifeMultiplier: number = 1.0
 ): number {
   if (!events || events.length === 0 || !stockId) return 0;
   return computeEffectiveEventValuationDelta(
     events,
     (e) => Array.isArray(e.targetStockIds) && e.targetStockIds.includes(stockId),
-    simulationTime
+    simulationTime,
+    halfLifeMultiplier
   );
 }
 
@@ -47,11 +56,23 @@ export function evaluateValueStrategy(
   agent: AgentAccount,
   config: ValueStrategyConfig,
   trueFundamental: number,
-  prng: SimPrng
+  prng: SimPrng,
+  effectParams?: BotEffectParams
 ): AgentOrderIntent {
+  const effects = effectParams ?? NEUTRAL_BOT_EFFECT_PARAMS;
+  const valueSensitivity = effects.valueSensitivity;
+  const riskToleranceMultiplier = effects.riskToleranceMultiplier;
+  const orderSizeMultiplier = effects.orderSizeMultiplier;
+  const cashPreference = clamp01(effects.cashPreference);
+
   // 1. Latent fundamental observation with agent-specific estimation error & observable news signals
   const rawEvents = obs.effectiveEvents ?? obs.recentEvents ?? [];
-  const newsValuationDelta = computeEffectiveNewsValuation(rawEvents, obs.stockId, obs.simulationTime);
+  const newsValuationDelta = computeEffectiveNewsValuation(
+    rawEvents,
+    obs.stockId,
+    obs.simulationTime,
+    effects.newsHalfLifeMultiplier
+  );
 
   // Cap combined news shock to reasonable range (-50% ~ +50%)
   const clampedShock = Math.max(-0.5, Math.min(0.5, newsValuationDelta));
@@ -83,10 +104,13 @@ export function evaluateValueStrategy(
 
   // 5. Position & Exposure Gap
   const baseTarget = agent.targetPositions[obs.stockId] ?? 1000;
-  const normValGap = Math.tanh(valGap / 0.05); // Scales 5% gap to ~0.76
+  // 국면 valueSensitivity: 가치 괴리에 대한 반응 강도 (원본 펀더멘털/시장가격은 변경하지 않음)
+  const normValGap = Math.tanh((valGap * valueSensitivity) / 0.05); // Scales 5% gap to ~0.76
 
   // Target position dynamically adjusted based on valuation gap
-  const adjustedTarget = Math.max(0, Math.min(agent.maxPosition, Math.round(baseTarget * (1 + normValGap))));
+  const baseAdjustedTarget = Math.max(0, Math.min(agent.maxPosition, Math.round(baseTarget * (1 + normValGap))));
+  // 국면 riskToleranceMultiplier: 목표 노출에 적용하되 절대 상한(maxPosition)은 상향하지 않음
+  const adjustedTarget = applyRiskToleranceToTarget(baseAdjustedTarget, riskToleranceMultiplier, agent.maxPosition);
   const currentPos = obs.account.holdingQty;
 
   // Open buy/sell commitments
@@ -112,7 +136,11 @@ export function evaluateValueStrategy(
       return { action: 'hold', stockId: obs.stockId, reason: 'target_position_reached' };
     }
 
-    const orderSize = Math.max(1, Math.min(neededShares, agent.maxOrderSize, participationCap));
+    // 국면 orderSizeMultiplier: 희망 수량에 1회 적용 후 주문상한/참여율/노출 한도로 최종 제한
+    const orderSize = applyOrderSizeMultiplier(neededShares, orderSizeMultiplier, agent.maxOrderSize, participationCap);
+    if (orderSize <= 0) {
+      return { action: 'hold', stockId: obs.stockId, reason: 'insufficient_size' };
+    }
 
     // Pricing:
     // If valuation is clearly above bestAsk and agent has urgency or large valuation gap,
@@ -131,7 +159,9 @@ export function evaluateValueStrategy(
 
     // Capital check
     const costPerShare = alignedPrice * 1.0025;
-    const maxAffordable = Math.floor(obs.account.availableCash / costPerShare);
+    // 국면 cashPreference: 전체 계좌 기준 목표 현금 비중. availableCash는 이미 예약 현금을 차감했으므로 중복 차감하지 않는다.
+    const investableCash = obs.account.availableCash * (1 - cashPreference);
+    const maxAffordable = Math.floor(investableCash / costPerShare);
     const finalSize = Math.min(orderSize, maxAffordable);
 
     if (finalSize <= 0) {
@@ -165,7 +195,11 @@ export function evaluateValueStrategy(
       return { action: 'hold', stockId: obs.stockId, reason: 'target_position_reached' };
     }
 
-    const orderSize = Math.max(1, Math.min(surplusShares, agent.maxOrderSize, participationCap));
+    // 국면 orderSizeMultiplier: 희망 수량에 1회 적용 후 주문상한/참여율/노출 한도로 최종 제한
+    const orderSize = applyOrderSizeMultiplier(surplusShares, orderSizeMultiplier, agent.maxOrderSize, participationCap);
+    if (orderSize <= 0) {
+      return { action: 'hold', stockId: obs.stockId, reason: 'insufficient_size' };
+    }
     const availableToSell = Math.min(orderSize, obs.account.availableHolding);
 
     if (availableToSell <= 0) {

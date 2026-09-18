@@ -12,7 +12,7 @@
  * - Unified execution via LocalMarketService.submitOrder & cancelOrder
  */
 
-import { memoryDb, StockRecord, MarketNewsRecord } from '../../memoryDb/memoryStore';
+import { memoryDb, StockRecord, MarketNewsRecord, OrderRecord } from '../../memoryDb/memoryStore';
 import { LocalMarketService } from '../marketService';
 import { SimulationClock, SimPrng } from './simClock';
 import {
@@ -44,6 +44,15 @@ import {
   deriveDeterministicSeed,
   calculateAuthoritativeMarketCap,
   calculateCrossSectionalDispersion,
+  resolveBotEffectParams,
+  resolveLpEffectParams,
+  computeDirectionalArrivalProbabilities,
+} from './regime';
+import type {
+  AppliedRegimeContext,
+  RegimeEffectsContext,
+  BotEffectParams,
+  LpEffectParams,
 } from './regime';
 
 export class AgentManager {
@@ -109,6 +118,7 @@ export class AgentManager {
   };
 
   public readonly enableRegimeEngine: boolean;
+  public readonly enableRegimeEffects: boolean;
 
   // ── 실제 국면 관측 통계 추적 상태 ──
   private previousTotalTurnover: number | null = null;
@@ -123,16 +133,20 @@ export class AgentManager {
     startEpochMs: number = 1773500000000,
     options?: {
       enableRegimeEngine?: boolean;
+      /** 국면 효과(봇 주문·LP 호가 반영) 활성화. 기본 false. */
+      enableRegimeEffects?: boolean;
       regimeEngineConfig?: Partial<MarketStateEngineConfig>;
     }
   ) {
     this.enableRegimeEngine = options?.enableRegimeEngine ?? true;
+    this.enableRegimeEffects =
+      options?.enableRegimeEffects ?? options?.regimeEngineConfig?.regimeEffectsEnabled ?? false;
     this.clock = new SimulationClock(startEpochMs, 1.0);
     this.prng = new SimPrng(seed);
     this.fundamentalPrng = this.prng.split(100);
     // MarketStateEngine 내부에서 seed로부터 고유 namespace 파생을 1회 수행하도록 원본 seed 전달
     this.marketStateEngine = new MarketStateEngine(
-      options?.regimeEngineConfig ?? {},
+      { ...(options?.regimeEngineConfig ?? {}), regimeEffectsEnabled: this.enableRegimeEffects },
       seed,
       startEpochMs
     );
@@ -443,11 +457,57 @@ export class AgentManager {
       this.marketStateEngine.activatePendingRegime(t0, currentStepId);
     }
 
+    // 1-b. 이번 스텝에 적용할 국면·전환 ID·파라미터를 불변 컨텍스트로 1회 고정한다.
+    //      같은 스텝의 모든 봇과 LP가 동일 컨텍스트를 사용하며, 스텝 종료 시 예약된 새 국면은 다음 스텝부터 적용된다.
+    //      getAppliedContext()는 아직 게시 전이라도 방금 활성화된 국면을 반영하므로 적용이 한 스텝 늦어지지 않는다.
+    const activeRegimeState = this.enableRegimeEngine ? this.marketStateEngine.getAppliedContext() : null;
+    const effectsActive = this.enableRegimeEffects && activeRegimeState !== null;
+    const regimeContext: RegimeEffectsContext =
+      effectsActive && activeRegimeState
+        ? Object.freeze({
+            enabled: true as const,
+            regime: activeRegimeState.regime,
+            transitionId: activeRegimeState.transitionId,
+            parameters: activeRegimeState.parameters,
+          })
+        : null;
+    // 순수 변환: 매 스텝 원본 설정과 활성 국면으로부터 유효 파라미터를 새로 계산 (누적 곱셈 없음, 원본 불변)
+    const botEffectParams: BotEffectParams = resolveBotEffectParams(regimeContext);
+    const lpEffectParams: LpEffectParams = resolveLpEffectParams(regimeContext);
+    const appliedMultipliers: Record<string, number> = regimeContext
+      ? {
+          bot_buyArrival: botEffectParams.buyArrivalMultiplier,
+          bot_sellArrival: botEffectParams.sellArrivalMultiplier,
+          bot_orderSize: botEffectParams.orderSizeMultiplier,
+          bot_riskTolerance: botEffectParams.riskToleranceMultiplier,
+          bot_trendSensitivity: botEffectParams.trendSensitivity,
+          bot_valueSensitivity: botEffectParams.valueSensitivity,
+          bot_uncertainty: botEffectParams.uncertaintyMultiplier,
+          bot_newsHalfLife: botEffectParams.newsHalfLifeMultiplier,
+          bot_cashPreference: botEffectParams.cashPreference,
+          lp_spread: lpEffectParams.lpSpreadMultiplier,
+          lp_depth: lpEffectParams.lpDepthMultiplier,
+          lp_uncertainty: lpEffectParams.uncertaintyMultiplier,
+        }
+      : {};
+
     // 2. 시계를 t1 = t0 + dt로 전진
     const { time: simTime, step: nextStepId } = this.clock.advance(dt);
 
     this.processDuePublications(simTime);
     this.processDueEffects(simTime);
+
+    // 관측/추적: 이번 스텝에 적용된 국면 컨텍스트 진단 기록 (효과 ON/OFF 및 주요 배수 포함)
+    if (this.enableRegimeEngine && activeRegimeState) {
+      this.diagnostics.recordRegimeApplication({
+        simulationTime: simTime,
+        stepId: currentStepId,
+        regime: activeRegimeState.regime,
+        transitionId: activeRegimeState.transitionId,
+        effectsEnabled: effectsActive,
+        multipliers: appliedMultipliers,
+      });
+    }
 
     // ── 1. MJD Latent Fundamental SDE Update ──
     for (const stock of memoryDb.stocks.values()) {
@@ -500,49 +560,34 @@ export class AgentManager {
 
         this.diagnostics.recordMarketQuality(stock.id, obs.spread, obs.hasTwoSidedBook);
 
-        const plan = evaluateLpStrategy(obs, lpAgent, this.lpConfig);
+        if (effectsActive) {
+          // Phase 1: 국면 효과 계획으로 취소 대상을 먼저 확정 취소하여 예약 자산을 해제
+          const initialPlan = evaluateLpStrategy(obs, lpAgent, this.lpConfig, lpEffectParams);
+          await this.cancelLpOrders(lpAgent, initialPlan.cancels);
 
-        // Phase 1: Execute cancellations first to safely release reserved cash & shares
-        for (const toCancel of plan.cancels) {
-          const cancelRes = await LocalMarketService.cancelOrder({
-            orderId: toCancel.id,
-            userId: lpAgent.accountId,
-          });
-          if (cancelRes.success) {
-            this.diagnostics.recordOrderCancel('market_maker');
-            lpAgent.stats.ordersCancelled++;
-          }
-        }
+          // Phase 2: 취소 확정 후 최신 장부·가용 자산을 재조회하여 신규 호가를 계산한다.
+          //   - 취소 전 계획의 예산을 그대로 사용하지 않고, 취소 실패 주문의 예약금도 사용하지 않는다.
+          const freshObs = buildMarketObservation(
+            stock.id,
+            lpAgent.accountId,
+            simTime,
+            20,
+            this.attentionMap,
+            this.uncertaintyMap,
+            this.events,
+            windowStatsMap.get(stock.id)
+          );
+          if (!freshObs) continue;
 
-        // Phase 2: Submit new quote levels within strictly re-verified available budget
-        for (const nOrd of plan.newOrders) {
-          const seq = this.clock.nextSequence();
-          const matchRes = await LocalMarketService.submitOrder({
-            userId: lpAgent.accountId,
-            stockId: stock.id,
-            side: nOrd.side,
-            price: nOrd.price,
-            size: nOrd.size,
-            isLp: true,
-            orderType: 'limit',
-            simulationTime: simTime,
-            createdAt: new Date(simTime).toISOString(),
-            sequence: seq,
-            participantType: 'lp',
-            accountId: lpAgent.accountId,
-            agentId: lpAgent.agentId,
-          });
-
-          this.diagnostics.recordOrderSubmit('market_maker');
-          lpAgent.stats.ordersSubmitted++;
-
-          if (matchRes.success && matchRes.filledQty > 0) {
-            for (const fill of matchRes.fills || [{ size: matchRes.filledQty }]) {
-              this.diagnostics.recordOrderFill('market_maker', fill.size, false);
-              lpAgent.stats.fillsCount++;
-              lpAgent.stats.volumeTraded += fill.size;
-            }
-          }
+          const refreshedPlan = evaluateLpStrategy(freshObs, lpAgent, this.lpConfig, lpEffectParams);
+          // 취소 실패분이 남아 있으면 재시도 (성공한 주문은 재계산에서 제외됨)
+          await this.cancelLpOrders(lpAgent, refreshedPlan.cancels);
+          await this.submitLpOrders(lpAgent, stock.id, refreshedPlan.newOrders, simTime);
+        } else {
+          // 기존 실행 경로 (효과 OFF): 단일 장부 기준 계획으로 취소 후 제출 (동작 보존)
+          const plan = evaluateLpStrategy(obs, lpAgent, this.lpConfig);
+          await this.cancelLpOrders(lpAgent, plan.cancels);
+          await this.submitLpOrders(lpAgent, stock.id, plan.newOrders, simTime);
         }
       }
     }
@@ -554,11 +599,32 @@ export class AgentManager {
       if (agent.participantType === 'lp') continue;
 
       const agentPrng = this.agentPrngs.get(accountId) || this.prng;
-      const arrivalProb = 1 - Math.exp(-agent.activityRate * dt);
 
-      // Poisson arrival check
-      if (agentPrng.next() >= arrivalProb) {
-        continue;
+      // 활동 게이트 (스텝당 정확히 1회 난수 소비 — 효과 OFF와 PRNG 소비 순서 동일)
+      let activityRoll = 0;
+      let pBuy = 1;
+      let pSell = 1;
+      if (effectsActive) {
+        // 국면 방향별 발생 확률: pCandidate = max(pBuy, pSell)로 활동을 판단하고,
+        // 전략이 선택한 방향에 따라 pBuy/pSell로 제출을 필터링한다 (기존 확률로 먼저 탈락시키지 않음).
+        const probs = computeDirectionalArrivalProbabilities(
+          agent.activityRate,
+          botEffectParams.buyArrivalMultiplier,
+          botEffectParams.sellArrivalMultiplier,
+          dt
+        );
+        pBuy = probs.pBuy;
+        pSell = probs.pSell;
+        activityRoll = agentPrng.next();
+        if (activityRoll >= probs.pCandidate) {
+          continue;
+        }
+      } else {
+        // 기존 실행 경로 (효과 OFF): 단일 Poisson 도착 확률
+        const arrivalProb = 1 - Math.exp(-agent.activityRate * dt);
+        if (agentPrng.next() >= arrivalProb) {
+          continue;
+        }
       }
 
       // Filter events visible to this agent based on information latency
@@ -585,9 +651,16 @@ export class AgentManager {
 
         if (agent.strategyType === 'value') {
           const trueF = this.fundamentals.get(stock.id) || stock.current_price;
-          intent = evaluateValueStrategy(obs, agent, this.valueConfig, trueF, agentPrng);
+          intent = evaluateValueStrategy(
+            obs,
+            agent,
+            this.valueConfig,
+            trueF,
+            agentPrng,
+            effectsActive ? botEffectParams : undefined
+          );
         } else if (agent.strategyType === 'trend') {
-          intent = evaluateTrendStrategy(obs, agent, this.trendConfig);
+          intent = evaluateTrendStrategy(obs, agent, this.trendConfig, effectsActive ? botEffectParams : undefined);
         }
 
         if (intent.action === 'hold') {
@@ -606,6 +679,15 @@ export class AgentManager {
 
         if (intent.action === 'buy' || intent.action === 'sell') {
           if (!intent.price || !intent.size || intent.size <= 0) continue;
+
+          // 방향별 발생 확률 필터: 전략 방향을 강제로 뒤집지 않고 제출 여부만 제한한다.
+          // 취소·필수 위험 관리 처리는 위에서 이미 처리되어 이 필터의 영향을 받지 않는다.
+          if (effectsActive) {
+            const directionalGate = intent.action === 'buy' ? pBuy : pSell;
+            if (activityRoll >= directionalGate) {
+              continue;
+            }
+          }
 
           const seq = this.clock.nextSequence();
           const decisionId = `decision_${agent.agentId}_${simTime}_${seq}`;
@@ -642,6 +724,10 @@ export class AgentManager {
             stage: 'ORDER_SUBMIT',
             details: `[${agent.strategyType}] ${intent.action.toUpperCase()} ${intent.size}sh @ ${intent.price} (reason: ${intent.reason})`,
             isCausalConnected: true,
+            regime: activeRegimeState?.regime,
+            regimeTransitionId: activeRegimeState?.transitionId,
+            regimeEffectsEnabled: effectsActive,
+            appliedMultipliers: regimeContext ? appliedMultipliers : undefined,
           });
 
           if (matchRes.success) {
@@ -854,6 +940,63 @@ export class AgentManager {
 
       // 완성된 t1 스냅샷 원자적 게시
       this.marketStateEngine.publishSnapshot(simTime);
+    }
+  }
+
+  /**
+   * LP 취소 대상 주문을 실제 취소하고, 성공한 경우에만 진단·통계를 기록한다.
+   * 취소 실패 주문은 예약 자산이 유지되므로 신규 호가 예산에서 사용되지 않는다.
+   */
+  private async cancelLpOrders(lpAgent: AgentAccount, orders: OrderRecord[]): Promise<void> {
+    for (const toCancel of orders) {
+      const cancelRes = await LocalMarketService.cancelOrder({
+        orderId: toCancel.id,
+        userId: lpAgent.accountId,
+      });
+      if (cancelRes.success) {
+        this.diagnostics.recordOrderCancel('market_maker');
+        lpAgent.stats.ordersCancelled++;
+      }
+    }
+  }
+
+  /**
+   * LP 신규 호가를 기존 LocalMarketService 검증·예약·매칭 경로로 제출한다.
+   */
+  private async submitLpOrders(
+    lpAgent: AgentAccount,
+    stockId: string,
+    newOrders: { side: 'buy' | 'sell'; price: number; size: number }[],
+    simTime: number
+  ): Promise<void> {
+    for (const nOrd of newOrders) {
+      const seq = this.clock.nextSequence();
+      const matchRes = await LocalMarketService.submitOrder({
+        userId: lpAgent.accountId,
+        stockId,
+        side: nOrd.side,
+        price: nOrd.price,
+        size: nOrd.size,
+        isLp: true,
+        orderType: 'limit',
+        simulationTime: simTime,
+        createdAt: new Date(simTime).toISOString(),
+        sequence: seq,
+        participantType: 'lp',
+        accountId: lpAgent.accountId,
+        agentId: lpAgent.agentId,
+      });
+
+      this.diagnostics.recordOrderSubmit('market_maker');
+      lpAgent.stats.ordersSubmitted++;
+
+      if (matchRes.success && matchRes.filledQty > 0) {
+        for (const fill of matchRes.fills || [{ size: matchRes.filledQty }]) {
+          this.diagnostics.recordOrderFill('market_maker', fill.size, false);
+          lpAgent.stats.fillsCount++;
+          lpAgent.stats.volumeTraded += fill.size;
+        }
+      }
     }
   }
 

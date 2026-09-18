@@ -399,7 +399,14 @@ export const SEED_EVENT_TEMPLATES: EventTemplate[] = [
 export function computeEffectiveEventValuationDelta(
   events: readonly (ObservableMarketEvent | MarketEvent)[],
   filterFn: (event: ObservableMarketEvent) => boolean,
-  simTime: number
+  simTime: number,
+  /**
+   * 전략 평가용 반감기 배수 (기본 1.0 = 원본 감쇠).
+   * - 원본 이벤트의 시간·반감기·신뢰도는 절대 변경하지 않는다.
+   * - 값이 클수록 감쇠가 느려져(유효 반감기 증가) 신호가 더 오래 유지된다.
+   * - 국면 탐지용 calculateEffectiveMacroSignal은 이 값을 전달하지 않아 원본 감쇠를 사용한다.
+   */
+  halfLifeMultiplier: number = 1.0
 ): number {
   if (!events || events.length === 0 || !Number.isFinite(simTime)) return 0;
 
@@ -493,7 +500,9 @@ export function computeEffectiveEventValuationDelta(
     }
 
     const elapsedSeconds = Math.max(0, (simTime - ev.effectiveFrom) / 1000);
-    const halfLife = Number.isFinite(ev.halfLife) && ev.halfLife > 0 ? ev.halfLife : 60;
+    const baseHalfLife = Number.isFinite(ev.halfLife) && ev.halfLife > 0 ? ev.halfLife : 60;
+    const hlMultiplier = Number.isFinite(halfLifeMultiplier) && halfLifeMultiplier > 0 ? halfLifeMultiplier : 1.0;
+    const halfLife = baseHalfLife * hlMultiplier;
     const decay = Math.pow(2, -elapsedSeconds / halfLife);
     const confidence = typeof ev.confidence === 'number' && Number.isFinite(ev.confidence) ? ev.confidence : 1.0;
     totalSignal += ev.valuationSignal * confidence * decay;

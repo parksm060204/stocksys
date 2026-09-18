@@ -99,6 +99,23 @@ export class MarketStateEngine {
 
     const sessionCalc = this.calculateSessionAtTime(initialEpochMs, schedule);
 
+    const VALID_REGIMES = new Set(['BULL', 'BEAR', 'SIDEWAYS', 'HIGH_VOLATILITY', 'LIQUIDITY_CRISIS']);
+    if (config?.initialRegime && !VALID_REGIMES.has(config.initialRegime)) {
+      throw new Error(`[MarketStateEngine] Invalid initialRegime: ${config.initialRegime}`);
+    }
+
+    if (config?.maxHistoryLimit !== undefined) {
+      if (
+        typeof config.maxHistoryLimit !== 'number' ||
+        !Number.isInteger(config.maxHistoryLimit) ||
+        config.maxHistoryLimit <= 0
+      ) {
+        throw new RangeError(
+          `[MarketStateEngine] maxHistoryLimit must be a positive integer: ${config.maxHistoryLimit}`
+        );
+      }
+    }
+
     this.config = {
       initialRegime: config?.initialRegime ?? 'SIDEWAYS',
       initialSession: config?.initialSession ?? sessionCalc.session,
@@ -376,8 +393,8 @@ export class MarketStateEngine {
       }
     }
 
-    // ── 방어 로직 1: 동일 스텝 중복 평가 차단 (스텝당 최대 1회, PRNG 추가 소비 방지) ──
-    if (this.pendingTransition !== null && this.pendingTransition.decisionStepId === decisionStepId) {
+    // ── 방어 로직 1: 이미 대기 중인 pending 전환이 있으면 다음 스텝 활성화 전까지 새 평가 예약 차단 (덮어쓰기 방지) ──
+    if (this.pendingTransition !== null) {
       return null;
     }
 
@@ -511,6 +528,7 @@ export class MarketStateEngine {
     const metrics: RegimeTransitionMetrics = deepFreeze({
       aggregateReturn: obs.aggregateReturn,
       realizedVolatility: obs.realizedVolatility,
+      crossSectionalDispersion: obs.crossSectionalDispersion,
       turnoverChange: obs.turnoverChange,
       averageSpreadBps: obs.averageSpreadBps,
       depthChange: obs.depthChange,
@@ -602,7 +620,7 @@ export class MarketStateEngine {
    * - 완성되지 않은 중간 상태를 반환하지 않고 마지막으로 원자적으로 게시된 스냅샷 반환
    */
   public getSnapshot(_currentSimTime?: number): Readonly<MarketStateSnapshot> {
-    return deepClone(this.publishedSnapshot);
+    return deepFreeze(deepClone(this.publishedSnapshot));
   }
 
   public getRegimeParameters(): Readonly<MarketRegimeParameters> {
@@ -610,15 +628,15 @@ export class MarketStateEngine {
   }
 
   public getRegimeHistory(): readonly RegimeTransitionRecord[] {
-    return deepClone(this.regimeHistory);
+    return deepFreeze(deepClone(this.regimeHistory));
   }
 
   public getSessionHistory(): readonly SessionTransitionRecord[] {
-    return deepClone(this.sessionHistory);
+    return deepFreeze(deepClone(this.sessionHistory));
   }
 
   public getPendingTransition(): Readonly<PendingRegimeTransition> | null {
-    return this.pendingTransition ? deepClone(this.pendingTransition) : null;
+    return this.pendingTransition ? deepFreeze(deepClone(this.pendingTransition)) : null;
   }
 
   // ─────────────────────────────────────────────────────────────────

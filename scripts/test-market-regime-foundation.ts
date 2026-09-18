@@ -251,6 +251,8 @@ async function runAllTests() {
       // Object.freeze로 인한 에러 발생도 정상 방어
     }
 
+    assert(Object.isFrozen(snap), '반환 스냅샷은 런타임에서 deepFreeze되어야 함');
+    assert(Object.isFrozen(snap.parameters), '중첩 파라미터 객체도 deepFreeze되어야 함');
     const safeSnap = engine.getSnapshot();
     assert(safeSnap.regime === 'SIDEWAYS', '외부 변조 시도 후에도 내부 regime은 SIDEWAYS 유지');
     assert(safeSnap.parameters.cashPreference === 0.3, '외부 변조 시도 후에도 내부 cashPreference는 0.3 유지');
@@ -614,7 +616,49 @@ async function runAllTests() {
     // 동일 스텝에서 2번째 활성화 시도
     const secondAct = engine.activatePendingRegime(startMs + 2000, 6);
     assert(secondAct === false, '이미 활성화되어 pending이 없으므로 false 반환');
-    console.log('  ✓ TEST 18 통과: 다음 스텝 1회 활성화 검증 완료\n');
+
+    // ── 2) AgentManager.step() 실제 통합 실행 경로에서 pending 국면이 다음 스텝에서 즉시 활성화되는지 검증 ──
+    const manager = new AgentManager(42, startMs);
+    // 최소 국면 유지시간(10초) 충족을 위해 10초 스텝 진행
+    await manager.step(10.0);
+
+    const curTime = manager.getMarketStateSnapshot().simulationTime;
+    for (const s of memoryDb.stocks.values()) {
+      memoryDb.stockPriceHistory.push(
+        { id: `sph_test_1_${s.id}`, stock_id: s.id, price: s.current_price, recorded_at: new Date(curTime - 1000).toISOString() },
+        { id: `sph_test_2_${s.id}`, stock_id: s.id, price: Math.round(s.current_price * 1.03), recorded_at: new Date(curTime).toISOString() }
+      );
+    }
+
+    manager.registerEvent({
+      eventId: 'evt_bull_activation_test',
+      publishedAt: curTime,
+      effectiveFrom: curTime,
+      scope: 'market',
+      targetStockIds: [],
+      eventType: 'OFFICIAL',
+      valuationSignal: 0.95,
+      attentionShock: 0.5,
+      uncertaintyShock: 0.05,
+      confidence: 0.95,
+      halfLife: 60,
+      publisher: '시장테스트',
+      title: '대형 호재 발생',
+      content: '강한 상승 모멘텀 발생',
+    });
+
+    // 스텝 실행 (t0 -> t1 전진 후 평가 -> pendingRegime에 BULL 예약)
+    await manager.step(1.0);
+    const snap1 = manager.getMarketStateSnapshot();
+    assert(snap1.regime === 'SIDEWAYS', '스텝 1 종료 시점에는 이전 국면인 SIDEWAYS 유지');
+    assert(snap1.pendingRegime === 'BULL', '스텝 1 종료 시점에 pendingRegime은 BULL로 예약되어야 함');
+
+    // 다음 스텝 실행 (시작 시점에 pendingRegime이 실제 국면으로 활성화되어야 함!)
+    await manager.step(1.0);
+    const snap2 = manager.getMarketStateSnapshot();
+    assert(snap2.regime === 'BULL', '스텝 2 시작 시점에 pendingRegime(BULL)이 실제 현재 국면으로 활성화되어야 함');
+    assert(snap2.previousRegime === 'SIDEWAYS', 'previousRegime은 SIDEWAYS여야 함');
+    console.log('  ✓ TEST 18 통과: 다음 스텝 1회 활성화 및 AgentManager 통합 경로 활성화 검증 완료\n');
   }
 
   // ─────────────────────────────────────────────────────────────────
@@ -682,6 +726,7 @@ async function runAllTests() {
   // ─────────────────────────────────────────────────────────────────
   console.log('▶ [TEST 21] 잘못된 설정 거절 및 부분 초기화 부재');
   {
+    // 1. 합계 불일치 세션 스케줄 거부
     let scheduleErrorThrown = false;
     try {
       new MarketStateEngine({
@@ -689,7 +734,7 @@ async function runAllTests() {
           tradingDayAnchorMs: startMs,
           tradingDayDurationSeconds: 86400,
           sessions: [
-            { session: 'PRE_OPEN', durationSeconds: 1000 }, // 합계 불일치 (1000 != 86400)
+            { session: 'PRE_OPEN', durationSeconds: 1000 },
           ],
         },
       }, 42, startMs);
@@ -698,6 +743,90 @@ async function runAllTests() {
     }
     assert(scheduleErrorThrown === true, '합계 불일치 스케줄은 생성자에서 거부');
 
+    // 2. 표준 5개 세션 누락 스케줄 거부
+    let missingSessionThrown = false;
+    try {
+      new MarketStateEngine({
+        sessionSchedule: {
+          tradingDayAnchorMs: startMs,
+          tradingDayDurationSeconds: 86400,
+          sessions: [
+            { session: 'PRE_OPEN', durationSeconds: 1800 },
+            { session: 'OPENING_AUCTION', durationSeconds: 600 },
+            { session: 'CONTINUOUS', durationSeconds: 21600 },
+            { session: 'CLOSED', durationSeconds: 62400 }, // CLOSING_AUCTION 누락
+          ],
+        },
+      }, 42, startMs);
+    } catch {
+      missingSessionThrown = true;
+    }
+    assert(missingSessionThrown === true, '표준 세션 누락 스케줄 거부');
+
+    // 3. 세션 순서 뒤바뀜 거부
+    let wrongOrderThrown = false;
+    try {
+      new MarketStateEngine({
+        sessionSchedule: {
+          tradingDayAnchorMs: startMs,
+          tradingDayDurationSeconds: 86400,
+          sessions: [
+            { session: 'OPENING_AUCTION', durationSeconds: 600 },
+            { session: 'PRE_OPEN', durationSeconds: 1800 },
+            { session: 'CONTINUOUS', durationSeconds: 21600 },
+            { session: 'CLOSING_AUCTION', durationSeconds: 600 },
+            { session: 'CLOSED', durationSeconds: 61800 },
+          ],
+        },
+      }, 42, startMs);
+    } catch {
+      wrongOrderThrown = true;
+    }
+    assert(wrongOrderThrown === true, '세션 순서 불일치 스케줄 거부');
+
+    // 4. 세션 중복 거부
+    let duplicateSessionThrown = false;
+    try {
+      new MarketStateEngine({
+        sessionSchedule: {
+          tradingDayAnchorMs: startMs,
+          tradingDayDurationSeconds: 86400,
+          sessions: [
+            { session: 'PRE_OPEN', durationSeconds: 1800 },
+            { session: 'PRE_OPEN', durationSeconds: 600 },
+            { session: 'CONTINUOUS', durationSeconds: 21600 },
+            { session: 'CLOSING_AUCTION', durationSeconds: 600 },
+            { session: 'CLOSED', durationSeconds: 61800 },
+          ],
+        },
+      }, 42, startMs);
+    } catch {
+      duplicateSessionThrown = true;
+    }
+    assert(duplicateSessionThrown === true, '중복 세션 스케줄 거부');
+
+    // 5. 비정상 세션 식별자 거부
+    let invalidSessionThrown = false;
+    try {
+      new MarketStateEngine({
+        sessionSchedule: {
+          tradingDayAnchorMs: startMs,
+          tradingDayDurationSeconds: 86400,
+          sessions: [
+            { session: 'UNKNOWN_SESSION' as any, durationSeconds: 1800 },
+            { session: 'OPENING_AUCTION', durationSeconds: 600 },
+            { session: 'CONTINUOUS', durationSeconds: 21600 },
+            { session: 'CLOSING_AUCTION', durationSeconds: 600 },
+            { session: 'CLOSED', durationSeconds: 61800 },
+          ],
+        },
+      }, 42, startMs);
+    } catch {
+      invalidSessionThrown = true;
+    }
+    assert(invalidSessionThrown === true, '비정상 세션 식별자 스케줄 거부');
+
+    // 6. 논리 모순 임계치 거부 (진입 <= 이탈)
     let thresholdErrorThrown = false;
     try {
       new MarketStateEngine({
@@ -711,7 +840,54 @@ async function runAllTests() {
       thresholdErrorThrown = true;
     }
     assert(thresholdErrorThrown === true, '논리 모순 임계치는 생성자에서 거부');
-    console.log('  ✓ TEST 21 통과: 잘못된 설정 거절 검증 완료\n');
+
+    // 7. NaN 임계치 거부
+    let nanErrorThrown = false;
+    try {
+      new MarketStateEngine({
+        thresholds: {
+          ...DEFAULT_REGIME_THRESHOLDS,
+          liquidityCrisisEnterSpreadBps: NaN,
+        },
+      }, 42, startMs);
+    } catch {
+      nanErrorThrown = true;
+    }
+    assert(nanErrorThrown === true, 'NaN 임계치는 생성자에서 거부');
+
+    // 8. 불확실성 범위 초과 거부
+    let uncertaintyErrorThrown = false;
+    try {
+      new MarketStateEngine({
+        thresholds: {
+          ...DEFAULT_REGIME_THRESHOLDS,
+          highVolatilityUncertaintyThreshold: 1.5, // 1.0 초과 오류
+        },
+      }, 42, startMs);
+    } catch {
+      uncertaintyErrorThrown = true;
+    }
+    assert(uncertaintyErrorThrown === true, '범위 초과 불확실성 임계치 거부');
+
+    // 9. 비정상 maxHistoryLimit 거부
+    let historyLimitErrorThrown = false;
+    try {
+      new MarketStateEngine({ maxHistoryLimit: -10 }, 42, startMs);
+    } catch {
+      historyLimitErrorThrown = true;
+    }
+    assert(historyLimitErrorThrown === true, '음수 maxHistoryLimit 거부');
+
+    // 10. 비정상 initialRegime 거부
+    let initialRegimeErrorThrown = false;
+    try {
+      new MarketStateEngine({ initialRegime: 'INVALID_REGIME' as any }, 42, startMs);
+    } catch {
+      initialRegimeErrorThrown = true;
+    }
+    assert(initialRegimeErrorThrown === true, '비정상 initialRegime 거부');
+
+    console.log('  ✓ TEST 21 통과: 전체 10개 설정 무결성 거절 검증 완료\n');
   }
 
   // ─────────────────────────────────────────────────────────────────
@@ -779,37 +955,40 @@ async function runAllTests() {
   // ─────────────────────────────────────────────────────────────────
   console.log('▶ [TEST 24] 국면 통합 전후 경제 시뮬레이션 A/B 결과 동일 (Test B)');
   {
-    // 1회차 실행 (초기 DB 리셋)
+    // ── 실행 A: 국면 엔진 비활성화 모드 (Baseline A: 국면 통합 직전 기준 동작) ──
     memoryDb.resetToSeedData();
-    const run1 = new AgentManager(12345, startMs);
-    for (let i = 0; i < 5; i++) await run1.step(1.0);
+    const runA = new AgentManager(12345, startMs, { enableRegimeEngine: false });
+    for (let i = 0; i < 5; i++) await runA.step(1.0);
 
-    const stocks1 = Array.from(memoryDb.stocks.values()).map(s => `${s.id}:${s.current_price}:${s.volume}:${s.high}:${s.low}`).sort().join('|');
-    const orders1 = Array.from(memoryDb.orders.values()).map(o => `${o.stock_id}:${o.side}:${o.price}:${o.size}:${o.filled}:${o.status}`).sort().join('|');
-    const trades1 = memoryDb.trades.map(t => `${t.stock_id}:${t.price}:${t.size}`).sort().join('|');
-    const profiles1 = Array.from(memoryDb.profiles.values()).map(p => `${p.id}:${p.cash}`).sort().join('|');
-    const holdings1 = Array.from(memoryDb.holdings.values()).map(h => `${h.user_id}:${h.stock_id}:${h.quantity}:${h.avg_price}`).sort().join('|');
-    const botPrngStates1 = Array.from(run1.agentPrngs.entries()).map(([k, p]) => `${k}:${p.getState()}`).sort().join('|');
+    const stocksA = Array.from(memoryDb.stocks.values()).map(s => `${s.id}:${s.current_price}:${s.volume}:${s.high}:${s.low}`).sort().join('|');
+    const ordersA = Array.from(memoryDb.orders.values()).map(o => `${o.stock_id}:${o.side}:${o.price}:${o.size}:${o.filled}:${o.status}`).sort().join('|');
+    const tradesA = memoryDb.trades.map(t => `${t.stock_id}:${t.price}:${t.size}`).sort().join('|');
+    const profilesA = Array.from(memoryDb.profiles.values()).map(p => `${p.id}:${p.cash}`).sort().join('|');
+    const holdingsA = Array.from(memoryDb.holdings.values()).map(h => `${h.user_id}:${h.stock_id}:${h.quantity}:${h.avg_price}`).sort().join('|');
+    const botPrngStatesA = Array.from(runA.agentPrngs.entries()).map(([k, p]) => `${k}:${p.getState()}`).sort().join('|');
+    const fundPrngStateA = runA.fundamentalPrng.getState();
 
-    // 2회차 실행 (동일 시드, 동일 입력으로 DB 리셋 후 실행)
+    // ── 실행 B: 국면 엔진 활성화 모드 (통합 B: 국면 상태 계산은 하지만 경제 전략에는 미적용) ──
     memoryDb.resetToSeedData();
-    const run2 = new AgentManager(12345, startMs);
-    for (let i = 0; i < 5; i++) await run2.step(1.0);
+    const runB = new AgentManager(12345, startMs, { enableRegimeEngine: true });
+    for (let i = 0; i < 5; i++) await runB.step(1.0);
 
-    const stocks2 = Array.from(memoryDb.stocks.values()).map(s => `${s.id}:${s.current_price}:${s.volume}:${s.high}:${s.low}`).sort().join('|');
-    const orders2 = Array.from(memoryDb.orders.values()).map(o => `${o.stock_id}:${o.side}:${o.price}:${o.size}:${o.filled}:${o.status}`).sort().join('|');
-    const trades2 = memoryDb.trades.map(t => `${t.stock_id}:${t.price}:${t.size}`).sort().join('|');
-    const profiles2 = Array.from(memoryDb.profiles.values()).map(p => `${p.id}:${p.cash}`).sort().join('|');
-    const holdings2 = Array.from(memoryDb.holdings.values()).map(h => `${h.user_id}:${h.stock_id}:${h.quantity}:${h.avg_price}`).sort().join('|');
-    const botPrngStates2 = Array.from(run2.agentPrngs.entries()).map(([k, p]) => `${k}:${p.getState()}`).sort().join('|');
+    const stocksB = Array.from(memoryDb.stocks.values()).map(s => `${s.id}:${s.current_price}:${s.volume}:${s.high}:${s.low}`).sort().join('|');
+    const ordersB = Array.from(memoryDb.orders.values()).map(o => `${o.stock_id}:${o.side}:${o.price}:${o.size}:${o.filled}:${o.status}`).sort().join('|');
+    const tradesB = memoryDb.trades.map(t => `${t.stock_id}:${t.price}:${t.size}`).sort().join('|');
+    const profilesB = Array.from(memoryDb.profiles.values()).map(p => `${p.id}:${p.cash}`).sort().join('|');
+    const holdingsB = Array.from(memoryDb.holdings.values()).map(h => `${h.user_id}:${h.stock_id}:${h.quantity}:${h.avg_price}`).sort().join('|');
+    const botPrngStatesB = Array.from(runB.agentPrngs.entries()).map(([k, p]) => `${k}:${p.getState()}`).sort().join('|');
+    const fundPrngStateB = runB.fundamentalPrng.getState();
 
-    assert(stocks1 === stocks2, '종목 현재가, 거래량, 고가, 저가 100% 일치');
-    assert(orders1 === orders2, '주문 방향, 가격, 수량, 체결량, 상태 100% 일치');
-    assert(trades1 === trades2, '체결 종목, 체결 가격, 체결 수량 100% 일치');
-    assert(profiles1 === profiles2, '계좌 현금 100% 일치');
-    assert(holdings1 === holdings2, '보유 수량 및 평균 단가 100% 일치');
-    assert(botPrngStates1 === botPrngStates2, '봇별 PRNG 결과 100% 일치');
-    console.log('  ✓ TEST 24 통과: 경제 시뮬레이션 A/B 동등성 검증 완료\n');
+    assert(stocksA === stocksB, 'A/B 종목 현재가, 거래량, 고가, 저가 100% 일치');
+    assert(ordersA === ordersB, 'A/B 주문 방향, 가격, 수량, 체결량, 상태 100% 일치');
+    assert(tradesA === tradesB, 'A/B 체결 종목, 체결 가격, 체결 수량 100% 일치');
+    assert(profilesA === profilesB, 'A/B 계좌 현금 100% 일치');
+    assert(holdingsA === holdingsB, 'A/B 보유 수량 및 평균 단가 100% 일치');
+    assert(botPrngStatesA === botPrngStatesB, 'A/B 봇별 PRNG 결과 100% 일치');
+    assert(fundPrngStateA === fundPrngStateB, 'A/B 펀더멘털 PRNG 결과 100% 일치');
+    console.log('  ✓ TEST 24 통과: 경제 시뮬레이션 A/B 동등성 검증 완료 (Baseline vs Regime Active 100% 일치)\n');
   }
 
   // ─────────────────────────────────────────────────────────────────

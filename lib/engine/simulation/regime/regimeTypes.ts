@@ -60,8 +60,10 @@ export interface RegimeObservation {
   readonly simulationTime: number;
   /** 시장 가중 평균 수익률 */
   readonly aggregateReturn: number;
-  /** 실현 변동성 */
+  /** 시장 지수 시계열 실현 변동성 (Time-series realized volatility) */
   readonly realizedVolatility: number;
+  /** 종목 간 횡단면 수익률 분산 (Cross-sectional return dispersion) */
+  readonly crossSectionalDispersion?: number;
   /** 거래대금 변화율 (전기 대비) */
   readonly turnoverChange: number;
   /** 평균 스프레드 (bps) */
@@ -79,6 +81,7 @@ export interface RegimeObservation {
 export interface RegimeTransitionMetrics {
   readonly aggregateReturn: number;
   readonly realizedVolatility: number;
+  readonly crossSectionalDispersion?: number;
   readonly turnoverChange: number;
   readonly averageSpreadBps: number;
   readonly depthChange: number;

@@ -4101,3 +4101,29 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
   - 국면 엔진 단독 무영향성 검증(Test 23): DB 원본 지문 100% 불변 실증.
 - `README.md`:
   - 1단계가 관측용 기반 기능이며 주문·봇·LP·체결·주가에 미반영, 세션 상태가 주문을 제한하지 않음, 메타데이터 명시, 거래일 기준점 및 반열린 구간 규칙, 다음 스텝 지연 활성화 이유 명시.
+
+---
+## 2026-09-18 22:40
+
+**요청 요약:** STOCKSYS 시장 국면 1단계 리뷰 지적사항 7대 결함 정밀 해결 (pending 국면 실제 활성화 timing 오류 수정, 진정한 A/B 테스트 구현, 실제 동적 관측 지표 계산, 시간축 실현 변동성 계산, 세션/임계값 설정 검증 전수 강화, 런타임 deepFreeze 동결 보장, 단일 seed 파생 계약 통일).
+**수행 결과:**
+- `lib/engine/simulation/agentManager.ts`:
+  - `evaluateNextRegime(obs, simTime, simTime, currentStepId)`로 호출 시점을 조정하여 스텝 N의 평가 결과가 스텝 N+1 시작 시점(`currentStepStartTime = simTime`, `currentStepId = nextStepId`)에 `decisionStepId < currentStepId && effectiveAt <= currentStepStartTime` 조건을 정확히 통과하여 활성화되도록 수정.
+  - 실제 관측 통계 동적 계산: 전기 윈도우 대비 실제 거래대금 변화율(`turnoverChange`), 실제 호가 깊이 변화율(`depthChange`), 실제 호가 공백 누적 시간(`emptyBookDurationSeconds`), 지수 시계열 롤링 표본 표준편차 기반 실현 변동성(`realizedVolatility`) 및 횡단면 분산(`crossSectionalDispersion`) 계산 반영.
+  - 단일 seed 파생 계약: `AgentManager`의 이중 파생을 제거하고 원본 `seed`를 전달하여 `MarketStateEngine` 내부에서만 1회 파생.
+  - 진정한 A/B 테스트 지원: `{ enableRegimeEngine: boolean }` 옵션을 추가하여 국면 엔진을 완전 우회하는 기준 동작(Baseline A) 모드 지원.
+- `lib/engine/simulation/regime/marketStateEngine.ts`:
+  - pending 전환이 대기 중일 때 후속 평가가 기존 pending을 덮어쓰지 못하도록 엄격 차단.
+  - `maxHistoryLimit` 양의 정수 검사, `initialRegime`, `initialSession` 유효성 검사 추가.
+  - `getSnapshot()`, `getRegimeHistory()`, `getSessionHistory()`, `getPendingTransition()`에 `deepFreeze(deepClone(...))`을 적용하여 런타임 객체 변조 시 `TypeError`가 발생하도록 불변성 보장.
+- `lib/engine/simulation/regime/regimeConfig.ts`:
+  - `validateSessionSchedule()`: 5개 표준 세션 필수 존재, 세션 순서 일치, 중복 세션 차단, 유효 세션 식별자 검증 강화.
+  - `validateRegimeThresholds()`: 전 필드 `Number.isFinite` 검사(NaN/Infinity 거절), 음수 금지 항목, 스프레드/변동성/깊이 양방향 히스테리시스 논리 순서, 불확실성/수익률/뉴스 신호 범위 검증 전수 구현.
+- `lib/engine/simulation/regime/regimeTypes.ts`:
+  - `RegimeObservation` 및 `RegimeTransitionMetrics`에 `crossSectionalDispersion` 필드 추가.
+- `scripts/test-market-regime-foundation.ts`:
+  - Test 5: 반환 스냅샷 및 중첩 파라미터의 `Object.isFrozen` 런타임 동결 검증.
+  - Test 18: `AgentManager.step()` 실제 통합 경로에서 스텝 1 종료 시 pending 예약 -> 스텝 2 시작 시 실제 국면 활성화 실증.
+  - Test 21: 10개 설정 무결성 거절 시나리오(스케줄 합계 불일치, 세션 누락, 순서 오류, 세션 중복, 비정상 세션명, 논리 모순 임계치, NaN 임계치, 범위 초과 불확실성, 음수 historyLimit, 비정상 initialRegime) 전수 검증.
+  - Test 24: `enableRegimeEngine: false`(Baseline A) vs `enableRegimeEngine: true`(Regime Active B) 간 주문, 체결, 시세, 잔고, 보유량, 봇별 PRNG, 펀더멘털 PRNG가 100% 비트 단위로 동일함을 증명하는 진정한 A/B 테스트 구현.
+  - 28대 테스트 전체 통과 (Exit Code 0).

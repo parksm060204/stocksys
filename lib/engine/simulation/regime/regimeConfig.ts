@@ -211,12 +211,23 @@ export const DEFAULT_SESSION_SCHEDULE: Readonly<SessionScheduleConfig> = deepFre
   ],
 });
 
+export const STANDARD_SESSIONS: readonly TradingSession[] = [
+  'PRE_OPEN',
+  'OPENING_AUCTION',
+  'CONTINUOUS',
+  'CLOSING_AUCTION',
+  'CLOSED',
+];
+
+const VALID_SESSIONS_SET = new Set<string>(STANDARD_SESSIONS);
+
 /**
  * 세션 스케줄 유효성 검증
- * - 단조 증가 경계
+ * - 5개 표준 세션(PRE_OPEN, OPENING_AUCTION, CONTINUOUS, CLOSING_AUCTION, CLOSED)이 정확히 한 번씩 존재
+ * - 표준 세션 순서 준수
+ * - 중복 세션 및 런타임 비정상 세션 문자열 차단
  * - 모든 세션 길이 > 0 및 유한성
  * - 세션 길이 합계 === tradingDayDurationSeconds
- * - 표준 세션 순서 준수
  */
 export function validateSessionSchedule(config: SessionScheduleConfig): void {
   if (!config || typeof config !== 'object') {
@@ -237,13 +248,49 @@ export function validateSessionSchedule(config: SessionScheduleConfig): void {
     throw new Error(`[SessionSchedule] sessions list must be a non-empty array`);
   }
 
+  if (config.sessions.length !== STANDARD_SESSIONS.length) {
+    throw new Error(
+      `[SessionSchedule] Schedule must contain exactly ${STANDARD_SESSIONS.length} standard sessions, got ${config.sessions.length}`
+    );
+  }
+
+  const seenSessions = new Set<TradingSession>();
   let accumulated = 0;
+
   for (let i = 0; i < config.sessions.length; i++) {
     const s = config.sessions[i];
-    if (!s || typeof s.durationSeconds !== 'number' || !Number.isFinite(s.durationSeconds) || s.durationSeconds <= 0) {
-      throw new RangeError(`[SessionSchedule] Session[${i}] (${s?.session}) durationSeconds must be positive: ${s?.durationSeconds}`);
+    if (!s || typeof s !== 'object') {
+      throw new Error(`[SessionSchedule] Session[${i}] must be a non-null object`);
+    }
+
+    if (!VALID_SESSIONS_SET.has(s.session)) {
+      throw new Error(`[SessionSchedule] Session[${i}] has invalid session identifier: '${s.session}'`);
+    }
+
+    if (seenSessions.has(s.session)) {
+      throw new Error(`[SessionSchedule] Duplicate session detected: '${s.session}' appears multiple times`);
+    }
+    seenSessions.add(s.session);
+
+    const expectedSession = STANDARD_SESSIONS[i];
+    if (s.session !== expectedSession) {
+      throw new Error(
+        `[SessionSchedule] Session order mismatch at index ${i}: expected '${expectedSession}', got '${s.session}'`
+      );
+    }
+
+    if (typeof s.durationSeconds !== 'number' || !Number.isFinite(s.durationSeconds) || s.durationSeconds <= 0) {
+      throw new RangeError(
+        `[SessionSchedule] Session[${i}] (${s.session}) durationSeconds must be positive finite: ${s.durationSeconds}`
+      );
     }
     accumulated += s.durationSeconds;
+  }
+
+  for (const std of STANDARD_SESSIONS) {
+    if (!seenSessions.has(std)) {
+      throw new Error(`[SessionSchedule] Missing required standard session: '${std}'`);
+    }
   }
 
   if (Math.abs(accumulated - durationSec) > 1e-6) {
@@ -258,35 +305,100 @@ validateSessionSchedule(DEFAULT_SESSION_SCHEDULE);
 
 /**
  * 국면 전환 임계값 및 히스테리시스 설정 유효성 검증
+ * - 모든 수치 필드의 유한성(NaN, Infinity 거절)
+ * - 음수 금지 항목 및 논리 범위 검증
+ * - 진입 및 이탈 임계값의 엄격한 히스테리시스 순서 검증
  */
 export function validateRegimeThresholds(th: RegimeThresholdConfig): void {
   if (!th || typeof th !== 'object') {
     throw new Error('[RegimeThresholds] thresholds must be a non-null object');
   }
 
-  if (!Number.isFinite(th.minRegimeDurationSeconds) || th.minRegimeDurationSeconds < 0) {
-    throw new RangeError(`minRegimeDurationSeconds must be non-negative finite: ${th.minRegimeDurationSeconds}`);
+  // 1. 유한성 검증 헬퍼
+  const assertFinite = (name: string, val: unknown): number => {
+    if (typeof val !== 'number' || !Number.isFinite(val)) {
+      throw new RangeError(`[RegimeThresholds] Field '${name}' must be a finite number, got: ${val}`);
+    }
+    return val;
+  };
+
+  const minDuration = assertFinite('minRegimeDurationSeconds', th.minRegimeDurationSeconds);
+  if (minDuration < 0) throw new RangeError(`minRegimeDurationSeconds must be non-negative: ${minDuration}`);
+
+  const cooldown = assertFinite('regimeCooldownSeconds', th.regimeCooldownSeconds);
+  if (cooldown < 0) throw new RangeError(`regimeCooldownSeconds must be non-negative: ${cooldown}`);
+
+  // 2. 유동성 위기 (LIQUIDITY_CRISIS)
+  const enterSpread = assertFinite('liquidityCrisisEnterSpreadBps', th.liquidityCrisisEnterSpreadBps);
+  const exitSpread = assertFinite('liquidityCrisisExitSpreadBps', th.liquidityCrisisExitSpreadBps);
+  if (enterSpread <= 0 || exitSpread <= 0) {
+    throw new RangeError(`Crisis spreads must be positive: enter=${enterSpread}, exit=${exitSpread}`);
   }
-  if (!Number.isFinite(th.regimeCooldownSeconds) || th.regimeCooldownSeconds < 0) {
-    throw new RangeError(`regimeCooldownSeconds must be non-negative finite: ${th.regimeCooldownSeconds}`);
+  if (enterSpread <= exitSpread) {
+    throw new Error(`liquidityCrisisEnterSpreadBps (${enterSpread}) must be greater than exitSpreadBps (${exitSpread}) for hysteresis`);
   }
 
-  // 진입/이탈 임계값 논리적 순서 검증
-  const enterSpread = th.liquidityCrisisEnterSpreadBps ?? th.liquidityCrisisSpreadBpsThreshold;
-  const exitSpread = th.liquidityCrisisExitSpreadBps ?? th.liquidityCrisisRecoverySpreadBps;
-  if (enterSpread !== undefined && exitSpread !== undefined) {
-    if (enterSpread <= exitSpread) {
-      throw new Error(`liquidityCrisisEnterSpreadBps (${enterSpread}) must be greater than exitSpreadBps (${exitSpread}) for hysteresis`);
-    }
+  const enterDepth = assertFinite('liquidityCrisisEnterDepthDrop', th.liquidityCrisisEnterDepthDrop);
+  const exitDepth = assertFinite('liquidityCrisisExitDepthDrop', th.liquidityCrisisExitDepthDrop);
+  if (enterDepth >= exitDepth) {
+    throw new Error(
+      `liquidityCrisisEnterDepthDrop (${enterDepth}) must be strictly less than exitDepthDrop (${exitDepth}) for hysteresis`
+    );
   }
 
-  const enterVol = th.highVolatilityEnterThreshold ?? th.highVolatilityThreshold;
-  const exitVol = th.highVolatilityExitThreshold ?? th.highVolatilityRecoveryVolatility;
-  if (enterVol !== undefined && exitVol !== undefined) {
-    if (enterVol <= exitVol) {
-      throw new Error(`highVolatilityEnterThreshold (${enterVol}) must be greater than exitThreshold (${exitVol}) for hysteresis`);
-    }
+  const emptyBookDur = assertFinite('liquidityCrisisEmptyBookDurationSeconds', th.liquidityCrisisEmptyBookDurationSeconds);
+  if (emptyBookDur < 0) {
+    throw new RangeError(`liquidityCrisisEmptyBookDurationSeconds must be non-negative: ${emptyBookDur}`);
   }
+
+  // 3. 고변동성 (HIGH_VOLATILITY)
+  const enterVol = assertFinite('highVolatilityEnterThreshold', th.highVolatilityEnterThreshold);
+  const exitVol = assertFinite('highVolatilityExitThreshold', th.highVolatilityExitThreshold);
+  if (enterVol <= 0 || exitVol <= 0) {
+    throw new RangeError(`Volatility thresholds must be positive: enter=${enterVol}, exit=${exitVol}`);
+  }
+  if (enterVol <= exitVol) {
+    throw new Error(`highVolatilityEnterThreshold (${enterVol}) must be greater than exitThreshold (${exitVol}) for hysteresis`);
+  }
+
+  const uncertainty = assertFinite('highVolatilityUncertaintyThreshold', th.highVolatilityUncertaintyThreshold);
+  if (uncertainty < 0 || uncertainty > 1.0) {
+    throw new RangeError(`highVolatilityUncertaintyThreshold must be in [0.0, 1.0], got: ${uncertainty}`);
+  }
+
+  // 4. 상승장 (BULL) & 하락장 (BEAR)
+  const bullReturn = assertFinite('bullReturnThreshold', th.bullReturnThreshold);
+  if (bullReturn <= 0) {
+    throw new RangeError(`bullReturnThreshold must be positive, got: ${bullReturn}`);
+  }
+
+  const bearReturn = assertFinite('bearReturnThreshold', th.bearReturnThreshold);
+  if (bearReturn >= 0) {
+    throw new RangeError(`bearReturnThreshold must be negative, got: ${bearReturn}`);
+  }
+
+  const bullTurnover = assertFinite('bullTurnoverChangeThreshold', th.bullTurnoverChangeThreshold);
+  if (bullTurnover < 0) throw new RangeError(`bullTurnoverChangeThreshold must be non-negative, got: ${bullTurnover}`);
+
+  const bearTurnover = assertFinite('bearTurnoverChangeThreshold', th.bearTurnoverChangeThreshold);
+  if (bearTurnover < 0) throw new RangeError(`bearTurnoverChangeThreshold must be non-negative, got: ${bearTurnover}`);
+
+  const bullMacro = assertFinite('bullMacroSignalThreshold', th.bullMacroSignalThreshold);
+  if (bullMacro <= 0 || bullMacro > 1.0) {
+    throw new RangeError(`bullMacroSignalThreshold must be in (0.0, 1.0], got: ${bullMacro}`);
+  }
+
+  const bearMacro = assertFinite('bearMacroSignalThreshold', th.bearMacroSignalThreshold);
+  if (bearMacro >= 0 || bearMacro < -1.0) {
+    throw new RangeError(`bearMacroSignalThreshold must be in [-1.0, 0.0), got: ${bearMacro}`);
+  }
+
+  // 5. 횡보장 (SIDEWAYS)
+  const sidewaysReturn = assertFinite('sidewaysReturnAbsBound', th.sidewaysReturnAbsBound);
+  if (sidewaysReturn <= 0) throw new RangeError(`sidewaysReturnAbsBound must be positive, got: ${sidewaysReturn}`);
+
+  const sidewaysVol = assertFinite('sidewaysVolatilityBound', th.sidewaysVolatilityBound);
+  if (sidewaysVol <= 0) throw new RangeError(`sidewaysVolatilityBound must be positive, got: ${sidewaysVol}`);
 }
 
 /**

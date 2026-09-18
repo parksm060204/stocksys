@@ -104,12 +104,25 @@ export class AgentManager {
     baseLevelSize: 50,
   };
 
-  constructor(seed: number = 42, startEpochMs: number = 1773500000000) {
+  public readonly enableRegimeEngine: boolean;
+
+  // ── 실제 국면 관측 통계 추적 상태 ──
+  private previousTotalTurnover: number | null = null;
+  private previousTotalDepth: number | null = null;
+  private emptyBookAccumulatedSeconds: number = 0;
+  private marketIndexReturns: number[] = [];
+
+  constructor(
+    seed: number = 42,
+    startEpochMs: number = 1773500000000,
+    options?: { enableRegimeEngine?: boolean }
+  ) {
+    this.enableRegimeEngine = options?.enableRegimeEngine ?? true;
     this.clock = new SimulationClock(startEpochMs, 1.0);
     this.prng = new SimPrng(seed);
     this.fundamentalPrng = this.prng.split(100);
-    const regimeSeed = deriveDeterministicSeed(seed, 'market-regime-v1');
-    this.marketStateEngine = new MarketStateEngine({}, regimeSeed, startEpochMs);
+    // MarketStateEngine 내부에서 seed로부터 고유 namespace 파생을 1회 수행하도록 원본 seed 전달
+    this.marketStateEngine = new MarketStateEngine({}, seed, startEpochMs);
 
     this.registerDefaultAgents();
     this.initFundamentals();
@@ -408,7 +421,9 @@ export class AgentManager {
     const currentStepId = this.clock.simulationStep;
 
     // 1. t0 시점에 적용 예정인 pending 국면 활성화
-    this.marketStateEngine.activatePendingRegime(t0, currentStepId);
+    if (this.enableRegimeEngine) {
+      this.marketStateEngine.activatePendingRegime(t0, currentStepId);
+    }
 
     // 2. 시계를 t1 = t0 + dt로 전진
     const { time: simTime, step: nextStepId } = this.clock.advance(dt);
@@ -677,70 +692,119 @@ export class AgentManager {
     this.diagnostics.recordSnapshot(simTime, this.attentionMap, this.publishedEvents, finalWindowStats);
 
     // ── 7. Deterministic Market Regime Evaluation (Scheduled for next step, No circular causality) ──
-    const statsList = Array.from(finalWindowStats.values());
-    let aggReturn = 0;
-    let avgSpreadBps = 0;
-    let validSpreadCount = 0;
+    if (this.enableRegimeEngine) {
+      const statsList = Array.from(finalWindowStats.values());
+      let aggReturn = 0;
+      let avgSpreadBps = 0;
+      let validSpreadCount = 0;
 
-    for (const st of statsList) {
-      aggReturn += st.returnRate;
-      if (st.spread !== null && st.spread > 0) {
-        const stk = memoryDb.stocks.get(st.stockId);
-        const price = stk?.current_price ?? 50000;
-        const bps = (st.spread / price) * 10000;
-        avgSpreadBps += bps;
-        validSpreadCount++;
+      for (const st of statsList) {
+        aggReturn += st.returnRate;
+        if (st.spread !== null && st.spread > 0) {
+          const stk = memoryDb.stocks.get(st.stockId);
+          const price = stk?.current_price ?? 50000;
+          const bps = (st.spread / price) * 10000;
+          avgSpreadBps += bps;
+          validSpreadCount++;
+        }
       }
+
+      const stockCount = Math.max(1, statsList.length);
+      const meanReturn = aggReturn / stockCount;
+      const meanSpreadBps = validSpreadCount > 0 ? avgSpreadBps / validSpreadCount : 20.0;
+
+      // 횡단면 수익률 분산 (종목 간 편차)
+      let varSum = 0;
+      for (const st of statsList) {
+        const diff = st.returnRate - meanReturn;
+        varSum += diff * diff;
+      }
+      const crossSectionalDispersion = Math.sqrt(varSum / stockCount);
+
+      // 시장 지수 시계열 실현 변동성 (Time-series realized volatility)
+      this.marketIndexReturns.push(meanReturn);
+      if (this.marketIndexReturns.length > 20) {
+        this.marketIndexReturns.shift();
+      }
+      let realizedVol: number;
+      if (this.marketIndexReturns.length >= 2) {
+        const n = this.marketIndexReturns.length;
+        const avgR = this.marketIndexReturns.reduce((acc, r) => acc + r, 0) / n;
+        const sumSq = this.marketIndexReturns.reduce((acc, r) => acc + (r - avgR) * (r - avgR), 0);
+        realizedVol = Math.sqrt(sumSq / (n - 1));
+      } else {
+        realizedVol = Math.max(0.005, Math.abs(meanReturn));
+      }
+
+      // 실제 거래대금 변화율 (전기 윈도우 대비)
+      const currentTotalTurnover = statsList.reduce((acc, st) => acc + (st.turnover || 0), 0);
+      let turnoverChange = 0;
+      if (this.previousTotalTurnover !== null && this.previousTotalTurnover > 0) {
+        turnoverChange = (currentTotalTurnover - this.previousTotalTurnover) / this.previousTotalTurnover;
+      }
+      this.previousTotalTurnover = currentTotalTurnover;
+
+      // 실제 호가 깊이 변화율 (전기 윈도우 대비)
+      const currentTotalDepth = statsList.reduce((acc, st) => acc + (st.depthShares || 0), 0);
+      let depthChange = 0;
+      if (this.previousTotalDepth !== null && this.previousTotalDepth > 0) {
+        depthChange = (currentTotalDepth - this.previousTotalDepth) / this.previousTotalDepth;
+      }
+      this.previousTotalDepth = currentTotalDepth;
+
+      // 실제 호가 공백(빈 장부) 누적 지속 시간 (초)
+      const hasEmptyBook = statsList.some((st) => st.spread === null || st.depthShares === 0);
+      if (hasEmptyBook) {
+        this.emptyBookAccumulatedSeconds += dt;
+      } else {
+        this.emptyBookAccumulatedSeconds = 0;
+      }
+      const emptyBookDurationSeconds = this.emptyBookAccumulatedSeconds;
+
+      let avgUncertainty = 0.05;
+      if (this.uncertaintyMap.size > 0) {
+        let sumUnc = 0;
+        for (const u of this.uncertaintyMap.values()) sumUnc += u;
+        avgUncertainty = sumUnc / this.uncertaintyMap.size;
+      }
+
+      // Effective Macro News Signal (Strict barrier: publishedAt <= simTime && effectiveFrom <= simTime only)
+      let macroSignal = 0;
+      const effectiveMacroEvents = this.publishedEvents.filter(
+        (e) => e.scope === 'market' && e.effectiveFrom <= simTime && this.effectiveEventIds.has(e.eventId)
+      );
+      for (const ev of effectiveMacroEvents) {
+        macroSignal += ev.valuationSignal;
+      }
+      macroSignal = Math.max(-1.0, Math.min(1.0, macroSignal));
+
+      const observation: RegimeObservation = {
+        simulationTime: simTime,
+        aggregateReturn: meanReturn,
+        realizedVolatility: realizedVol,
+        crossSectionalDispersion,
+        turnoverChange,
+        averageSpreadBps: meanSpreadBps,
+        depthChange,
+        uncertainty: avgUncertainty,
+        emptyBookDurationSeconds,
+        effectiveMacroNewsSignal: macroSignal,
+      };
+
+      // 세션 경계 처리
+      this.marketStateEngine.advanceSession(simTime);
+
+      // evaluateNextRegime:
+      // 평가 결정 시각: simTime (스텝 종료 시각)
+      // 발효 예정 시각: simTime (다음 스텝의 시작 시각 t0와 동일)
+      // 평가 결정 스텝 ID: currentStepId (시뮬레이션 스텝 전진 이전의 step ID)
+      // -> 다음 스텝에서: decisionStepId (= currentStepId) < nextStepId (새 currentStepId) AND
+      //    effectiveAt (= simTime) <= newStepStartTime (= simTime) 가 정확히 만족되어 1회 활성화됨.
+      this.marketStateEngine.evaluateNextRegime(observation, simTime, simTime, currentStepId);
+
+      // 완성된 t1 스냅샷 원자적 게시
+      this.marketStateEngine.publishSnapshot(simTime);
     }
-
-    const stockCount = Math.max(1, statsList.length);
-    const meanReturn = aggReturn / stockCount;
-    const meanSpreadBps = validSpreadCount > 0 ? avgSpreadBps / validSpreadCount : 20.0;
-
-    let varSum = 0;
-    for (const st of statsList) {
-      const diff = st.returnRate - meanReturn;
-      varSum += diff * diff;
-    }
-    const realizedVol = Math.sqrt(varSum / stockCount);
-
-    let avgUncertainty = 0.05;
-    if (this.uncertaintyMap.size > 0) {
-      let sumUnc = 0;
-      for (const u of this.uncertaintyMap.values()) sumUnc += u;
-      avgUncertainty = sumUnc / this.uncertaintyMap.size;
-    }
-
-    // Effective Macro News Signal (Strict barrier: publishedAt <= simTime && effectiveFrom <= simTime only)
-    let macroSignal = 0;
-    const effectiveMacroEvents = this.publishedEvents.filter(
-      (e) => e.scope === 'market' && e.effectiveFrom <= simTime && this.effectiveEventIds.has(e.eventId)
-    );
-    for (const ev of effectiveMacroEvents) {
-      macroSignal += ev.valuationSignal;
-    }
-    macroSignal = Math.max(-1.0, Math.min(1.0, macroSignal));
-
-    const observation: RegimeObservation = {
-      simulationTime: simTime,
-      aggregateReturn: meanReturn,
-      realizedVolatility: realizedVol,
-      turnoverChange: 0,
-      averageSpreadBps: meanSpreadBps,
-      depthChange: 0,
-      uncertainty: avgUncertainty,
-      emptyBookDurationSeconds: 0,
-      effectiveMacroNewsSignal: macroSignal,
-    };
-
-    // 7. (t0, t1]에서 통과한 세션 경계 전부 처리
-    this.marketStateEngine.advanceSession(simTime);
-
-    const nextStepTime = simTime + Math.round(dt * 1000);
-    this.marketStateEngine.evaluateNextRegime(observation, simTime, nextStepTime, nextStepId);
-
-    // 8. 완성된 t1 스냅샷 원자적 게시
-    this.marketStateEngine.publishSnapshot(simTime);
   }
 
   /**
@@ -799,8 +863,13 @@ export class AgentManager {
     this.clock.reset();
     this.prng = new SimPrng(seed);
     this.fundamentalPrng = this.prng.split(100);
-    const regimeSeed = deriveDeterministicSeed(seed, 'market-regime-v1');
-    this.marketStateEngine.reset(this.clock.simulationTime, regimeSeed);
+    if (this.enableRegimeEngine) {
+      this.marketStateEngine.reset(this.clock.simulationTime, seed);
+    }
+    this.previousTotalTurnover = null;
+    this.previousTotalDepth = null;
+    this.emptyBookAccumulatedSeconds = 0;
+    this.marketIndexReturns = [];
     this.diagnostics.reset();
     this.agents.clear();
     this.agentPrngs.clear();

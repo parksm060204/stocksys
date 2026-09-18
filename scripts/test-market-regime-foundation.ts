@@ -854,6 +854,29 @@ async function runAllTests() {
     assert(errDispNeg, '음수 crossSectionalDispersion 거부');
     assert(errDispNan, 'NaN crossSectionalDispersion 거부');
 
+    // 12. 선택 필드 emptyBookStockRatio 음수/1.0 초과/비유한 거절
+    let errRatioNeg = false;
+    let errRatioHigh = false;
+    let errRatioNan = false;
+    try {
+      engine.evaluateNextRegime({ ...validObs, emptyBookStockRatio: -0.1 }, startMs + 1000, startMs + 2000, 1);
+    } catch {
+      errRatioNeg = true;
+    }
+    try {
+      engine.evaluateNextRegime({ ...validObs, emptyBookStockRatio: 1.5 }, startMs + 1000, startMs + 2000, 1);
+    } catch {
+      errRatioHigh = true;
+    }
+    try {
+      engine.evaluateNextRegime({ ...validObs, emptyBookStockRatio: NaN }, startMs + 1000, startMs + 2000, 1);
+    } catch {
+      errRatioNan = true;
+    }
+    assert(errRatioNeg, '음수 emptyBookStockRatio 거부');
+    assert(errRatioHigh, '1.0 초과 emptyBookStockRatio 거부');
+    assert(errRatioNan, 'NaN emptyBookStockRatio 거부');
+
     assert(engine.getPendingTransition() === null, '모든 거절 후 엔진 내부 상태 무변경 유지');
     console.log('  ✓ TEST 20 통과: 비정상 관측값 및 매개변수 엄격 거절 확인 완료\n');
   }
@@ -1562,38 +1585,38 @@ async function runAllTests() {
     console.log('  ✓ TEST 30 통과: RETRACT·REPLACE·ADDITIVE 및 복수 정정 순서 결정론 검증 완료\n');
   }
 
+  // memoryDb 주문 취소 및 인덱스 정합성 공통 헬퍼
+  function safeCancelAndDeleteOrder(orderId: string) {
+    const ord = memoryDb.orders.get(orderId);
+    if (ord) {
+      ord.status = 'cancelled';
+      memoryDb.removeOrderFromIndex(ord);
+      memoryDb.orders.delete(orderId);
+    }
+  }
+
+  // memoryDb.orders와 orderStockIndex 간의 완전한 1:1 양방향 정합성 검증 헬퍼
+  function verifyOrderIndexIntegrity() {
+    // 1) orders에 존재하는 모든 활성 주문이 orderStockIndex에 정확히 1건 매핑되는지 검증
+    for (const [orderId, order] of memoryDb.orders.entries()) {
+      const stockSet = memoryDb.orderStockIndex.get(order.stock_id);
+      assert(stockSet !== undefined && stockSet.has(orderId), `주문 ${orderId}가 orderStockIndex[${order.stock_id}]에 1:1 정합 매핑되어야 함`);
+    }
+    // 2) orderStockIndex에 등록된 모든 orderId가 실제 memoryDb.orders에 실존하고 stock_id가 일치하는지 검증
+    for (const [stockId, idSet] of memoryDb.orderStockIndex.entries()) {
+      for (const orderId of idSet) {
+        const order = memoryDb.orders.get(orderId);
+        assert(order !== undefined, `인덱스 내 주문 ${orderId}가 memoryDb.orders에 실존해야 함 (stale index 부재)`);
+        assert(order!.stock_id === stockId, `인덱스 stock_id(${stockId})와 주문 본체 stock_id(${order!.stock_id}) 일치`);
+      }
+    }
+  }
+
   // ─────────────────────────────────────────────────────────────────
   // TEST 31: 시장 전체 빈 장부 판정 및 주문·인덱스 1:1 정합성 검증
   // ─────────────────────────────────────────────────────────────────
   console.log('▶ [TEST 31] 시장 전체 빈 장부 판정 및 주문·인덱스 1:1 정합성 검증');
   {
-    // 주문 상태를 cancelled로 변경하고 orderStockIndex와 orders Map에서 함께 안전하게 제거하는 헬퍼
-    function safeCancelAndDeleteOrder(orderId: string) {
-      const ord = memoryDb.orders.get(orderId);
-      if (ord) {
-        ord.status = 'cancelled';
-        memoryDb.removeOrderFromIndex(ord);
-        memoryDb.orders.delete(orderId);
-      }
-    }
-
-    // memoryDb.orders와 orderStockIndex 간의 완전한 1:1 양방향 정합성 검증 헬퍼
-    function verifyOrderIndexIntegrity() {
-      // 1) orders에 존재하는 모든 활성 주문이 orderStockIndex에 정확히 1건 매핑되는지 검증
-      for (const [orderId, order] of memoryDb.orders.entries()) {
-        const stockSet = memoryDb.orderStockIndex.get(order.stock_id);
-        assert(stockSet !== undefined && stockSet.has(orderId), `주문 ${orderId}가 orderStockIndex[${order.stock_id}]에 1:1 정합 매핑되어야 함`);
-      }
-      // 2) orderStockIndex에 등록된 모든 orderId가 실제 memoryDb.orders에 실존하고 stock_id가 일치하는지 검증
-      for (const [stockId, idSet] of memoryDb.orderStockIndex.entries()) {
-        for (const orderId of idSet) {
-          const order = memoryDb.orders.get(orderId);
-          assert(order !== undefined, `인덱스 내 주문 ${orderId}가 memoryDb.orders에 실존해야 함 (stale index 부재)`);
-          assert(order!.stock_id === stockId, `인덱스 stock_id(${stockId})와 주문 본체 stock_id(${order!.stock_id}) 일치`);
-        }
-      }
-    }
-
     // 1. 단일 종목 빈 장부로 시장 위기 미발생 (전체 26개 중 1개 = ~3.8% < 30%)
     memoryDb.resetToSeedData();
     const mgr = new AgentManager(42, startMs, {
@@ -1950,8 +1973,218 @@ async function runAllTests() {
     console.log('  ✓ TEST 32 통과: 상장주식수 기준 시가총액 단일 권위 및 동일 가중 횡단면 분산 정합성 검증 완료\n');
   }
 
+  // ─────────────────────────────────────────────────────────────────
+  // TEST 33: 기본 설정(DEFAULT_REGIME_THRESHOLDS) 기반 유동성 위기 진입·유지·이탈 5대 사례 결정론적 검증
+  // ─────────────────────────────────────────────────────────────────
+  console.log('▶ [TEST 33] 기본 설정(DEFAULT_REGIME_THRESHOLDS) 기반 유동성 위기 진입·유지·이탈 결정론적 검증');
+  {
+    // A. 임계값을 낮추지 않은 기본 설정으로 AgentManager 인스턴스 생성
+    // DEFAULT_REGIME_THRESHOLDS:
+    // minRegimeDurationSeconds: 10.0s
+    // regimeCooldownSeconds: 5.0s
+    // liquidityCrisisEmptyBookDurationSeconds: 2.0s
+    // emptyBookStockRatioThreshold: 0.3 (30%)
+    // liquidityCrisisRecoveryMinDurationSeconds: 12.0s
+    // liquidityCrisisEnterSpreadBps: 120.0
+    // liquidityCrisisExitSpreadBps: 65.0
+    // liquidityCrisisEnterDepthDrop: -0.45
+    // liquidityCrisisExitDepthDrop: -0.20
+
+    async function runDeterministicCrisisScenario() {
+      memoryDb.resetToSeedData();
+      const testStartMs = 1773500000000;
+      const stocks = Array.from(memoryDb.stocks.values());
+      assert(stocks.length >= 10, `시드 종목 수 10개 이상 확인 (${stocks.length}개)`);
+
+      const mgr = new AgentManager(42, testStartMs, {
+        enableRegimeEngine: true,
+        // regimeEngineConfig를 전달하지 않아 DEFAULT_REGIME_THRESHOLDS를 100% 원본 그대로 적용
+      });
+
+      // 특정 시드의 우연한 봇 주문에 의존하지 않도록 일반 매매 봇을 제거하고 순수 장부 상태를 결정론적으로 제어
+      mgr.agents.clear();
+
+      // 초기 상태 확인: SIDEWAYS, pending = null
+      const initialSnap = mgr.getMarketStateSnapshot();
+      assert(initialSnap.regime === 'SIDEWAYS', '초기 국면은 SIDEWAYS');
+      assert(initialSnap.pendingRegime === null, '초기 pendingRegime은 null');
+
+      // 모든 종목에 대해 정상적인 2단 매수/매도 호가를 생성하여 양측 호가 장부 구성
+      let orderSeq = 1;
+      function addTwoSidedOrders(stockId: string, price: number) {
+        const bId = `ord_t33_b_${stockId}_${orderSeq++}`;
+        const aId = `ord_t33_a_${stockId}_${orderSeq++}`;
+        memoryDb.orders.set(bId, {
+          id: bId,
+          user_id: 'usr_t33_maker',
+          stock_id: stockId,
+          side: 'buy',
+          order_type: 'limit',
+          price: Math.round(price * 0.99),
+          size: 100,
+          filled: 0,
+          status: 'open',
+          is_lp: true,
+          created_at: new Date(testStartMs).toISOString(),
+        });
+        memoryDb.orders.set(aId, {
+          id: aId,
+          user_id: 'usr_t33_maker',
+          stock_id: stockId,
+          side: 'sell',
+          order_type: 'limit',
+          price: Math.round(price * 1.01),
+          size: 100,
+          filled: 0,
+          status: 'open',
+          is_lp: true,
+          created_at: new Date(testStartMs).toISOString(),
+        });
+        memoryDb.addOrderToIndex(memoryDb.orders.get(bId)!);
+        memoryDb.addOrderToIndex(memoryDb.orders.get(aId)!);
+      }
+
+      // 기존 주문 클리어 후 깨끗한 양측 장부 생성
+      memoryDb.orders.clear();
+      memoryDb.orderStockIndex.clear();
+      memoryDb.orderUserIndex.clear();
+      for (const stk of stocks) {
+        addTwoSidedOrders(stk.id, stk.current_price);
+      }
+      verifyOrderIndexIntegrity();
+
+      // ─────────────────────────────────────────────────────────────
+      // 사례 ⑤: 공백 비율이 임계값(30%) 미만이면 위기로 진입하지 않음
+      // 26개 종목 중 2개 종목만 호가 제거 (2/26 = 7.7% < 30%)
+      // ─────────────────────────────────────────────────────────────
+      const subThresholdStockIds = [stocks[0].id, stocks[1].id];
+      for (const sId of subThresholdStockIds) {
+        const oIds = Array.from(memoryDb.orderStockIndex.get(sId) ?? []);
+        for (const oId of oIds) safeCancelAndDeleteOrder(oId);
+      }
+      verifyOrderIndexIntegrity();
+
+      // 10스텝 동안 실행 (최소 국면 유지 시간 10초 경과)
+      for (let step = 1; step <= 10; step++) {
+        await mgr.step(1.0);
+      }
+      const ratioCase5 = mgr.getEmptyBookStockRatio();
+      const accCase5 = mgr.getEmptyBookAccumulatedSeconds();
+      assert(ratioCase5 < 0.3, `공백 비율(${ratioCase5.toFixed(3)})이 30% 미만이어야 함`);
+      assert(accCase5 === 0, `공백 비율 30% 미만 시 누적 시간 0초 유지 (실제: ${accCase5})`);
+      const snapCase5 = mgr.getMarketStateSnapshot();
+      assert(snapCase5.regime === 'SIDEWAYS', '공백 비율 30% 미만 시 SIDEWAYS 유지');
+      assert(snapCase5.pendingRegime === null, '공백 비율 30% 미만 시 LIQUIDITY_CRISIS 예약 불가');
+
+      // ─────────────────────────────────────────────────────────────
+      // 사례 ① & ②:
+      // ① 시장의 30% 이상(40%) 종목에서 양측 호가가 사라짐.
+      // ② 유효한 스프레드 이력이 없어 관측 스프레드가 기존 대체값 20bps가 되는 경우에도,
+      //    지속 시간(2s)과 최소 유지 시간(10s)을 충족하면 위기가 예약되고 다음 스텝에 활성화됨.
+      // ─────────────────────────────────────────────────────────────
+      // 26개 중 40% (11개) 종목의 호가를 제거하여 단측/공백 장부로 전환 (11/26 = 42.3% >= 30%)
+      const emptyCount = Math.ceil(stocks.length * 0.4); // 11개
+      const targetEmptyStockIds = new Set(stocks.slice(0, emptyCount).map(s => s.id));
+      for (const sId of targetEmptyStockIds) {
+        const oIds = Array.from(memoryDb.orderStockIndex.get(sId) ?? []);
+        for (const oId of oIds) safeCancelAndDeleteOrder(oId);
+      }
+      verifyOrderIndexIntegrity();
+
+      // 스프레드 이력이 없는 상황(대체값 20bps)을 시뮬레이션하기 위해 diagnostics의 spreadHistory 리셋
+      mgr.diagnostics.reset();
+
+      // 스텝 11 실행: emptyBookAccumulatedSeconds = 1.0s (< 2.0s 기준 미달) -> pending 없음
+      await mgr.step(1.0);
+      const acc1 = mgr.getEmptyBookAccumulatedSeconds();
+      assert(acc1 >= 1.0, `장부 공백 누적 시작 (1.0s 이상, 실제: ${acc1})`);
+      assert(mgr.getMarketStateSnapshot().pendingRegime === null, '2초 미달 시 pending 전환 없음');
+
+      // 스텝 12 실행: emptyBookAccumulatedSeconds = 2.0s (>= 2.0s 기준 충족)
+      // 관측 스프레드는 이력 부재로 20bps(진입임계치 120bps 미만)이지만, 경로 B(장부 공백 지속)로 위기 예약!
+      await mgr.step(1.0);
+      const lastObsCase2 = mgr.getLastObservation();
+      assert(lastObsCase2 !== null, '관측값 존재');
+      assert(lastObsCase2!.averageSpreadBps === 20.0, `스프레드 이력 부재 시 관측 스프레드는 기본 대체값 20.0bps (실제: ${lastObsCase2!.averageSpreadBps})`);
+      assert(lastObsCase2!.emptyBookDurationSeconds >= 2.0, `지속시간 2.0초 이상 충족 (실제: ${lastObsCase2!.emptyBookDurationSeconds})`);
+      assert(lastObsCase2!.emptyBookStockRatio !== undefined && lastObsCase2!.emptyBookStockRatio >= 0.3, `공백 비율 30% 이상 충족 (실제: ${lastObsCase2!.emptyBookStockRatio})`);
+
+      const snapCase2Pending = mgr.getMarketStateSnapshot();
+      assert(snapCase2Pending.pendingRegime === 'LIQUIDITY_CRISIS', `스프레드가 20bps여도 공백 지속 조건 충족으로 LIQUIDITY_CRISIS 예약 (실제: ${snapCase2Pending.pendingRegime})`);
+
+      // 스텝 13 실행: 다음 스텝 시작 시 LIQUIDITY_CRISIS 활성화
+      await mgr.step(1.0);
+      const snapCase2Active = mgr.getMarketStateSnapshot();
+      assert(snapCase2Active.regime === 'LIQUIDITY_CRISIS', `다음 스텝 시작 시 LIQUIDITY_CRISIS 활성화 완료 (실제: ${snapCase2Active.regime})`);
+
+      // ─────────────────────────────────────────────────────────────
+      // 사례 ③: 장부 공백이 지속되는 동안에는 이탈하지 않음
+      // - 스프레드가 회복 기준(65bps) 이하인 20bps를 유지하고 깊이 변화도 안정적이라 하더라도,
+      // - 최소 위기 지속 시간(12s)을 초과한 후에도 장부 공백(42.3% >= 30%)이 유지되면 이탈 차단!
+      // ─────────────────────────────────────────────────────────────
+      // 15초(15스텝) 동안 공백을 유지한 채 실행 (recoveryMinDuration 12초 초과)
+      for (let step = 1; step <= 15; step++) {
+        await mgr.step(1.0);
+      }
+      const snapCase3 = mgr.getMarketStateSnapshot();
+      const lastObsCase3 = mgr.getLastObservation();
+      assert(snapCase3.regimeDurationSeconds >= 12.0, `최소 위기 지속시간 12초 초과 (실제: ${snapCase3.regimeDurationSeconds}s)`);
+      assert(lastObsCase3!.averageSpreadBps <= 65.0, `스프레드는 회복 기준 이하 (20bps <= 65bps)`);
+      assert(lastObsCase3!.emptyBookStockRatio! >= 0.3, `공백 비율은 여전히 30% 이상 (실제: ${lastObsCase3!.emptyBookStockRatio})`);
+      assert(snapCase3.regime === 'LIQUIDITY_CRISIS', '장부 공백 지속 시 위기에서 이탈하지 않고 유지');
+      assert(snapCase3.pendingRegime !== 'SIDEWAYS' && snapCase3.pendingRegime !== 'HIGH_VOLATILITY', '이탈 pending 예약 부재 확인');
+
+      // ─────────────────────────────────────────────────────────────
+      // 사례 ④: 양측 호가가 복구되고 이탈 조건을 충족하면 정상적으로 이탈함
+      // ─────────────────────────────────────────────────────────────
+      // 비어있던 11개 종목에 양측 호가를 다시 안전하게 복원
+      for (const sId of targetEmptyStockIds) {
+        const stk = memoryDb.stocks.get(sId);
+        if (stk) addTwoSidedOrders(stk.id, stk.current_price);
+      }
+      verifyOrderIndexIntegrity();
+
+      // 1스텝 실행: 이제 공백 비율 = 0.0% (< 30%), emptyBookDurationSeconds = 0, 스프레드 20bps <= 65bps, 깊이 회복
+      await mgr.step(1.0);
+      const lastObsCase4 = mgr.getLastObservation();
+      assert(lastObsCase4!.emptyBookStockRatio === 0, `양측 호가 복구 후 공백 비율은 0 (실제: ${lastObsCase4!.emptyBookStockRatio})`);
+      assert(lastObsCase4!.emptyBookDurationSeconds === 0, `공백 지속시간 0초로 리셋 확인 (실제: ${lastObsCase4!.emptyBookDurationSeconds})`);
+
+      const snapCase4Pending = mgr.getMarketStateSnapshot();
+      assert(snapCase4Pending.pendingRegime === 'SIDEWAYS', `양측 호가 복구 및 이탈 조건 충족 시 SIDEWAYS 정상 예약 (실제: ${snapCase4Pending.pendingRegime})`);
+
+      // 다음 스텝 실행: SIDEWAYS 활성화
+      await mgr.step(1.0);
+      const snapCase4Active = mgr.getMarketStateSnapshot();
+      assert(snapCase4Active.regime === 'SIDEWAYS', `다음 스텝 시작 시 SIDEWAYS로 정상 복귀 완료 (실제: ${snapCase4Active.regime})`);
+
+      verifyOrderIndexIntegrity();
+
+      return {
+        finalRegime: snapCase4Active.regime,
+        finalStateVersion: snapCase4Active.stateVersion,
+        finalSimTime: snapCase4Active.simulationTime,
+        regimeHistoryLength: mgr.marketStateEngine.getRegimeHistory().length,
+      };
+    }
+
+    // Run 1: 시나리오 전체 1회 실행
+    const run1Result = await runDeterministicCrisisScenario();
+    console.log('  ✓ Run 1 완료: 사례 ①~⑤ 전체 성공적 통과');
+
+    // Run 2: 동일 시드(42) 및 동일 입력으로 1회 추가 실행하여 100% 비트 단위 재현성 실증
+    const run2Result = await runDeterministicCrisisScenario();
+    assert(run1Result.finalRegime === run2Result.finalRegime, '재실행 시 최종 국면 100% 일치');
+    assert(run1Result.finalStateVersion === run2Result.finalStateVersion, '재실행 시 최종 stateVersion 100% 일치');
+    assert(run1Result.finalSimTime === run2Result.finalSimTime, '재실행 시 최종 simulationTime 100% 일치');
+    assert(run1Result.regimeHistoryLength === run2Result.regimeHistoryLength, '재실행 시 국면 전이 이력 개수 100% 일치');
+    console.log('  ✓ Run 2 완료: 동일 시드 기반 비트 단위 완전 결정론적 재현성 검증 완료');
+
+    console.log('  ✓ TEST 33 통과: 기본 설정 기반 유동성 위기 진입·유지·이탈 5대 사례 결정론적 검증 완료\n');
+  }
+
   console.log('================================================================');
-  console.log('  🎉 ALL 32 MARKET REGIME FOUNDATION TESTS PASSED (EXIT CODE 0)');
+  console.log('  🎉 ALL 33 MARKET REGIME FOUNDATION TESTS PASSED (EXIT CODE 0)');
   console.log('================================================================\n');
   process.exit(0);
 }

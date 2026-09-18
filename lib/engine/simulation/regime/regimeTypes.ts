@@ -74,6 +74,8 @@ export interface RegimeObservation {
   readonly uncertainty: number;
   /** 호가 공백(빈 장부) 지속 시간 (초) */
   readonly emptyBookDurationSeconds: number;
+  /** 호가 공백(양측 호가 부재) 종목 비율 (0.0 ~ 1.0) */
+  readonly emptyBookStockRatio?: number;
   /** 유효 거시 경제 뉴스 신호 (-1.0 ~ +1.0) */
   readonly effectiveMacroNewsSignal: number;
 }
@@ -87,6 +89,7 @@ export interface RegimeTransitionMetrics {
   readonly depthChange: number;
   readonly uncertainty: number;
   readonly emptyBookDurationSeconds: number;
+  readonly emptyBookStockRatio?: number;
   readonly effectiveMacroNewsSignal: number;
   readonly triggerScore?: number;
 }

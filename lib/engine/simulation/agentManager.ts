@@ -114,6 +114,7 @@ export class AgentManager {
   private previousTotalTurnover: number | null = null;
   private previousTotalDepth: number | null = null;
   private emptyBookAccumulatedSeconds: number = 0;
+  private emptyBookStockRatio: number = 0;
   private marketIndexReturns: number[] = [];
   public lastObservation: RegimeObservation | null = null;
 
@@ -786,6 +787,7 @@ export class AgentManager {
         }
       }
       const emptyBookRatio = totalStockCount > 0 ? emptyBookStockCount / totalStockCount : 0;
+      this.emptyBookStockRatio = emptyBookRatio;
       const ratioThreshold = this.marketStateEngine.getThresholds().emptyBookStockRatioThreshold ?? 0.3;
 
       if (emptyBookRatio >= ratioThreshold) {
@@ -815,6 +817,7 @@ export class AgentManager {
         depthChange,
         uncertainty: avgUncertainty,
         emptyBookDurationSeconds,
+        emptyBookStockRatio: emptyBookRatio,
         effectiveMacroNewsSignal: macroSignal,
       };
       this.lastObservation = observation;
@@ -911,6 +914,7 @@ export class AgentManager {
     this.attentionMap.clear();
     this.uncertaintyMap.clear();
     this.lastObservation = null;
+    this.emptyBookStockRatio = 0;
 
     this.registerDefaultAgents();
     this.initFundamentals();
@@ -927,6 +931,10 @@ export class AgentManager {
 
   public getEmptyBookAccumulatedSeconds(): number {
     return this.emptyBookAccumulatedSeconds;
+  }
+
+  public getEmptyBookStockRatio(): number {
+    return this.emptyBookStockRatio;
   }
 
   public applyDueEventEffects(simTime: number): void {

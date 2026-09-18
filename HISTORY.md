@@ -4197,3 +4197,28 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
   - TEST 31: 정상 양측 호가 → 단측(One-Sided: 매수만 잔여, 매도만 잔여) 전환 검증 추가. 과거 스프레드와 잔여 깊이가 양수여도 구버전 로직은 놓치고 신규 로직은 양측 호가 부재를 정상 감지함을 실증하고, 단측 호가 40% 전환 시 빈 장부 누적 시간 증가 및 `LIQUIDITY_CRISIS` 예약/발생 검증.
   - TEST 32: `calculateCrossSectionalDispersion` 순수 함수 검증(대형주 +10%, 소형주 -10% 시 10.0% 산출) 및 `AgentManager` 실측 관측치와 `MarketStateEngine.pendingTransition.metrics`에서 동일 가중 10.0% 정확 일치 검증 (구버전 시총 가중 왜곡 12.92% 배제 실증).
 - 검증 결과: 8개 테스트 스크립트 전수 통과, `npx tsc --noEmit` 통과(Exit Code 0), Next.js `npm run build` 성공(Exit Code 0), `git diff --check` 클린(Exit Code 0).
+
+---
+## 2026-09-19 01:00
+
+**요청 요약:** STOCKSYS 시장 국면 1단계 유동성 위기(LIQUIDITY_CRISIS) 진입 및 이탈 판정 정합성 보완 (양측 호가 공백 비율 기준 진입 경로 분리, 공백 지속 시 이탈 차단 및 회복 조건 일관화, 기본 설정 기반 결정론적 5대 사례 회귀 테스트).
+
+**수행 결과:**
+- `lib/engine/simulation/regime/regimeTypes.ts`:
+  - `RegimeObservation` 및 `RegimeTransitionMetrics` 인터페이스에 `emptyBookStockRatio?: number` 필드 추가.
+- `lib/engine/simulation/regime/marketStateEngine.ts`:
+  - `evaluateNextRegime` 내 관측치 유효성 검증 시 `emptyBookStockRatio`가 정의된 경우 유한수 `[0.0, 1.0]` 범위 엄격 검증 추가.
+  - 위기 진입 경로를 2가지로 명확히 분리:
+    - 경로 A (스프레드 확대 + 깊이 급감): `obs.averageSpreadBps >= 120bps && obs.depthChange <= -45%`
+    - 경로 B (양측 호가 공백 지속): `obs.emptyBookDurationSeconds >= 2.0s && emptyBookStockRatio >= 30%` (체결 이력 부재로 스프레드가 기본 대체값 20.0bps인 경우에도 정상 진입).
+  - 위기 이탈 조건 보완:
+    - `hasRecoveredSpread` (<=65bps), `hasRecoveredDepth` (>=-20%), `hasMetMinCrisisDuration` (>=12s)에 더해 `hasRecoveredEmptyBook` (`typeof obs.emptyBookStockRatio === 'number' && obs.emptyBookStockRatio < 0.3 && obs.emptyBookDurationSeconds === 0`) 필수 적용.
+    - 관측값이 누락(`undefined`)되거나 공백이 남아있는 경우 정상 회복으로 오인하지 않고 위기 상태를 엄격히 유지.
+    - `metrics` 생성 시 `emptyBookStockRatio` 전달.
+- `lib/engine/simulation/agentManager.ts`:
+  - `private emptyBookStockRatio: number = 0` 및 `getEmptyBookStockRatio(): number` 접근자 추가, `resetSimulation()` 시 초기화.
+  - 관측치 DTO 생성 시 `emptyBookStockRatio: emptyBookRatio` 전달.
+- `scripts/test-market-regime-foundation.ts`:
+  - TEST 20: `emptyBookStockRatio`의 비정상 값(음수, 1.0 초과, NaN) 거절 및 내부 상태 불변 검증 추가.
+  - TEST 33 신설: 기본 설정(`DEFAULT_REGIME_THRESHOLDS` 원본 그대로 적용) 하에서 5대 시나리오(사례 ⑤ 30% 미만 시 위기 미진입, 사례 ① & ② 30% 이상 공백 및 스프레드 20bps 상황에서 지속시간 충족 시 위기 예약 및 활성화, 사례 ③ 공백 지속 시 이탈 차단, 사례 ④ 양측 호가 복구 시 정상 이탈) 및 주문·인덱스 1:1 정합성, 동일 시드(42) 비트 단위 재현성 실증 (총 33개 테스트 전수 통과).
+- 검증 결과: 8개 테스트 스크립트 전수 통과(Exit Code 0), `npx tsc --noEmit` 통과(Exit Code 0), Next.js `npm run build` 성공(Exit Code 0), `git diff --check` 클린(Exit Code 0).

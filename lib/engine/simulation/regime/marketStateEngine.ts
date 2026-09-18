@@ -477,6 +477,19 @@ export class MarketStateEngine {
       }
     }
 
+    if (obs.emptyBookStockRatio !== undefined) {
+      if (
+        typeof obs.emptyBookStockRatio !== 'number' ||
+        !Number.isFinite(obs.emptyBookStockRatio) ||
+        obs.emptyBookStockRatio < 0 ||
+        obs.emptyBookStockRatio > 1.0
+      ) {
+        throw new RangeError(
+          `[MarketStateEngine] emptyBookStockRatio must be a finite number in [0.0, 1.0]: got ${obs.emptyBookStockRatio}`
+        );
+      }
+    }
+
     // ── 방어 로직 1: 이미 대기 중인 pending 전환이 있으면 다음 스텝 활성화 전까지 새 평가 예약 차단 (덮어쓰기 방지) ──
     if (this.pendingTransition !== null) {
       return null;
@@ -513,6 +526,7 @@ export class MarketStateEngine {
     const isCrisisSpread = obs.averageSpreadBps >= crisisEnterSpread;
     const isCrisisDepthDrop = obs.depthChange <= crisisEnterDepth;
     const isCrisisEmptyBook = obs.emptyBookDurationSeconds >= th.liquidityCrisisEmptyBookDurationSeconds;
+    const ratioThreshold = th.emptyBookStockRatioThreshold ?? 0.3;
 
     if (this.currentRegime === 'LIQUIDITY_CRISIS') {
       // 위기 탈출 히스테리시스: 스프레드가 회복 기준 이하로 안정되고 깊이도 회복되어야 이탈
@@ -521,7 +535,14 @@ export class MarketStateEngine {
       const minCrisisDuration = th.liquidityCrisisRecoveryMinDurationSeconds ?? 10.0;
       const hasMetMinCrisisDuration = regimeDurationSeconds >= minCrisisDuration;
 
-      if (!hasRecoveredSpread || !hasRecoveredDepth || !hasMetMinCrisisDuration) {
+      // 위기 이탈 조건: 스프레드·깊이 회복과 함께 장부 공백(양측 호가 부재) 종목 비율이 임계값 아래로 확실히 복구되고 누적 지속시간이 0초로 리셋됨.
+      // 값이 누락된 경우(undefined/null) 정상 회복으로 오인하지 않고 회복 차단.
+      const hasRecoveredEmptyBook =
+        typeof obs.emptyBookStockRatio === 'number' &&
+        obs.emptyBookStockRatio < ratioThreshold &&
+        obs.emptyBookDurationSeconds === 0;
+
+      if (!hasRecoveredSpread || !hasRecoveredDepth || !hasMetMinCrisisDuration || !hasRecoveredEmptyBook) {
         return null; // 위기 유지
       }
 
@@ -533,9 +554,20 @@ export class MarketStateEngine {
         candidateRegime = 'SIDEWAYS';
         reason = 'CRISIS_RECOVERY';
       }
-    } else if (isCrisisSpread && (isCrisisDepthDrop || isCrisisEmptyBook)) {
-      candidateRegime = 'LIQUIDITY_CRISIS';
-      reason = 'LIQUIDITY_DROUGHT';
+    } else {
+      // 위기 진입 경로:
+      // 경로 A: 기존 스프레드 확대 + 호가 깊이 급감
+      const isSpreadDepthCrisis = isCrisisSpread && isCrisisDepthDrop;
+      // 경로 B: 설정된 종목 비율 이상에서 양측 호가가 없고 emptyBookDurationSeconds가 기준 이상 지속
+      //        (스프레드 이력이 없거나 평균 스프레드가 대체값(20bps) 등 낮은 경우에도 위기 진입 가능)
+      const isBookDroughtCrisis =
+        isCrisisEmptyBook &&
+        (obs.emptyBookStockRatio === undefined || obs.emptyBookStockRatio >= ratioThreshold);
+
+      if (isSpreadDepthCrisis || isBookDroughtCrisis) {
+        candidateRegime = 'LIQUIDITY_CRISIS';
+        reason = 'LIQUIDITY_DROUGHT';
+      }
     }
 
     // ─────────────────────────────────────────────────────────────────
@@ -618,6 +650,7 @@ export class MarketStateEngine {
       depthChange: obs.depthChange,
       uncertainty: obs.uncertainty,
       emptyBookDurationSeconds: obs.emptyBookDurationSeconds,
+      emptyBookStockRatio: obs.emptyBookStockRatio,
       effectiveMacroNewsSignal: obs.effectiveMacroNewsSignal,
     });
 

@@ -4244,3 +4244,18 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
   - TEST 33을 A~D 사례로 재구성. A(비율 관측값 누락 시 빈 장부 경로 위기 예약 차단, 비율 0.42 대조군 예약), B(위기 중 ±1% 복구 시 현재 스프레드 약 200bps로 위기 유지, 20bps 대체값으로 이탈 금지), C(±0.2% 약 40bps로 전 주문 안전 교체 시 이탈 예약 후 다음 스텝 활성화), D(유효 양측 호가 부재/교차 호가는 스프레드 회복 미판정).
   - 각 사례에서 최우선 호가, 현재 장부 스프레드, 공백 비율, 지속시간, 현재/대기 국면을 명시 검증하고, 주문 교체 시 `orders`·`orderStockIndex` 양방향 1:1 정합성 검증. 일반 봇 제거 후 수동 장부로 결정론적 구성.
 - 검증 결과: 시장 국면 포함 13개 관련 테스트 스크립트 전수 통과(Exit Code 0), `npx tsc --noEmit` 통과(Exit Code 0), Next.js `npm run build` 성공(Exit Code 0), `git diff --check` 클린(Exit Code 0).
+
+---
+## 2026-09-19 03:10
+
+**요청 요약:** 리뷰 P2 보완 — 교차 호가가 시장 복구 비율을 높여 보이지 않도록, 유효하지 않은 장부를 복구된 장부로 세지 않게 시장 지표를 보완하고 교차 종목 비율이 높을 때의 회귀 테스트 추가.
+
+**수행 결과:**
+- `lib/engine/simulation/marketDiagnostics.ts`:
+  - `WindowStatistics`에 `hasValidTwoSidedQuote: boolean` 추가(양측 유효 잔량 + 비정상 가격 아님 + `bestAsk > bestBid`인 경우에만 true, 교차/부재/동일 호가 시 false). 기존 `hasTwoSidedBook`(양측 잔량 존재, 교차 포함)은 호환용으로 유지.
+- `lib/engine/simulation/agentManager.ts`:
+  - 시장 빈 장부 비율 판정을 `hasTwoSidedBook` 대신 `hasValidTwoSidedQuote` 기준으로 변경. 교차 호가·단측·잔량 0/비정상은 모두 공백으로 집계되어, 유효하지 않은 장부가 복구 비율을 부풀리지 못하도록 수정.
+- `scripts/test-market-regime-foundation.ts`:
+  - TEST 33에 사례 E 추가: 교차 종목 비율 40% + 나머지 ±0.2% 좁은 유효 호가에서 유효 종목만 평균한 현재 스프레드가 44.1bps(< 65bps)로 회복처럼 보여도, 공백 비율 0.500(>= 30%)·지속시간 1s로 위기가 유지되고 이탈이 예약되지 않음을 검증.
+  - 사례 D에 빈 장부/교차 호가의 `hasValidTwoSidedQuote === false`(교차는 `hasTwoSidedBook === true`이지만 유효 호가 아님) 검증 보강. 사례 C는 소수 종목의 0폭 호가로 공백 비율이 0이 아닐 수 있음을 반영해 이탈 조건을 `비율 < 30% && 지속 0s`로 정합화.
+- 검증 결과: 시장 국면 포함 13개 관련 테스트 스크립트 전수 통과(Exit Code 0), `npx tsc --noEmit` 통과(Exit Code 0), Next.js `npm run build` 성공(Exit Code 0), `git diff --check` 클린(Exit Code 0).

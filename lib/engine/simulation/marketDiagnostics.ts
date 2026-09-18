@@ -35,7 +35,8 @@ export interface WindowStatistics {
   depthNotional: number;       // 10단 호가 총 금액
   bidDepthShares: number;      // 현재 활성 매수 호가 총 주수
   askDepthShares: number;      // 현재 활성 매도 호가 총 주수
-  hasTwoSidedBook: boolean;    // 현재 매수·매도 양측 호가가 모두 유효하게 존재하는지 여부
+  hasTwoSidedBook: boolean;    // 현재 매수·매도 양측 호가가 모두 존재하는지 여부 (교차 호가 포함)
+  hasValidTwoSidedQuote: boolean; // 양측 잔량이 유효하고 bestAsk > bestBid인 정상 양측 호가 여부 (교차/부재 시 false)
   relativeTurnover: number;    // 시장 대비 상대 거래대금 비중
   buyTakerVolume: number;      // Taker 매수 체결량
   sellTakerVolume: number;     // Taker 매도 체결량
@@ -334,6 +335,8 @@ export class MarketDiagnostics {
           currentSpreadBps = (currentSpread / mid) * 10000;
         }
       }
+      // 유효한 복구 장부 여부: 교차 호가/부재/비정상은 복구된 양측 장부로 세지 않는다.
+      const hasValidTwoSidedQuote = currentSpreadBps !== null;
 
       // 가격 변동률 계산
       const hist = memoryDb.stockPriceHistory.filter((h) => h.stock_id === stock.id);
@@ -370,6 +373,7 @@ export class MarketDiagnostics {
         bidDepthShares,
         askDepthShares,
         hasTwoSidedBook,
+        hasValidTwoSidedQuote,
         relativeTurnover: 0, // 2단계에서 계산
         buyTakerVolume: buyTakerVol,
         sellTakerVolume: sellTakerVol,

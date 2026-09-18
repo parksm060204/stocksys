@@ -786,17 +786,21 @@ export class AgentManager {
       }
       this.previousTotalDepth = currentTotalDepth;
 
-      // 실제 호가 공백(빈 장부) 종목 비율 판정: 현재 장부의 실제 양측 호가(Two-Sided Book) 존재 여부로 판정
-      // 매수 또는 매도 한쪽만 남아있는 단측 호가(One-Sided Book) 역시 공백으로 집계
+      // 실제 호가 공백(빈 장부) 종목 비율 판정: 현재 장부의 "유효한" 양측 최우선 호가 존재 여부로 판정
+      // 매수 또는 매도 한쪽만 남아있는 단측 호가(One-Sided Book), 교차 호가, 잔량 0/비정상 가격은 모두 공백으로 집계.
+      // 교차 호가를 정상 양측 장부로 세면 복구 비율이 과대평가되므로 hasValidTwoSidedQuote만 신뢰한다.
       // 중앙 설정의 emptyBookStockRatioThreshold 이상일 때만 지속시간 누적
       const totalStockCount = statsList.length;
       let emptyBookStockCount = 0;
       for (const st of statsList) {
-        const isTwoSided =
-          typeof st.hasTwoSidedBook === 'boolean'
-            ? st.hasTwoSidedBook && (st.bidDepthShares ?? 0) > 0 && (st.askDepthShares ?? 0) > 0
-            : st.spread !== null && st.spread > 0 && (st.depthShares ?? 0) > 0;
-        if (!isTwoSided) {
+        const isValidTwoSidedQuote =
+          typeof st.hasValidTwoSidedQuote === 'boolean'
+            ? st.hasValidTwoSidedQuote
+            : st.hasTwoSidedBook === true &&
+              (st.bidDepthShares ?? 0) > 0 &&
+              (st.askDepthShares ?? 0) > 0 &&
+              st.currentSpreadBps !== null;
+        if (!isValidTwoSidedQuote) {
           emptyBookStockCount++;
         }
       }

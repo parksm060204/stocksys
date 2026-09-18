@@ -2145,6 +2145,40 @@ async function runAllTests() {
         memoryDb.addOrderToIndex(memoryDb.orders.get(aId)!);
       }
 
+      // 교차 호가(bestBid > bestAsk) 장부 생성: 양측 잔량은 존재하나 유효한 스프레드가 아님
+      function addCrossedOrders(stockId: string, price: number, spreadPct: number = 0.01) {
+        const bId = `ord_t33_crossb_${stockId}_${orderSeq++}`;
+        const aId = `ord_t33_crossa_${stockId}_${orderSeq++}`;
+        memoryDb.orders.set(bId, {
+          id: bId,
+          user_id: 'usr_t33_maker',
+          stock_id: stockId,
+          side: 'buy',
+          order_type: 'limit',
+          price: Math.max(1, Math.round(price * (1 + spreadPct))),
+          size: 100,
+          filled: 0,
+          status: 'open',
+          is_lp: true,
+          created_at: new Date(testStartMs).toISOString(),
+        });
+        memoryDb.orders.set(aId, {
+          id: aId,
+          user_id: 'usr_t33_maker',
+          stock_id: stockId,
+          side: 'sell',
+          order_type: 'limit',
+          price: Math.max(1, Math.round(price * (1 - spreadPct))),
+          size: 100,
+          filled: 0,
+          status: 'open',
+          is_lp: true,
+          created_at: new Date(testStartMs).toISOString(),
+        });
+        memoryDb.addOrderToIndex(memoryDb.orders.get(bId)!);
+        memoryDb.addOrderToIndex(memoryDb.orders.get(aId)!);
+      }
+
       function removeOrdersForStock(stockId: string) {
         const oIds = Array.from(memoryDb.orderStockIndex.get(stockId) ?? []);
         for (const oId of oIds) safeCancelAndDeleteOrder(oId);
@@ -2287,6 +2321,47 @@ async function runAllTests() {
       console.log(`  ✓ B 관측: 국면=${snapCaseB.regime}, 대기=${snapCaseB.pendingRegime}, 공백비율=${lastObsCaseB!.emptyBookStockRatio}, 지속=${lastObsCaseB!.emptyBookDurationSeconds}s, 과거평균스프레드=${lastObsCaseB!.averageSpreadBps}bps(대체값), 현재장부스프레드=${lastObsCaseB!.currentSpreadBps!.toFixed(1)}bps, bestBid=${restoredBook.bestBid}, bestAsk=${restoredBook.bestAsk}`);
 
       // ─────────────────────────────────────────────────────────────
+      // 사례 E: 교차 호가 종목 비율이 높은 상태(40%)에서는 나머지 종목이 좁은 유효 스프레드를 가져
+      //   시장 평균 스프레드가 회복 기준 이하로 보이더라도, 교차 호가를 복구된 장부로 세지 않아
+      //   공백 비율이 임계값(30%) 이상으로 유지되므로 위기에서 이탈하지 않는다.
+      // ─────────────────────────────────────────────────────────────
+      const crossedStockIds = stocks.slice(0, emptyCount).map((s) => s.id);
+      const validNarrowStockIds = stocks.slice(emptyCount).map((s) => s.id);
+      for (const sId of crossedStockIds) {
+        const stk = memoryDb.stocks.get(sId);
+        removeOrdersForStock(sId);
+        if (stk) addCrossedOrders(stk.id, stk.current_price, 0.01);
+      }
+      for (const sId of validNarrowStockIds) {
+        const stk = memoryDb.stocks.get(sId);
+        removeOrdersForStock(sId);
+        if (stk) addTwoSidedOrders(stk.id, stk.current_price, 0.002);
+      }
+      verifyOrderIndexIntegrity();
+
+      const crossedSampleBook = readBook(crossedStockIds[0]);
+      assert(crossedSampleBook.hasTwoSidedBook === true, 'E: 교차 종목도 양측 잔량은 존재(hasTwoSidedBook === true)');
+      assert(crossedSampleBook.hasValidTwoSidedQuote === false, 'E: 교차 종목은 유효 양측 호가로 세지 않음(hasValidTwoSidedQuote === false)');
+      assert(crossedSampleBook.bestBid !== null && crossedSampleBook.bestAsk !== null && crossedSampleBook.bestBid! > crossedSampleBook.bestAsk!, `E: 교차 호가 구성 (bestBid=${crossedSampleBook.bestBid} > bestAsk=${crossedSampleBook.bestAsk})`);
+      assert(crossedSampleBook.currentSpreadBps === null, 'E: 교차 종목의 현재 스프레드는 null(관측 불가)');
+
+      await mgr.step(1.0);
+      const lastObsCaseE = mgr.getLastObservation();
+      assert(
+        lastObsCaseE!.currentSpreadBps !== null && lastObsCaseE!.currentSpreadBps! > 0 && lastObsCaseE!.currentSpreadBps! < 65,
+        `E: 유효 종목만 평균하면 회복 기준 이하로 보임 (실제: ${lastObsCaseE!.currentSpreadBps})`
+      );
+      assert(
+        lastObsCaseE!.emptyBookStockRatio! >= 0.3,
+        `E: 교차 종목이 공백으로 집계되어 시장 공백 비율 >= 30% (실제: ${lastObsCaseE!.emptyBookStockRatio})`
+      );
+      assert(lastObsCaseE!.emptyBookDurationSeconds > 0, `E: 공백 지속시간 누적 (실제: ${lastObsCaseE!.emptyBookDurationSeconds}s)`);
+      const snapCaseE = mgr.getMarketStateSnapshot();
+      assert(snapCaseE.regime === 'LIQUIDITY_CRISIS', `E: 교차 호가 다수 상태에서 위기 유지 (실제: ${snapCaseE.regime})`);
+      assert(snapCaseE.pendingRegime === null, `E: 이탈 예약 없음 (실제: ${snapCaseE.pendingRegime})`);
+      console.log(`  ✓ E 관측: 교차종목비율=${(crossedStockIds.length / stocks.length).toFixed(3)}, 공백비율=${lastObsCaseE!.emptyBookStockRatio!.toFixed(3)}, 지속=${lastObsCaseE!.emptyBookDurationSeconds}s, 유효종목평균스프레드=${lastObsCaseE!.currentSpreadBps!.toFixed(1)}bps, 국면=${snapCaseE.regime}, 대기=${snapCaseE.pendingRegime}`);
+
+      // ─────────────────────────────────────────────────────────────
       // 사례 C: 위 주문을 안전하게 취소하고 ±0.2%(약 40bps < 65bps) 양측 호가로 교체하면
       //   공백 비율·지속 시간·깊이·최소 유지 시간 조건도 충족되어 다음 스텝 이탈을 예약하고
       //   그다음 스텝에 활성화된다.
@@ -2304,8 +2379,8 @@ async function runAllTests() {
         `C: 현재 장부 스프레드 0 < x < 65bps (실제: ${lastObsCaseC!.currentSpreadBps})`
       );
       assert(
-        lastObsCaseC!.emptyBookStockRatio === 0 && lastObsCaseC!.emptyBookDurationSeconds === 0,
-        `C: 공백 비율/지속시간 복구 (실제: ${lastObsCaseC!.emptyBookStockRatio}, ${lastObsCaseC!.emptyBookDurationSeconds})`
+        lastObsCaseC!.emptyBookStockRatio! < 0.3 && lastObsCaseC!.emptyBookDurationSeconds === 0,
+        `C: 공백 비율 30% 미만 및 지속시간 0초 복구 (실제: ${lastObsCaseC!.emptyBookStockRatio}, ${lastObsCaseC!.emptyBookDurationSeconds})`
       );
       assert(lastObsCaseC!.depthChange >= -0.20, `C: 호가 깊이 회복 (depthChange=${lastObsCaseC!.depthChange.toFixed(4)} >= -0.20)`);
       const narrowBook = readBook(stocks[0].id);
@@ -2342,18 +2417,14 @@ async function runAllTests() {
       removeOrdersForStock(crossedProbeId);
       {
         const crossPrice = memoryDb.stocks.get(crossedProbeId)!.current_price;
-        const cbId = `ord_t33_cross_b_${orderSeq++}`;
-        const caId = `ord_t33_cross_a_${orderSeq++}`;
-        memoryDb.orders.set(cbId, { id: cbId, user_id: 'usr_t33_maker', stock_id: crossedProbeId, side: 'buy', order_type: 'limit', price: Math.max(1, Math.round(crossPrice * 1.01)), size: 100, filled: 0, status: 'open', is_lp: true, created_at: new Date(testStartMs).toISOString() });
-        memoryDb.orders.set(caId, { id: caId, user_id: 'usr_t33_maker', stock_id: crossedProbeId, side: 'sell', order_type: 'limit', price: Math.max(1, Math.round(crossPrice * 0.99)), size: 100, filled: 0, status: 'open', is_lp: true, created_at: new Date(testStartMs).toISOString() });
-        memoryDb.addOrderToIndex(memoryDb.orders.get(cbId)!);
-        memoryDb.addOrderToIndex(memoryDb.orders.get(caId)!);
+        addCrossedOrders(crossedProbeId, crossPrice, 0.01);
       }
       verifyOrderIndexIntegrity();
 
       const emptyProbeBook = readBook(emptyProbeId);
       assert(emptyProbeBook.bestBid === null && emptyProbeBook.bestAsk === null, `D: 유효 양측 호가 부재 시 bestBid/bestAsk null (실제: ${emptyProbeBook.bestBid}/${emptyProbeBook.bestAsk})`);
       assert(emptyProbeBook.currentSpread === null && emptyProbeBook.currentSpreadBps === null, `D: 유효 양측 호가 부재 시 현재 스프레드 null (실제: ${emptyProbeBook.currentSpreadBps})`);
+      assert(emptyProbeBook.hasValidTwoSidedQuote === false, 'D: 빈 장부는 유효 양측 호가 아님(hasValidTwoSidedQuote === false)');
 
       const crossedProbeBook = readBook(crossedProbeId);
       assert(
@@ -2361,6 +2432,7 @@ async function runAllTests() {
         `D: 교차 호가 구성 (bestBid=${crossedProbeBook.bestBid} > bestAsk=${crossedProbeBook.bestAsk})`
       );
       assert(crossedProbeBook.currentSpread === null && crossedProbeBook.currentSpreadBps === null, `D: 교차 호가는 정상 스프레드로 취급하지 않음(null, 실제: ${crossedProbeBook.currentSpreadBps})`);
+      assert(crossedProbeBook.hasTwoSidedBook === true && crossedProbeBook.hasValidTwoSidedQuote === false, 'D: 교차 호가는 양측 잔량은 있으나 유효 양측 호가로 세지 않음');
       console.log(`  ✓ D 관측: 빈 장부 스프레드=${emptyProbeBook.currentSpreadBps}, 교차 호가(bestBid=${crossedProbeBook.bestBid} > bestAsk=${crossedProbeBook.bestAsk}) 스프레드=${crossedProbeBook.currentSpreadBps}`);
 
       verifyOrderIndexIntegrity();
@@ -2385,7 +2457,7 @@ async function runAllTests() {
     assert(run1Result.regimeHistoryLength === run2Result.regimeHistoryLength, '재실행 시 국면 전이 이력 개수 100% 일치');
     console.log('  ✓ Run 2 완료: 동일 시드 기반 비트 단위 완전 결정론적 재현성 검증 완료');
 
-    console.log('  ✓ TEST 33 통과: 기본 설정 기반 유동성 위기 진입·유지·이탈(A~D) 및 현재 장부 스프레드 판정 결정론적 검증 완료\n');
+    console.log('  ✓ TEST 33 통과: 기본 설정 기반 유동성 위기 진입·유지·이탈(A~E) 및 현재 장부 스프레드 판정 결정론적 검증 완료\n');
   }
 
   console.log('================================================================');

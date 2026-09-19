@@ -20,7 +20,8 @@
  *    - H. 예산 부족 상태에서 유지 가능한 주문의 ID·시간 우선순위 보존
  */
 
-import { memoryDb, OrderRecord } from '../lib/memoryDb/memoryStore';
+import { memoryDb, OrderRecord, ProfileRecord, HoldingRecord, TradeRecord } from '../lib/memoryDb/memoryStore';
+import { calculateReservedCash, calculateReservedQty, OpenOrderForRisk } from '../lib/engine/orderRisk';
 import { LocalMarketService } from '../lib/engine/marketService';
 import { AgentManager } from '../lib/engine/simulation/agentManager';
 import * as MarketObservationModule from '../lib/engine/simulation/marketObservation';
@@ -51,6 +52,33 @@ function assert(condition: boolean, message: string): void {
 
 const STOCK_A_ID = '00000000-0000-4000-8000-000000000101'; // 오성전자
 const STOCK_B_ID = '00000000-0000-4000-8000-000000000102'; // 바이오젠
+
+function addTestProfile(userId: string, cash: number): void {
+  const profile: ProfileRecord = {
+    id: userId,
+    user_id: userId,
+    username: userId,
+    nickname: userId,
+    cash,
+    net_worth: cash,
+    rank_tier: 'Bronze',
+    created_at: new Date().toISOString(),
+  };
+  memoryDb.profiles.set(userId, profile);
+}
+
+function addTestHolding(userId: string, stockId: string, quantity = 0, avgPrice = 70000): void {
+  const holding: HoldingRecord = {
+    id: `${userId}_${stockId}`,
+    user_id: userId,
+    stock_id: stockId,
+    quantity,
+    avg_price: avgPrice,
+    created_at: new Date().toISOString(),
+  };
+  memoryDb.holdings.set(holding.id, holding);
+  memoryDb.addHoldingToIndex(holding);
+}
 
 // ─────────────────────────────────────────────────────────────────
 // [PART 1] 추세 매수 회귀 복원 검증
@@ -298,6 +326,7 @@ async function runPart2_LpCancelDefenseTests() {
   const ordAId = ordARes.orderId!;
 
   const origCancel = LocalMarketService.cancelOrder;
+  const origSubmit = LocalMarketService.submitOrder;
   try {
     // 취소 실패 주입
     LocalMarketService.cancelOrder = async (params) => {
@@ -429,36 +458,70 @@ async function runPart2_LpCancelDefenseTests() {
     LocalMarketService.cancelOrder = origCancel;
   }
 
-  // ── [사례 E] 취소 대기 중 부분체결 및 전량체결
-  console.log('\n  [Case E] 취소 대기 중 부분체결 및 전량체결');
-  for (const oId of Array.from(memoryDb.orders.keys())) {
-    if (memoryDb.orders.get(oId)?.user_id === lpAgent.accountId) memoryDb.orders.delete(oId);
+  // ── [사례 E] 실제 체결 경합 (Real Matching & Execution Race)
+  console.log('\n  [Case E] 실제 주문 서비스를 통한 체결 경합 및 취소 실패');
+  const counterpartyUserId = 'trader_counterparty_1';
+  addTestProfile(counterpartyUserId, 100_000_000);
+  addTestHolding(counterpartyUserId, STOCK_A_ID, 5000, 70000);
+
+  function resetLpAccountCash(amount = 100_000_000): void {
+    assert(Boolean(lpAgent), 'lpAgent must exist');
+    const p = memoryDb.profiles.get(lpAgent!.accountId);
+    if (p) {
+      p.cash = amount;
+      p.net_worth = amount;
+    }
   }
+
+  // E-1: 실제 부분체결(200주 체결, 800주 잔여) 후 취소 실패
+  console.log('    [E-1] 실제 반대 주문으로 200주 부분체결 후 취소 실패 -> 800주 잔여로 신규 호가 보류');
+  for (const [oId, o] of Array.from(memoryDb.orders.entries())) {
+    if (o.user_id === lpAgent.accountId || (o.stock_id === STOCK_A_ID && o.side === 'buy')) {
+      memoryDb.orders.delete(oId);
+      memoryDb.removeOrderFromIndex(o);
+    }
+  }
+  resetLpAccountCash(100_000_000);
+  memoryDb.holdings.delete(`${lpAgent.accountId}_${STOCK_A_ID}`);
   mgr.lpDeferrals.clear();
 
-  // E-1: 전량체결 시 -> 미해결 주문이 없으므로 신규 호가 정상 제출
-  console.log('    [E-1] 취소 대기 중 전량체결: 미해결 잔량 0 -> 신규 제출 정상 허용');
   const ordE1Res = await LocalMarketService.submitOrder({
     userId: lpAgent.accountId,
     stockId: STOCK_A_ID,
     side: 'buy',
     price: 70000,
-    size: 100,
+    size: 1000,
     isLp: true,
     orderType: 'limit',
     simulationTime: startMs,
     createdAt: new Date(startMs).toISOString(),
   });
+  assert(ordE1Res.success && ordE1Res.orderId !== undefined, `ordE1 등록 성공 (error: ${ordE1Res.message})`);
   const ordE1Id = ordE1Res.orderId!;
+  const initialTradeCountE1 = memoryDb.trades.length;
+  const initialLpHoldingE1 = memoryDb.holdings.get(`${lpAgent.accountId}_${STOCK_A_ID}`)?.quantity || 0;
 
+  let cancelCallCountE1 = 0;
   try {
     LocalMarketService.cancelOrder = async (params) => {
       if (params.orderId === ordE1Id) {
-        // 취소 시도 직전에 테이커 매도로 전량 체결 발생
-        const ord = memoryDb.orders.get(ordE1Id)!;
-        ord.filled = 100;
-        ord.status = 'filled';
-        return { success: false, statusCode: 400, message: 'Order already filled' };
+        cancelCallCountE1++;
+        if (cancelCallCountE1 === 1) {
+          // 실제 주문 서비스로 상대방 매도 주문 200주 제출하여 실제 매칭·정산 발생
+          const matchRes = await origSubmit.call(LocalMarketService, {
+            userId: counterpartyUserId,
+            stockId: STOCK_A_ID,
+            side: 'sell',
+            price: 70000,
+            size: 200,
+            isLp: false,
+            orderType: 'limit',
+            simulationTime: startMs,
+            createdAt: new Date(startMs).toISOString(),
+          });
+          assert(matchRes.success && matchRes.filledQty === 200, '실제 매칭 엔진을 통해 200주 체결 확정');
+        }
+        return { success: false, statusCode: 500, message: 'Simulated cancel failure after real partial fill' };
       }
       return origCancel.call(LocalMarketService, params);
     };
@@ -466,17 +529,36 @@ async function runPart2_LpCancelDefenseTests() {
     await mgr.step(1.0);
 
     const ordE1 = memoryDb.orders.get(ordE1Id);
-    assert(ordE1?.status === 'filled', '주문 상태 filled 확인');
-    assert(!mgr.lpDeferrals.has(STOCK_A_ID), '전량 체결되어 잔량이 0이므로 신규 호가가 차단되지 않고 정상 제출됨');
+    assert(ordE1?.status === 'partial' && (ordE1.size - (ordE1.filled || 0)) === 800, '장부에 800주 잔여 partial 상태 확인');
+    assert(memoryDb.trades.length === initialTradeCountE1 + 1, '실제 체결 로그(trades)에 1건 추가 반영됨');
+    const lpHoldingAfterE1 = memoryDb.holdings.get(`${lpAgent.accountId}_${STOCK_A_ID}`)?.quantity || 0;
+    assert(lpHoldingAfterE1 === initialLpHoldingE1 + 200, `체결된 200주만 LP 보유량에 정확히 반영됨 (${lpHoldingAfterE1}주)`);
+
+    // 예약 자산 검사 (해당 종목 주문 기준)
+    const stockAOpenOrdersE1 = Array.from(memoryDb.orders.values()).filter(
+      (o) => o.user_id === lpAgent.accountId && o.stock_id === STOCK_A_ID && (o.status === 'open' || o.status === 'partial')
+    ) as OpenOrderForRisk[];
+    assert(stockAOpenOrdersE1.length === 1 && stockAOpenOrdersE1[0].id === ordE1Id, '종목 A에는 오직 ordE1 1건만 활성 유지');
+    const reservedCashE1 = calculateReservedCash(stockAOpenOrdersE1);
+    const expectedReservedE1 = 800 * 70000;
+    assert(reservedCashE1 === expectedReservedE1, `종목 A 예약 자산이 남은 미체결 800주와 정확히 일치함 (${reservedCashE1}원)`);
+
+    assert(mgr.lpDeferrals.has(STOCK_A_ID), '잔여 800주 활성 주문이 남아있으므로 신규 호가 제출이 안전하게 보류됨');
+    assert(mgr.lpDeferrals.get(STOCK_A_ID)?.reason === 'unresolved_active_cancel_orders', '보류 사유 unresolved_active_cancel_orders 확인');
   } finally {
     LocalMarketService.cancelOrder = origCancel;
   }
 
-  // E-2: 부분체결(200체결, 800잔여) 후 취소 실패 -> 800주 잔여가 있으므로 신규 호가 보류
-  console.log('    [E-2] 취소 대기 중 부분체결(800주 잔여) 후 취소 실패 -> 신규 호가 안전 보류');
-  for (const oId of Array.from(memoryDb.orders.keys())) {
-    if (memoryDb.orders.get(oId)?.user_id === lpAgent.accountId) memoryDb.orders.delete(oId);
+  // E-2: 실제 전량체결(1,000주) 후 취소 요청 실패
+  console.log('    [E-2] 실제 반대 주문으로 1,000주 전량체결 후 취소 실패 -> 잔량 0으로 신규 제출 정상 허용');
+  for (const [oId, o] of Array.from(memoryDb.orders.entries())) {
+    if (o.user_id === lpAgent.accountId || (o.stock_id === STOCK_A_ID && o.side === 'buy')) {
+      memoryDb.orders.delete(oId);
+      memoryDb.removeOrderFromIndex(o);
+    }
   }
+  resetLpAccountCash(100_000_000);
+  memoryDb.holdings.delete(`${lpAgent.accountId}_${STOCK_A_ID}`);
   mgr.lpDeferrals.clear();
 
   const ordE2Res = await LocalMarketService.submitOrder({
@@ -490,15 +572,31 @@ async function runPart2_LpCancelDefenseTests() {
     simulationTime: startMs,
     createdAt: new Date(startMs).toISOString(),
   });
+  assert(ordE2Res.success && ordE2Res.orderId !== undefined, `ordE2 등록 성공 (error: ${ordE2Res.message})`);
   const ordE2Id = ordE2Res.orderId!;
+  const initialTradeCountE2 = memoryDb.trades.length;
 
+  let cancelCallCountE2 = 0;
   try {
     LocalMarketService.cancelOrder = async (params) => {
       if (params.orderId === ordE2Id) {
-        const ord = memoryDb.orders.get(ordE2Id)!;
-        ord.filled = 200;
-        ord.status = 'partial';
-        return { success: false, statusCode: 500, message: 'Partial cancel failure' };
+        cancelCallCountE2++;
+        if (cancelCallCountE2 === 1) {
+          // 실제 주문 서비스로 상대방 매도 주문 1,000주 제출하여 실제 전량 체결
+          const matchRes = await origSubmit.call(LocalMarketService, {
+            userId: counterpartyUserId,
+            stockId: STOCK_A_ID,
+            side: 'sell',
+            price: 70000,
+            size: 1000,
+            isLp: false,
+            orderType: 'limit',
+            simulationTime: startMs,
+            createdAt: new Date(startMs).toISOString(),
+          });
+          assert(matchRes.success && matchRes.filledQty === 1000, '실제 매칭 엔진을 통해 1,000주 전량 체결 확정');
+        }
+        return { success: false, statusCode: 400, message: 'Order already filled' };
       }
       return origCancel.call(LocalMarketService, params);
     };
@@ -506,21 +604,35 @@ async function runPart2_LpCancelDefenseTests() {
     await mgr.step(1.0);
 
     const ordE2 = memoryDb.orders.get(ordE2Id);
-    assert(ordE2?.status === 'partial' && (ordE2.size - (ordE2.filled || 0)) === 800, '800주 잔여 partial 상태 확인');
-    assert(mgr.lpDeferrals.has(STOCK_A_ID), '잔여 800주 활성 주문이 남아있으므로 신규 호가 제출이 안전하게 보류됨');
+    assert(ordE2?.status === 'filled', '주문 상태 filled 확인');
+    assert((ordE2!.size - (ordE2!.filled || 0)) === 0, '잔여 주문 수량 0 확인');
+    assert(memoryDb.trades.length === initialTradeCountE2 + 1, '전량 체결 로그 1건 추가 확인');
+    assert(!mgr.lpDeferrals.has(STOCK_A_ID), '과거 취소 실패 응답이 있더라도 장부 잔량이 0이므로 차단되지 않고 신규 호가 정상 제출');
+
+    const activeBidsAfterE2 = Array.from(memoryDb.orders.values()).filter(
+      (o) => o.user_id === lpAgent.accountId && o.stock_id === STOCK_A_ID && o.side === 'buy' && (o.status === 'open' || o.status === 'partial')
+    );
+    assert(activeBidsAfterE2.length >= 1, '최신 자산 장부 기준으로 새 호가가 정상 제출됨');
   } finally {
     LocalMarketService.cancelOrder = origCancel;
   }
 
-  // ── [사례 F] 최종 장부 조회 실패 시 신규 제출 보류
-  console.log('\n  [Case F] 최종 장부 재조회 실패 시 신규 제출 보류');
-  for (const oId of Array.from(memoryDb.orders.keys())) {
-    if (memoryDb.orders.get(oId)?.user_id === lpAgent.accountId) memoryDb.orders.delete(oId);
+  // ── [사례 F] 최종 장부 재조회 실패 시 신규 제출 보류
+  console.log('\n  [Case F] 장부 재조회 실패 시 신규 제출 보류 (freshObs & finalObs)');
+
+  // F-1: Phase 2 fresh_observation_failed
+  console.log('    [F-1] Phase 2 freshObs 재조회 실패 시 신규 제출 보류');
+  for (const [oId, o] of Array.from(memoryDb.orders.entries())) {
+    if (o.user_id === lpAgent.accountId || (o.stock_id === STOCK_A_ID && o.side === 'buy')) {
+      memoryDb.orders.delete(oId);
+      memoryDb.removeOrderFromIndex(o);
+    }
   }
+  resetLpAccountCash(100_000_000);
+  memoryDb.holdings.delete(`${lpAgent.accountId}_${STOCK_A_ID}`);
   mgr.lpDeferrals.clear();
 
-  // 종목 A에 취소 대상 주문 1개 등록
-  const ordFRes = await LocalMarketService.submitOrder({
+  const ordF1Res = await LocalMarketService.submitOrder({
     userId: lpAgent.accountId,
     stockId: STOCK_A_ID,
     side: 'buy',
@@ -531,7 +643,8 @@ async function runPart2_LpCancelDefenseTests() {
     simulationTime: startMs,
     createdAt: new Date(startMs).toISOString(),
   });
-  const ordFId = ordFRes.orderId!;
+  assert(ordF1Res.success && ordF1Res.orderId !== undefined, `ordF1 등록 성공 (error: ${ordF1Res.message})`);
+  const ordF1Id = ordF1Res.orderId!;
 
   const savedStockA = memoryDb.stocks.get(STOCK_A_ID);
   try {
@@ -543,11 +656,87 @@ async function runPart2_LpCancelDefenseTests() {
 
     await mgr.step(1.0);
 
-    const activeOrdersF = Array.from(memoryDb.orders.values()).filter(
-      (o) => o.user_id === lpAgent.accountId && o.stock_id === STOCK_A_ID && o.id !== ordFId
+    const activeOrdersF1 = Array.from(memoryDb.orders.values()).filter(
+      (o) => o.user_id === lpAgent.accountId && o.stock_id === STOCK_A_ID && o.id !== ordF1Id
     );
-    assert(activeOrdersF.length === 0, '관측 재조회 실패 시 오래된 계획이 제출되지 않고 신규 제출이 전면 보류됨');
+    assert(activeOrdersF1.length === 0, 'freshObs 재조회 실패 시 오래된 계획이 제출되지 않고 신규 제출이 전면 보류됨');
     assert(mgr.lpDeferrals.get(STOCK_A_ID)?.reason === 'fresh_observation_failed', 'fresh_observation_failed 보류 사유 기록 확인');
+  } finally {
+    if (savedStockA) memoryDb.stocks.set(STOCK_A_ID, savedStockA);
+    LocalMarketService.cancelOrder = origCancel;
+  }
+
+  // F-2: Phase 4 final_observation_failed (재시도 후 finalObs 실패 6단계 검증)
+  console.log('    [F-2] Phase 4 finalObs 재조회 실패 시 신규 제출 보류 및 다음 스텝 복구');
+  for (const [oId, o] of Array.from(memoryDb.orders.entries())) {
+    if (o.user_id === lpAgent.accountId || (o.stock_id === STOCK_A_ID && o.side === 'buy')) {
+      memoryDb.orders.delete(oId);
+      memoryDb.removeOrderFromIndex(o);
+    }
+  }
+  resetLpAccountCash(100_000_000);
+  memoryDb.holdings.delete(`${lpAgent.accountId}_${STOCK_A_ID}`);
+  mgr.lpDeferrals.clear();
+
+  const ordF2Res = await LocalMarketService.submitOrder({
+    userId: lpAgent.accountId,
+    stockId: STOCK_A_ID,
+    side: 'buy',
+    price: 70000,
+    size: 1000,
+    isLp: true,
+    orderType: 'limit',
+    simulationTime: startMs,
+    createdAt: new Date(startMs).toISOString(),
+  });
+  assert(ordF2Res.success && ordF2Res.orderId !== undefined, `ordF2 등록 성공 (error: ${ordF2Res.message})`);
+  const ordF2Id = ordF2Res.orderId!;
+
+  let cancelCallCountF2 = 0;
+  try {
+    LocalMarketService.cancelOrder = async (params) => {
+      if (params.orderId === ordF2Id) {
+        cancelCallCountF2++;
+        if (cancelCallCountF2 === 1) {
+          // 1차 취소 실패 -> failedCancelOrderIds에 기록되어 재시도 경로 트리거
+          return { success: false, statusCode: 500, message: 'First cancel fail to trigger retry' };
+        }
+        if (cancelCallCountF2 === 2) {
+          // 2차 재시도 취소 시점에 종목을 일시 제거하여 Phase 4 finalObs 재조회 실패 유도
+          memoryDb.stocks.delete(STOCK_A_ID);
+          return origCancel.call(LocalMarketService, params);
+        }
+      }
+      return origCancel.call(LocalMarketService, params);
+    };
+
+    // 스텝 1 실행
+    await mgr.step(1.0);
+
+    assert(cancelCallCountF2 === 2, `1차 실패 후 재시도까지 정확히 2회 호출됨 (호출 횟수: ${cancelCallCountF2})`);
+    assert(mgr.lpDeferrals.get(STOCK_A_ID)?.reason === 'final_observation_failed', 'final_observation_failed 보류 사유 기록 확인');
+
+    const newOrdersF2 = Array.from(memoryDb.orders.values()).filter(
+      (o) => o.user_id === lpAgent.accountId && o.stock_id === STOCK_A_ID && o.id !== ordF2Id
+    );
+    assert(newOrdersF2.length === 0, 'finalObs 실패 시 앞서 계산된 오래된 계획이 제출되지 않음 (신규 호가 0건)');
+
+    // 종목 B는 정상 처리되었는지 확인
+    const activeBidsB = Array.from(memoryDb.orders.values()).filter(
+      (o) => o.user_id === lpAgent.accountId && o.stock_id === STOCK_B_ID && (o.status === 'open' || o.status === 'partial')
+    );
+    assert(activeBidsB.length > 0, '종목 A finalObs 실패 중에도 종목 B는 정상 처리 지속');
+
+    if (savedStockA) memoryDb.stocks.set(STOCK_A_ID, savedStockA);
+    LocalMarketService.cancelOrder = origCancel;
+    resetLpAccountCash(2_000_000_000);
+    await mgr.step(1.0);
+
+    assert(!mgr.lpDeferrals.has(STOCK_A_ID), '다음 스텝에서 조회가 복구되어 보류 상태 정상 해제');
+    const recoveredOrdersA = Array.from(memoryDb.orders.values()).filter(
+      (o) => o.user_id === lpAgent.accountId && o.stock_id === STOCK_A_ID && (o.status === 'open' || o.status === 'partial')
+    );
+    assert(recoveredOrdersA.length > 0, '최신 장부 기준으로 종목 A 신규 호가 정상 등록 확인');
   } finally {
     if (savedStockA) memoryDb.stocks.set(STOCK_A_ID, savedStockA);
     LocalMarketService.cancelOrder = origCancel;

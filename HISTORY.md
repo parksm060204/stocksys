@@ -4353,4 +4353,39 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
     - 2단계: LP 취소 실패 방어 8대 필수 사례 (A: 동일 가격 축소 실패 보류, B: 가격 변경 교체 실패 보류, C: 다음 스텝 취소 후 재호가, D: 동일 스텝 재시도 성공, E: 취소 대기 중 부분/전량체결, F: 관측 조회 실패 시 보류, G: 타 종목 정상 지속, H: 예산 부족 지속 가능 주문 유지) 전수 검증 통과 (Exit Code 0).
   - 전체 회귀 테스트 통과: `test-stage2-review-fixes.ts`, `test-regime-effects-stage2.ts`, `test-market-regime-foundation.ts`, `test-agent-based-market.ts`, `test-order-security-and-atomic.ts`, `test-transaction-isolation.ts`, `test-order-risk-and-settlement.ts` (전부 Exit Code 0).
   - 빌드 및 정적 검사 통과: `npx tsc --noEmit` (Exit Code 0), `npm run build` (Exit Code 0), `git diff --check` (Exit Code 0).
+---
+## 2026-09-20 02:05
 
+**요청 요약:** STOCKSYS 시장 국면 2단계 기능 수정 마무리 및 진본 검증 (1단계: 827dd60 기준 코드 진본 추출 픽스처 및 경계값 보강 순수 함수 비교, 2단계: 실제 주문 매칭 체결 경합 및 finalObs 재조회 실패 라이프사이클 검증, 3단계: 종합 회귀·타입·빌드 검증).
+
+**수행 결과:**
+- `scripts/fixtures/baseline-827dd60-trendStrategy.ts`:
+  - `git show 827dd60:lib/engine/simulation/strategies/trendStrategy.ts`로부터 원본 `evaluateTrendStrategy` 코드를 바이트 단위 진본으로 추출.
+  - Git Blob Hash `743aa3b7a66102bcb6d6bf0756b9d4b9becb21f4` 및 SHA-256 `eb968afdb2f73ad4ed140ec02865c1a1c28424fa3dd12334760c76046da6d596` 무결성 잠금.
+- `scripts/test-comparison-827dd60.ts`:
+  - 진본 해시 자동 검증 로직 통합.
+  - 기존 96개 다차원 입력 조합 매트릭스 전수 비교(action, price, size, orderType 100% 일치 확인).
+  - 5대 정밀 경계값 테스트(urgency 0.499 vs 0.500 vs 0.501, 호가 결손/비대칭, 웜업 4 vs 5, 잔여 주문/현금 0/보유 0, 매수·매도 신호 임계값) 총 21건 추가 및 전수 통과.
+  - `AgentAccount`, `TrendStrategyConfig`, `AgentStats` 타입 정합성 완비.
+- `scripts/test-stage2-review-fixes-v2.ts`:
+  - Case E: Mock 조작이 아닌 `LocalMarketService.submitOrder` 실제 매칭 엔진을 통한 반대 매매 체결 경합 검증 구현.
+    - E-1: 200주 실제 부분 체결 후 취소 실패 -> 장부 잔여 800주 확인, 실제 trade 로그 및 LP 보유량 200주 반영, 미체결 800주 예약 자산 정확 일치, 신규 호가 안전 보류(`unresolved_active_cancel_orders`) 검증.
+    - E-2: 1,000주 실제 전량 체결 후 과거 취소 실패 응답 발생 -> 장부 잔량 0 확인, 과거 실패 이력으로 차단되지 않고 최신 자산 기준 신규 호가 정상 제출 허용 검증.
+  - Case F: 관측 재조회 실패 라이프사이클 검증 구현.
+    - F-1: Phase 2 `fresh_observation_failed` 보류 확인.
+    - F-2: Phase 4 `final_observation_failed` 6단계 라이프사이클(1차 실패 -> 재시도 취소 성공 및 종목 일시 삭제 -> finalObs null 반환 -> 보류 사유 `final_observation_failed` 등록 및 오래된 계획 제출 차단, 종목 B 정상 처리 -> 다음 스텝 관측 복구 및 보류 해제, 종목 A 최신 호가 정상 등록) 완전 검증.
+- 검증 결과:
+  - `scripts/test-comparison-827dd60.ts`: Exit Code 0 (96개 매트릭스 + 21개 경계값 전수 일치).
+  - `scripts/test-stage2-review-fixes-v2.ts`: Exit Code 0 (A ~ H 전수 통과).
+  - 전체 회귀 테스트 통과 (모두 Exit Code 0):
+    - `scripts/test-stage2-review-fixes.ts`
+    - `scripts/test-regime-effects-stage2.ts`
+    - `scripts/test-market-regime-foundation.ts`
+    - `scripts/test-agent-based-market.ts`
+    - `scripts/test-order-security-and-atomic.ts`
+    - `scripts/test-transaction-isolation.ts`
+    - `scripts/test-order-risk-and-settlement.ts`
+  - 정적 분석 및 프로덕션 빌드:
+    - `npx tsc --noEmit`: Exit Code 0
+    - `npm run build`: Next.js 16.2.9 production build Exit Code 0
+    - `git diff --check`: Exit Code 0

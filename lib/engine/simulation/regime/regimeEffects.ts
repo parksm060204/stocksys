@@ -163,23 +163,57 @@ export function applyRiskToleranceToTarget(
 }
 
 /**
- * 희망 주문 수량에 크기 배수를 한 번 적용한 뒤 기존 한도(노출/주문상한/참여율)로 최종 제한한다.
- * - 이미 제한된 수량에 배수를 다시 곱해 한도를 초과하지 않도록 최종 min을 다시 적용한다.
+ * 전략의 기본 희망 수량(baseDesiredShares)에 주문 크기 배수를 1회 적용한 뒤,
+ * 목표 노출까지의 잔여 수량·최대 주문 크기·시장 참여율 한도로 최종 제한한다.
+ *
+ * - baseDesiredShares: 전략의 기본 주문 의도 수량 (예: 노출 갭에 실행 강도/exposureWeight 반영)
+ * - orderSizeMultiplier: 국면 유효 주문 크기 배수 (기본 1.0)
+ * - neededShares: 목표 노출까지의 잔여 수량 (절대 상한)
+ * - maxOrderSize: 계좌 주문 1회 최대 크기 (절대 상한)
+ * - participationCap: 최근 거래량 기반 시장 참여율 한도 (절대 상한)
+ * - 정수화 후 1주 미만이면 0을 반환하여 불필요한 0주 주문을 방지한다.
  */
+export function applyOrderSizeMultiplier(
+  baseDesiredShares: number,
+  orderSizeMultiplier: number,
+  neededShares: number,
+  maxOrderSize: number,
+  participationCap: number
+): number;
 export function applyOrderSizeMultiplier(
   neededShares: number,
   orderSizeMultiplier: number,
   maxOrderSize: number,
   participationCap: number
+): number;
+export function applyOrderSizeMultiplier(
+  arg1: number,
+  arg2: number,
+  arg3: number,
+  arg4: number,
+  arg5?: number
 ): number {
-  const needed = Number.isFinite(neededShares) ? neededShares : 0;
-  const participation = Number.isFinite(participationCap) ? participationCap : 0;
-  const mult = safeMultiplier(orderSizeMultiplier);
-  const rawDesired = Math.min(needed, participation);
-  const scaled = rawDesired * mult;
-  const bounded = Math.min(scaled, needed, maxOrderSize, participation);
-  if (bounded < 1) return 0;
-  return Math.floor(bounded);
+  if (arg5 !== undefined) {
+    const base = Number.isFinite(arg1) ? Math.max(0, arg1) : 0;
+    const mult = safeMultiplier(arg2);
+    const needed = Number.isFinite(arg3) ? Math.max(0, arg3) : 0;
+    const maxOrder = Number.isFinite(arg4) ? Math.max(0, arg4) : 0;
+    const participation = Number.isFinite(arg5) ? Math.max(0, arg5) : 0;
+    const scaled = base * mult;
+    const bounded = Math.min(scaled, needed, maxOrder, participation);
+    if (bounded < 1) return 0;
+    return Math.floor(bounded);
+  } else {
+    // 4-인자 하위 호환 호출
+    const needed = Number.isFinite(arg1) ? Math.max(0, arg1) : 0;
+    const mult = safeMultiplier(arg2);
+    const maxOrder = Number.isFinite(arg3) ? Math.max(0, arg3) : 0;
+    const participation = Number.isFinite(arg4) ? Math.max(0, arg4) : 0;
+    const scaled = needed * mult;
+    const bounded = Math.min(scaled, needed, maxOrder, participation);
+    if (bounded < 1) return 0;
+    return Math.floor(bounded);
+  }
 }
 
 /** 유효 불확실성: 원본 상태를 덮어쓰지 않고 배수 적용 후 [0,1] 제한. */

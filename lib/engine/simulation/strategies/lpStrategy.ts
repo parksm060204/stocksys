@@ -103,79 +103,164 @@ export function evaluateLpStrategy(
   }
 
   // 5. Strict Multi-Level Aggregate Asset Budget Constraint
-  // Crucial bugfix:
-  // - obs.account.availableCash already subtracts reserved cash from ALL active orders (including resting LP orders).
-  // - Retained resting orders are ALREADY funded in reservedCash and must NOT be subtracted again.
-  // - Partial fills use remaining shares: (size - filled).
-  // - New orders must collectively fit within the stock's allocated available cash.
-  const existingLpOrders = obs.activeOrders.filter((o) => o.is_lp || o.user_id === agent.accountId);
+  if (!effects.enforceDepthTarget) {
+    // ── 효과 OFF: 기준 커밋(4701f11, a7c1987) 기존 LP 동작 100% 보존 ──
+    const existingLpOrders = obs.activeOrders.filter((o) => o.is_lp || o.user_id === agent.accountId);
+    const existingBids = existingLpOrders.filter((o) => o.side === 'buy');
+    const existingAsks = existingLpOrders.filter((o) => o.side === 'sell');
+    const retainedOrderIds = new Set<string>();
+
+    let remainingNewOrderCash = obs.account.availableCash;
+    for (const des of desiredBids) {
+      const matchingResting = existingBids.find(
+        (o) => !retainedOrderIds.has(o.id) && o.price === des.price && (o.status === 'open' || o.status === 'partial')
+      );
+      if (matchingResting) {
+        retainedOrderIds.add(matchingResting.id);
+        continue;
+      }
+      const costPerShare = des.price * 1.0025;
+      const maxAffordable = Math.floor(remainingNewOrderCash / costPerShare);
+      if (maxAffordable <= 0) {
+        break;
+      }
+      const actualSize = Math.min(des.size, maxAffordable);
+      if (actualSize > 0) {
+        newOrders.push({ side: 'buy', price: des.price, size: actualSize });
+        remainingNewOrderCash -= actualSize * costPerShare;
+      }
+    }
+
+    let remainingNewOrderHolding = obs.account.availableHolding;
+    for (const des of desiredAsks) {
+      const matchingResting = existingAsks.find(
+        (o) => !retainedOrderIds.has(o.id) && o.price === des.price && (o.status === 'open' || o.status === 'partial')
+      );
+      if (matchingResting) {
+        retainedOrderIds.add(matchingResting.id);
+        continue;
+      }
+      const maxSellable = Math.min(des.size, remainingNewOrderHolding);
+      if (maxSellable <= 0) {
+        break;
+      }
+      newOrders.push({ side: 'sell', price: des.price, size: maxSellable });
+      remainingNewOrderHolding -= maxSellable;
+    }
+
+    for (const ord of existingLpOrders) {
+      if (!retainedOrderIds.has(ord.id) && (ord.status === 'open' || ord.status === 'partial')) {
+        cancels.push(ord);
+      }
+    }
+    return { cancels, newOrders };
+  }
+
+  // ── 효과 ON: 2단계 LP 예산 제약 및 지속 가능 주문 유지 정책 ──
+  // - obs.account.availableCash / availableHolding은 모든 활성 주문(기존 LP 호가 포함)의 예약 자산을 이미 차감한 상태이다.
+  // - 기존 호가(resting)는 이미 예약금을 확보하고 있으므로, 해당 호가를 유지할 때 추가 가용 현금/주식을 요구하지 않는다.
+  // - 예산 제한 전 구조적 목표 깊이(des.size)와 실제 유지 가능한 목표 깊이(sustainableTargetSize)를 구분한다.
+  // - 가격과 예산이 동일하고 기존 잔량이 지속 가능한 목표에 부합하면 주문 ID와 시간 우선순위를 유지한다.
+  // - 신규 주문은 unallocated 자산 범위 내에서만 레벨별로 순차 배정하여 자산 중복 배정을 방지한다.
+  const existingLpOrders = obs.activeOrders.filter(
+    (o) => o.user_id === agent.accountId && (o.is_lp || o.user_id === 'acc_lp_main')
+  );
   const existingBids = existingLpOrders.filter((o) => o.side === 'buy');
   const existingAsks = existingLpOrders.filter((o) => o.side === 'sell');
 
   const retainedOrderIds = new Set<string>();
 
   // Process Bids:
-  // Budget for NEW orders is capped by availableCash
-  let remainingNewOrderCash = obs.account.availableCash;
+  let unallocatedCash = Math.max(0, obs.account.availableCash);
 
   for (const des of desiredBids) {
-    // Check if an existing open order already sits at this price level
+    const costPerShare = des.price * 1.0025;
     const matchingResting = existingBids.find(
       (o) =>
         !retainedOrderIds.has(o.id) &&
         o.price === des.price &&
-        (o.status === 'open' || o.status === 'partial') &&
-        isDepthMatching(o, des.size)
+        (o.status === 'open' || o.status === 'partial')
     );
 
     if (matchingResting) {
-      // Retain existing resting order (preserves time-priority, already reserved in DB)
-      retainedOrderIds.add(matchingResting.id);
-      continue;
-    }
+      const remainingQty = Math.max(0, matchingResting.size - (matchingResting.filled || 0));
 
-    // New order: verify against remaining new order cash budget
-    const costPerShare = des.price * 1.0025;
-    const maxAffordable = Math.floor(remainingNewOrderCash / costPerShare);
+      // 효과 ON: 해당 레벨의 지속 가능한 목표 깊이 산출
+      // 이미 확보된 주문 잔여 수량 + unallocatedCash로 추가 가능한 수량
+      const additionalAffordable = Math.floor(unallocatedCash / costPerShare);
+      const maxAffordableForLevel = remainingQty + Math.max(0, additionalAffordable);
+      const sustainableTargetSize = Math.min(des.size, maxAffordableForLevel);
 
-    if (maxAffordable <= 0) {
-      // No more cash budget for deeper levels
-      break;
-    }
+      const tol = Math.max(1, sustainableTargetSize * DEPTH_MATCH_TOLERANCE);
+      const isMatching = remainingQty > 0 && Math.abs(remainingQty - sustainableTargetSize) <= tol;
 
-    const actualSize = Math.min(des.size, maxAffordable);
-    if (actualSize > 0) {
-      newOrders.push({ side: 'buy', price: des.price, size: actualSize });
-      remainingNewOrderCash -= actualSize * costPerShare;
+      if (isMatching) {
+        // 지속 가능한 목표와 잔량이 부합하므로 주문 ID 및 시간 우선순위 유지 (예약금 중복 차감 없음)
+        retainedOrderIds.add(matchingResting.id);
+        continue;
+      }
+
+      // 잔량이 지속 가능 목표와 크게 불일치(확장 가능하거나 국면 깊이 축소)하여 재호가 대상 (취소 예정)
+      // 취소 전에는 unallocatedCash가 아직 해제되지 않았으므로 현재 가용 현금 내에서만 신규 수량 배정
+      const maxAffordable = Math.floor(unallocatedCash / costPerShare);
+      const actualSize = Math.min(sustainableTargetSize, maxAffordable);
+      if (actualSize > 0) {
+        newOrders.push({ side: 'buy', price: des.price, size: actualSize });
+        unallocatedCash -= actualSize * costPerShare;
+      }
+    } else {
+      // 신규 가격 레벨 호가: 순수 미배정 가용 현금 내에서 생성
+      const maxAffordable = Math.floor(unallocatedCash / costPerShare);
+      if (maxAffordable <= 0) {
+        // 더 깊은 레벨은 예산 소진으로 중단
+        continue;
+      }
+      const actualSize = Math.min(des.size, maxAffordable);
+      if (actualSize > 0) {
+        newOrders.push({ side: 'buy', price: des.price, size: actualSize });
+        unallocatedCash -= actualSize * costPerShare;
+      }
     }
   }
 
   // Process Asks:
-  // Budget for NEW orders is capped by availableHolding
-  let remainingNewOrderHolding = obs.account.availableHolding;
+  let unallocatedHolding = Math.max(0, obs.account.availableHolding);
 
   for (const des of desiredAsks) {
     const matchingResting = existingAsks.find(
       (o) =>
         !retainedOrderIds.has(o.id) &&
         o.price === des.price &&
-        (o.status === 'open' || o.status === 'partial') &&
-        isDepthMatching(o, des.size)
+        (o.status === 'open' || o.status === 'partial')
     );
 
     if (matchingResting) {
-      // Retain existing resting order (already reserved in holding)
-      retainedOrderIds.add(matchingResting.id);
-      continue;
-    }
+      const remainingQty = Math.max(0, matchingResting.size - (matchingResting.filled || 0));
 
-    const maxSellable = Math.min(des.size, remainingNewOrderHolding);
-    if (maxSellable <= 0) {
-      break;
-    }
+      const maxSellableForLevel = remainingQty + unallocatedHolding;
+      const sustainableTargetSize = Math.min(des.size, maxSellableForLevel);
 
-    newOrders.push({ side: 'sell', price: des.price, size: maxSellable });
-    remainingNewOrderHolding -= maxSellable;
+      const tol = Math.max(1, sustainableTargetSize * DEPTH_MATCH_TOLERANCE);
+      const isMatching = remainingQty > 0 && Math.abs(remainingQty - sustainableTargetSize) <= tol;
+
+      if (isMatching) {
+        retainedOrderIds.add(matchingResting.id);
+        continue;
+      }
+
+      const maxSellable = Math.min(sustainableTargetSize, unallocatedHolding);
+      if (maxSellable > 0) {
+        newOrders.push({ side: 'sell', price: des.price, size: maxSellable });
+        unallocatedHolding -= maxSellable;
+      }
+    } else {
+      const maxSellable = Math.min(des.size, unallocatedHolding);
+      if (maxSellable <= 0) {
+        continue;
+      }
+      newOrders.push({ side: 'sell', price: des.price, size: maxSellable });
+      unallocatedHolding -= maxSellable;
+    }
   }
 
   // 6. Schedule cancellation for any active LP order not retained

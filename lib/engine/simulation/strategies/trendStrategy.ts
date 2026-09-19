@@ -15,6 +15,7 @@ import {
   NEUTRAL_BOT_EFFECT_PARAMS,
   applyOrderSizeMultiplier,
   applyRiskToleranceToTarget,
+  applyUncertaintyMultiplier,
   clamp01,
 } from '../regime/regimeEffects';
 
@@ -29,6 +30,21 @@ export function evaluateTrendStrategy(
   const riskToleranceMultiplier = effects.riskToleranceMultiplier;
   const orderSizeMultiplier = effects.orderSizeMultiplier;
   const cashPreference = clamp01(effects.cashPreference);
+
+  // 국면 uncertaintyMultiplier: 원본 불확실성 관측에 배수를 1회 적용하여 [0, 1] 유효 불확실성 산출
+  // 진입에 필요한 최소 신호 강도(추세 임계치)에 1회 적용하여 높은 불확실성에서 섣부른 진입을 방지한다.
+  const baseUncertainty = obs.uncertaintyScore ?? 0.05;
+  const effectiveUncertainty = effectParams
+    ? applyUncertaintyMultiplier(baseUncertainty, effects.uncertaintyMultiplier)
+    : 0;
+
+  const effectiveBuyThreshold = effectParams
+    ? config.buyThreshold * (1 + effectiveUncertainty)
+    : config.buyThreshold;
+  const effectiveSellThreshold = effectParams
+    ? config.sellThreshold * (1 + effectiveUncertainty)
+    : config.sellThreshold;
+
   // 1. Warm-up check: require sufficient historical trade/price data points
   if (obs.priceHistory.length < config.minWarmupSteps) {
     return { action: 'hold', stockId: obs.stockId, reason: 'warmup_insufficient_history' };
@@ -58,7 +74,7 @@ export function evaluateTrendStrategy(
   const normTrend = Math.tanh(rawSignal * trendSensitivity);
 
   // 4. Threshold check
-  if (Math.abs(normTrend) < Math.min(Math.abs(config.buyThreshold), Math.abs(config.sellThreshold))) {
+  if (Math.abs(normTrend) < Math.min(Math.abs(effectiveBuyThreshold), Math.abs(effectiveSellThreshold))) {
     return { action: 'hold', stockId: obs.stockId, reason: 'trend_below_threshold' };
   }
 
@@ -87,20 +103,35 @@ export function evaluateTrendStrategy(
   const participationCap = Math.max(10, Math.floor(recentVol * config.participationRate));
 
   // 6. Bullish Trend -> BUY
-  if (normTrend >= config.buyThreshold) {
+  if (normTrend >= effectiveBuyThreshold) {
     const needed = adjustedTarget - (currentPos + openBuyQty);
     if (needed <= 0) {
       return { action: 'hold', stockId: obs.stockId, reason: 'trend_target_reached' };
     }
 
-    // 국면 orderSizeMultiplier: 희망 수량에 1회 적용 후 주문상한/참여율/노출 한도로 최종 제한
-    const orderSize = applyOrderSizeMultiplier(needed, orderSizeMultiplier, agent.maxOrderSize, participationCap);
+    let orderSize: number;
+    if (!effectParams) {
+      // 효과 OFF: 변경 전 수량 계산 보존 (절대 한도 최솟값)
+      orderSize = Math.max(1, Math.min(needed, agent.maxOrderSize, participationCap));
+    } else {
+      // 효과 ON: 전략의 기본 희망 수량(분할 실행 계수 exposureWeight 반영)에 국면 배수를 1회 곱한 뒤 절대 한도로 제한
+      const executionIntensity = Math.max(0.01, Math.min(1.0, config.exposureWeight ?? 1.0));
+      const baseDesiredShares = Math.round(needed * executionIntensity);
+      orderSize = applyOrderSizeMultiplier(
+        baseDesiredShares,
+        orderSizeMultiplier,
+        needed,
+        agent.maxOrderSize,
+        participationCap
+      );
+    }
+
     if (orderSize <= 0) {
       return { action: 'hold', stockId: obs.stockId, reason: 'insufficient_size' };
     }
 
     // Urgency pricing: if trend is confirmed and urgency high, take liquidity at best ask (IOC)
-    const isUrgent = normTrend >= config.buyThreshold && agent.urgency >= 0.5 && obs.bestAsk !== null;
+    const isUrgent = normTrend >= effectiveBuyThreshold && agent.urgency >= 0.5 && obs.bestAsk !== null;
     let targetPrice = isUrgent
       ? obs.bestAsk!
       : (obs.bestBid !== null ? obs.bestBid : currentPrice);
@@ -108,9 +139,21 @@ export function evaluateTrendStrategy(
     targetPrice = Math.max(tickSize, Math.round(targetPrice / tickSize) * tickSize);
 
     const costPerShare = targetPrice * 1.0025;
-    // 국면 cashPreference: 전체 계좌 기준 목표 현금 비중. availableCash는 이미 예약 현금을 차감했으므로 중복 차감하지 않는다.
-    const investableCash = obs.account.availableCash * (1 - cashPreference);
-    const maxAffordable = Math.floor(investableCash / costPerShare);
+    let maxAffordable: number;
+    if (!effectParams || cashPreference <= 0) {
+      // 효과 OFF 또는 cashPreference=0: 기존 가용 현금(availableCash) 기준 계산 보존
+      maxAffordable = Math.floor(obs.account.availableCash / costPerShare);
+    } else {
+      // 효과 ON: 계좌 전체 NAV = 장부 현금 + 전체 보유 주식 평가액
+      // targetCash = NAV * cashPreference
+      // spendableCash = max(0, 장부 현금 - 전체 매수 예약금 - targetCash) = max(0, availableCash - targetCash)
+      const totalHoldingsVal = obs.account.totalHoldingsValue ?? (obs.account.holdingQty * currentPrice);
+      const nav = obs.account.nav ?? (obs.account.cash + totalHoldingsVal);
+      const targetCash = nav * cashPreference;
+      const spendableCash = Math.max(0, obs.account.availableCash - targetCash);
+      maxAffordable = Math.floor(spendableCash / costPerShare);
+    }
+
     const finalSize = Math.min(orderSize, maxAffordable);
 
     if (finalSize <= 0) {
@@ -133,19 +176,34 @@ export function evaluateTrendStrategy(
       price: targetPrice,
       size: finalSize,
       orderType: isUrgent ? 'ioc' : 'limit',
-      reason: `trend_buy: signal=${normTrend.toFixed(3)}, return=${(rollingReturn * 100).toFixed(2)}%`,
+      reason: `trend_buy: signal=${normTrend.toFixed(3)}, return=${(rollingReturn * 100).toFixed(2)}%` + (effectParams ? `, unc=${effectiveUncertainty.toFixed(3)}` : ''),
     };
   }
 
   // 7. Bearish Trend -> SELL
-  if (normTrend <= config.sellThreshold) {
+  if (normTrend <= effectiveSellThreshold) {
     const surplus = (currentPos - openSellQty) - adjustedTarget;
     if (surplus <= 0) {
       return { action: 'hold', stockId: obs.stockId, reason: 'trend_target_reached' };
     }
 
-    // 국면 orderSizeMultiplier: 희망 수량에 1회 적용 후 주문상한/참여율/노출 한도로 최종 제한
-    const orderSize = applyOrderSizeMultiplier(surplus, orderSizeMultiplier, agent.maxOrderSize, participationCap);
+    let orderSize: number;
+    if (!effectParams) {
+      // 효과 OFF: 변경 전 수량 계산 보존
+      orderSize = Math.max(1, Math.min(surplus, agent.maxOrderSize, participationCap));
+    } else {
+      // 효과 ON: 기본 희망 수량에 배수 적용 후 절대 한도로 제한
+      const executionIntensity = Math.max(0.01, Math.min(1.0, config.exposureWeight ?? 1.0));
+      const baseDesiredShares = Math.round(surplus * executionIntensity);
+      orderSize = applyOrderSizeMultiplier(
+        baseDesiredShares,
+        orderSizeMultiplier,
+        surplus,
+        agent.maxOrderSize,
+        participationCap
+      );
+    }
+
     if (orderSize <= 0) {
       return { action: 'hold', stockId: obs.stockId, reason: 'insufficient_size' };
     }
@@ -155,7 +213,7 @@ export function evaluateTrendStrategy(
       return { action: 'hold', stockId: obs.stockId, reason: 'insufficient_holding' };
     }
 
-    const isUrgent = normTrend <= config.sellThreshold && agent.urgency >= 0.5 && obs.bestBid !== null;
+    const isUrgent = normTrend <= effectiveSellThreshold && agent.urgency >= 0.5 && obs.bestBid !== null;
     let targetPrice = isUrgent
       ? obs.bestBid!
       : (obs.bestAsk !== null ? obs.bestAsk : currentPrice);
@@ -177,7 +235,7 @@ export function evaluateTrendStrategy(
       price: targetPrice,
       size: availableToSell,
       orderType: isUrgent ? 'ioc' : 'limit',
-      reason: `trend_sell: signal=${normTrend.toFixed(3)}, return=${(rollingReturn * 100).toFixed(2)}%`,
+      reason: `trend_sell: signal=${normTrend.toFixed(3)}, return=${(rollingReturn * 100).toFixed(2)}%` + (effectParams ? `, unc=${effectiveUncertainty.toFixed(3)}` : ''),
     };
   }
 

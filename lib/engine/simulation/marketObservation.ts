@@ -63,6 +63,8 @@ export interface MarketObservation {
     reservedHolding: number;
     availableCash: number;
     availableHolding: number;
+    totalHoldingsValue?: number; // 전체 보유 종목 평가액 (동일 관측 시점 기준)
+    nav?: number;                // 계좌 전체 순자산 가치 (장부 현금 + 전체 보유 주식 평가액)
   };
   activeOrders: OrderRecord[]; // Agent's current open/partial orders for this stock
 }
@@ -189,6 +191,24 @@ export function buildMarketObservation(
   const availableCash = Math.max(0, rawCash - reservedCash);
   const availableHolding = Math.max(0, rawHolding - reservedHolding);
 
+  // 4. Calculate total portfolio holdings value across all stocks for account NAV
+  // 동일 관측 시점의 가격(현재 종목은 midPrice, 타 종목은 memoryDb.stocks current_price)을 적용한다.
+  let totalHoldingsValue = 0;
+  const userHoldingIds = memoryDb.holdingUserIndex.get(accountId);
+  if (userHoldingIds) {
+    for (const hId of userHoldingIds) {
+      const h = memoryDb.holdings.get(hId);
+      if (h && Number(h.quantity) > 0) {
+        const hStock = memoryDb.stocks.get(h.stock_id);
+        const price = h.stock_id === stockId ? midPrice : Number(hStock?.current_price ?? h.avg_price ?? 0);
+        totalHoldingsValue += Number(h.quantity) * price;
+      }
+    }
+  } else if (rawHolding > 0) {
+    totalHoldingsValue = rawHolding * midPrice;
+  }
+  const nav = rawCash + totalHoldingsValue;
+
   return {
     stockId,
     ticker: stock.ticker,
@@ -231,6 +251,8 @@ export function buildMarketObservation(
       reservedHolding,
       availableCash,
       availableHolding,
+      totalHoldingsValue,
+      nav,
     },
     activeOrders,
   };

@@ -18,6 +18,7 @@ import {
   NEUTRAL_BOT_EFFECT_PARAMS,
   applyOrderSizeMultiplier,
   applyRiskToleranceToTarget,
+  applyUncertaintyMultiplier,
   clamp01,
 } from '../regime/regimeEffects';
 
@@ -98,7 +99,17 @@ export function evaluateValueStrategy(
   const halfSpreadPct = obs.spread ? (obs.spread / (2 * midPrice)) : 0.0015;
   const estimatedRoundTripCost = 0.003 + halfSpreadPct; // fee + half-spread + buffer
 
-  if (Math.abs(valGap) <= estimatedRoundTripCost + config.minProfitMarginPct) {
+  // 국면 uncertaintyMultiplier: 원본 불확실성 관측에 배수를 1회 적용하여 [0, 1] 유효 불확실성 산출
+  // 진입에 필요한 최소 신호 강도(요구 안전 마진)에 1회 적용하여 높은 불확실성에서 섣부른 진입을 방지한다.
+  const baseUncertainty = obs.uncertaintyScore ?? 0.05;
+  const effectiveUncertainty = effectParams
+    ? applyUncertaintyMultiplier(baseUncertainty, effects.uncertaintyMultiplier)
+    : 0;
+  const effectiveMinProfitMargin = effectParams
+    ? config.minProfitMarginPct * (1 + effectiveUncertainty)
+    : config.minProfitMarginPct;
+
+  if (Math.abs(valGap) <= estimatedRoundTripCost + effectiveMinProfitMargin) {
     return { action: 'hold', stockId: obs.stockId, reason: 'insufficient_profit_margin' };
   }
 
@@ -136,8 +147,23 @@ export function evaluateValueStrategy(
       return { action: 'hold', stockId: obs.stockId, reason: 'target_position_reached' };
     }
 
-    // 국면 orderSizeMultiplier: 희망 수량에 1회 적용 후 주문상한/참여율/노출 한도로 최종 제한
-    const orderSize = applyOrderSizeMultiplier(neededShares, orderSizeMultiplier, agent.maxOrderSize, participationCap);
+    let orderSize: number;
+    if (!effectParams) {
+      // 효과 OFF: 변경 전 수량 계산 보존 (절대 한도 최솟값)
+      orderSize = Math.max(1, Math.min(neededShares, agent.maxOrderSize, participationCap));
+    } else {
+      // 효과 ON: 전략의 기본 희망 수량(분할 실행 계수 exposureWeight 반영)에 국면 배수를 1회 곱한 뒤 절대 한도로 제한
+      const executionIntensity = Math.max(0.01, Math.min(1.0, config.exposureWeight ?? 1.0));
+      const baseDesiredShares = Math.round(neededShares * executionIntensity);
+      orderSize = applyOrderSizeMultiplier(
+        baseDesiredShares,
+        orderSizeMultiplier,
+        neededShares,
+        agent.maxOrderSize,
+        participationCap
+      );
+    }
+
     if (orderSize <= 0) {
       return { action: 'hold', stockId: obs.stockId, reason: 'insufficient_size' };
     }
@@ -159,9 +185,21 @@ export function evaluateValueStrategy(
 
     // Capital check
     const costPerShare = alignedPrice * 1.0025;
-    // 국면 cashPreference: 전체 계좌 기준 목표 현금 비중. availableCash는 이미 예약 현금을 차감했으므로 중복 차감하지 않는다.
-    const investableCash = obs.account.availableCash * (1 - cashPreference);
-    const maxAffordable = Math.floor(investableCash / costPerShare);
+    let maxAffordable: number;
+    if (!effectParams || cashPreference <= 0) {
+      // 효과 OFF 또는 cashPreference=0: 기존 가용 현금(availableCash) 기준 계산 보존
+      maxAffordable = Math.floor(obs.account.availableCash / costPerShare);
+    } else {
+      // 효과 ON: 계좌 전체 NAV = 장부 현금 + 전체 보유 주식 평가액
+      // targetCash = NAV * cashPreference
+      // spendableCash = max(0, 장부 현금 - 전체 매수 예약금 - targetCash) = max(0, availableCash - targetCash)
+      const totalHoldingsVal = obs.account.totalHoldingsValue ?? (obs.account.holdingQty * midPrice);
+      const nav = obs.account.nav ?? (obs.account.cash + totalHoldingsVal);
+      const targetCash = nav * cashPreference;
+      const spendableCash = Math.max(0, obs.account.availableCash - targetCash);
+      maxAffordable = Math.floor(spendableCash / costPerShare);
+    }
+
     const finalSize = Math.min(orderSize, maxAffordable);
 
     if (finalSize <= 0) {
@@ -184,7 +222,7 @@ export function evaluateValueStrategy(
       price: alignedPrice,
       size: finalSize,
       orderType: shouldTakeLiquidity ? 'ioc' : 'limit',
-      reason: `value_buy: gap=${(valGap * 100).toFixed(2)}%`,
+      reason: `value_buy: gap=${(valGap * 100).toFixed(2)}%` + (effectParams ? `, unc=${effectiveUncertainty.toFixed(3)}` : ''),
     };
   }
 
@@ -195,8 +233,23 @@ export function evaluateValueStrategy(
       return { action: 'hold', stockId: obs.stockId, reason: 'target_position_reached' };
     }
 
-    // 국면 orderSizeMultiplier: 희망 수량에 1회 적용 후 주문상한/참여율/노출 한도로 최종 제한
-    const orderSize = applyOrderSizeMultiplier(surplusShares, orderSizeMultiplier, agent.maxOrderSize, participationCap);
+    let orderSize: number;
+    if (!effectParams) {
+      // 효과 OFF: 변경 전 수량 계산 보존
+      orderSize = Math.max(1, Math.min(surplusShares, agent.maxOrderSize, participationCap));
+    } else {
+      // 효과 ON: 기본 희망 수량에 배수 적용 후 절대 한도로 제한
+      const executionIntensity = Math.max(0.01, Math.min(1.0, config.exposureWeight ?? 1.0));
+      const baseDesiredShares = Math.round(surplusShares * executionIntensity);
+      orderSize = applyOrderSizeMultiplier(
+        baseDesiredShares,
+        orderSizeMultiplier,
+        surplusShares,
+        agent.maxOrderSize,
+        participationCap
+      );
+    }
+
     if (orderSize <= 0) {
       return { action: 'hold', stockId: obs.stockId, reason: 'insufficient_size' };
     }
@@ -237,7 +290,7 @@ export function evaluateValueStrategy(
       price: alignedPrice,
       size: availableToSell,
       orderType: shouldTakeLiquiditySell ? 'ioc' : 'limit',
-      reason: `value_sell: gap=${(valGap * 100).toFixed(2)}%`,
+      reason: `value_sell: gap=${(valGap * 100).toFixed(2)}%` + (effectParams ? `, unc=${effectiveUncertainty.toFixed(3)}` : ''),
     };
   }
 

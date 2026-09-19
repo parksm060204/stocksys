@@ -561,12 +561,15 @@ export class AgentManager {
         this.diagnostics.recordMarketQuality(stock.id, obs.spread, obs.hasTwoSidedBook);
 
         if (effectsActive) {
-          // Phase 1: 국면 효과 계획으로 취소 대상을 먼저 확정 취소하여 예약 자산을 해제
+          // 1. 취소 대상 계산 (Phase 1)
           const initialPlan = evaluateLpStrategy(obs, lpAgent, this.lpConfig, lpEffectParams);
-          await this.cancelLpOrders(lpAgent, initialPlan.cancels);
+          if (initialPlan.cancels.length > 0) {
+            // 2. 실제 취소 결과 확인: cancelLpOrders 내부에서 성공 건만 반영하며, 취소 실패 주문의 예약 자산은 유지된다.
+            await this.cancelLpOrders(lpAgent, initialPlan.cancels);
+          }
 
-          // Phase 2: 취소 확정 후 최신 장부·가용 자산을 재조회하여 신규 호가를 계산한다.
-          //   - 취소 전 계획의 예산을 그대로 사용하지 않고, 취소 실패 주문의 예약금도 사용하지 않는다.
+          // 3. 최신 계좌·주문 관측 재조회 (Phase 2):
+          //    취소 성공분만 가용 자산으로 회복되고, 실패분은 여전히 예약 자산으로 차감되어 안전하게 보존됨
           const freshObs = buildMarketObservation(
             stock.id,
             lpAgent.accountId,
@@ -579,10 +582,31 @@ export class AgentManager {
           );
           if (!freshObs) continue;
 
+          // 4. 최종 신규 주문 수량 계산
           const refreshedPlan = evaluateLpStrategy(freshObs, lpAgent, this.lpConfig, lpEffectParams);
-          // 취소 실패분이 남아 있으면 재시도 (성공한 주문은 재계산에서 제외됨)
-          await this.cancelLpOrders(lpAgent, refreshedPlan.cancels);
-          await this.submitLpOrders(lpAgent, stock.id, refreshedPlan.newOrders, simTime);
+
+          // 재계산 후 추가 취소가 남아있으면 1회 한정 재시도 (무한 루프 방지) 후 최종 예산 확정
+          if (refreshedPlan.cancels.length > 0) {
+            await this.cancelLpOrders(lpAgent, refreshedPlan.cancels);
+            const finalObs = buildMarketObservation(
+              stock.id,
+              lpAgent.accountId,
+              simTime,
+              20,
+              this.attentionMap,
+              this.uncertaintyMap,
+              this.events,
+              windowStatsMap.get(stock.id)
+            );
+            if (finalObs) {
+              const finalPlan = evaluateLpStrategy(finalObs, lpAgent, this.lpConfig, lpEffectParams);
+              // 5. 기존 주문 서비스로 제출
+              await this.submitLpOrders(lpAgent, stock.id, finalPlan.newOrders, simTime);
+            }
+          } else {
+            // 5. 기존 주문 서비스로 제출
+            await this.submitLpOrders(lpAgent, stock.id, refreshedPlan.newOrders, simTime);
+          }
         } else {
           // 기존 실행 경로 (효과 OFF): 단일 장부 기준 계획으로 취소 후 제출 (동작 보존)
           const plan = evaluateLpStrategy(obs, lpAgent, this.lpConfig);

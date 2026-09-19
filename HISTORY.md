@@ -4275,3 +4275,26 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
   - TEST 33에 사례 E 추가: 교차 종목 비율 40% + 나머지 ±0.2% 좁은 유효 호가에서 유효 종목만 평균한 현재 스프레드가 44.1bps(< 65bps)로 회복처럼 보여도, 공백 비율 0.500(>= 30%)·지속시간 1s로 위기가 유지되고 이탈이 예약되지 않음을 검증.
   - 사례 D에 빈 장부/교차 호가의 `hasValidTwoSidedQuote === false`(교차는 `hasTwoSidedBook === true`이지만 유효 호가 아님) 검증 보강. 사례 C는 소수 종목의 0폭 호가로 공백 비율이 0이 아닐 수 있음을 반영해 이탈 조건을 `비율 < 30% && 지속 0s`로 정합화.
 - 검증 결과: 시장 국면 포함 13개 관련 테스트 스크립트 전수 통과(Exit Code 0), `npx tsc --noEmit` 통과(Exit Code 0), Next.js `npm run build` 성공(Exit Code 0), `git diff --check` 클린(Exit Code 0).
+
+---
+## 2026-09-19 21:05
+
+**요청 요약:** STOCKSYS 시장 국면 2단계 코드 리뷰 문제 4건 수정 (주문 크기 증가 배수 유효화, 계좌 전체 NAV 기준 cashPreference, 예산 부족 LP의 반복 취소·재호가 방지, 봇 uncertaintyMultiplier 실제 의사결정 연결) 및 변경 전 호환성(A/B)·결정론·회귀 검증.
+
+**수행 결과:**
+- `lib/engine/simulation/regime/regimeEffects.ts`: `applyOrderSizeMultiplier`에 5인자 시그니처(`baseDesiredShares, orderSizeMultiplier, neededShares, maxOrderSize, participationCap`) 오버로드 추가(기존 4인자 시그니처 하위 호환). 기본 희망 수량과 절대 한도를 분리하여 multiplier >= 1에서 수량 증가가 실제 작동하도록 개선.
+- `lib/engine/simulation/marketObservation.ts`: 관측 시점 기준 계좌 전체 보유 종목 평가액 `totalHoldingsValue` 및 순자산 가치 `nav = rawCash + totalHoldingsValue` 계산 필드 추가.
+- `lib/engine/simulation/strategies/valueStrategy.ts` / `trendStrategy.ts`:
+  - 주문 크기: `config.exposureWeight` 기반 기본 희망 수량 산출 후 배수 적용, 이후 목표 노출 잔여량·maxOrderSize·참여율·가용자산으로 순차 제한(정수화 후 1주 미만 시 주문 미생성). 효과 OFF는 변경 전 수량 계산 보존.
+  - 현금 선호: 계좌 전체 NAV 기준 목표 현금액 `targetCash = nav * cashPreference`, 신규 주문 가능 예산 `spendableCash = Math.max(0, availableCash - targetCash)` 산출. 목표 비중 미달 시 신규 매수를 차단하되 임의 강제 매도는 발생하지 않음.
+  - 불확실성: `effectiveUncertainty = clamp01(baseUncertainty * uncertaintyMultiplier)`를 진입 임계값(가치: 최소 이익 마진 확대, 추세: 진입 모멘텀 임계치 상향)에 적용하여 불확실성 시 안전마진 확대 및 신규 위험 노출 제한 (매매 방향 왜곡 없음).
+- `lib/engine/simulation/strategies/lpStrategy.ts`: 구조적 목표 깊이와 예산 반영 지속 가능 목표 깊이(`sustainableTargetSize`)를 분리. 효과 ON 시 가격과 예산이 동일하고 잔량이 10% 오차 내 부합하면 주문 ID 및 시간 우선순위 유지(No Churn). 복수 레벨 unallocated 자산 순차 배정으로 중복 배정 방지. 효과 OFF 시에는 기준 커밋(4701f11, a7c1987)의 기존 호가 유지·루프 동작 100% 보존.
+- `lib/engine/simulation/agentManager.ts`: 5단계 LP 라이프사이클(취소 대상 선정 → 취소 실행 → 최신 관측 재조회 → 신규 수량 확정 → 제출, 최대 1회 재계산 제한) 구현 및 취소 실패 주문 예약 자산 보호.
+- 검증 결과:
+  - 1단계 검증(`scripts/test-stage1-verification.ts`): 배수 0.5x, 1.0x, 1.5x 단조 증감, 한도 구속, 매수/매도 대칭, NAV 현금 비중, 불확실성 안전마진 확대 전수 통과 (Exit Code 0).
+  - 2단계 검증(`scripts/test-stage2-verification.ts`): 목표 1,000주·예산 100주 5스텝 주문 ID 유지(Churn 0), 매도 보유량 부족 유지, 부분체결 잔량 유지, 다단계 레벨 한도 준수, 취소 실패 시 예약금 보존 전수 통과 (Exit Code 0).
+  - 3단계 검증:
+    - 효과 OFF A/B 비교: 2단계 도입 직전 커밋 `4701f11` 및 리뷰 기준 커밋 `a7c1987` 대비 주문·체결·가격·현금·보유량·PRNG 100% 비트 단위 동일 (Exit Code 0).
+    - 효과 ON 결정론: 동일 시드 100% 재현 및 OFF 대비 실제 행동 변화 확인 (Exit Code 0).
+    - 전체 회귀 테스트: 시장 국면(기초/2단계), ABM(13개), 뉴스 정정, 시간 동시성, 주문 보안, 트랜잭션 격리, 정산 전수 통과 (Exit Code 0).
+    - 빌드 검증: `npx tsc --noEmit` (Exit Code 0), `npm run build` (Exit Code 0), `git diff --check` (Exit Code 0).

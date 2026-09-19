@@ -4438,3 +4438,27 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 - 남은 제한 사항:
   - `enableRegimeEffects` 기본값은 `false`로 안전하게 유지됨.
   - 실서비스 기본 활성화 여부는 장기 다중 시드 시뮬레이션 결과를 확인한 뒤 별도 결정 필요.
+
+---
+## 2026-09-20 02:50
+
+**요청 요약:** STOCKSYS 시장 국면 2단계 최신 커밋(be70a58) 리뷰 2대 검증 정확성 보완 (1. Shallow clone 환경 기준 픽스처 5종 및 golden-outputs.json SHA-256 상시 잠금 검증, 2. 종료 주문의 활성 관측 제외 및 장부-보조인덱스 1:1 정합성/정리 시 원시 인덱스 제거 직접 검증).
+
+**수행 결과:**
+- `scripts/test-comparison-827dd60.ts`:
+  - `FixtureProvenance`에 로컬 변환 픽스처 5종의 자체 정규화 SHA-256 해시(`trendStrategy.ts`: `2a2c2d9...`, `regimeEffects.ts`: `58e2c10...`, `regimeTypes.ts`: `858b8e2...`, `agentTypes.ts`: `7917e2d...`, `marketObservation.ts`: `30c5e55...`) 추가 및 잠금.
+  - `golden-outputs.json`의 SHA-256 해시(`1c27685...`) 고정.
+  - Shallow clone 및 Git 원본 커밋 객체 부재 환경에서도 로컬 픽스처 5종 및 골든 출력의 콘텐츠 해시를 100% 상시 전수 검증하도록 보완.
+  - Git 객체 존재 시 원본 커밋 Blob 및 원본 SHA-256 추가 검증 유지.
+- `scripts/test-stage2-review-fixes-v2.ts`:
+  - Case D 및 Case E-2의 거짓 양성(status 필터링 선적용) assertion 제거.
+  - 활성 관측 배제 검증: `buildMarketObservation()`의 `activeOrders`에서 취소/체결 주문이 즉시 제외됨을 직접 검증.
+  - 1:1 보조 인덱스 정합성 검증: 장부(`memoryDb.orders`)에 취소/체결 상태로 보존되는 동안 `orderStockIndex` 및 `orderUserIndex`가 1:1 정합 매핑을 유지하여 고스트/누락 인덱스가 없음을 검증.
+  - 원시 인덱스 직접 제거 검증: 장부 보존 한도 초과/정리 시 `removeOrderFromIndex`를 통해 `orderStockIndex`와 `orderUserIndex`의 Set에서 원시 ID가 완전 제거됨(`!stockOrders.has(...)`, `!userOrders.has(...)`)을 상태 필터 없이 직접 검증.
+- 검증 결과:
+  - `scripts/test-comparison-827dd60.ts`: Exit Code 0 (픽스처/골든 해시 전수 일치 및 117건 3자 비교 100% 통과).
+  - `scripts/test-stage2-review-fixes-v2.ts`: Exit Code 0 (원시 인덱스 직접 검증 포함 A~H 전수 통과).
+  - 전체 회귀 테스트 전수 통과: `test-stage2-review-fixes.ts`, `test-regime-effects-stage2.ts`, `test-market-regime-foundation.ts`, `test-concurrency-and-stale-ref.ts`, `test-agent-based-market.ts` (전부 Exit Code 0).
+  - `npx tsc --noEmit` 통과 (Exit Code 0).
+  - `npm run build` 통과 (Next.js 16.2.9 Turbopack Exit Code 0).
+  - `git diff --check` 통과 (Exit Code 0).

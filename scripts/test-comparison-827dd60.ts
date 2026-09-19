@@ -42,7 +42,8 @@ interface FixtureProvenance {
   fileName: string;
   sourceGitPath: string;
   blobHash: string;
-  sha256: string;
+  originalSha256: string;
+  convertedSha256: string;
 }
 
 const LOCKED_PROVENANCE: FixtureProvenance[] = [
@@ -50,33 +51,40 @@ const LOCKED_PROVENANCE: FixtureProvenance[] = [
     fileName: 'trendStrategy.ts',
     sourceGitPath: 'lib/engine/simulation/strategies/trendStrategy.ts',
     blobHash: '743aa3b7a66102bcb6d6bf0756b9d4b9becb21f4',
-    sha256: 'eb968afdb2f73ad4ed140ec02865c1a1c28424fa3dd12334760c76046da6d596',
+    originalSha256: 'eb968afdb2f73ad4ed140ec02865c1a1c28424fa3dd12334760c76046da6d596',
+    convertedSha256: '2a2c2d975cc9ddb25f4ee5390f22b4848aa761c7ecbb99ad3594e0c70358af61',
   },
   {
     fileName: 'regimeEffects.ts',
     sourceGitPath: 'lib/engine/simulation/regime/regimeEffects.ts',
     blobHash: 'b781649b6c409397888f2cc7ed86bb9bfe4cdb18',
-    sha256: '6df6e74f8d346f43cc3ffb2a05a9b77d73ee986b5889acd048cbc86fb8430fc0',
+    originalSha256: '6df6e74f8d346f43cc3ffb2a05a9b77d73ee986b5889acd048cbc86fb8430fc0',
+    convertedSha256: '58e2c10b9980beaf744e7077e17a5df3ad2b4df4ffafa5032415d31e8d6022f4',
   },
   {
     fileName: 'regimeTypes.ts',
     sourceGitPath: 'lib/engine/simulation/regime/regimeTypes.ts',
     blobHash: '1ac2fd2d28adcfceae7a13a03c8ea77857d3a116',
-    sha256: '7d5ff85dc90f3051ad7ddc1d6e0fb0f190ab22c7e803fadcaa83588bc8916ff4',
+    originalSha256: '7d5ff85dc90f3051ad7ddc1d6e0fb0f190ab22c7e803fadcaa83588bc8916ff4',
+    convertedSha256: '858b8e2d415fa8cee438e6397a9ca27765c730d2f5b8bc8e8bce4a68340c8c5f',
   },
   {
     fileName: 'agentTypes.ts',
     sourceGitPath: 'lib/engine/simulation/agentTypes.ts',
     blobHash: '64af9c83107007fde434cc2ccac4d1a316518e9f',
-    sha256: '7a53d732f960bc320f573a1db0c1a9fdefa21fd0c7593330a10aac37b65f5924',
+    originalSha256: '7a53d732f960bc320f573a1db0c1a9fdefa21fd0c7593330a10aac37b65f5924',
+    convertedSha256: '7917e2d857c920e1d98ef1e84492ba682440d53a3c06c1340cd0c250f57bce5a',
   },
   {
     fileName: 'marketObservation.ts',
     sourceGitPath: 'lib/engine/simulation/marketObservation.ts',
     blobHash: '80dba63278189384091592d9cd1c3f43c9f45a6b',
-    sha256: '9fd056d48430e0d8a51ff1ac4ff9cf1a594816bd4ef63de13bc5d1e159a6eb51',
+    originalSha256: '9fd056d48430e0d8a51ff1ac4ff9cf1a594816bd4ef63de13bc5d1e159a6eb51',
+    convertedSha256: '30c5e55ff159226582daeeb82ca566db6686e36ac36a946a0d22e907948ca449',
   },
 ];
+
+const LOCKED_GOLDEN_OUTPUTS_SHA256 = '1c27685ff82654f1c15bf6f91ea22d77b09784c5923f3933a0951133f6008fdb';
 
 function verifyBaselineIndependence(): void {
   console.log('================================================================');
@@ -86,6 +94,39 @@ function verifyBaselineIndependence(): void {
   const fixturesDir = path.resolve(__dirname, 'fixtures/baseline-827dd60');
   assert(fs.existsSync(fixturesDir), `격리된 baseline 픽스처 디렉터리 실존 확인 (${fixturesDir})`);
 
+  // [1-1] 픽스처 파일들의 자체 SHA-256 해시 검증 (Shallow Clone 및 오프라인 환경에서도 상시 실행)
+  for (const prov of LOCKED_PROVENANCE) {
+    const filePath = path.join(fixturesDir, prov.fileName);
+    assert(fs.existsSync(filePath), `픽스처 파일 실존 확인 (${prov.fileName})`);
+    const content = fs.readFileSync(filePath, 'utf8');
+    const normalizedContent = content.replace(/\r\n/g, '\n');
+    const actualSha256 = crypto.createHash('sha256').update(normalizedContent).digest('hex');
+    assert(
+      actualSha256 === prov.convertedSha256,
+      `[픽스처 무결성 잠금] ${prov.fileName} SHA-256 일치: ${actualSha256} === ${prov.convertedSha256}`
+    );
+
+    // HEAD lib/ 참조 검사: '../lib' 또는 '../../lib'가 없어야 함
+    assert(
+      !content.includes('../../lib') && !content.includes('../lib'),
+      `[독립성 검증] ${prov.fileName} 내부에 현재 HEAD lib/ 역참조 부재 확인 (완전 격리)`
+    );
+  }
+
+  // [1-2] golden-outputs.json 실존 및 SHA-256 콘텐츠 해시 잠금 검증 (Shallow Clone에서도 상시 실행)
+  const goldenPath = path.join(fixturesDir, 'golden-outputs.json');
+  assert(fs.existsSync(goldenPath), `골든 기준 출력 파일 실존 확인 (${goldenPath})`);
+  const rawGoldenContent = fs.readFileSync(goldenPath, 'utf8');
+  const normalizedGolden = rawGoldenContent.replace(/\r\n/g, '\n');
+  const actualGoldenSha256 = crypto.createHash('sha256').update(normalizedGolden).digest('hex');
+  assert(
+    actualGoldenSha256 === LOCKED_GOLDEN_OUTPUTS_SHA256,
+    `[골든 출력 무결성 잠금] golden-outputs.json SHA-256 일치: ${actualGoldenSha256} === ${LOCKED_GOLDEN_OUTPUTS_SHA256}`
+  );
+  const goldenData = JSON.parse(rawGoldenContent);
+  assert(Array.isArray(goldenData) && goldenData.length === 117, `골든 기준 출력 117건 전수 로드 확인 (총 ${goldenData.length}건)`);
+
+  // [1-3] 과거 Git 객체가 존재하는 경우, 원본 커밋 Blob 및 SHA-256 추가 검증
   let isGitCommitAvailable = false;
   try {
     execSync(`git cat-file -e ${BASELINE_COMMIT}`, { stdio: 'pipe' });
@@ -104,30 +145,11 @@ function verifyBaselineIndependence(): void {
 
       const rawGitContent = execSync(`git show ${BASELINE_COMMIT}:${prov.sourceGitPath}`);
       const sha256 = crypto.createHash('sha256').update(rawGitContent).digest('hex');
-      assert(sha256 === prov.sha256, `Content SHA-256 일치 [${prov.fileName}]: ${sha256} === ${prov.sha256}`);
+      assert(sha256 === prov.originalSha256, `원본 Content SHA-256 일치 [${prov.fileName}]: ${sha256} === ${prov.originalSha256}`);
     }
   } else {
-    console.log(`  ℹ️ Git 커밋 ${BASELINE_COMMIT.slice(0, 7)} 부재 (shallow clone). 잠긴 파일 SHA-256 서명 기반 검증 진행`);
+    console.log(`  ℹ️ Git 커밋 ${BASELINE_COMMIT.slice(0, 7)} 부재 (shallow clone). 잠긴 픽스처 및 골든 SHA-256 서명 기반 검증 완료`);
   }
-
-  // 픽스처 파일들의 내용에서 현재 HEAD 'lib/'로의 역참조가 전혀 없는지 확인
-  for (const prov of LOCKED_PROVENANCE) {
-    const filePath = path.join(fixturesDir, prov.fileName);
-    assert(fs.existsSync(filePath), `픽스처 파일 실존 확인 (${prov.fileName})`);
-    const content = fs.readFileSync(filePath, 'utf8');
-
-    // HEAD lib/ 참조 검사: '../lib' 또는 '../../lib'가 없어야 함
-    assert(
-      !content.includes('../../lib') && !content.includes('../lib'),
-      `[독립성 검증] ${prov.fileName} 내부에 현재 HEAD lib/ 역참조 부재 확인 (완전 격리)`
-    );
-  }
-
-  // golden-outputs.json 실존 및 레코드 수 검증
-  const goldenPath = path.join(fixturesDir, 'golden-outputs.json');
-  assert(fs.existsSync(goldenPath), `골든 기준 출력 파일 실존 확인 (${goldenPath})`);
-  const goldenData = JSON.parse(fs.readFileSync(goldenPath, 'utf8'));
-  assert(Array.isArray(goldenData) && goldenData.length === 117, `골든 기준 출력 117건 전수 로드 확인 (총 ${goldenData.length}건)`);
 
   console.log('  -> 기준 코드 출처 커밋: 827dd6079a11f58cdb2746668cbab7290752b8f4');
   console.log('  -> 격리 디렉터리: scripts/fixtures/baseline-827dd60/');

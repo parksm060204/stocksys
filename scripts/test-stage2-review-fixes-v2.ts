@@ -450,10 +450,25 @@ async function runPart2_LpCancelDefenseTests() {
 
     assert(attemptCountD >= 2, `1차 실패 후 동일 스텝 내 재시도가 실제로 발생함 (시도 횟수: ${attemptCountD})`);
     assert(memoryDb.orders.get(ordDId)?.status === 'cancelled', '재시도로 기존 주문이 취소 완료됨');
-    const activeStockOrdersD = Array.from(memoryDb.orderStockIndex.get(STOCK_A_ID) || [])
-      .map((id) => memoryDb.orders.get(id))
-      .filter((o) => o && (o.status === 'open' || o.status === 'partial') && (o.size - (o.filled || 0)) > 0);
-    assert(!activeStockOrdersD.some((o) => o?.id === ordDId), 'cancelled 주문이 활성 주문(open/partial) 인덱스에 남지 않음');
+
+    // [활성 관측 제외 검증 - 상태 필터 기반 거짓 양성 배제]
+    const obsD = buildMarketObservation(STOCK_A_ID, lpAgent.accountId, startMs);
+    assert(!obsD?.activeOrders.some((o) => o.id === ordDId), 'cancelled 주문은 관측의 activeOrders(활성 주문 집합)에서 즉시 제외됨');
+
+    // [장부 및 1:1 보조 인덱스 정합성 검증]
+    // memoryDb 아키텍처 상 orderStockIndex/orderUserIndex는 orders 테이블의 O(1) 조회를 위한 1:1 보조 인덱스임
+    const stockOrdersD = memoryDb.orderStockIndex.get(STOCK_A_ID);
+    const userOrdersD = memoryDb.orderUserIndex.get(lpAgent.accountId);
+    assert(stockOrdersD !== undefined && stockOrdersD.has(ordDId), '장부(memoryDb.orders)에 취소 상태로 보존되는 동안 orderStockIndex 1:1 보조 인덱스 매핑 유지');
+    assert(userOrdersD !== undefined && userOrdersD.has(ordDId), '장부에 취소 상태로 보존되는 동안 orderUserIndex 1:1 보조 인덱스 매핑 유지');
+
+    // [종료 주문 정리 시 원시 인덱스 제거 검증 - raw index 직접 검사 (거짓 양성 원천 차단)]
+    const cancelledOrdD = memoryDb.orders.get(ordDId)!;
+    memoryDb.removeOrderFromIndex(cancelledOrdD);
+    memoryDb.orders.delete(ordDId);
+    assert(!stockOrdersD?.has(ordDId), '종료 주문 정리 시 orderStockIndex에서 원시 ID가 완전 제거됨 (raw index 직접 검증)');
+    assert(!userOrdersD?.has(ordDId), '종료 주문 정리 시 orderUserIndex에서 원시 ID가 완전 제거됨 (raw index 직접 검증)');
+
     assert(!mgr.lpDeferrals.has(STOCK_A_ID), '재시도 성공 후 보류 기록 정상 제거 확인');
 
     const activeBidsD = Array.from(memoryDb.orders.values()).filter(
@@ -627,10 +642,12 @@ async function runPart2_LpCancelDefenseTests() {
     assert(midSnapE1!.tradesCount === preSnapE1.tradesCount + 1, '실제 체결 로그(trades)에 정확히 1건 추가');
     assert(midSnapE1!.buyerHoldingQty === preSnapE1.buyerHoldingQty + 200, 'LP 보유량 200주 증가 확인');
     assert(midSnapE1!.sellerHoldingQty === preSnapE1.sellerHoldingQty - 200, '상대방 보유량 200주 감소 확인');
-    const activeStockOrdersE1 = Array.from(memoryDb.orderStockIndex.get(STOCK_A_ID) || [])
-      .map((id) => memoryDb.orders.get(id))
-      .filter((o) => o && (o.status === 'open' || o.status === 'partial') && (o.size - (o.filled || 0)) > 0);
-    assert(activeStockOrdersE1.some((o) => o?.id === ordE1Id), '부분체결된 잔여 주문은 활성 주문(open/partial) 인덱스에 유지됨');
+
+    // 활성 관측 유지 확인
+    const obsE1 = buildMarketObservation(STOCK_A_ID, lpAgent.accountId, startMs);
+    assert(Boolean(obsE1?.activeOrders.some((o) => o.id === ordE1Id)), '부분체결된 잔여 800주 주문은 관측의 activeOrders에 정상 유지됨');
+    assert(obsE1?.activeOrders.find((o) => o.id === ordE1Id)?.filled === 200, '관측의 activeOrders 내 filled=200 잔여 800주 반영 확인');
+    assert(Boolean(memoryDb.orderStockIndex.get(STOCK_A_ID)?.has(ordE1Id)), '부분체결 주문은 orderStockIndex에 1:1 보조 인덱스 매핑 유지');
 
     // 수수료 및 자산 변화 공식 검증
     // 거래 대금: 200 * 70,000 = 14,000,000원
@@ -783,11 +800,22 @@ async function runPart2_LpCancelDefenseTests() {
       '음수 자산 부재 확인'
     );
 
-    // 체결된 주문은 활성 인덱스에서 제거됨
-    const activeStockOrdersE2 = Array.from(memoryDb.orderStockIndex.get(STOCK_A_ID) || [])
-      .map((id) => memoryDb.orders.get(id))
-      .filter((o) => o && (o.status === 'open' || o.status === 'partial') && (o.size - (o.filled || 0)) > 0);
-    assert(!activeStockOrdersE2.some((o) => o?.id === ordE2Id), '전량 체결된 주문은 활성 주문(open/partial) 인덱스에 남지 않음');
+    // [활성 관측 제외 검증 - 상태 필터 기반 거짓 양성 배제]
+    const obsE2 = buildMarketObservation(STOCK_A_ID, lpAgent.accountId, startMs);
+    assert(!obsE2?.activeOrders.some((o) => o.id === ordE2Id), '전량 체결된 주문은 관측의 activeOrders(활성 주문 집합)에서 즉시 제외됨');
+
+    // [장부 및 1:1 보조 인덱스 정합성 검증]
+    const stockOrdersE2 = memoryDb.orderStockIndex.get(STOCK_A_ID);
+    const userOrdersE2 = memoryDb.orderUserIndex.get(lpAgent.accountId);
+    assert(stockOrdersE2 !== undefined && stockOrdersE2.has(ordE2Id), '장부에 체결 완료 상태로 보존되는 동안 orderStockIndex 1:1 보조 인덱스 매핑 유지');
+    assert(userOrdersE2 !== undefined && userOrdersE2.has(ordE2Id), '장부에 체결 완료 상태로 보존되는 동안 orderUserIndex 1:1 보조 인덱스 매핑 유지');
+
+    // [종료 주문 정리 시 원시 인덱스 제거 검증 - raw index 직접 검사 (거짓 양성 원천 차단)]
+    const filledOrdE2 = memoryDb.orders.get(ordE2Id)!;
+    memoryDb.removeOrderFromIndex(filledOrdE2);
+    memoryDb.orders.delete(ordE2Id);
+    assert(!stockOrdersE2?.has(ordE2Id), '전량 체결 주문 정리 시 orderStockIndex에서 원시 ID가 완전 제거됨 (raw index 직접 검증)');
+    assert(!userOrdersE2?.has(ordE2Id), '전량 체결 주문 정리 시 orderUserIndex에서 원시 ID가 완전 제거됨 (raw index 직접 검증)');
 
     assert(!mgr.lpDeferrals.has(STOCK_A_ID), '과거 취소 실패 응답이 있더라도 장부 잔량이 0이므로 차단되지 않고 신규 호가 정상 제출');
 

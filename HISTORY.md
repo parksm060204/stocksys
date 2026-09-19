@@ -4389,3 +4389,52 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
     - `npx tsc --noEmit`: Exit Code 0
     - `npm run build`: Next.js 16.2.9 production build Exit Code 0
     - `git diff --check`: Exit Code 0
+
+---
+## 2026-09-20 02:40
+
+**요청 요약:** STOCKSYS 시장 국면 2단계 생산 로직 유지 하 장기 회귀 테스트 신뢰성 문제 보완 (1단계: 과거 827dd60 기준선의 런타임 실행 의존성 완전 격리화 및 골든 이중 기준선 구축, 2단계: 실제 매칭 서비스 기반 부분·전량체결 및 취소 경합 전후 계좌/주식 총량 전수 정산 불변식 검증, 3단계: 전체 회귀·정적검사·빌드 검증 및 2단계 최종 판정).
+
+**수행 결과:**
+- 생산 코드(`lib/`): 변경 사항 없음 (0건 수정, 기존 생산 로직 및 `enableRegimeEffects = false` 기본값 100% 보존).
+- [1단계 — 과거 기준선의 실행 의존성 독립화]:
+  - `scripts/fixtures/baseline-827dd60/` 디렉터리 구축: 원본 커밋 `827dd6079a11f58cdb2746668cbab7290752b8f4`로부터 필요한 5개 의존 모듈(`trendStrategy.ts`, `regimeEffects.ts`, `regimeTypes.ts`, `agentTypes.ts`, `marketObservation.ts`)을 자체 완결형으로 완전 격리 추출.
+  - 각 모듈별 Git Blob Hash 및 SHA-256 체크섬 잠금:
+    - `trendStrategy.ts`: Blob `743aa3b7a66102bcb6d6bf0756b9d4b9becb21f4` / SHA-256 `eb968afdb2f73ad4ed140ec02865c1a1c28424fa3dd12334760c76046da6d596`
+    - `regimeEffects.ts`: Blob `b781649b6c409397888f2cc7ed86bb9bfe4cdb18` / SHA-256 `6df6e74f8d346f43cc3ffb2a05a9b77d73ee986b5889acd048cbc86fb8430fc0`
+    - `regimeTypes.ts`: Blob `1ac2fd2d28adcfceae7a13a03c8ea77857d3a116` / SHA-256 `7d5ff85dc90f3051ad7ddc1d6e0fb0f190ab22c7e803fadcaa83588bc8916ff4`
+    - `agentTypes.ts`: Blob `64af9c83107007fde434cc2ccac4d1a316518e9f` / SHA-256 `7a53d732f960bc320f573a1db0c1a9fdefa21fd0c7593330a10aac37b65f5924`
+    - `marketObservation.ts`: Blob `80dba63278189384091592d9cd1c3f43c9f45a6b` / SHA-256 `9fd056d48430e0d8a51ff1ac4ff9cf1a594816bd4ef63de13bc5d1e159a6eb51`
+  - `golden-outputs.json`: 117개 레코드(96개 매트릭스 + 21개 경계값)의 정규화된 출력 JSON 생성 및 고정(CI shallow clone 대응 이중 검증 구조).
+  - `scripts/fixtures/baseline-827dd60-trendStrategy.ts`: 격리 패키지 re-export 인터페이스로 전환.
+  - `scripts/test-comparison-827dd60.ts`: 3자(골든 JSON vs 격리 기준선 vs 현재 HEAD) 병렬 비교 및 Git Blob/SHA-256 검증 완비.
+- [2단계 — 실제 체결·정산 불변식 검증 보강]:
+  - `scripts/test-stage2-review-fixes-v2.ts`:
+    - Case D (동일 스텝 취소 재시도 성공): 1차 실패 후 재시도 성공 시 `status === 'cancelled'`, 활성 주문 인덱스 제거, `lpDeferrals` 해제, 신규 대체 주문 1건 등록 검증.
+    - Case E-1 (부분 체결 200주): 사전/체결직후/스텝종료 3단계 `LedgerSnapshot` 전수 검증.
+      - 매수자(LP 메이커) 리베이트(-0.1%): 14,000,000 * 0.999 = 13,986,000원 지불
+      - 매도자(테이커) 수수료(+0.25%): 14,000,000 * 0.9975 = 13,965,000원 수령
+      - 거래소 순 수수료: 21,000원 (총현금 변화와 일치)
+      - LP 매입단가 70,000원, 잔여 800주 예약 현금(56,000,000원), 총주식 발행량 불변(15,000주 보존), 음수 자산 0건, 활성 인덱스 잔여 유지, 신규 주문 보류(`unresolved_active_cancel_orders`) 및 중복 주문 부재 검증.
+    - Case E-2 (전량 체결 1,000주): 전량 체결 시 `status === 'filled'`, 잔량 0, 예약 현금 0 완전 해제, 활성 인덱스에서 제거, 총주식 보존, 과거 취소 실패 응답에도 최신 자산 기준 신규 호가 제출 허용 검증.
+- [3단계 — 종합 회귀 및 빌드 검증]:
+  - 기준선 독립 비교: `scripts/test-comparison-827dd60.ts` (Exit Code 0)
+  - 시장 국면 최신 검증:
+    - `scripts/test-stage2-review-fixes-v2.ts` (Exit Code 0)
+    - `scripts/test-stage2-review-fixes.ts` (Exit Code 0)
+    - `scripts/test-regime-effects-stage2.ts` (Exit Code 0)
+    - `scripts/test-market-regime-foundation.ts` (Exit Code 0)
+  - 관련 회귀 테스트:
+    - `scripts/test-agent-based-market.ts` (Exit Code 0)
+    - `scripts/test-concurrency-and-stale-ref.ts` (Exit Code 0)
+    - `scripts/test-order-security-and-atomic.ts` (Exit Code 0)
+    - `scripts/test-transaction-isolation.ts` (Exit Code 0)
+    - `scripts/test-order-risk-and-settlement.ts` (Exit Code 0)
+    - `scripts/settlement/run_settlement_verification.ts` (Exit Code 0)
+  - 정적 검사 및 빌드:
+    - `npx tsc --noEmit` (Exit Code 0)
+    - `npm run build` (Next.js 16.2.9 production build Exit Code 0)
+    - `git diff --check` (Exit Code 0)
+- 남은 제한 사항:
+  - `enableRegimeEffects` 기본값은 `false`로 안전하게 유지됨.
+  - 실서비스 기본 활성화 여부는 장기 다중 시드 시뮬레이션 결과를 확인한 뒤 별도 결정 필요.

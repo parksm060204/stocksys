@@ -450,16 +450,22 @@ async function runPart2_LpCancelDefenseTests() {
 
     assert(attemptCountD >= 2, `1차 실패 후 동일 스텝 내 재시도가 실제로 발생함 (시도 횟수: ${attemptCountD})`);
     assert(memoryDb.orders.get(ordDId)?.status === 'cancelled', '재시도로 기존 주문이 취소 완료됨');
+    const activeStockOrdersD = Array.from(memoryDb.orderStockIndex.get(STOCK_A_ID) || [])
+      .map((id) => memoryDb.orders.get(id))
+      .filter((o) => o && (o.status === 'open' || o.status === 'partial') && (o.size - (o.filled || 0)) > 0);
+    assert(!activeStockOrdersD.some((o) => o?.id === ordDId), 'cancelled 주문이 활성 주문(open/partial) 인덱스에 남지 않음');
+    assert(!mgr.lpDeferrals.has(STOCK_A_ID), '재시도 성공 후 보류 기록 정상 제거 확인');
+
     const activeBidsD = Array.from(memoryDb.orders.values()).filter(
       (o) => o.user_id === lpAgent.accountId && o.stock_id === STOCK_A_ID && o.side === 'buy' && (o.status === 'open' || o.status === 'partial')
     );
-    assert(activeBidsD.length === 1 && activeBidsD[0].id !== ordDId, '재시도 성공으로 동일 스텝 내에서 신규 대체 주문이 정상 제출됨');
+    assert(activeBidsD.length === 1 && activeBidsD[0].id !== ordDId, '재시도 성공으로 동일 스텝 내에서 신규 대체 주문이 단 한 번만 정상 제출됨');
   } finally {
     LocalMarketService.cancelOrder = origCancel;
   }
 
-  // ── [사례 E] 실제 체결 경합 (Real Matching & Execution Race)
-  console.log('\n  [Case E] 실제 주문 서비스를 통한 체결 경합 및 취소 실패');
+  // ── [사례 E] 실제 체결 경합 및 정산 불변식 전수 검증 (Real Matching & Settlement Invariants)
+  console.log('\n  [Case E] 실제 주문 서비스를 통한 체결 경합 및 정산 불변식 전수 검증');
   const counterpartyUserId = 'trader_counterparty_1';
   addTestProfile(counterpartyUserId, 100_000_000);
   addTestHolding(counterpartyUserId, STOCK_A_ID, 5000, 70000);
@@ -473,8 +479,93 @@ async function runPart2_LpCancelDefenseTests() {
     }
   }
 
+  interface LedgerSnapshot {
+    buyerCash: number;
+    sellerCash: number;
+    buyerHoldingQty: number;
+    buyerAvgPrice: number;
+    sellerHoldingQty: number;
+    sellerAvgPrice: number;
+    buyerActiveOrders: OrderRecord[];
+    sellerActiveOrders: OrderRecord[];
+    buyerReservedCash: number;
+    buyerReservedHolding: number;
+    sellerReservedCash: number;
+    sellerReservedHolding: number;
+    totalStockShares: number;
+    totalAccountsCash: number;
+    tradesCount: number;
+    targetOrderStatus?: string;
+    targetOrderFilled?: number;
+    targetOrderRemaining?: number;
+  }
+
+  function takeLedgerSnapshot(buyerId: string, sellerId: string, stockId: string, targetOrderId?: string): LedgerSnapshot {
+    const buyerProfile = memoryDb.profiles.get(buyerId);
+    const sellerProfile = memoryDb.profiles.get(sellerId);
+    const buyerHolding = memoryDb.holdings.get(`${buyerId}_${stockId}`);
+    const sellerHolding = memoryDb.holdings.get(`${sellerId}_${stockId}`);
+
+    const buyerActiveOrders = Array.from(memoryDb.orders.values()).filter(
+      (o) => o.user_id === buyerId && (o.status === 'open' || o.status === 'partial')
+    );
+    const sellerActiveOrders = Array.from(memoryDb.orders.values()).filter(
+      (o) => o.user_id === sellerId && (o.status === 'open' || o.status === 'partial')
+    );
+
+    const buyerReservedCash = calculateReservedCash(buyerActiveOrders as OpenOrderForRisk[]);
+    const buyerReservedHolding = calculateReservedQty(buyerActiveOrders as OpenOrderForRisk[], stockId);
+    const sellerReservedCash = calculateReservedCash(sellerActiveOrders as OpenOrderForRisk[]);
+    const sellerReservedHolding = calculateReservedQty(sellerActiveOrders as OpenOrderForRisk[], stockId);
+
+    let totalStockShares = 0;
+    for (const h of memoryDb.holdings.values()) {
+      if (h.stock_id === stockId) {
+        totalStockShares += h.quantity;
+      }
+    }
+
+    let totalAccountsCash = 0;
+    for (const p of memoryDb.profiles.values()) {
+      totalAccountsCash += p.cash;
+    }
+
+    let targetOrderStatus: string | undefined;
+    let targetOrderFilled: number | undefined;
+    let targetOrderRemaining: number | undefined;
+    if (targetOrderId) {
+      const ord = memoryDb.orders.get(targetOrderId);
+      if (ord) {
+        targetOrderStatus = ord.status;
+        targetOrderFilled = ord.filled || 0;
+        targetOrderRemaining = Math.max(0, ord.size - (ord.filled || 0));
+      }
+    }
+
+    return {
+      buyerCash: buyerProfile?.cash ?? 0,
+      sellerCash: sellerProfile?.cash ?? 0,
+      buyerHoldingQty: buyerHolding?.quantity ?? 0,
+      buyerAvgPrice: buyerHolding?.avg_price ?? 0,
+      sellerHoldingQty: sellerHolding?.quantity ?? 0,
+      sellerAvgPrice: sellerHolding?.avg_price ?? 0,
+      buyerActiveOrders,
+      sellerActiveOrders,
+      buyerReservedCash,
+      buyerReservedHolding,
+      sellerReservedCash,
+      sellerReservedHolding,
+      totalStockShares,
+      totalAccountsCash,
+      tradesCount: memoryDb.trades.length,
+      targetOrderStatus,
+      targetOrderFilled,
+      targetOrderRemaining,
+    };
+  }
+
   // E-1: 실제 부분체결(200주 체결, 800주 잔여) 후 취소 실패
-  console.log('    [E-1] 실제 반대 주문으로 200주 부분체결 후 취소 실패 -> 800주 잔여로 신규 호가 보류');
+  console.log('    [E-1] 실제 반대 주문으로 200주 부분체결 후 취소 실패 -> 800주 잔여로 신규 호가 보류 및 정산 불변식 검증');
   for (const [oId, o] of Array.from(memoryDb.orders.entries())) {
     if (o.user_id === lpAgent.accountId || (o.stock_id === STOCK_A_ID && o.side === 'buy')) {
       memoryDb.orders.delete(oId);
@@ -498,8 +589,9 @@ async function runPart2_LpCancelDefenseTests() {
   });
   assert(ordE1Res.success && ordE1Res.orderId !== undefined, `ordE1 등록 성공 (error: ${ordE1Res.message})`);
   const ordE1Id = ordE1Res.orderId!;
-  const initialTradeCountE1 = memoryDb.trades.length;
-  const initialLpHoldingE1 = memoryDb.holdings.get(`${lpAgent.accountId}_${STOCK_A_ID}`)?.quantity || 0;
+
+  const preSnapE1 = takeLedgerSnapshot(lpAgent.accountId, counterpartyUserId, STOCK_A_ID, ordE1Id);
+  let midSnapE1: LedgerSnapshot | undefined;
 
   let cancelCallCountE1 = 0;
   try {
@@ -520,6 +612,7 @@ async function runPart2_LpCancelDefenseTests() {
             createdAt: new Date(startMs).toISOString(),
           });
           assert(matchRes.success && matchRes.filledQty === 200, '실제 매칭 엔진을 통해 200주 체결 확정');
+          midSnapE1 = takeLedgerSnapshot(lpAgent.accountId, counterpartyUserId, STOCK_A_ID, ordE1Id);
         }
         return { success: false, statusCode: 500, message: 'Simulated cancel failure after real partial fill' };
       }
@@ -528,29 +621,72 @@ async function runPart2_LpCancelDefenseTests() {
 
     await mgr.step(1.0);
 
-    const ordE1 = memoryDb.orders.get(ordE1Id);
-    assert(ordE1?.status === 'partial' && (ordE1.size - (ordE1.filled || 0)) === 800, '장부에 800주 잔여 partial 상태 확인');
-    assert(memoryDb.trades.length === initialTradeCountE1 + 1, '실제 체결 로그(trades)에 1건 추가 반영됨');
-    const lpHoldingAfterE1 = memoryDb.holdings.get(`${lpAgent.accountId}_${STOCK_A_ID}`)?.quantity || 0;
-    assert(lpHoldingAfterE1 === initialLpHoldingE1 + 200, `체결된 200주만 LP 보유량에 정확히 반영됨 (${lpHoldingAfterE1}주)`);
+    assert(midSnapE1 !== undefined, '체결 직후 스냅샷 정상 기록');
+    assert(midSnapE1!.targetOrderStatus === 'partial', 'LP 주문 상태 partial 확인');
+    assert(midSnapE1!.targetOrderFilled === 200 && midSnapE1!.targetOrderRemaining === 800, 'filled=200, remaining=800 정확 일치');
+    assert(midSnapE1!.tradesCount === preSnapE1.tradesCount + 1, '실제 체결 로그(trades)에 정확히 1건 추가');
+    assert(midSnapE1!.buyerHoldingQty === preSnapE1.buyerHoldingQty + 200, 'LP 보유량 200주 증가 확인');
+    assert(midSnapE1!.sellerHoldingQty === preSnapE1.sellerHoldingQty - 200, '상대방 보유량 200주 감소 확인');
+    const activeStockOrdersE1 = Array.from(memoryDb.orderStockIndex.get(STOCK_A_ID) || [])
+      .map((id) => memoryDb.orders.get(id))
+      .filter((o) => o && (o.status === 'open' || o.status === 'partial') && (o.size - (o.filled || 0)) > 0);
+    assert(activeStockOrdersE1.some((o) => o?.id === ordE1Id), '부분체결된 잔여 주문은 활성 주문(open/partial) 인덱스에 유지됨');
 
-    // 예약 자산 검사 (해당 종목 주문 기준)
-    const stockAOpenOrdersE1 = Array.from(memoryDb.orders.values()).filter(
-      (o) => o.user_id === lpAgent.accountId && o.stock_id === STOCK_A_ID && (o.status === 'open' || o.status === 'partial')
-    ) as OpenOrderForRisk[];
-    assert(stockAOpenOrdersE1.length === 1 && stockAOpenOrdersE1[0].id === ordE1Id, '종목 A에는 오직 ordE1 1건만 활성 유지');
-    const reservedCashE1 = calculateReservedCash(stockAOpenOrdersE1);
-    const expectedReservedE1 = 800 * 70000;
-    assert(reservedCashE1 === expectedReservedE1, `종목 A 예약 자산이 남은 미체결 800주와 정확히 일치함 (${reservedCashE1}원)`);
+    // 수수료 및 자산 변화 공식 검증
+    // 거래 대금: 200 * 70,000 = 14,000,000원
+    // 매수자(LP 메이커) 리베이트: -0.1% -> 14,000,000 * 0.999 = 13,986,000원 지불
+    const expectedBuyerCashPaid = 14000000 * (1 - 0.001);
+    assert(
+      preSnapE1.buyerCash - midSnapE1!.buyerCash === expectedBuyerCashPaid,
+      `매수자(LP 메이커) 현금 감소가 메이커 리베이트 수수료 공식과 일치 (${expectedBuyerCashPaid}원)`
+    );
 
+    // 매도자(상대 테이커) 수수료: +0.25% -> 14,000,000 * 0.9975 = 13,965,000원 수령
+    const expectedSellerCashReceived = 14000000 * (1 - 0.0025);
+    assert(
+      midSnapE1!.sellerCash - preSnapE1.sellerCash === expectedSellerCashReceived,
+      `매도자(상대 테이커) 현금 증가가 테이커 수수료 공식과 일치 (${expectedSellerCashReceived}원)`
+    );
+
+    // 플랫폼 순 수수료 수익: 13,986,000 - 13,965,000 = 21,000원 (0.15%)
+    const expectedPlatformFee = expectedBuyerCashPaid - expectedSellerCashReceived;
+    assert(
+      Math.round(preSnapE1.totalAccountsCash - midSnapE1!.totalAccountsCash) === expectedPlatformFee,
+      `전체 계좌 총현금 변화는 순 거래소 수수료(${expectedPlatformFee}원)와 일치`
+    );
+
+    // 평균단가 규칙 검증 (기존 보유 0 -> 70,000원)
+    assert(midSnapE1!.buyerAvgPrice === 70000, 'LP 매입 평균단가가 정산 체결가(70,000원)와 정확히 일치');
+
+    // 예약 현금 검증 (잔여 800주에 대한 5,600만원)
+    const expectedReservedCashE1 = 800 * 70000;
+    assert(midSnapE1!.buyerReservedCash === expectedReservedCashE1, `예약 현금은 잔여 800주에 해당하는 ${expectedReservedCashE1}원만 남음`);
+
+    // 총주식 수량 보존 불변식
+    assert(midSnapE1!.totalStockShares === preSnapE1.totalStockShares, '종목 A 전체 발행/유통 주식 총량 완벽 보존');
+
+    // 음수 방어 불변식
+    assert(
+      midSnapE1!.buyerCash >= 0 && midSnapE1!.sellerCash >= 0 &&
+      midSnapE1!.buyerHoldingQty >= 0 && midSnapE1!.sellerHoldingQty >= 0 &&
+      midSnapE1!.buyerReservedCash >= 0 && midSnapE1!.sellerReservedHolding >= 0,
+      '음수 현금, 음수 보유량, 음수 예약량 부재 확인'
+    );
+
+    // 스텝 완료 후 보류 및 중복 방지 검증
     assert(mgr.lpDeferrals.has(STOCK_A_ID), '잔여 800주 활성 주문이 남아있으므로 신규 호가 제출이 안전하게 보류됨');
     assert(mgr.lpDeferrals.get(STOCK_A_ID)?.reason === 'unresolved_active_cancel_orders', '보류 사유 unresolved_active_cancel_orders 확인');
+
+    const activeOrdersAfterStepE1 = Array.from(memoryDb.orders.values()).filter(
+      (o) => o.user_id === lpAgent.accountId && o.stock_id === STOCK_A_ID && (o.status === 'open' || o.status === 'partial')
+    );
+    assert(activeOrdersAfterStepE1.length === 1 && activeOrdersAfterStepE1[0].id === ordE1Id, '동일 종목에 중복 LP 대체 주문 미생성 확인 (ordE1 단 1건만 유지)');
   } finally {
     LocalMarketService.cancelOrder = origCancel;
   }
 
   // E-2: 실제 전량체결(1,000주) 후 취소 요청 실패
-  console.log('    [E-2] 실제 반대 주문으로 1,000주 전량체결 후 취소 실패 -> 잔량 0으로 신규 제출 정상 허용');
+  console.log('    [E-2] 실제 반대 주문으로 1,000주 전량체결 후 취소 실패 -> 잔량 0으로 신규 제출 정상 허용 및 정산 불변식 검증');
   for (const [oId, o] of Array.from(memoryDb.orders.entries())) {
     if (o.user_id === lpAgent.accountId || (o.stock_id === STOCK_A_ID && o.side === 'buy')) {
       memoryDb.orders.delete(oId);
@@ -574,7 +710,9 @@ async function runPart2_LpCancelDefenseTests() {
   });
   assert(ordE2Res.success && ordE2Res.orderId !== undefined, `ordE2 등록 성공 (error: ${ordE2Res.message})`);
   const ordE2Id = ordE2Res.orderId!;
-  const initialTradeCountE2 = memoryDb.trades.length;
+
+  const preSnapE2 = takeLedgerSnapshot(lpAgent.accountId, counterpartyUserId, STOCK_A_ID, ordE2Id);
+  let midSnapE2: LedgerSnapshot | undefined;
 
   let cancelCallCountE2 = 0;
   try {
@@ -595,6 +733,7 @@ async function runPart2_LpCancelDefenseTests() {
             createdAt: new Date(startMs).toISOString(),
           });
           assert(matchRes.success && matchRes.filledQty === 1000, '실제 매칭 엔진을 통해 1,000주 전량 체결 확정');
+          midSnapE2 = takeLedgerSnapshot(lpAgent.accountId, counterpartyUserId, STOCK_A_ID, ordE2Id);
         }
         return { success: false, statusCode: 400, message: 'Order already filled' };
       }
@@ -603,10 +742,53 @@ async function runPart2_LpCancelDefenseTests() {
 
     await mgr.step(1.0);
 
-    const ordE2 = memoryDb.orders.get(ordE2Id);
-    assert(ordE2?.status === 'filled', '주문 상태 filled 확인');
-    assert((ordE2!.size - (ordE2!.filled || 0)) === 0, '잔여 주문 수량 0 확인');
-    assert(memoryDb.trades.length === initialTradeCountE2 + 1, '전량 체결 로그 1건 추가 확인');
+    assert(midSnapE2 !== undefined, '전량 체결 직후 스냅샷 정상 기록');
+    assert(midSnapE2!.targetOrderStatus === 'filled' && midSnapE2!.targetOrderRemaining === 0, '주문 상태 filled 및 잔량 0 확인');
+    assert(midSnapE2!.buyerReservedCash === 0, '전량 체결로 예약 현금 0 완전 해제 확인');
+    assert(midSnapE2!.tradesCount === preSnapE2.tradesCount + 1, '전량 체결 로그 1건 추가 확인');
+    assert(midSnapE2!.buyerHoldingQty === preSnapE2.buyerHoldingQty + 1000, 'LP 보유량 1,000주 증가 확인');
+    assert(midSnapE2!.sellerHoldingQty === preSnapE2.sellerHoldingQty - 1000, '상대방 보유량 1,000주 감소 확인');
+
+    // 수수료 및 자산 변화 공식 검증
+    // 거래 대금: 1,000 * 70,000 = 70,000,000원
+    // 매수자(LP 메이커) 리베이트: -0.1% -> 70,000,000 * 0.999 = 69,930,000원 지불
+    const expectedBuyerCashPaidE2 = 70000000 * (1 - 0.001);
+    assert(
+      preSnapE2.buyerCash - midSnapE2!.buyerCash === expectedBuyerCashPaidE2,
+      `매수자(LP) 현금 차감이 수수료 공식과 일치 (${expectedBuyerCashPaidE2}원)`
+    );
+
+    // 매도자(상대 테이커) 수수료: +0.25% -> 70,000,000 * 0.9975 = 69,825,000원 수령
+    const expectedSellerCashReceivedE2 = 70000000 * (1 - 0.0025);
+    assert(
+      midSnapE2!.sellerCash - preSnapE2.sellerCash === expectedSellerCashReceivedE2,
+      `매도자(상대방) 현금 증가가 수수료 공식과 일치 (${expectedSellerCashReceivedE2}원)`
+    );
+
+    // 플랫폼 순 수수료: 69,930,000 - 69,825,000 = 105,000원
+    const expectedPlatformFeeE2 = expectedBuyerCashPaidE2 - expectedSellerCashReceivedE2;
+    assert(
+      Math.round(preSnapE2.totalAccountsCash - midSnapE2!.totalAccountsCash) === expectedPlatformFeeE2,
+      `전체 계좌 총현금 변화는 순 거래소 수수료(${expectedPlatformFeeE2}원)와 일치`
+    );
+
+    // 총주식 수량 보존 불변식
+    assert(midSnapE2!.totalStockShares === preSnapE2.totalStockShares, '종목 A 전체 발행/유통 주식 총량 완벽 보존');
+
+    // 음수 방어 불변식
+    assert(
+      midSnapE2!.buyerCash >= 0 && midSnapE2!.sellerCash >= 0 &&
+      midSnapE2!.buyerHoldingQty >= 0 && midSnapE2!.sellerHoldingQty >= 0 &&
+      midSnapE2!.buyerReservedCash >= 0 && midSnapE2!.sellerReservedHolding >= 0,
+      '음수 자산 부재 확인'
+    );
+
+    // 체결된 주문은 활성 인덱스에서 제거됨
+    const activeStockOrdersE2 = Array.from(memoryDb.orderStockIndex.get(STOCK_A_ID) || [])
+      .map((id) => memoryDb.orders.get(id))
+      .filter((o) => o && (o.status === 'open' || o.status === 'partial') && (o.size - (o.filled || 0)) > 0);
+    assert(!activeStockOrdersE2.some((o) => o?.id === ordE2Id), '전량 체결된 주문은 활성 주문(open/partial) 인덱스에 남지 않음');
+
     assert(!mgr.lpDeferrals.has(STOCK_A_ID), '과거 취소 실패 응답이 있더라도 장부 잔량이 0이므로 차단되지 않고 신규 호가 정상 제출');
 
     const activeBidsAfterE2 = Array.from(memoryDb.orders.values()).filter(

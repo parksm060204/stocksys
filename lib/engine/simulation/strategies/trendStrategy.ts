@@ -31,18 +31,25 @@ export function evaluateTrendStrategy(
   const orderSizeMultiplier = effects.orderSizeMultiplier;
   const cashPreference = clamp01(effects.cashPreference);
 
+  const currentPos = obs.account.holdingQty;
+
   // 국면 uncertaintyMultiplier: 원본 불확실성 관측에 배수를 1회 적용하여 [0, 1] 유효 불확실성 산출
-  // 진입에 필요한 최소 신호 강도(추세 임계치)에 1회 적용하여 높은 불확실성에서 섣부른 진입을 방지한다.
+  // 진입에 필요한 최소 신호 강도(추세 임계치)에 적용하여 높은 불확실성에서 섣부른 신규 위험 노출 진입을 방지한다.
   const baseUncertainty = obs.uncertaintyScore ?? 0.05;
   const effectiveUncertainty = effectParams
     ? applyUncertaintyMultiplier(baseUncertainty, effects.uncertaintyMultiplier)
     : 0;
 
+  // 신규 위험 노출 확대(BUY)와 기존 보유 위험 축소(SELL) 분리:
+  // - BUY: 신규 매수는 위험 노출 확대이므로 불확실성이 높을 때 진입 임계치(effectiveBuyThreshold)를 상향 강화.
+  // - SELL: 현재 현물(Spot) 시장에서 기존 보유량(currentPos > 0) 축소는 위험을 줄이는 회피 매도이므로 불확실성 가중 없는 기본 임계치(config.sellThreshold)를 적용.
+  //   (향후 무차입 공매도 지원 시 currentPos <= 0 인 신규 숏 진입은 위험 확대이므로 그때는 effectiveSellThreshold 적용 필요)
   const effectiveBuyThreshold = effectParams
     ? config.buyThreshold * (1 + effectiveUncertainty)
     : config.buyThreshold;
-  const effectiveSellThreshold = effectParams
-    ? config.sellThreshold * (1 + effectiveUncertainty)
+  const isRiskReductionSell = currentPos > 0;
+  const activeSellThreshold = effectParams
+    ? (isRiskReductionSell ? config.sellThreshold : config.sellThreshold * (1 + effectiveUncertainty))
     : config.sellThreshold;
 
   // 1. Warm-up check: require sufficient historical trade/price data points
@@ -73,9 +80,18 @@ export function evaluateTrendStrategy(
   // 국면 trendSensitivity: 추세 신호 반응 강도 (원본 가격/체결 데이터는 변경하지 않음)
   const normTrend = Math.tanh(rawSignal * trendSensitivity);
 
-  // 4. Threshold check
-  if (Math.abs(normTrend) < Math.min(Math.abs(effectiveBuyThreshold), Math.abs(effectiveSellThreshold))) {
-    return { action: 'hold', stockId: obs.stockId, reason: 'trend_below_threshold' };
+  // 4. Directional Threshold & Strategy Execution
+  const isBuySignal = normTrend >= effectiveBuyThreshold;
+  const isSellSignal = normTrend <= activeSellThreshold;
+
+  if (!isBuySignal && !isSellSignal) {
+    const isUncertaintyBlocked =
+      (normTrend > 0 && normTrend >= config.buyThreshold) ||
+      (normTrend < 0 && normTrend <= config.sellThreshold);
+    const reason = isUncertaintyBlocked
+      ? 'trend_below_threshold_uncertainty'
+      : 'trend_below_threshold';
+    return { action: 'hold', stockId: obs.stockId, reason };
   }
 
   // 5. Target exposure calculation
@@ -87,8 +103,6 @@ export function evaluateTrendStrategy(
     : Math.max(0, Math.round(baseTarget * (1 + normTrend))); // normTrend is negative
   // 국면 riskToleranceMultiplier: 목표 노출에 적용하되 절대 상한(maxPosition)은 상향하지 않음
   const adjustedTarget = applyRiskToleranceToTarget(baseAdjustedTarget, riskToleranceMultiplier, agent.maxPosition);
-
-  const currentPos = obs.account.holdingQty;
 
   let openBuyQty = 0;
   let openSellQty = 0;
@@ -103,7 +117,7 @@ export function evaluateTrendStrategy(
   const participationCap = Math.max(10, Math.floor(recentVol * config.participationRate));
 
   // 6. Bullish Trend -> BUY
-  if (normTrend >= effectiveBuyThreshold) {
+  if (isBuySignal) {
     const needed = adjustedTarget - (currentPos + openBuyQty);
     if (needed <= 0) {
       return { action: 'hold', stockId: obs.stockId, reason: 'trend_target_reached' };
@@ -130,11 +144,11 @@ export function evaluateTrendStrategy(
       return { action: 'hold', stockId: obs.stockId, reason: 'insufficient_size' };
     }
 
-    // Urgency pricing: if trend is confirmed and urgency high, take liquidity at best ask (IOC)
-    const isUrgent = normTrend >= effectiveBuyThreshold && agent.urgency >= 0.5 && obs.bestAsk !== null;
+    // Pricing
+    const isUrgent = agent.urgency >= 0.2 || normTrend > 0.6;
     let targetPrice = isUrgent
-      ? obs.bestAsk!
-      : (obs.bestBid !== null ? obs.bestBid : currentPrice);
+      ? (obs.bestAsk || currentPrice)
+      : (obs.bestBid || currentPrice);
 
     targetPrice = Math.max(tickSize, Math.round(targetPrice / tickSize) * tickSize);
 
@@ -144,10 +158,10 @@ export function evaluateTrendStrategy(
       // 효과 OFF 또는 cashPreference=0: 기존 가용 현금(availableCash) 기준 계산 보존
       maxAffordable = Math.floor(obs.account.availableCash / costPerShare);
     } else {
-      // 효과 ON: 계좌 전체 NAV = 장부 현금 + 전체 보유 주식 평가액
-      // targetCash = NAV * cashPreference
-      // spendableCash = max(0, 장부 현금 - 전체 매수 예약금 - targetCash) = max(0, availableCash - targetCash)
-      const totalHoldingsVal = obs.account.totalHoldingsValue ?? (obs.account.holdingQty * currentPrice);
+      if (obs.account.isPortfolioValuationComplete === false) {
+        return { action: 'hold', stockId: obs.stockId, reason: 'incomplete_portfolio_valuation' };
+      }
+      const totalHoldingsVal = obs.account.totalHoldingsValue ?? 0;
       const nav = obs.account.nav ?? (obs.account.cash + totalHoldingsVal);
       const targetCash = nav * cashPreference;
       const spendableCash = Math.max(0, obs.account.availableCash - targetCash);
@@ -181,7 +195,7 @@ export function evaluateTrendStrategy(
   }
 
   // 7. Bearish Trend -> SELL
-  if (normTrend <= effectiveSellThreshold) {
+  if (isSellSignal) {
     const surplus = (currentPos - openSellQty) - adjustedTarget;
     if (surplus <= 0) {
       return { action: 'hold', stockId: obs.stockId, reason: 'trend_target_reached' };
@@ -213,7 +227,7 @@ export function evaluateTrendStrategy(
       return { action: 'hold', stockId: obs.stockId, reason: 'insufficient_holding' };
     }
 
-    const isUrgent = normTrend <= effectiveSellThreshold && agent.urgency >= 0.5 && obs.bestBid !== null;
+    const isUrgent = normTrend <= activeSellThreshold && agent.urgency >= 0.5 && obs.bestBid !== null;
     let targetPrice = isUrgent
       ? obs.bestBid!
       : (obs.bestAsk !== null ? obs.bestAsk : currentPrice);
@@ -235,7 +249,7 @@ export function evaluateTrendStrategy(
       price: targetPrice,
       size: availableToSell,
       orderType: isUrgent ? 'ioc' : 'limit',
-      reason: `trend_sell: signal=${normTrend.toFixed(3)}, return=${(rollingReturn * 100).toFixed(2)}%` + (effectParams ? `, unc=${effectiveUncertainty.toFixed(3)}` : ''),
+      reason: `trend_sell: signal=${normTrend.toFixed(3)}, return=${(rollingReturn * 100).toFixed(2)}%` + (isRiskReductionSell ? ' (risk_reduction)' : '') + (effectParams ? `, unc=${effectiveUncertainty.toFixed(3)}` : ''),
     };
   }
 

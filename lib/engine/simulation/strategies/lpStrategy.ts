@@ -20,7 +20,7 @@ import {
 
 export interface LpQuotePlan {
   cancels: OrderRecord[];
-  newOrders: { side: 'buy' | 'sell'; price: number; size: number }[];
+  newOrders: { side: 'buy' | 'sell'; price: number; size: number; replacesOrderId?: string }[];
 }
 
 const DEPTH_MATCH_TOLERANCE = 0.1; // 목표 잔여 수량 대비 허용 오차 10%
@@ -33,7 +33,7 @@ export function evaluateLpStrategy(
 ): LpQuotePlan {
   const effects = effectParams ?? NEUTRAL_LP_EFFECT_PARAMS;
   const cancels: OrderRecord[] = [];
-  const newOrders: { side: 'buy' | 'sell'; price: number; size: number }[] = [];
+  const newOrders: { side: 'buy' | 'sell'; price: number; size: number; replacesOrderId?: string }[] = [];
 
   const midPrice = obs.midPrice > 0 ? obs.midPrice : 10000;
   const tickSize = midPrice < 2000 ? 1 : midPrice < 5000 ? 5 : midPrice < 20000 ? 10 : midPrice < 50000 ? 50 : midPrice < 200000 ? 100 : 500;
@@ -205,7 +205,7 @@ export function evaluateLpStrategy(
       const maxAffordable = Math.floor(unallocatedCash / costPerShare);
       const actualSize = Math.min(sustainableTargetSize, maxAffordable);
       if (actualSize > 0) {
-        newOrders.push({ side: 'buy', price: des.price, size: actualSize });
+        newOrders.push({ side: 'buy', price: des.price, size: actualSize, replacesOrderId: matchingResting.id });
         unallocatedCash -= actualSize * costPerShare;
       }
     } else {
@@ -250,7 +250,7 @@ export function evaluateLpStrategy(
 
       const maxSellable = Math.min(sustainableTargetSize, unallocatedHolding);
       if (maxSellable > 0) {
-        newOrders.push({ side: 'sell', price: des.price, size: maxSellable });
+        newOrders.push({ side: 'sell', price: des.price, size: maxSellable, replacesOrderId: matchingResting.id });
         unallocatedHolding -= maxSellable;
       }
     } else {

@@ -561,11 +561,16 @@ export class AgentManager {
         this.diagnostics.recordMarketQuality(stock.id, obs.spread, obs.hasTwoSidedBook);
 
         if (effectsActive) {
+          const failedCancelOrderIds = new Set<string>();
+
           // 1. 취소 대상 계산 (Phase 1)
           const initialPlan = evaluateLpStrategy(obs, lpAgent, this.lpConfig, lpEffectParams);
           if (initialPlan.cancels.length > 0) {
             // 2. 실제 취소 결과 확인: cancelLpOrders 내부에서 성공 건만 반영하며, 취소 실패 주문의 예약 자산은 유지된다.
-            await this.cancelLpOrders(lpAgent, initialPlan.cancels);
+            const cancelRes1 = await this.cancelLpOrders(lpAgent, initialPlan.cancels);
+            for (const fid of cancelRes1.failedOrderIds) {
+              failedCancelOrderIds.add(fid);
+            }
           }
 
           // 3. 최신 계좌·주문 관측 재조회 (Phase 2):
@@ -583,11 +588,14 @@ export class AgentManager {
           if (!freshObs) continue;
 
           // 4. 최종 신규 주문 수량 계산
-          const refreshedPlan = evaluateLpStrategy(freshObs, lpAgent, this.lpConfig, lpEffectParams);
+          let currentPlan = evaluateLpStrategy(freshObs, lpAgent, this.lpConfig, lpEffectParams);
 
           // 재계산 후 추가 취소가 남아있으면 1회 한정 재시도 (무한 루프 방지) 후 최종 예산 확정
-          if (refreshedPlan.cancels.length > 0) {
-            await this.cancelLpOrders(lpAgent, refreshedPlan.cancels);
+          if (currentPlan.cancels.length > 0) {
+            const cancelRes2 = await this.cancelLpOrders(lpAgent, currentPlan.cancels);
+            for (const fid of cancelRes2.failedOrderIds) {
+              failedCancelOrderIds.add(fid);
+            }
             const finalObs = buildMarketObservation(
               stock.id,
               lpAgent.accountId,
@@ -599,14 +607,47 @@ export class AgentManager {
               windowStatsMap.get(stock.id)
             );
             if (finalObs) {
-              const finalPlan = evaluateLpStrategy(finalObs, lpAgent, this.lpConfig, lpEffectParams);
-              // 5. 기존 주문 서비스로 제출
-              await this.submitLpOrders(lpAgent, stock.id, finalPlan.newOrders, simTime);
+              currentPlan = evaluateLpStrategy(finalObs, lpAgent, this.lpConfig, lpEffectParams);
             }
-          } else {
-            // 5. 기존 주문 서비스로 제출
-            await this.submitLpOrders(lpAgent, stock.id, refreshedPlan.newOrders, simTime);
           }
+
+          // 미해결 취소 주문 ID 수집: 시도 후 실패한 주문 및 최종 계획에 여전히 남은 취소 주문
+          const unresolvedCancelIds = new Set<string>(failedCancelOrderIds);
+          for (const c of currentPlan.cancels) {
+            unresolvedCancelIds.add(c.id);
+          }
+
+          // 최신 실제 메모리 DB 장부에서 해당 미해결 주문의 실제 상태 및 잔여 수량 재확인
+          const activeConflictingOrders: OrderRecord[] = [];
+          for (const orderId of unresolvedCancelIds) {
+            const actualOrder = memoryDb.orders.get(orderId);
+            if (
+              actualOrder &&
+              actualOrder.user_id === lpAgent.accountId &&
+              actualOrder.stock_id === stock.id &&
+              (actualOrder.status === 'open' || actualOrder.status === 'partial')
+            ) {
+              const rem = actualOrder.size - (actualOrder.filled || 0);
+              if (rem > 0) {
+                activeConflictingOrders.push(actualOrder);
+              }
+            }
+          }
+
+          // 취소 미완료 주문과 충돌하는 신규 대체 주문은 보류하고 다음 스텝으로 넘김 (중복 호가 생성 방지)
+          // 관계없는 안전한 호가는 제출 허용
+          const safeNewOrders = currentPlan.newOrders.filter((nOrd) => {
+            if (nOrd.replacesOrderId && unresolvedCancelIds.has(nOrd.replacesOrderId)) {
+              return false;
+            }
+            const hasConflict = activeConflictingOrders.some(
+              (o) => o.side === nOrd.side && o.price === nOrd.price
+            );
+            return !hasConflict;
+          });
+
+          // 5. 기존 주문 서비스로 제출
+          await this.submitLpOrders(lpAgent, stock.id, safeNewOrders, simTime);
         } else {
           // 기존 실행 경로 (효과 OFF): 단일 장부 기준 계획으로 취소 후 제출 (동작 보존)
           const plan = evaluateLpStrategy(obs, lpAgent, this.lpConfig);
@@ -971,17 +1012,31 @@ export class AgentManager {
    * LP 취소 대상 주문을 실제 취소하고, 성공한 경우에만 진단·통계를 기록한다.
    * 취소 실패 주문은 예약 자산이 유지되므로 신규 호가 예산에서 사용되지 않는다.
    */
-  private async cancelLpOrders(lpAgent: AgentAccount, orders: OrderRecord[]): Promise<void> {
+  private async cancelLpOrders(
+    lpAgent: AgentAccount,
+    orders: OrderRecord[]
+  ): Promise<{ failedOrderIds: Set<string>; cancelledOrderIds: Set<string> }> {
+    const failedOrderIds = new Set<string>();
+    const cancelledOrderIds = new Set<string>();
+
     for (const toCancel of orders) {
-      const cancelRes = await LocalMarketService.cancelOrder({
-        orderId: toCancel.id,
-        userId: lpAgent.accountId,
-      });
-      if (cancelRes.success) {
-        this.diagnostics.recordOrderCancel('market_maker');
-        lpAgent.stats.ordersCancelled++;
+      try {
+        const cancelRes = await LocalMarketService.cancelOrder({
+          orderId: toCancel.id,
+          userId: lpAgent.accountId,
+        });
+        if (cancelRes.success) {
+          this.diagnostics.recordOrderCancel('market_maker');
+          lpAgent.stats.ordersCancelled++;
+          cancelledOrderIds.add(toCancel.id);
+        } else {
+          failedOrderIds.add(toCancel.id);
+        }
+      } catch (e) {
+        failedOrderIds.add(toCancel.id);
       }
     }
+    return { failedOrderIds, cancelledOrderIds };
   }
 
   /**
@@ -990,7 +1045,7 @@ export class AgentManager {
   private async submitLpOrders(
     lpAgent: AgentAccount,
     stockId: string,
-    newOrders: { side: 'buy' | 'sell'; price: number; size: number }[],
+    newOrders: { side: 'buy' | 'sell'; price: number; size: number; replacesOrderId?: string }[],
     simTime: number
   ): Promise<void> {
     for (const nOrd of newOrders) {

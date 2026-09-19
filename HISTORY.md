@@ -4298,3 +4298,32 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
     - 효과 ON 결정론: 동일 시드 100% 재현 및 OFF 대비 실제 행동 변화 확인 (Exit Code 0).
     - 전체 회귀 테스트: 시장 국면(기초/2단계), ABM(13개), 뉴스 정정, 시간 동시성, 주문 보안, 트랜잭션 격리, 정산 전수 통과 (Exit Code 0).
     - 빌드 검증: `npx tsc --noEmit` (Exit Code 0), `npm run build` (Exit Code 0), `git diff --check` (Exit Code 0).
+
+---
+## 2026-09-20 00:22
+
+**요청 요약:** STOCKSYS 시장 국면 2단계 최신 코드 리뷰(827dd60) 3가지 문제 수정 (A. 불확실성이 위험 축소 매도를 차단하는 결함 해결, B. LP 취소 실패 시 동일 가격 대체 주문 중복 추가 방지, C. 계좌 NAV가 관측 대상 종목의 midPrice에 의존하던 결함 해결) 및 종합 회귀 검증.
+
+**수행 결과:**
+- `lib/engine/simulation/strategies/trendStrategy.ts`:
+  - 불확실성 배수(`uncertaintyMultiplier`)를 신규 위험 노출 확대(매수, 또는 short 포지션 확대)에만 강화 적용(`effectiveBuyThreshold = clamp01(sellThreshold * (1 + unc))`).
+  - 기존 롱 포지션(`currentPos > 0`)의 하락 추세 위험 축소 매도는 불확실성으로 인해 차단되지 않도록 기본 임계값(`config.sellThreshold`)을 그대로 적용하고, 사유에 `(risk_reduction)` 태그 부여.
+  - 포트폴리오 평가 불완전(`isPortfolioValuationComplete === false`) 시 신규 매수 주문을 보수적으로 차단(`incomplete_portfolio_valuation` HOLD).
+- `lib/engine/simulation/strategies/valueStrategy.ts`:
+  - 고평가 종목의 위험 축소 매도(`currentPos > 0`) 시 `minProfitMarginPct`를 불확실성 배수 없이 기본값으로 적용하여 포지션 감축을 허용.
+  - 신규 매수(저평가 진입)에만 불확실성에 따른 안전마진 확대(`effectiveProfitMarginPct = minProfitMarginPct * (1 + uncertaintyMultiplier)`)를 적용.
+  - 포트폴리오 평가 불완전(`isPortfolioValuationComplete === false`) 시 신규 매수 차단.
+- `lib/engine/simulation/strategies/lpStrategy.ts`:
+  - `LpQuotePlan['newOrders']`에 `replacesOrderId?: string` 필드를 추가하여, 기존 주문 대체 계획 시 교체 대상 주문 ID를 명시적으로 태깅.
+- `lib/engine/simulation/agentManager.ts`:
+  - `cancelLpOrders`의 반환값을 `{ failedOrderIds: Set<string>, cancelledOrderIds: Set<string> }`로 확장하여 취소 실패 주문을 정확히 추적.
+  - 취소에 실패한 주문의 ID 또는 `(side, price)`가 동일한 활성 주문이 존재하는 경우, 신규 호가 제출 단계에서 해당 주문을 보류/제외하고 다음 스텝으로 이월하여 중복 호가(예: 1,000주 취소 실패 + 200주 추가 = 1,200주 호가 팽창) 방지.
+- `lib/engine/simulation/marketObservation.ts`:
+  - `calculateAuthoritativePortfolioValuation(accountId, rawCash)` 도입: 조회 대상 종목의 호가창 `midPrice`를 일체 사용하지 않고, 계좌 내 모든 보유 종목의 권위적 체결가(`current_price`, fallback: `avg_price`)만을 단일 기준으로 사용하여 포트폴리오 평가액(`totalHoldingsValue`) 및 순자산가치(`nav`)를 산출.
+  - 비정상 가격(NaN, 0 이하 등) 감지 시 `isPortfolioValuationComplete = false` 플래그 및 원인(`incompleteReasons`)을 기록하여 신규 매수를 안전하게 차단.
+- `scripts/test-stage2-review-fixes.ts`:
+  - 불확실성 위험 축소 매도/신규 매수 차단(PART A), LP 취소 실패 시 중복 방지 4대 사례(PART B), 계좌 NAV 종목 독립성/비정상 가격 감지/예약금 보존(PART C) 검증 스위트 작성 및 실행(Exit Code 0).
+- 검증 결과:
+  - 종합 리뷰 수정 검증(`scripts/test-stage2-review-fixes.ts`): 전수 통과 (Exit Code 0).
+  - 전체 회귀 테스트: `test-regime-effects-stage2.ts`, `test-market-regime-foundation.ts`, `test-agent-based-market.ts`, `test-order-security-and-atomic.ts`, `test-transaction-isolation.ts`, `test-order-risk-and-settlement.ts` 전수 통과 (Exit Code 0).
+  - 빌드 및 린트 검증: `npx tsc --noEmit` (Exit Code 0), `npm run build` (Exit Code 0), `git diff --check` (Exit Code 0).

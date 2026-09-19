@@ -100,7 +100,7 @@ export function evaluateValueStrategy(
   const estimatedRoundTripCost = 0.003 + halfSpreadPct; // fee + half-spread + buffer
 
   // 국면 uncertaintyMultiplier: 원본 불확실성 관측에 배수를 1회 적용하여 [0, 1] 유효 불확실성 산출
-  // 진입에 필요한 최소 신호 강도(요구 안전 마진)에 1회 적용하여 높은 불확실성에서 섣부른 진입을 방지한다.
+  // 진입에 필요한 최소 신호 강도(요구 안전 마진)에 적용하여 높은 불확실성에서 섣부른 신규 위험 노출 진입을 방지한다.
   const baseUncertainty = obs.uncertaintyScore ?? 0.05;
   const effectiveUncertainty = effectParams
     ? applyUncertaintyMultiplier(baseUncertainty, effects.uncertaintyMultiplier)
@@ -109,8 +109,28 @@ export function evaluateValueStrategy(
     ? config.minProfitMarginPct * (1 + effectiveUncertainty)
     : config.minProfitMarginPct;
 
-  if (Math.abs(valGap) <= estimatedRoundTripCost + effectiveMinProfitMargin) {
-    return { action: 'hold', stockId: obs.stockId, reason: 'insufficient_profit_margin' };
+  const currentPos = obs.account.holdingQty;
+
+  // 신규 위험 노출 확대(BUY)와 기존 노출 축소(SELL)의 분리:
+  // - valGap > 0 (BUY): 신규 매수는 위험 노출 확대이므로 불확실성이 높을 때 요구 이익 마진(effectiveMinProfitMargin)을 강화하여 진입을 억제한다.
+  // - valGap < 0 (SELL): 현재 현물(Spot) 시장에서 기존 보유량(currentPos > 0)의 매도는 위험을 축소하는 행위이므로,
+  //   불확실성 배수로 인한 추가 진입 제한을 적용하지 않고 본래의 전략 기준(config.minProfitMarginPct)을 충족하면 매도를 정상 허용한다.
+  //   (참고: 향후 공매도 지원 시 currentPos <= 0 인 신규 숏 진입은 위험 확대이므로 그때는 effectiveMinProfitMargin이 적용되어야 함)
+  if (valGap > 0) {
+    if (valGap <= estimatedRoundTripCost + effectiveMinProfitMargin) {
+      const reason = valGap > estimatedRoundTripCost + config.minProfitMarginPct
+        ? 'insufficient_profit_margin_uncertainty'
+        : 'insufficient_profit_margin';
+      return { action: 'hold', stockId: obs.stockId, reason };
+    }
+  } else if (valGap < 0) {
+    const isRiskReductionSell = currentPos > 0;
+    const requiredMargin = isRiskReductionSell ? config.minProfitMarginPct : effectiveMinProfitMargin;
+    if (Math.abs(valGap) <= estimatedRoundTripCost + requiredMargin) {
+      return { action: 'hold', stockId: obs.stockId, reason: 'insufficient_profit_margin' };
+    }
+  } else {
+    return { action: 'hold', stockId: obs.stockId, reason: 'within_deadband' };
   }
 
   // 5. Position & Exposure Gap
@@ -122,7 +142,6 @@ export function evaluateValueStrategy(
   const baseAdjustedTarget = Math.max(0, Math.min(agent.maxPosition, Math.round(baseTarget * (1 + normValGap))));
   // 국면 riskToleranceMultiplier: 목표 노출에 적용하되 절대 상한(maxPosition)은 상향하지 않음
   const adjustedTarget = applyRiskToleranceToTarget(baseAdjustedTarget, riskToleranceMultiplier, agent.maxPosition);
-  const currentPos = obs.account.holdingQty;
 
   // Open buy/sell commitments
   let openBuyQty = 0;
@@ -193,7 +212,11 @@ export function evaluateValueStrategy(
       // 효과 ON: 계좌 전체 NAV = 장부 현금 + 전체 보유 주식 평가액
       // targetCash = NAV * cashPreference
       // spendableCash = max(0, 장부 현금 - 전체 매수 예약금 - targetCash) = max(0, availableCash - targetCash)
-      const totalHoldingsVal = obs.account.totalHoldingsValue ?? (obs.account.holdingQty * midPrice);
+      if (obs.account.isPortfolioValuationComplete === false) {
+        // 계좌 포트폴리오 평가가 불완전/손상된 경우 보수적으로 신규 매수를 차단하여 목표 현금 비중 훼손 방지
+        return { action: 'hold', stockId: obs.stockId, reason: 'incomplete_portfolio_valuation' };
+      }
+      const totalHoldingsVal = obs.account.totalHoldingsValue ?? 0;
       const nav = obs.account.nav ?? (obs.account.cash + totalHoldingsVal);
       const targetCash = nav * cashPreference;
       const spendableCash = Math.max(0, obs.account.availableCash - targetCash);

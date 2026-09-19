@@ -144,11 +144,11 @@ export function evaluateTrendStrategy(
       return { action: 'hold', stockId: obs.stockId, reason: 'insufficient_size' };
     }
 
-    // Pricing
-    const isUrgent = agent.urgency >= 0.2 || normTrend > 0.6;
+    // Urgency pricing: if trend is confirmed and urgency high, take liquidity at best ask (IOC)
+    const isUrgent = normTrend >= effectiveBuyThreshold && agent.urgency >= 0.5 && obs.bestAsk !== null;
     let targetPrice = isUrgent
-      ? (obs.bestAsk || currentPrice)
-      : (obs.bestBid || currentPrice);
+      ? obs.bestAsk!
+      : (obs.bestBid !== null ? obs.bestBid : currentPrice);
 
     targetPrice = Math.max(tickSize, Math.round(targetPrice / tickSize) * tickSize);
 

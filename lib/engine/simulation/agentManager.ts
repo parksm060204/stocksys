@@ -75,6 +75,8 @@ export class AgentManager {
   public idempotencyTracker: EventIdempotencyTracker = new EventIdempotencyTracker();
   public attentionMap: Map<string, number> = new Map();     // stockId -> attentionScore [0, 1]
   public uncertaintyMap: Map<string, number> = new Map();   // stockId -> uncertaintyScore [0, 1]
+  // LP 취소 실패/지연으로 인한 종목별 신규 호가 제출 보류 진단 기록
+  public lpDeferrals: Map<string, { stockId: string; reason: string; unresolvedOrderIds: string[]; simTime: number }> = new Map();
 
   // MJD SDE parameters (per-second units)
   public readonly mjd_mu: number = 0.00005;     // Drift per second
@@ -585,17 +587,41 @@ export class AgentManager {
             this.events,
             windowStatsMap.get(stock.id)
           );
-          if (!freshObs) continue;
+          if (!freshObs) {
+            this.lpDeferrals.set(stock.id, {
+              stockId: stock.id,
+              reason: 'fresh_observation_failed',
+              unresolvedOrderIds: Array.from(failedCancelOrderIds),
+              simTime,
+            });
+            console.warn(`[LP Deferral] Stock ${stock.id}: Failed to refetch fresh market observation in Phase 2. Deferring new LP quotes.`);
+            continue;
+          }
 
           // 4. 최종 신규 주문 수량 계산
           let currentPlan = evaluateLpStrategy(freshObs, lpAgent, this.lpConfig, lpEffectParams);
 
-          // 재계산 후 추가 취소가 남아있으면 1회 한정 재시도 (무한 루프 방지) 후 최종 예산 확정
-          if (currentPlan.cancels.length > 0) {
-            const cancelRes2 = await this.cancelLpOrders(lpAgent, currentPlan.cancels);
+          // 재계산 후 추가 취소가 남아있거나 이전 실패 건 중 여전히 활성인 주문이 있으면 1회 한정 재시도 (무한 루프 방지)
+          const retryCancelsMap = new Map<string, OrderRecord>();
+          for (const c of currentPlan.cancels) {
+            retryCancelsMap.set(c.id, c);
+          }
+          for (const fid of failedCancelOrderIds) {
+            const ord = memoryDb.orders.get(fid);
+            if (ord && (ord.status === 'open' || ord.status === 'partial') && (ord.size - (ord.filled || 0)) > 0) {
+              retryCancelsMap.set(fid, ord);
+            }
+          }
+
+          if (retryCancelsMap.size > 0) {
+            const cancelRes2 = await this.cancelLpOrders(lpAgent, Array.from(retryCancelsMap.values()));
+            for (const cid of cancelRes2.cancelledOrderIds) {
+              failedCancelOrderIds.delete(cid);
+            }
             for (const fid of cancelRes2.failedOrderIds) {
               failedCancelOrderIds.add(fid);
             }
+
             const finalObs = buildMarketObservation(
               stock.id,
               lpAgent.accountId,
@@ -606,21 +632,29 @@ export class AgentManager {
               this.events,
               windowStatsMap.get(stock.id)
             );
-            if (finalObs) {
-              currentPlan = evaluateLpStrategy(finalObs, lpAgent, this.lpConfig, lpEffectParams);
+            if (!finalObs) {
+              this.lpDeferrals.set(stock.id, {
+                stockId: stock.id,
+                reason: 'final_observation_failed',
+                unresolvedOrderIds: Array.from(failedCancelOrderIds),
+                simTime,
+              });
+              console.warn(`[LP Deferral] Stock ${stock.id}: Failed to refetch final market observation. Deferring new LP quotes.`);
+              continue;
             }
+            currentPlan = evaluateLpStrategy(finalObs, lpAgent, this.lpConfig, lpEffectParams);
           }
 
-          // 미해결 취소 주문 ID 수집: 시도 후 실패한 주문 및 최종 계획에 여전히 남은 취소 주문
-          const unresolvedCancelIds = new Set<string>(failedCancelOrderIds);
+          // 미해결 취소 대상 주문 ID 전체 집합 수집
+          const allTargetCancelIds = new Set<string>(failedCancelOrderIds);
           for (const c of currentPlan.cancels) {
-            unresolvedCancelIds.add(c.id);
+            allTargetCancelIds.add(c.id);
           }
 
           // 최신 실제 메모리 DB 장부에서 해당 미해결 주문의 실제 상태 및 잔여 수량 재확인
-          const activeConflictingOrders: OrderRecord[] = [];
-          for (const orderId of unresolvedCancelIds) {
-            const actualOrder = memoryDb.orders.get(orderId);
+          const activeUnresolvedCancels: OrderRecord[] = [];
+          for (const cancelId of allTargetCancelIds) {
+            const actualOrder = memoryDb.orders.get(cancelId);
             if (
               actualOrder &&
               actualOrder.user_id === lpAgent.accountId &&
@@ -629,25 +663,31 @@ export class AgentManager {
             ) {
               const rem = actualOrder.size - (actualOrder.filled || 0);
               if (rem > 0) {
-                activeConflictingOrders.push(actualOrder);
+                activeUnresolvedCancels.push(actualOrder);
               }
             }
           }
 
-          // 취소 미완료 주문과 충돌하는 신규 대체 주문은 보류하고 다음 스텝으로 넘김 (중복 호가 생성 방지)
-          // 관계없는 안전한 호가는 제출 허용
-          const safeNewOrders = currentPlan.newOrders.filter((nOrd) => {
-            if (nOrd.replacesOrderId && unresolvedCancelIds.has(nOrd.replacesOrderId)) {
-              return false;
-            }
-            const hasConflict = activeConflictingOrders.some(
-              (o) => o.side === nOrd.side && o.price === nOrd.price
+          // 보수적 안전 정책: 취소 대상 주문 중 단 하나라도 미해결 활성 상태로 남아있으면,
+          // 동일 가격/다른 가격 불문하고 해당 종목의 신규 호가 제출을 이번 스텝에서 전면 보류하고 다음 스텝으로 이월!
+          if (activeUnresolvedCancels.length > 0) {
+            this.lpDeferrals.set(stock.id, {
+              stockId: stock.id,
+              reason: 'unresolved_active_cancel_orders',
+              unresolvedOrderIds: activeUnresolvedCancels.map((o) => o.id),
+              simTime,
+            });
+            console.warn(
+              `[LP Deferral] Stock ${stock.id} (${stock.ticker}): ${activeUnresolvedCancels.length} unresolved cancel order(s) remain active ([${activeUnresolvedCancels.map((o) => `${o.id}:${o.side}@${o.price}`).join(', ')}]). Deferring all new LP quote submissions for this stock until next step.`
             );
-            return !hasConflict;
-          });
+            continue;
+          }
+
+          // 모든 취소 대상이 정상 해소되었으므로 이전 보류 기록 해제
+          this.lpDeferrals.delete(stock.id);
 
           // 5. 기존 주문 서비스로 제출
-          await this.submitLpOrders(lpAgent, stock.id, safeNewOrders, simTime);
+          await this.submitLpOrders(lpAgent, stock.id, currentPlan.newOrders, simTime);
         } else {
           // 기존 실행 경로 (효과 OFF): 단일 장부 기준 계획으로 취소 후 제출 (동작 보존)
           const plan = evaluateLpStrategy(obs, lpAgent, this.lpConfig);
@@ -1156,6 +1196,7 @@ export class AgentManager {
     this.uncertaintyMap.clear();
     this.lastObservation = null;
     this.emptyBookStockRatio = 0;
+    this.lpDeferrals.clear();
 
     this.registerDefaultAgents();
     this.initFundamentals();

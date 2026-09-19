@@ -4327,3 +4327,30 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
   - 종합 리뷰 수정 검증(`scripts/test-stage2-review-fixes.ts`): 전수 통과 (Exit Code 0).
   - 전체 회귀 테스트: `test-regime-effects-stage2.ts`, `test-market-regime-foundation.ts`, `test-agent-based-market.ts`, `test-order-security-and-atomic.ts`, `test-transaction-isolation.ts`, `test-order-risk-and-settlement.ts` 전수 통과 (Exit Code 0).
   - 빌드 및 린트 검증: `npx tsc --noEmit` (Exit Code 0), `npm run build` (Exit Code 0), `git diff --check` (Exit Code 0).
+
+---
+## 2026-09-20 00:46
+
+**요청 요약:** STOCKSYS 최신 코드 리뷰(c07bd76) 2대 문제 수정 (1단계: 효과 OFF에서 발생한 추세 매수 회귀 복원 [비교 기준 커밋 827dd60 대비 9,900원 limit 복원], 2단계: 가격 변경을 동반한 LP 교체의 취소 실패 방어 [8대 필수 사례 A~H 보수적 전면 보류 정책 적용]) 및 회귀·빌드 검증.
+
+**수행 결과:**
+- `lib/engine/simulation/strategies/trendStrategy.ts`:
+  - `c07bd76`에서 완화되었던 매수 긴급도 조건을 기준 커밋 `827dd60`과 동일하게 복원: `normTrend >= effectiveBuyThreshold && agent.urgency >= 0.5 && obs.bestAsk !== null`.
+  - 가격 결정 로직 복원: 긴급 매수 시 `obs.bestAsk!`, 일반 매수 시 `obs.bestBid !== null ? obs.bestBid : currentPrice`.
+  - `urgency < 0.5`인 경우 10,100원 IOC 대신 9,900원 Limit으로 정상 발주되도록 회귀 복원 확인.
+  - 기존 높은 불확실성 매수 억제 및 보유 포지션 위험 축소 매도 로직 유지.
+- `lib/engine/simulation/strategies/lpStrategy.ts`:
+  - `replacesOrderId` 매핑 확장: 동일 가격뿐 아니라 호가 가격이 변경되어 취소될 기존 미유지 호가(`!retainedOrderIds.has(o.id)`)도 신규 호가의 `replacesOrderId`로 매핑하여 교체 의도를 추적.
+- `lib/engine/simulation/agentManager.ts`:
+  - `LpDeferralDiagnostic` 진단 인터페이스 및 `lpDeferrals` 맵 추가 (보류 사유, 종목 ID, 미해결 주문 ID, 시각 기록).
+  - 가격 변경/동일 가격 불문하고, 취소 대상 주문 중 단 하나라도 최신 실제 DB에서 `open`/`partial` 상태로 남아있거나 관측 재조회 실패 시 해당 종목의 신규 LP 주문 제출을 이번 스텝에서 보류하고 다음 스텝으로 이월하는 보수적 안전 정책 적용.
+  - 다음 스텝에서 취소 성공/체결/해소 시 보류 기록이 정상 해제되고 최신 장부로 재계획.
+  - 다른 종목/타 계좌/사용자 주문에는 영향이 없도록 종목 단위 격리 보장.
+- 검증 및 테스트:
+  - `scripts/test-comparison-827dd60.ts`: 827dd60 전략 코드와 현재 수정 코드를 96개 입력 조합(모든 urgency, trend, orderbook)에 대해 효과 OFF 비교 수행 -> 100% 비트 단위 일치 검증 (Exit Code 0).
+  - `scripts/test-stage2-review-fixes-v2.ts`:
+    - 1단계: 9,900원 limit 1,000주 복원, urgency 구간별(0.2 미만, 0.2~0.5, 0.5 이상), normTrend > 0.6 & urgency 저조, bestAsk 유/무, 불확실성 매수 억제 및 위험 축소 매도 검증 통과.
+    - 2단계: LP 취소 실패 방어 8대 필수 사례 (A: 동일 가격 축소 실패 보류, B: 가격 변경 교체 실패 보류, C: 다음 스텝 취소 후 재호가, D: 동일 스텝 재시도 성공, E: 취소 대기 중 부분/전량체결, F: 관측 조회 실패 시 보류, G: 타 종목 정상 지속, H: 예산 부족 지속 가능 주문 유지) 전수 검증 통과 (Exit Code 0).
+  - 전체 회귀 테스트 통과: `test-stage2-review-fixes.ts`, `test-regime-effects-stage2.ts`, `test-market-regime-foundation.ts`, `test-agent-based-market.ts`, `test-order-security-and-atomic.ts`, `test-transaction-isolation.ts`, `test-order-risk-and-settlement.ts` (전부 Exit Code 0).
+  - 빌드 및 정적 검사 통과: `npx tsc --noEmit` (Exit Code 0), `npm run build` (Exit Code 0), `git diff --check` (Exit Code 0).
+

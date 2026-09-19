@@ -169,6 +169,7 @@ export function evaluateLpStrategy(
   const existingAsks = existingLpOrders.filter((o) => o.side === 'sell');
 
   const retainedOrderIds = new Set<string>();
+  const replacedOrderIds = new Set<string>();
 
   // Process Bids:
   let unallocatedCash = Math.max(0, obs.account.availableCash);
@@ -205,6 +206,7 @@ export function evaluateLpStrategy(
       const maxAffordable = Math.floor(unallocatedCash / costPerShare);
       const actualSize = Math.min(sustainableTargetSize, maxAffordable);
       if (actualSize > 0) {
+        replacedOrderIds.add(matchingResting.id);
         newOrders.push({ side: 'buy', price: des.price, size: actualSize, replacesOrderId: matchingResting.id });
         unallocatedCash -= actualSize * costPerShare;
       }
@@ -217,7 +219,19 @@ export function evaluateLpStrategy(
       }
       const actualSize = Math.min(des.size, maxAffordable);
       if (actualSize > 0) {
-        newOrders.push({ side: 'buy', price: des.price, size: actualSize });
+        // 가격 변경으로 취소될 동일 방향 기존 미유지 호가가 있다면 대체 주문으로 매핑
+        const candidateReplace = existingBids.find(
+          (o) =>
+            !retainedOrderIds.has(o.id) &&
+            !replacedOrderIds.has(o.id) &&
+            (o.status === 'open' || o.status === 'partial')
+        );
+        let replacesOrderId: string | undefined = undefined;
+        if (candidateReplace) {
+          replacedOrderIds.add(candidateReplace.id);
+          replacesOrderId = candidateReplace.id;
+        }
+        newOrders.push({ side: 'buy', price: des.price, size: actualSize, replacesOrderId });
         unallocatedCash -= actualSize * costPerShare;
       }
     }
@@ -250,6 +264,7 @@ export function evaluateLpStrategy(
 
       const maxSellable = Math.min(sustainableTargetSize, unallocatedHolding);
       if (maxSellable > 0) {
+        replacedOrderIds.add(matchingResting.id);
         newOrders.push({ side: 'sell', price: des.price, size: maxSellable, replacesOrderId: matchingResting.id });
         unallocatedHolding -= maxSellable;
       }
@@ -258,7 +273,18 @@ export function evaluateLpStrategy(
       if (maxSellable <= 0) {
         continue;
       }
-      newOrders.push({ side: 'sell', price: des.price, size: maxSellable });
+      const candidateReplace = existingAsks.find(
+        (o) =>
+          !retainedOrderIds.has(o.id) &&
+          !replacedOrderIds.has(o.id) &&
+          (o.status === 'open' || o.status === 'partial')
+      );
+      let replacesOrderId: string | undefined = undefined;
+      if (candidateReplace) {
+        replacedOrderIds.add(candidateReplace.id);
+        replacesOrderId = candidateReplace.id;
+      }
+      newOrders.push({ side: 'sell', price: des.price, size: maxSellable, replacesOrderId });
       unallocatedHolding -= maxSellable;
     }
   }

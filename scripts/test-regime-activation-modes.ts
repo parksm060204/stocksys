@@ -189,12 +189,42 @@ async function runAllTests(): Promise<void> {
     assert(Boolean(_typeTestRunner), '1.3-B createHeadlessSimulationRunner 옵션 타입에서 capabilityVerifier 배제 확인');
 
     // 런타임에 임의 verifier를 options로 강제 주입하려 해도 내부 operational verifier로 고정됨
-    const fakeVerifier = { verifyAndConsume: () => ({ success: true }), pruneExpiredConsumed: () => {} };
+    const fakeVerifier = { verifyAndConsume: () => ({ success: true }) };
     const forcedMgr = new AgentManager(42, START_EPOCH_MS, { capabilityVerifier: fakeVerifier } as any);
     assert(
       (forcedMgr as any).capabilityVerifier instanceof OperationalRegimeCapabilityVerifier,
       '1.3-C 런타임에 capabilityVerifier 주입 시도해도 OperationalRegimeCapabilityVerifier 강제 유지'
     );
+
+    // [P1 수정 검증 1] verifier 인스턴스에 pruneExpiredConsumed 공개 메서드가 존재하지 않음 확인
+    const opVerifierInstance = new OperationalRegimeCapabilityVerifier();
+    assert(
+      typeof (opVerifierInstance as any).pruneExpiredConsumed === 'undefined',
+      '1.3-D pruneExpiredConsumed 공개 메서드 완전 제거 확인 (인터페이스 및 클래스)'
+    );
+
+    // [P1 수정 검증 2] 악의적인 nowMs: MAX_SAFE_INTEGER 주입을 통한 process-wide 저장소 삭제 공격 원천 차단
+    {
+      const capAttack = issueRealCapability();
+      const mgrAttack = new AgentManager(42, START_EPOCH_MS);
+      const resInit = mgrAttack.setRegimeEffectsMode('EXPERIMENTAL_ON', { capability: capAttack });
+      assert(resInit.success === true, '1.3-E 정상 capability 1차 소비 성공');
+      mgrAttack.reset(42);
+
+      // 공격 시도: nowMs: MAX_SAFE_INTEGER를 주입하여 기존 소비 기록을 prune 시도
+      const resExploit = mgrAttack.setRegimeEffectsMode('EXPERIMENTAL_ON', {
+        capability: createUnauthenticatedTestCapability(),
+        nowMs: Number.MAX_SAFE_INTEGER,
+      } as any);
+      assert(!resExploit.success, '1.3-F 위조 capability 및 MAX_SAFE_INTEGER 주입 거절');
+
+      // 기존 소비된 capAttack을 재사용 시도 -> 저장소가 비워지지 않고 보존되어 ALREADY_CONSUMED 거절되어야 함
+      const resReplay = mgrAttack.setRegimeEffectsMode('EXPERIMENTAL_ON', { capability: capAttack });
+      assert(
+        !resReplay.success && resReplay.errorCode === 'ALREADY_CONSUMED',
+        '1.3-G nowMs 주입 공격 후에도 기존 소비 기록이 보존되어 ALREADY_CONSUMED 거절 (P1 공격 차단 성공)'
+      );
+    }
 
     // NODE_ENV 무관 fail-closed 검증 (staging, dev, preview, test, production, undefined)
     const envsToTest = ['development', 'staging', 'test', undefined, 'production'];
@@ -207,7 +237,7 @@ async function runAllTests(): Promise<void> {
         const testEnvMgr = new AgentManager(42, START_EPOCH_MS);
         const unauthCap = createUnauthenticatedTestCapability();
         const res = testEnvMgr.setRegimeEffectsMode('EXPERIMENTAL_ON', { capability: unauthCap });
-        assert(!res.success, `1.3-D NODE_ENV=${env} 에서 비인가 capability 거절 확인 (fail-open 없음)`);
+        assert(!res.success, `1.3-H NODE_ENV=${env} 에서 비인가 capability 거절 확인 (fail-open 없음)`);
       } finally {
         if (prevEnv === undefined) delete envRecord.NODE_ENV;
         else envRecord.NODE_ENV = prevEnv;
@@ -215,16 +245,32 @@ async function runAllTests(): Promise<void> {
     }
   }
 
-  // 1.4 정상 발급 경로 및 환경변수 격리 (Fail-closed)
+  // 1.4 정상 발급 경로 및 환경변수 격리 (Fail-closed & 최소 키 길이 32자 검증)
   {
     const oldKey = process.env.REGIME_EXPERIMENT_AUTH_KEY;
     try {
+      // 1. 환경변수 미설정 시 거절
       delete process.env.REGIME_EXPERIMENT_AUTH_KEY;
-      const provider = new ServerRegimeAuthorizationProvider();
-      assert(!provider.issueCapability({ secretKey: 'any' }).success, '1.4-A 환경변수 미설정 시 발급 거절');
-      assert(!provider.issueCapability({ secretKey: 'STOCKSYS_REGIME_ADMIN' }).success, '1.4-B 과거 기본키 거절');
-      assert(!provider.issueCapability({ secretKey: 'TEST_PERMITTED' }).success, '1.4-C 과거 테스트키 거절');
-      assert(!provider.issueCapability({ secretKey: 'too-short-secret-key' }).success, '1.4-D 최소 길이(32자) 미만 키 거절');
+      const providerUnset = new ServerRegimeAuthorizationProvider();
+      assert(!providerUnset.issueCapability({ secretKey: 'any' }).success, '1.4-A 환경변수 미설정 시 발급 거절');
+      assert(!providerUnset.issueCapability({ secretKey: 'STOCKSYS_REGIME_ADMIN' }).success, '1.4-B 과거 기본키 거절');
+      assert(!providerUnset.issueCapability({ secretKey: 'TEST_PERMITTED' }).success, '1.4-C 과거 테스트키 거절');
+
+      // 2. [P2 수정 검증] 환경변수와 일치하지만 32자 미만(8~31자)인 키 거절 정책 검증
+      process.env.REGIME_EXPERIMENT_AUTH_KEY = 'short-secret-key-only-26char';
+      const shortKeyProvider = new ServerRegimeAuthorizationProvider();
+      const shortRes = shortKeyProvider.issueCapability({ secretKey: 'short-secret-key-only-26char' });
+      assert(
+        !shortRes.success && Boolean(shortRes.error && shortRes.error.includes('32자')),
+        '1.4-D 환경변수와 비밀키가 동일하더라도 32자 미만(26자) 키 거절 확인 (P2 정책 준수)'
+      );
+
+      // 3. 32자 이상 올바른 키 설정 시 정상 발급
+      const valid32Key = 'production-grade-auth-key-for-test-39824';
+      process.env.REGIME_EXPERIMENT_AUTH_KEY = valid32Key;
+      const validProvider = new ServerRegimeAuthorizationProvider();
+      const validRes = validProvider.issueCapability({ secretKey: valid32Key });
+      assert(validRes.success === true, '1.4-E 32자 이상 올바른 비밀키 시 정상 발급 성공');
     } finally {
       if (oldKey === undefined) {
         delete process.env.REGIME_EXPERIMENT_AUTH_KEY;
@@ -232,7 +278,7 @@ async function runAllTests(): Promise<void> {
         process.env.REGIME_EXPERIMENT_AUTH_KEY = oldKey;
       }
     }
-    assert(process.env.REGIME_EXPERIMENT_AUTH_KEY === oldKey, '1.4-E 환경변수 try/finally 완벽 복원 확인');
+    assert(process.env.REGIME_EXPERIMENT_AUTH_KEY === oldKey, '1.4-F 환경변수 try/finally 완벽 복원 확인');
   }
 
   // 1.5 올바른 인증 키 capability 운영 verifier 통과 및 가짜/만료/위조 객체 거절
@@ -242,18 +288,20 @@ async function runAllTests(): Promise<void> {
     const operationalVerifier = new OperationalRegimeCapabilityVerifier();
     const opNow = Date.now();
 
+    // 순수 시간 검증 함수 isValidRegimeExperimentCapability를 통한 경계 조건 검증
     assert(isValidRegimeExperimentCapability(validCap, opNow), '1.5-A 올바른 키로 발급된 capability 유효');
     assert(isValidRegimeExperimentCapability(validCap, validCap.expiresAt - 1), '1.5-B 만료 1ms 직전까지 유효');
     assert(!isValidRegimeExperimentCapability(validCap, validCap.expiresAt), '1.5-C 만료 시각(nowMs >= expiresAt) 즉시 거절');
     assert(!isValidRegimeExperimentCapability(validCap, validCap.expiresAt + 1000), '1.5-D 만료 이후 거절');
 
-    const opVerifyResult = operationalVerifier.verifyAndConsume(validCap, opNow);
+    // 운영 verifier는 내부 wall-clock을 읽어 검증 (외부 nowMs 전달 불필요)
+    const opVerifyResult = operationalVerifier.verifyAndConsume(validCap);
     assert(opVerifyResult.success, '1.5-E 올바른 인증 키를 통한 Capability만 운영 verifier 통과');
 
     // 테스트/가짜 capability는 운영 verifier에서 엄격히 거절됨 (운영 Symbol 부재)
     const fakeCap = createUnauthenticatedTestCapability(60000, opNow);
     assert(!isValidRegimeExperimentCapability(fakeCap, opNow), '1.5-F 테스트 가짜 객체 isValidRegimeExperimentCapability 거절');
-    const fakeAgainstOp = operationalVerifier.verifyAndConsume(fakeCap, opNow);
+    const fakeAgainstOp = operationalVerifier.verifyAndConsume(fakeCap);
     assert(!fakeAgainstOp.success, '1.5-G 테스트 가짜 객체 운영 verifier 거절');
 
     // 미래 발급 (클록 스큐 초과)
@@ -272,19 +320,18 @@ async function runAllTests(): Promise<void> {
   // 1.6 소비 시점 3대 상태 구분 및 단회용 정책 정밀 검증
   {
     memoryDb.resetToSeedData();
-    const baseNow = Date.now();
     const mgr = new AgentManager(42, START_EPOCH_MS);
 
     const cap1 = issueRealCapability();
     const cap2 = issueRealCapability();
 
     // [케이스 1] 신규 EXPERIMENTAL_ON 전환 예약 성공 시 정확히 1회 소비
-    const res1 = mgr.setRegimeEffectsMode('EXPERIMENTAL_ON', { capability: cap1, nowMs: baseNow });
+    const res1 = mgr.setRegimeEffectsMode('EXPERIMENTAL_ON', { capability: cap1 });
     assert(res1.success === true, '1.6-A 신규 EXPERIMENTAL_ON 1차 전환 예약 성공');
     assert(mgr.getRegimeModeDiagnostics().pendingMode === 'EXPERIMENTAL_ON', '1.6-B pendingMode === EXPERIMENTAL_ON');
 
     // [케이스 2] 동일한 모드 전환이 이미 pending 대기 중인 경우 -> 중복 예약 no-op, capability 미소비 보존
-    const resDup = mgr.setRegimeEffectsMode('EXPERIMENTAL_ON', { capability: cap2, nowMs: baseNow + 100 });
+    const resDup = mgr.setRegimeEffectsMode('EXPERIMENTAL_ON', { capability: cap2 });
     assert(resDup.success === true, '1.6-C 동일 모드 대기 중 중복 예약 성공 (no-op)');
     assert(resDup.message.includes('대기 중'), '1.6-D 대기 중 메시지 확인');
 
@@ -294,7 +341,7 @@ async function runAllTests(): Promise<void> {
     assert(mgr.getRegimeModeDiagnostics().pendingMode === null, '1.6-F pendingMode 해제 (null)');
 
     // [케이스 3] 현재 모드와 요청 모드가 같고 pending이 없는 경우 -> no-op 응답, capability 미소비 보존
-    const resNoop = mgr.setRegimeEffectsMode('EXPERIMENTAL_ON', { capability: cap2, nowMs: baseNow + 200 });
+    const resNoop = mgr.setRegimeEffectsMode('EXPERIMENTAL_ON', { capability: cap2 });
     assert(resNoop.success === true, '1.6-G 이미 활성 모드인 경우 no-op 응답 반환');
     assert(resNoop.message.includes('이미'), '1.6-H 이미 활성 메시지 확인');
 
@@ -306,36 +353,36 @@ async function runAllTests(): Promise<void> {
 
     // 이제 cap2로 EXPERIMENTAL_ON 재요청 (pending 취소 및 EXPERIMENTAL_ON 유지)
     // 앞서 케이스 2, 3에서 cap2가 미소비 상태로 잘 보존되었으므로 정상 승인 및 이번에 최초 소비됨!
-    const resOverride = mgr.setRegimeEffectsMode('EXPERIMENTAL_ON', { capability: cap2, nowMs: baseNow + 300 });
+    const resOverride = mgr.setRegimeEffectsMode('EXPERIMENTAL_ON', { capability: cap2 });
     assert(resOverride.success === true, '1.6-K pending OFF 취소 및 EXPERIMENTAL_ON 재예약 성공 (cap2 미소비 보존 증명)');
     assert(mgr.getRegimeModeDiagnostics().pendingMode === 'EXPERIMENTAL_ON', '1.6-L pendingMode === EXPERIMENTAL_ON 복원');
 
     // [케이스 5] 이미 소비된 capability 재사용 거절:
     mgr.setRegimeEffectsMode('OFF');
-    const resReuse1 = mgr.setRegimeEffectsMode('EXPERIMENTAL_ON', { capability: cap1, nowMs: baseNow + 400 });
+    const resReuse1 = mgr.setRegimeEffectsMode('EXPERIMENTAL_ON', { capability: cap1 });
     assert(resReuse1.success === false && resReuse1.errorCode === 'ALREADY_CONSUMED', '1.6-M 이미 소비된 cap1 재사용 거절 (ALREADY_CONSUMED)');
 
-    const resReuse2 = mgr.setRegimeEffectsMode('EXPERIMENTAL_ON', { capability: cap2, nowMs: baseNow + 500 });
+    const resReuse2 = mgr.setRegimeEffectsMode('EXPERIMENTAL_ON', { capability: cap2 });
     assert(resReuse2.success === false && resReuse2.errorCode === 'ALREADY_CONSUMED', '1.6-N 이미 소비된 cap2 재사용 거절 (ALREADY_CONSUMED)');
 
     // [케이스 6] 거절된 요청의 capability는 미소비
     const cap3 = issueRealCapability();
-    const fakeRejected = mgr.setRegimeEffectsMode('INVALID_MODE' as any, { capability: cap3, nowMs: baseNow + 600 });
+    const fakeRejected = mgr.setRegimeEffectsMode('INVALID_MODE' as any, { capability: cap3 });
     assert(fakeRejected.success === false, '1.6-O 유효하지 않은 모드 거절');
 
     // cap3가 미소비 상태이므로 정상적인 전환 요청에 유효하게 사용됨을 검증
-    const resValidCap3 = mgr.setRegimeEffectsMode('EXPERIMENTAL_ON', { capability: cap3, nowMs: baseNow + 700 });
+    const resValidCap3 = mgr.setRegimeEffectsMode('EXPERIMENTAL_ON', { capability: cap3 });
     assert(resValidCap3.success === true, '1.6-P 거절된 요청의 cap3는 소비되지 않고 이후 정상 요청에 사용됨 증명');
 
     // [케이스 7] reset 후에도 소비된 capability 재사용 차단
     mgr.reset(42);
-    const resReuseAfterReset = mgr.setRegimeEffectsMode('EXPERIMENTAL_ON', { capability: cap1, nowMs: baseNow + 800 });
+    const resReuseAfterReset = mgr.setRegimeEffectsMode('EXPERIMENTAL_ON', { capability: cap1 });
     assert(resReuseAfterReset.success === false && resReuseAfterReset.errorCode === 'ALREADY_CONSUMED', '1.6-Q reset 후에도 과거 소비된 cap1 재사용 차단');
   }
 
-  // 1.7 reset 시간 도메인 분리 검증 (요구사항 2)
+  // 1.7 reset 시간 도메인 분리 검증 (시뮬레이션 클록 혼용 차단 & Fake Timer 검증)
   {
-    // 1. 실제 기준 시각 wallNow에서 capability 발급
+    // 1. 실제 기준 시각에서 capability 발급
     const wallNow = Date.now();
     const capResetDomain = issueRealCapability();
 
@@ -343,30 +390,34 @@ async function runAllTests(): Promise<void> {
     const futureStartEpoch = wallNow + 100_000_000;
     const timeMgr = new AgentManager(42, futureStartEpoch);
 
-    // 3. capability를 사용해 전환 예약 (nowMs는 실제 wall-clock 기준 전달)
-    const timeRes1 = timeMgr.setRegimeEffectsMode('EXPERIMENTAL_ON', { capability: capResetDomain, nowMs: wallNow });
-    assert(timeRes1.success === true, '1.7-A 미래 시뮬레이션 클록 매니저에서 wallNow 기준 정상 예약');
+    // 3. capability를 사용해 전환 예약
+    const timeRes1 = timeMgr.setRegimeEffectsMode('EXPERIMENTAL_ON', { capability: capResetDomain });
+    assert(timeRes1.success === true, '1.7-A 미래 시뮬레이션 클록 매니저에서 정상 예약');
 
-    // 4. manager reset (postResetTime = futureStartEpoch가 전달되더라도 capability 소비 기록을 prune하지 않아야 함)
+    // 4. manager reset (postResetTime = futureStartEpoch가 전달되더라도 capability 소비 기록을 prune하지 않음)
     timeMgr.reset(42);
 
-    // 5. 실제 wall-clock 기준으로 capability가 아직 만료되지 않은 시각(wallNow + 5000)에 같은 capability 재사용 시도
-    const timeRes2 = timeMgr.setRegimeEffectsMode('EXPERIMENTAL_ON', { capability: capResetDomain, nowMs: wallNow + 5000 });
-
-    // 6. 반드시 ALREADY_CONSUMED로 거절
+    // 5. 같은 capability 재사용 시도 -> 시뮬레이션 클록으로 만료 정리되지 않았으므로 여전히 ALREADY_CONSUMED
+    const timeRes2 = timeMgr.setRegimeEffectsMode('EXPERIMENTAL_ON', { capability: capResetDomain });
     assert(
       timeRes2.success === false && timeRes2.errorCode === 'ALREADY_CONSUMED',
-      '1.7-B reset 시 시뮬레이션 클록으로 만료 정리하지 않음 -> wallNow 기준 미만료 소비 기록 보존 및 ALREADY_CONSUMED 거절 확인'
+      '1.7-B reset 시 시뮬레이션 클록으로 만료 정리하지 않음 -> 소비 기록 보존 및 ALREADY_CONSUMED 거절 확인'
     );
 
-    // 7. 반대로 실제 만료 시각 이후(capResetDomain.expiresAt + 1000) 새로운 검증이 발생하면 만료된 소비 기록이 정리됨
+    // 6. Fake timer를 사용하여 실제 wall clock 경과 시 만료 정리 동작 검증
     const testCleanVerifier = new OperationalRegimeCapabilityVerifier();
-    testCleanVerifier.pruneExpiredConsumed(capResetDomain.expiresAt + 1000);
-    const expVerify = testCleanVerifier.verifyAndConsume(capResetDomain, capResetDomain.expiresAt + 1000);
-    assert(
-      expVerify.success === false && expVerify.errorCode === 'INVALID_CAPABILITY',
-      '1.7-C 실제 만료 시각 이후에는 만료된 소비 기록이 안전하게 정리됨 확인'
-    );
+    const origNow = Date.now;
+    try {
+      Date.now = () => capResetDomain.expiresAt + 1000;
+      // 만료 후 검증 시 내부 private pruneExpired가 트리거되고, 만료된 capability는 INVALID_CAPABILITY 거절
+      const expVerify = testCleanVerifier.verifyAndConsume(capResetDomain);
+      assert(
+        expVerify.success === false && expVerify.errorCode === 'INVALID_CAPABILITY',
+        '1.7-C Fake timer 경과 후 내부 만료 정리가 정상 수행되고 만료 capability 거절 확인'
+      );
+    } finally {
+      Date.now = origNow;
+    }
   }
 
   // 1.8 manager 간 capability 재사용 차단 및 process-wide 단회용 검증 (요구사항 3)
@@ -405,7 +456,7 @@ async function runAllTests(): Promise<void> {
     );
   }
 
-  // 1.9 1,000건 저장소 포화 시 fail-closed 및 만료 후 복구 검증
+  // 1.9 1,000건 저장소 포화 시 fail-closed 및 Fake Timer 기반 만료 복구 검증
   {
     const satVerifier = new OperationalRegimeCapabilityVerifier();
     const satNow = Date.now();
@@ -417,7 +468,7 @@ async function runAllTests(): Promise<void> {
     while (lastRes.success) {
       const cap = issueRealCapability(authKey);
       satCaps.push(cap);
-      lastRes = satVerifier.verifyAndConsume(cap, satNow);
+      lastRes = satVerifier.verifyAndConsume(cap);
     }
 
     // 1,000건 상한 도달 후 요청 -> fail-closed (거절)
@@ -426,23 +477,27 @@ async function runAllTests(): Promise<void> {
 
     // 1,001번째 이상 추가 요청도 CONSUMED_STORE_SATURATED 거절
     const capOverflow = issueRealCapability(authKey);
-    const rOverflow = satVerifier.verifyAndConsume(capOverflow, satNow);
+    const rOverflow = satVerifier.verifyAndConsume(capOverflow);
     assert(!rOverflow.success && rOverflow.errorCode === 'CONSUMED_STORE_SATURATED', '1.9-C 추가 요청 거절 확인');
 
     // 기존 1,000건 중 첫 번째 항목 재제출 -> 여전히 ALREADY_CONSUMED (삭제되지 않고 보존됨)
-    const rCheckFirst = satVerifier.verifyAndConsume(satCaps[0], satNow);
+    const rCheckFirst = satVerifier.verifyAndConsume(satCaps[0]);
     assert(
       !rCheckFirst.success && rCheckFirst.errorCode === 'ALREADY_CONSUMED',
       '1.9-D 포화 상태에서도 기존 미만료 기록은 삭제되지 않고 온전히 보존됨'
     );
 
-    // 만료 시각 이후(satNow + MAX_CAPABILITY_TTL_MS + 1000)에는 만료 정리(pruneExpiredConsumed)로 1,000건이 정리됨
-    satVerifier.pruneExpiredConsumed(satNow + MAX_CAPABILITY_TTL_MS + 1000);
-
-    // 만료 정리 후 신규 capability 검증 정상 성공 확인
-    const postCleanCap = issueRealCapability(authKey);
-    const rPostClean = satVerifier.verifyAndConsume(postCleanCap, Date.now());
-    assert(rPostClean.success, '1.9-E 만료 정리 후 신규 capability 정상 처리 확인');
+    // Fake timer를 통해 만료 시각(satNow + MAX_CAPABILITY_TTL_MS + 1000)으로 전진
+    // -> 다음 verifyAndConsume 호출 시 내부 private pruneExpired가 만료된 1,000건을 정리하여 새 capability 발급이 다시 성공함
+    const origNow = Date.now;
+    try {
+      Date.now = () => satNow + MAX_CAPABILITY_TTL_MS + 1000;
+      const postCleanCap = issueRealCapability(authKey);
+      const rPostClean = satVerifier.verifyAndConsume(postCleanCap);
+      assert(rPostClean.success, '1.9-E 가상 시간 경과 후 내부 만료 정리가 수행되어 신규 capability 정상 처리 확인');
+    } finally {
+      Date.now = origNow;
+    }
   }
 
   // 1.10 reset 시 감사 이력 시간 역행 방지 및 보존 검증

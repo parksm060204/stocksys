@@ -243,16 +243,13 @@ export class AgentManager {
    */
   public setRegimeEffectsMode(
     mode: RegimeEffectsMode,
-    options?: { capability?: RegimeExperimentCapability; reason?: string; nowMs?: number }
+    options?: { capability?: RegimeExperimentCapability; reason?: string }
   ): { success: boolean; message: string; errorCode?: string } {
     if (!isValidRegimeEffectsMode(mode)) {
       return { success: false, errorCode: 'INVALID_MODE', message: `유효하지 않은 국면 효과 모드입니다: ${mode}` };
     }
 
     const sanitizedReason = sanitizeReason(options?.reason) || `Mode transition to ${mode}`;
-    const nowMs = typeof options?.nowMs === 'number' && Number.isSafeInteger(options.nowMs) && options.nowMs > 0
-      ? options.nowMs
-      : Date.now();
 
     // 1. 현재 모드와 요청 모드가 같고 대기 중인 전환이 없는 경우
     //    -> 성공적인 no-op 응답을 반환하며, capability를 검증하거나 소비하지 않는다.
@@ -273,9 +270,9 @@ export class AgentManager {
     if (mode === 'EXPERIMENTAL_ON') {
       const cap = options?.capability;
 
-      // capabilityVerifier.verifyAndConsume()은:
-      // 1. 만료 항목 정리 2. 유효성 검증 3. 재사용 거절 4. 포화 fail-closed 5. 성공 시 소비
-      const verifyResult = this.capabilityVerifier.verifyAndConsume(cap, nowMs);
+      // verifyAndConsume() 내부에서 신뢰할 수 있는 시스템 시계(Date.now())를 직접 1회 조회
+      // 외부에서 nowMs를 임의로 전달하여 만료 정리를 트리거하는 보안 우회는 원천 차단됨
+      const verifyResult = this.capabilityVerifier.verifyAndConsume(cap);
       if (!verifyResult.success) {
         return {
           success: false,

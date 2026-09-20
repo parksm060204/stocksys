@@ -147,24 +147,18 @@ export interface CapabilityVerificationResult {
 export interface RegimeCapabilityVerifier {
   /**
    * Capability의 유효성을 검증하고 단회용으로 소비한다.
+   * 신뢰 가능한 시스템 시계(Date.now())를 내부에서 직접 조회하여 검증 및 만료 정리를 수행한다.
    * 검증 실패 또는 이미 소비된 경우 success: false.
    * 성공한 경우에만 capability를 소비한다.
    */
   verifyAndConsume(
-    capability: unknown,
-    nowMs: number
+    capability: unknown
   ): CapabilityVerificationResult;
 
   /**
    * 이미 소비된 capability인지 확인한다 (소비하지 않음).
    */
   isConsumed(capabilityId: string): boolean;
-
-  /**
-   * reset 후에도 미만료 소비 기록을 유지한다.
-   * 만료된 소비 기록만 제거한다.
-   */
-  pruneExpiredConsumed(nowMs: number): void;
 }
 
 export interface RegimeAuthorizationProvider {
@@ -186,7 +180,8 @@ export interface RegimeAuthorizationProvider {
  *   공통의 정적 저장소(consumedCapabilities static Map<capabilityId, expiresAt>)를 공유한다.
  * - 한 AgentManager에서 소비된 capability는 다른 AgentManager 또는 새로운 인스턴스에서도 즉시 재사용 거절된다.
  * - AgentManager reset 또는 재생성으로 소비 기록이 초기화되지 않는다.
- * - 검증 수행 직전(verifyAndConsume 내부): expiresAt <= nowMs인 만료 항목만 안전하게 정리한다.
+ * - 검증 수행 직전(verifyAndConsume 내부): 신뢰 가능한 시스템 시계(Date.now()) 기준 만료 항목만 안전하게 내부 private 정리한다.
+ * - 외부에서 임의의 nowMs를 주입하여 저장소를 비우거나 공개 prune 메서드를 호출하는 보안 우회는 원천 차단된다.
  * - 미만료 소비 기록은 저장소 크기 제한 때문에 절대 임의로 삭제하지 않는다.
  * - 안전 상한(1,000건) 도달 후 만료 정리 후에도 포화 상태이면 fail-closed (errorCode: CONSUMED_STORE_SATURATED)로 거절한다.
  * - 성공적으로 EXPERIMENTAL_ON 전환이 예약된 경우에만 단 1회 capability를 소비 등록한다.
@@ -204,11 +199,13 @@ export class OperationalRegimeCapabilityVerifier implements RegimeCapabilityVeri
   private static readonly consumedCapabilities: Map<string, number> = new Map();
 
   public verifyAndConsume(
-    capability: unknown,
-    nowMs: number
+    capability: unknown
   ): CapabilityVerificationResult {
-    // 1. 만료된 소비 기록 정리 (미만료 기록은 절대 삭제하지 않음)
-    this.pruneExpiredConsumed(nowMs);
+    // 외부 조작 불가능한 신뢰할 수 있는 시스템 시계(wall-clock)를 내부에서 단 1회 직접 조회
+    const nowMs = Date.now();
+
+    // 1. 만료된 소비 기록 정리 (신뢰 가능한 현재 시각으로만 내부 private 정리)
+    OperationalRegimeCapabilityVerifier.pruneExpired(nowMs);
 
     // 2. capability 기본 유효성 검증
     if (!isValidRegimeExperimentCapability(capability, nowMs)) {
@@ -237,7 +234,12 @@ export class OperationalRegimeCapabilityVerifier implements RegimeCapabilityVeri
     return OperationalRegimeCapabilityVerifier.consumedCapabilities.has(capabilityId);
   }
 
-  public pruneExpiredConsumed(nowMs: number): void {
+  /**
+   * 신뢰 가능한 wall-clock 기준으로 만료된 항목만 정리하는 내부 private 메서드.
+   * 외부(공개 인터페이스 또는 인스턴스 메서드)에서 임의의 미래 시각을 전달하여
+   * process-wide 저장소를 비우는 보안 우회를 원천 차단한다.
+   */
+  private static pruneExpired(nowMs: number): void {
     for (const [id, expiresAt] of OperationalRegimeCapabilityVerifier.consumedCapabilities) {
       if (expiresAt <= nowMs) {
         OperationalRegimeCapabilityVerifier.consumedCapabilities.delete(id);
@@ -248,7 +250,7 @@ export class OperationalRegimeCapabilityVerifier implements RegimeCapabilityVeri
 
 /**
  * 서버 환경변수(REGIME_EXPERIMENT_AUTH_KEY)를 통한 정규 서버 인가 프로바이더.
- * - fail-closed: 환경변수 미설정 시 발급 거절
+ * - fail-closed: 환경변수 미설정 또는 최소 길이(32자) 미만 시 발급 거절
  * - 취약/과거 기본키 거절
  * - capability 생성은 내부 _createRegimeCapabilityRaw만 사용 (외부 노출 금지)
  */
@@ -263,11 +265,11 @@ export class ServerRegimeAuthorizationProvider implements RegimeAuthorizationPro
   } {
     const requiredKey = process.env.REGIME_EXPERIMENT_AUTH_KEY;
 
-    // Fail-closed: 환경변수 미설정이거나 너무 짧으면 즉시 거절
-    if (!requiredKey || requiredKey.trim().length < 8) {
+    // Fail-closed: 환경변수 미설정이거나 최소 길이(32자) 미만이면 즉시 거절
+    if (!requiredKey || requiredKey.trim().length < 32) {
       return {
         success: false,
-        error: 'REGIME_EXPERIMENT_AUTH_KEY 미설정 또는 길이 부족 (Fail-closed 정책 적용)',
+        error: 'REGIME_EXPERIMENT_AUTH_KEY 미설정 또는 길이 부족 (최소 32자 필수, Fail-closed 정책 적용)',
       };
     }
 

@@ -4721,3 +4721,28 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 - `scripts/test-stage2-review-fixes-v2.ts` & `scripts/test-regime-effects-stage2.ts`:
   - `TestRegimeCapabilityVerifier` 주입 코드 제거 및 시뮬레이션 시각(startMs) 인가 시간 주입 분리.
 - 빌드 및 테스트 전수 검증 통과: `npx tsc --noEmit` (Exit 0), `npm run build` (Exit 0), `test-regime-activation-modes.ts` (Exit 0), `test-market-regime-foundation.ts` (Exit 0), `test-market-regime-scenarios.ts` (Exit 0), `test-market-regime-long-run.ts` (Exit 0), `test-stage2-review-fixes.ts` (Exit 0), `test-stage2-review-fixes-v2.ts` (Exit 0), `test-agent-based-market.ts` (Exit 0), `git diff --check` (Exit 0).
+
+---
+## 2026-09-20 20:31
+
+**요청 요약:** 커밋 da494c7 리뷰 지적사항 반영 - 임의 nowMs 주입 및 공개 prune을 통한 process-wide 소비 기록 삭제 우회(P1) 차단, 최소 키 길이 32자 운영 정책 및 테스트 정합성 확보(P2)
+**수행 결과:**
+- `lib/engine/simulation/regime/regimeAuth.ts`:
+  - `RegimeCapabilityVerifier` 인터페이스 및 `OperationalRegimeCapabilityVerifier` 클래스에서 `pruneExpiredConsumed` 공개 메서드 완전 제거.
+  - 소비 기록 만료 정리를 `private static pruneExpired(nowMs: number)`로 격리하여 외부/동일 프로세스 코드에서 임의 시각 전달을 통한 저장소 초기화 원천 차단.
+  - `verifyAndConsume(capability: unknown)` 시그니처에서 외부 `nowMs` 매개변수를 제거하고, 내부에서 신뢰할 수 있는 단일 시스템 시계(`Date.now()`)를 직접 읽어 만료 정리 및 유효성 검증 수행.
+  - `ServerRegimeAuthorizationProvider`: `requiredKey.trim().length < 32` 검사를 도입하여 32자 미만 인증 키 거절 정책을 명확하게 적용.
+- `lib/engine/simulation/agentManager.ts`:
+  - `setRegimeEffectsMode(mode, options)`의 `options` 타입에서 `nowMs` 필드 완전 제거.
+  - 모드 전환 시 `this.capabilityVerifier.verifyAndConsume(cap)`로 호출하여 외부 호출자의 임의 미래 시각 전달을 통한 저장소 삭제 우회 공격 원천 차단.
+- `scripts/test-regime-activation-modes.ts`:
+  - 1.3: 공개 `pruneExpiredConsumed` 부재 검증 및 `nowMs: MAX_SAFE_INTEGER` 주입 공격 시도 후에도 기존 소비 기록 보존 및 `ALREADY_CONSUMED` 거절 회귀 테스트 추가.
+  - 1.4: 환경변수와 제출키가 동일하더라도 32자 미만(26자)일 때 발급 거절(`error.includes('32자')`) 및 32자 이상 정상 발급 테스트 정합성 보완 (P2).
+  - 1.5, 1.6, 1.7, 1.8, 1.9: 호출자 제공 `nowMs` 인자 전면 제거, Fake timer(`Date.now` 모킹)를 활용하여 공개 prune 메서드 호출 없이 가상 시간 경과 후 내부 만료 정리 및 신규 발급 복구 검증.
+- 검증 완료:
+  - `npx tsc --noEmit` (Exit Code 0)
+  - `npm run build` (Next.js 16.2.9 production build, Exit Code 0)
+  - `npx tsx scripts/test-regime-activation-modes.ts` (전체 통과, Exit Code 0)
+  - `npx tsx scripts/test-market-regime-foundation.ts` (33개 테스트 전체 통과, Exit Code 0)
+  - `npx tsx scripts/test-stage2-review-fixes-v2.ts` (전체 통과, Exit Code 0)
+  - `git diff --check` (공백/줄바꿈 경고 없음, Exit Code 0)

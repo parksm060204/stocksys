@@ -6,7 +6,7 @@ import { withAccountLocks } from '../memoryDb/accountLocks';
 import { snapshotTradingState, rollbackTradingState, TradingSnapshot } from '../memoryDb/memoryTransaction';
 import { calculateTradeFees, executeSettlement, SettlementTrade } from './settlement';
 import { randomUUID } from 'crypto';
-import { AgentManager } from './simulation/agentManager';
+import { AgentManager, AgentManagerOptions } from './simulation/agentManager';
 import { SerialExecutionQueue } from './simulation/executionQueue';
 
 interface GlobalWithEngine {
@@ -565,12 +565,25 @@ export function getLocalStandaloneClient(): any {
 }
 
 /**
+ * Headless 시뮬레이션 러너 전용 안전 옵션 타입.
+ * verifier 또는 인증 구현체를 주입할 수 있는 필드는 엄격히 배제됨.
+ */
+export interface HeadlessSimulationRunnerOptions {
+  enableRegimeEngine?: boolean;
+  /** 국면 효과 모드 ('OFF' | 'SHADOW' 허용. 'EXPERIMENTAL_ON'은 생성자 직접 활성화 금지). 기본값 'OFF'. */
+  regimeEffectsMode?: 'OFF' | 'SHADOW' | 'EXPERIMENTAL_ON';
+  /** @deprecated 생성자 직접 활성화는 금지되며 무시됩니다. 기본값 'OFF'. */
+  enableRegimeEffects?: boolean;
+  regimeEngineConfig?: AgentManagerOptions['regimeEngineConfig'];
+}
+
+/**
  * Creates a standalone, queue-aware headless simulation runner for isolated deterministic tests.
  */
 export function createHeadlessSimulationRunner(
   seed: number = 42,
   startEpochMs: number = 1773500000000,
-  options?: ConstructorParameters<typeof AgentManager>[2]
+  options?: HeadlessSimulationRunnerOptions
 ) {
   const queue = new SerialExecutionQueue();
   const agentManager = new AgentManager(seed, startEpochMs, options);

@@ -4698,3 +4698,26 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
   - 보안 경계 전수 검증(운영 배럴 미노출, 운영 코드 내 test-support 미임포트 정적 검사, 서버 키 미설정/폐기키 거절, 운영 vs 테스트 capability 상호 격리 등).
   - 소비 시점 전수 검증(신규 예약 1회 소비, 중복 pending no-op 미소비, 활성 no-op 미소비, pending OFF 덮어쓰기 소비, 재사용 거절, 거절 시 미소비 보존, reset 후 재사용 차단, 1,000건 포화 fail-closed).
   - 전체 테스트 통과: `scripts/test-regime-activation-modes.ts` (Exit Code 0), `test-market-regime-foundation`, `test-market-regime-scenarios`, `test-market-regime-long-run`, `test-agent-based-market`, `test-causal-market-flow`, `test-order-security-and-atomic`, `test-transaction-isolation`, `test-concurrency-and-stale-ref`, `test-order-risk-and-settlement`, `npx tsc --noEmit` (Exit Code 0), `npm run build` (Exit Code 0), `git diff --check` (Exit Code 0).
+
+---
+## 2026-09-20 18:48
+
+**요청 요약:** Capability 보안 경계 3대 근본 결함 수정 (공개 verifier 주입 경로 제거, reset 시 시뮬레이션 시각 혼용 오류 제거, manager 간 process-wide 단회용 소비 보장)
+**수행 결과:**
+- `lib/engine/simulation/agentManager.ts`:
+  - `AgentManagerOptions` 및 생성자 매개변수에서 `capabilityVerifier` 옵션 완전 제거.
+  - `NODE_ENV === 'production'` 조건 분기를 삭제하고 모든 런타임 환경에서 `OperationalRegimeCapabilityVerifier` 강제 적용.
+  - `reset()` 메서드에서 `pruneExpiredConsumed(postResetTime)` 호출을 완전 제거하여 시뮬레이션 클록과 인증 wall-clock 완전 분리 (reset 후에도 실제 미만료 소비 기록 유지).
+  - `setRegimeEffectsMode()` 반환 DTO에 `errorCode?: string` 명시적 지원.
+- `lib/engine/localStandaloneServer.ts`:
+  - `createHeadlessSimulationRunner`의 매개변수 옵션을 안전 옵션 전용 인터페이스(`HeadlessSimulationRunnerOptions`)로 한정하여 임의 verifier 주입 경로 차단.
+- `lib/engine/simulation/regime/regimeAuth.ts`:
+  - `OperationalRegimeCapabilityVerifier.consumedCapabilities`를 `private static readonly Map<string, number>`(Process-wide singleton)으로 전환하여 동일 프로세스 내 모든 verifier/manager 간 단회용 소비 보장.
+  - 단일 프로세스 메모리 범위 한계 및 다중 인스턴스/수평 확장 환경에서 중앙 원자적 분산 저장소(Redis/DB) 필요성에 대한 기술적 제한 문서화.
+- `scripts/test-support/testRegimeAuth.ts`:
+  - `createTestRegimeCapability`: `ServerRegimeAuthorizationProvider` 정식 발급 및 `try/finally`를 통한 `REGIME_EXPERIMENT_AUTH_KEY` 엄격 복원 구조로 개편 (미정의 환경변수는 `delete` 처리).
+- `scripts/test-regime-activation-modes.ts`:
+  - 공개 verifier 주입 경로 차단(@ts-expect-error 및 런타임 검증, NODE_ENV 무관 검증), 시간 도메인 분리(미래 시뮬레이션 시간 reset 후 wall-clock 미만료 capability 재사용 거절), manager 간 재사용 차단, 1,000건 포화 fail-closed 회귀 테스트 전수 추가 및 통과.
+- `scripts/test-stage2-review-fixes-v2.ts` & `scripts/test-regime-effects-stage2.ts`:
+  - `TestRegimeCapabilityVerifier` 주입 코드 제거 및 시뮬레이션 시각(startMs) 인가 시간 주입 분리.
+- 빌드 및 테스트 전수 검증 통과: `npx tsc --noEmit` (Exit 0), `npm run build` (Exit 0), `test-regime-activation-modes.ts` (Exit 0), `test-market-regime-foundation.ts` (Exit 0), `test-market-regime-scenarios.ts` (Exit 0), `test-market-regime-long-run.ts` (Exit 0), `test-stage2-review-fixes.ts` (Exit 0), `test-stage2-review-fixes-v2.ts` (Exit 0), `test-agent-based-market.ts` (Exit 0), `git diff --check` (Exit 0).

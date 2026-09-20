@@ -70,6 +70,15 @@ import type {
   LpEffectParams,
 } from './regime';
 
+export interface AgentManagerOptions {
+  enableRegimeEngine?: boolean;
+  /** 국면 효과 모드 ('OFF' | 'SHADOW' 허용. 'EXPERIMENTAL_ON'은 생성자 직접 활성화 금지). 기본값 'OFF'. */
+  regimeEffectsMode?: RegimeEffectsMode;
+  /** @deprecated 생성자 직접 활성화는 금지되며 무시됩니다. 기본값 'OFF'. */
+  enableRegimeEffects?: boolean;
+  regimeEngineConfig?: Partial<MarketStateEngineConfig>;
+}
+
 export class AgentManager {
   public clock: SimulationClock;
   public prng: SimPrng;
@@ -145,11 +154,11 @@ export class AgentManager {
   private invariantViolations: InvariantViolationRecord[] = [];
   private reportedInvariantFingerprints: Map<string, number> = new Map();
   /**
-   * Capability 검증·소비 인스턴스 (Dependency Injection).
-   * 운영 기본값: OperationalRegimeCapabilityVerifier
-   * 테스트: scripts/test-support의 TestRegimeCapabilityVerifier를 생성자 옵션으로 주입
+   * Capability 검증·소비 인스턴스.
+   * 운영 환경 및 모든 런타임에서 항상 OperationalRegimeCapabilityVerifier(Process-wide single-use) 사용.
+   * 외부 임의 verifier 주입 경로는 완전히 차단됨.
    */
-  private capabilityVerifier: RegimeCapabilityVerifier;
+  private capabilityVerifier: OperationalRegimeCapabilityVerifier = new OperationalRegimeCapabilityVerifier();
 
   /** 현재 활성 중인 국면 효과 모드 ('OFF' | 'SHADOW' | 'EXPERIMENTAL_ON') */
   public get regimeEffectsMode(): RegimeEffectsMode {
@@ -175,20 +184,7 @@ export class AgentManager {
   constructor(
     seed: number = 42,
     startEpochMs: number = 1773500000000,
-    options?: {
-      enableRegimeEngine?: boolean;
-      /** 국면 효과 모드 ('OFF' | 'SHADOW' 허용. 'EXPERIMENTAL_ON'은 생성자 직접 활성화 금지). 기본값 'OFF'. */
-      regimeEffectsMode?: RegimeEffectsMode;
-      /** @deprecated 생성자 직접 활성화는 금지되며 무시됩니다. 기본값 'OFF'. */
-      enableRegimeEffects?: boolean;
-      regimeEngineConfig?: Partial<MarketStateEngineConfig>;
-      /**
-       * Capability 검증기 DI (Dependency Injection).
-       * 생략 시 OperationalRegimeCapabilityVerifier(운영 기본값) 사용.
-       * 테스트에서만 TestRegimeCapabilityVerifier를 주입하라.
-       */
-      capabilityVerifier?: RegimeCapabilityVerifier;
-    }
+    options?: AgentManagerOptions
   ) {
     this.enableRegimeEngine = options?.enableRegimeEngine ?? true;
 
@@ -213,15 +209,8 @@ export class AgentManager {
       );
     }
 
-    // Capability 검증기: 프로덕션 환경에서는 임의 verifier 주입을 엄격히 차단 (운영 인증 우회 방지)
-    if (process.env.NODE_ENV === 'production' && options?.capabilityVerifier) {
-      console.warn(
-        '[AgentManager] 보안 경계 경고: 프로덕션 환경에서는 커스텀 capabilityVerifier 주입이 금지됩니다. OperationalRegimeCapabilityVerifier가 강제 적용됩니다.'
-      );
-      this.capabilityVerifier = new OperationalRegimeCapabilityVerifier();
-    } else {
-      this.capabilityVerifier = options?.capabilityVerifier ?? new OperationalRegimeCapabilityVerifier();
-    }
+    // Capability 검증기: 항상 단일화된 운영 검증기(Process-wide singleton 저장소 공유)를 직접 사용
+    this.capabilityVerifier = new OperationalRegimeCapabilityVerifier();
 
     this.clock = new SimulationClock(startEpochMs, 1.0);
     this.prng = new SimPrng(seed);
@@ -255,9 +244,9 @@ export class AgentManager {
   public setRegimeEffectsMode(
     mode: RegimeEffectsMode,
     options?: { capability?: RegimeExperimentCapability; reason?: string; nowMs?: number }
-  ): { success: boolean; message: string } {
+  ): { success: boolean; message: string; errorCode?: string } {
     if (!isValidRegimeEffectsMode(mode)) {
-      return { success: false, message: `유효하지 않은 국면 효과 모드입니다: ${mode}` };
+      return { success: false, errorCode: 'INVALID_MODE', message: `유효하지 않은 국면 효과 모드입니다: ${mode}` };
     }
 
     const sanitizedReason = sanitizeReason(options?.reason) || `Mode transition to ${mode}`;
@@ -290,6 +279,7 @@ export class AgentManager {
       if (!verifyResult.success) {
         return {
           success: false,
+          errorCode: verifyResult.errorCode,
           message: `비인가 요청: EXPERIMENTAL_ON 모드 전환 거절 (errorCode: ${verifyResult.errorCode ?? 'UNKNOWN'})`,
         };
       }
@@ -2124,10 +2114,10 @@ export class AgentManager {
     this.invariantViolations = [];
     this.reportedInvariantFingerprints.clear();
 
-    // ── consumed capability: 미만료 기록 유지, 만료된 기록만 정리 ──
-    // reset 후에도 미만료 소비 기록은 반드시 유지해야 한다.
-    // 만료 정리는 verifier에 위임한다.
-    this.capabilityVerifier.pruneExpiredConsumed(postResetTime);
+    // ── consumed capability 정합성 정책 ──
+    // reset은 capability 소비 기록을 삭제하거나 만료 정리하지 않는다.
+    // 만료된 기록은 오직 verifyAndConsume() 실행 직전에만 정리되며,
+    // 아직 만료되지 않은 소비 기록은 reset 후에도 프로세스 전역에서 반드시 유지된다.
 
     // ── 감사 이력 정합성: append 방식, timestamp 역행 방지 ──
     // 이 인메모리 bounded history는 영구 보안 감사 로그가 아니라 최근 진단 이력이다.

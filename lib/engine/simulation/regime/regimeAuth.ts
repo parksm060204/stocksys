@@ -15,8 +15,8 @@
  * - raw capability 생성 함수(_createRegimeCapabilityRaw)는 이 모듈 내부에서만 사용되며,
  *   외부로 export되지 않는다. 운영 capability 생성 권한은 ServerRegimeAuthorizationProvider에만 있다.
  * - 외부 코드는 capability 검증 함수(isValidRegimeExperimentCapability)와
- *   RegimeCapabilityVerifier 인터페이스만 사용한다.
- * - 테스트 코드는 TestRegimeCapabilityVerifier를 DI하며 이 모듈의 내부 함수를 import하지 않는다.
+ *   RegimeCapabilityVerifier 인터페이스 및 OperationalRegimeCapabilityVerifier만 사용한다.
+ * - AgentManager는 환경과 무관하게 OperationalRegimeCapabilityVerifier(Process-wide single-use)를 내부에서 직접 생성하여 사용한다.
  */
 
 import { randomUUID } from 'crypto';
@@ -140,12 +140,9 @@ export interface CapabilityVerificationResult {
 }
 
 /**
- * Capability 검증·소비 인터페이스 (Dependency Injection용).
+ * Capability 검증·소비 인터페이스.
  *
- * 운영 환경: OperationalRegimeCapabilityVerifier (AgentManager 기본)
- * 테스트 환경: scripts/test-support/TestRegimeCapabilityVerifier (테스트 DI)
- *
- * 이 인터페이스를 통해 테스트 코드가 운영 비공개 raw factory에 접근하지 않아도 된다.
+ * 운영 구현체: OperationalRegimeCapabilityVerifier (AgentManager 내부 기본, Process-wide single-use)
  */
 export interface RegimeCapabilityVerifier {
   /**
@@ -184,21 +181,27 @@ export interface RegimeAuthorizationProvider {
 /**
  * 운영 환경 Capability 검증기.
  *
- * consumed capability 저장소 정책:
- * - Map<capabilityId, expiresAt> 구조 사용
- * - 신규 검증 전: expiresAt <= nowMs인 만료 항목만 제거
- * - 미만료 소비 기록은 저장소 크기 제한 때문에 절대 삭제하지 않음
- * - 안전 상한(1,000건) 도달 후 만료 항목이 없으면 fail-closed (신규 거절)
- * - 성공적으로 EXPERIMENTAL_ON 전환이 예약된 경우에만 capability 소비
- * - reset 후에도 미만료 소비 기록 유지
+ * consumed capability 저장소 정책 (Process-wide Single-Use):
+ * - 동일 프로세스 내 모든 OperationalRegimeCapabilityVerifier 및 AgentManager 인스턴스가
+ *   공통의 정적 저장소(consumedCapabilities static Map<capabilityId, expiresAt>)를 공유한다.
+ * - 한 AgentManager에서 소비된 capability는 다른 AgentManager 또는 새로운 인스턴스에서도 즉시 재사용 거절된다.
+ * - AgentManager reset 또는 재생성으로 소비 기록이 초기화되지 않는다.
+ * - 검증 수행 직전(verifyAndConsume 내부): expiresAt <= nowMs인 만료 항목만 안전하게 정리한다.
+ * - 미만료 소비 기록은 저장소 크기 제한 때문에 절대 임의로 삭제하지 않는다.
+ * - 안전 상한(1,000건) 도달 후 만료 정리 후에도 포화 상태이면 fail-closed (errorCode: CONSUMED_STORE_SATURATED)로 거절한다.
+ * - 성공적으로 EXPERIMENTAL_ON 전환이 예약된 경우에만 단 1회 capability를 소비 등록한다.
  *
- * 제한: 단일 프로세스 인스턴스 내에서만 보장됨.
- * 다중 인스턴스 환경(수평 확장)에서는 공유 저장소(Redis 등)가 필요하다.
+ * 🚨 [보안 제약 사항]:
+ * - 이 단회용 소비 보장은 동일 Node.js 프로세스 내 메모리에서만 유효하다.
+ * - 프로세스 재시작 시 인메모리 Map이 소멸되므로, 만료되지 않은 capability가 이론적으로 재사용될 수 있는 창(최대 5분 TTL)이 존재한다.
+ * - 다중 컨테이너 / 멀티프로세스 수평 확장(Scale-out) 환경에서는 인스턴스 간 메모리가 분리되므로,
+ *   중앙 원자적 분산 캐시(Redis `SET key value NX EX ttl` 등) 또는 DB 트랜잭션 기반 저장소가 필수적이다.
+ *   본 모듈은 단일 프로세스 아키텍처 범위 내에서 process-wide 불변식을 엄격히 보장한다.
  */
 export class OperationalRegimeCapabilityVerifier implements RegimeCapabilityVerifier {
-  private readonly CONSUMED_MAX_SIZE = 1000;
-  // Map<capabilityId, expiresAt>
-  private readonly consumedCapabilities: Map<string, number> = new Map();
+  private static readonly CONSUMED_MAX_SIZE = 1000;
+  // Process-wide 싱글톤 소비 저장소: Map<capabilityId, expiresAt>
+  private static readonly consumedCapabilities: Map<string, number> = new Map();
 
   public verifyAndConsume(
     capability: unknown,
@@ -214,46 +217,32 @@ export class OperationalRegimeCapabilityVerifier implements RegimeCapabilityVeri
 
     const cap = capability as RegimeExperimentCapability;
 
-    // 3. 이미 소비된 capability 재사용 거절
-    if (this.consumedCapabilities.has(cap.id)) {
+    // 3. 이미 소비된 capability 재사용 거절 (프로세스 전체 범위)
+    if (OperationalRegimeCapabilityVerifier.consumedCapabilities.has(cap.id)) {
       return { success: false, errorCode: 'ALREADY_CONSUMED' };
     }
 
     // 4. 저장소 포화 검사: 만료 정리 후에도 상한에 도달했다면 fail-closed
-    if (this.consumedCapabilities.size >= this.CONSUMED_MAX_SIZE) {
+    if (OperationalRegimeCapabilityVerifier.consumedCapabilities.size >= OperationalRegimeCapabilityVerifier.CONSUMED_MAX_SIZE) {
       return { success: false, errorCode: 'CONSUMED_STORE_SATURATED' };
     }
 
-    // 5. 소비 기록 (expiresAt 저장으로 미래 만료 정리 가능)
-    this.consumedCapabilities.set(cap.id, cap.expiresAt);
+    // 5. 소비 기록 등록 (expiresAt 저장으로 미래 만료 정리 가능)
+    OperationalRegimeCapabilityVerifier.consumedCapabilities.set(cap.id, cap.expiresAt);
 
     return { success: true };
   }
 
   public isConsumed(capabilityId: string): boolean {
-    return this.consumedCapabilities.has(capabilityId);
+    return OperationalRegimeCapabilityVerifier.consumedCapabilities.has(capabilityId);
   }
 
   public pruneExpiredConsumed(nowMs: number): void {
-    for (const [id, expiresAt] of this.consumedCapabilities) {
+    for (const [id, expiresAt] of OperationalRegimeCapabilityVerifier.consumedCapabilities) {
       if (expiresAt <= nowMs) {
-        this.consumedCapabilities.delete(id);
+        OperationalRegimeCapabilityVerifier.consumedCapabilities.delete(id);
       }
     }
-  }
-
-  /** 테스트 검증용: 현재 소비된 capability 수 (만료 포함) */
-  public getConsumedCount(): number {
-    return this.consumedCapabilities.size;
-  }
-
-  /** 테스트 검증용: 미만료 소비된 capability 수 */
-  public getUnexpiredConsumedCount(nowMs: number): number {
-    let count = 0;
-    for (const expiresAt of this.consumedCapabilities.values()) {
-      if (expiresAt > nowMs) count++;
-    }
-    return count;
   }
 }
 

@@ -41,7 +41,7 @@ import {
   NEUTRAL_BOT_EFFECT_PARAMS,
   NEUTRAL_LP_EFFECT_PARAMS,
 } from '../lib/engine/simulation/regime/regimeEffects';
-import { createTestRegimeCapability, TestRegimeCapabilityVerifier } from './test-support/testRegimeAuth';
+import { createTestRegimeCapability } from './test-support/testRegimeAuth';
 
 function assert(condition: boolean, message: string): void {
   if (!condition) {
@@ -275,14 +275,10 @@ async function runPart2_LpCancelDefenseTests() {
   const seed = 42;
   const startMs = 1773500000000;
   memoryDb.resetToSeedData();
-  const mgr = new AgentManager(seed, startMs, {
-    enableRegimeEngine: true,
-    capabilityVerifier: new TestRegimeCapabilityVerifier(),
-  });
+  const mgr = new AgentManager(seed, startMs, { enableRegimeEngine: true });
   const setRes = mgr.setRegimeEffectsMode('EXPERIMENTAL_ON', {
-    capability: createTestRegimeCapability('test-authorized-token', 60000, startMs),
+    capability: createTestRegimeCapability(),
     reason: 'test_lp_cancel_defense',
-    nowMs: startMs,
   });
   if (!setRes.success) throw new Error(`setRegimeEffectsMode failed: ${setRes.message}`);
   const lpAgent = Array.from(mgr.agents.values()).find((a) => a.participantType === 'lp');
@@ -1007,14 +1003,10 @@ async function runPart2_LpCancelDefenseTests() {
   // ── [사례 H] 예산 부족 상태에서 유지 가능한 주문의 ID·시간 우선순위 보존
   console.log('\n  [Case H] 예산 부족 상태에서 유지 가능한 주문의 ID 및 시간 우선순위 다중 스텝 보존');
   memoryDb.resetToSeedData();
-  const mgrH = new AgentManager(seed, startMs, {
-    enableRegimeEngine: true,
-    capabilityVerifier: new TestRegimeCapabilityVerifier(),
-  });
+  const mgrH = new AgentManager(seed, startMs, { enableRegimeEngine: true });
   const setResH = mgrH.setRegimeEffectsMode('EXPERIMENTAL_ON', {
-    capability: createTestRegimeCapability('test-authorized-token', 60000, startMs),
+    capability: createTestRegimeCapability(),
     reason: 'test_lp_cancel_defense_h',
-    nowMs: startMs,
   });
   if (!setResH.success) throw new Error(`setRegimeEffectsMode mgrH failed: ${setResH.message}`);
   const lpH = Array.from(mgrH.agents.values()).find((a) => a.participantType === 'lp')!;

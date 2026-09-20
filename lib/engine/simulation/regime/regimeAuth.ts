@@ -175,12 +175,13 @@ export interface RegimeAuthorizationProvider {
 /**
  * 운영 환경 Capability 검증기.
  *
- * consumed capability 저장소 정책 (Process-wide Single-Use):
+ * consumed capability 저장소 정책 (Process-wide Single-Use & Module Closure Private):
  * - 동일 프로세스 내 모든 OperationalRegimeCapabilityVerifier 및 AgentManager 인스턴스가
- *   공통의 정적 저장소(consumedCapabilities static Map<capabilityId, expiresAt>)를 공유한다.
+ *   공통의 모듈 비공개 저장소(processWideConsumedCapabilities Map<capabilityId, expiresAt>)를 공유한다.
+ * - 클래스 정적(static) 필드가 아닌 모듈 레벨 클로저로 은닉되어, 런타임 리플렉션(as any)을 통한 임의 접근 및 조작을 원천 차단한다.
  * - 한 AgentManager에서 소비된 capability는 다른 AgentManager 또는 새로운 인스턴스에서도 즉시 재사용 거절된다.
  * - AgentManager reset 또는 재생성으로 소비 기록이 초기화되지 않는다.
- * - 검증 수행 직전(verifyAndConsume 내부): 신뢰 가능한 시스템 시계(Date.now()) 기준 만료 항목만 안전하게 내부 private 정리한다.
+ * - 검증 수행 직전(verifyAndConsume 내부): 신뢰 가능한 시스템 시계(Date.now()) 기준 만료 항목만 안전하게 모듈 비공개 함수(pruneExpiredConsumedModule)로 정리한다.
  * - 외부에서 임의의 nowMs를 주입하여 저장소를 비우거나 공개 prune 메서드를 호출하는 보안 우회는 원천 차단된다.
  * - 미만료 소비 기록은 저장소 크기 제한 때문에 절대 임의로 삭제하지 않는다.
  * - 안전 상한(1,000건) 도달 후 만료 정리 후에도 포화 상태이면 fail-closed (errorCode: CONSUMED_STORE_SATURATED)로 거절한다.

@@ -4776,3 +4776,17 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
   - `npx tsx scripts/test-market-regime-foundation.ts`: 33개 테스트 전체 통과 (Exit Code 0)
   - `npx tsx scripts/test-stage2-review-fixes-v2.ts`: 전체 통과 (Exit Code 0)
   - `git diff --check`: (Exit Code 0)
+
+---
+## 2026-09-20 21:50
+
+**요청 요약:** 커밋 e331a1e 리뷰 지적사항 반영 - [P3] `regimeAuth.ts` 문서 주석을 최신 모듈 비공개 클로저 저장소 구현에 맞게 정정
+**수행 결과:**
+- `lib/engine/simulation/regime/regimeAuth.ts`:
+  - 178~184행의 문서 주석에서 과거 `consumedCapabilities static Map` 표기를 최신 구현인 `processWideConsumedCapabilities module-scoped Map` 및 모듈 비공개 클로저(`pruneExpiredConsumedModule`)로 정정.
+  - 클래스 정적 필드가 아닌 모듈 레벨 클로저 은닉 정책을 문서화하여 향후 유지보수자가 클래스 정적 필드로 오해하지 않도록 정합성 확보.
+- 검증 완료:
+  - `git diff --check`: (Exit Code 0)
+  - `npx tsc --noEmit`: (Exit Code 0)
+  - `npm run lint`: 0 errors (Exit Code 0)
+  - `npx tsx scripts/test-regime-activation-modes.ts`: (Exit Code 0)

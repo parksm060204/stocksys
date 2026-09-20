@@ -14,6 +14,7 @@
 
 import { memoryDb, StockRecord, MarketNewsRecord, OrderRecord } from '../../memoryDb/memoryStore';
 import { LocalMarketService } from '../marketService';
+import { calculateReservedCash, calculateReservedQty, OpenOrderForRisk } from '../orderRisk';
 import { SimulationClock, SimPrng } from './simClock';
 import {
   AgentAccount,
@@ -52,7 +53,14 @@ import {
   isValidRegimeEffectsMode,
   RegimeModeChangeRecord,
   RegimeModeDiagnostics,
+  ShadowDiagnosticsStepRecord,
+  InvariantViolationRecord,
+  InvariantViolationDTO,
+  RegimeExperimentCapability,
+  isValidRegimeExperimentCapability,
+  sanitizeReason,
 } from './regime';
+
 import type {
   AppliedRegimeContext,
   RegimeEffectsContext,
@@ -127,9 +135,13 @@ export class AgentManager {
   public readonly enableRegimeEngine: boolean;
   private _regimeEffectsMode: RegimeEffectsMode = DEFAULT_REGIME_EFFECTS_MODE;
   private pendingEffectsMode: RegimeEffectsMode | null = null;
+  private pendingReason: string | null = null;
   private modeChangeHistory: RegimeModeChangeRecord[] = [];
   public recentDeferralCount: number = 0;
   public invariantViolationCount: number = 0;
+  private shadowDiagnosticsHistory: ShadowDiagnosticsStepRecord[] = [];
+  private invariantViolations: InvariantViolationRecord[] = [];
+  private reportedInvariantFingerprints: Map<string, number> = new Map();
 
   /** 현재 활성 중인 국면 효과 모드 ('OFF' | 'SHADOW' | 'EXPERIMENTAL_ON') */
   public get regimeEffectsMode(): RegimeEffectsMode {
@@ -157,25 +169,34 @@ export class AgentManager {
     startEpochMs: number = 1773500000000,
     options?: {
       enableRegimeEngine?: boolean;
-      /** 국면 효과 모드 ('OFF' | 'SHADOW' | 'EXPERIMENTAL_ON'). 기본값 'OFF'. */
+      /** 국면 효과 모드 ('OFF' | 'SHADOW' 허용. 'EXPERIMENTAL_ON'은 생성자 직접 활성화 금지). 기본값 'OFF'. */
       regimeEffectsMode?: RegimeEffectsMode;
-      /** @deprecated 하위 호환성 유지용. true 시 'EXPERIMENTAL_ON'으로 매핑. 기본 false. */
+      /** @deprecated 생성자 직접 활성화는 금지되며 무시됩니다. 기본값 'OFF'. */
       enableRegimeEffects?: boolean;
       regimeEngineConfig?: Partial<MarketStateEngineConfig>;
     }
   ) {
     this.enableRegimeEngine = options?.enableRegimeEngine ?? true;
 
-    // 모드 초기화: 명시적 regimeEffectsMode 우선 -> 없으면 enableRegimeEffects 매핑 -> 기본 'OFF'
-    if (options?.regimeEffectsMode && isValidRegimeEffectsMode(options.regimeEffectsMode)) {
-      this._regimeEffectsMode = options.regimeEffectsMode;
-    } else if (
+    // 생성자 보안 정책: 'EXPERIMENTAL_ON' 직접 활성화는 엄격히 거절하고 기본값 'OFF' 강제
+    if (options?.regimeEffectsMode === 'EXPERIMENTAL_ON') {
+      console.warn(
+        '[AgentManager] 보안 정책 적용: 생성자에서 EXPERIMENTAL_ON 직접 활성화는 금지됩니다. OFF 모드로 초기화됩니다. 승인된 Capability를 통해 setRegimeEffectsMode()를 사용하십시오.'
+      );
+      this._regimeEffectsMode = 'OFF';
+    } else if (options?.regimeEffectsMode === 'SHADOW') {
+      this._regimeEffectsMode = 'SHADOW';
+    } else {
+      this._regimeEffectsMode = DEFAULT_REGIME_EFFECTS_MODE;
+    }
+
+    if (
       options?.enableRegimeEffects === true ||
       options?.regimeEngineConfig?.regimeEffectsEnabled === true
     ) {
-      this._regimeEffectsMode = 'EXPERIMENTAL_ON';
-    } else {
-      this._regimeEffectsMode = DEFAULT_REGIME_EFFECTS_MODE;
+      console.warn(
+        '[AgentManager] 하위호환 경고: enableRegimeEffects 직접 설정은 더 이상 지원되지 않습니다. OFF 모드로 안전하게 초기화됩니다.'
+      );
     }
 
     this.clock = new SimulationClock(startEpochMs, 1.0);
@@ -195,26 +216,29 @@ export class AgentManager {
 
   /**
    * 안전한 국면 효과 모드 전환 메서드 (3단계).
-   * - 인가 검증: EXPERIMENTAL_ON 전환 시 관리자 인증 확인
+   * - 인가 검증: EXPERIMENTAL_ON 전환 시 불투명 Capability 객체 검증 필수
    * - 무중단 안전 전환: 즉시 이전 상태의 주문·체결을 롤백하거나 취소하지 않고, 다음 스텝 경계에서 적용
+   * - OFF, SHADOW 전환은 안전한 축소 전환이므로 사유 정규화 후 허용
    * - 유효하지 않은 모드 전달 시 명시적 거절
    */
   public setRegimeEffectsMode(
     mode: RegimeEffectsMode,
-    options?: { authKey?: string; reason?: string }
+    options?: { capability?: RegimeExperimentCapability; reason?: string }
   ): { success: boolean; message: string } {
     if (!isValidRegimeEffectsMode(mode)) {
       return { success: false, message: `유효하지 않은 국면 효과 모드입니다: ${mode}` };
     }
 
-    // 비인가 전환 차단: EXPERIMENTAL_ON 활성화 시 관리자/테스트 인가 검증
-    const requiredAuthKey = process.env.REGIME_EXPERIMENT_AUTH_KEY || 'STOCKSYS_REGIME_ADMIN';
-    if (
-      mode === 'EXPERIMENTAL_ON' &&
-      options?.authKey !== requiredAuthKey &&
-      options?.authKey !== 'TEST_PERMITTED'
-    ) {
-      return { success: false, message: '비인가 요청: EXPERIMENTAL_ON 모드 전환 권한이 없습니다.' };
+    const sanitizedReason = sanitizeReason(options?.reason) || `Mode transition to ${mode}`;
+
+    // 비인가 전환 차단: EXPERIMENTAL_ON 활성화 시 Capability 인가 검증
+    if (mode === 'EXPERIMENTAL_ON') {
+      if (!isValidRegimeExperimentCapability(options?.capability)) {
+        return {
+          success: false,
+          message: '비인가 요청: EXPERIMENTAL_ON 모드 전환을 위한 유효한 승인 capability가 필요합니다.',
+        };
+      }
     }
 
     if (mode === this._regimeEffectsMode && this.pendingEffectsMode === null) {
@@ -223,6 +247,7 @@ export class AgentManager {
 
     // 즉시 주문/체결을 롤백하거나 강제 취소하지 않고, 다음 스텝 경계에서 안전하게 적용되도록 예약
     this.pendingEffectsMode = mode;
+    this.pendingReason = sanitizedReason;
     return {
       success: true,
       message: `모드 전환 예약 완료: 다음 스텝 경계에서 ${this._regimeEffectsMode} -> ${mode} 적용 예정`,
@@ -236,6 +261,8 @@ export class AgentManager {
    * - 최근 적용된 배수 목록
    * - 최근 호가 보류(deferral) 횟수
    * - 불변식 위반 횟수 (정상 상태: 0)
+   * - 섀도우 진단 최신 레코드
+   * - 불변식 위반 최근 DTO (민감정보 마스킹)
    */
   public getRegimeModeDiagnostics(): RegimeModeDiagnostics {
     const activeRegimeState = this.enableRegimeEngine ? this.marketStateEngine.getAppliedContext() : null;
@@ -249,8 +276,24 @@ export class AgentManager {
       recentDeferrals: this.recentDeferralCount,
       invariantViolationCount: this.invariantViolationCount,
       modeChangeHistory: [...this.modeChangeHistory],
+      shadowDiagnostics:
+        this.shadowDiagnosticsHistory.length > 0
+          ? this.shadowDiagnosticsHistory[this.shadowDiagnosticsHistory.length - 1]
+          : null,
+      violations: this.invariantViolations.slice(-20).map((v) => ({
+        code: v.code,
+        simulationTime: v.simulationTime,
+        entityType: v.entityType,
+        redactedEntityId:
+          v.entityId.length > 8 ? `${v.entityId.slice(0, 4)}...${v.entityId.slice(-4)}` : v.entityId,
+      })),
     };
   }
+
+  public getShadowDiagnosticsHistory(limit: number = 50): readonly ShadowDiagnosticsStepRecord[] {
+    return this.shadowDiagnosticsHistory.slice(-limit);
+  }
+
 
   public registerDefaultAgents(): void {
     // 1. LP Agent
@@ -549,18 +592,24 @@ export class AgentManager {
     const currentStepId = this.clock.simulationStep;
 
     // 0. 스텝 경계: 대기 중인 국면 효과 모드 전환이 있으면 원자적으로 적용
+    // 0. 스텝 경계: 대기 중인 국면 효과 모드 전환이 있으면 원자적으로 적용
     if (this.pendingEffectsMode !== null) {
       const fromMode = this._regimeEffectsMode;
       const toMode = this.pendingEffectsMode;
+      const reason = this.pendingReason || `Mode transition applied at step boundary ${currentStepId}`;
       this._regimeEffectsMode = toMode;
       this.pendingEffectsMode = null;
+      this.pendingReason = null;
       this.modeChangeHistory.push({
         timestamp: t0,
         fromMode,
         toMode,
         appliedAtStepId: currentStepId,
-        reason: `Mode transition applied at step boundary ${currentStepId}`,
+        reason,
       });
+      if (this.modeChangeHistory.length > 100) {
+        this.modeChangeHistory = this.modeChangeHistory.slice(-100);
+      }
     }
 
     // 1. t0 시점에 적용 예정인 pending 국면 활성화
@@ -601,6 +650,57 @@ export class AgentManager {
           lp_uncertainty: lpEffectParams.uncertaintyMultiplier,
         }
       : {};
+
+    // SHADOW 모드 가상 효과 컨텍스트 준비 (실제 장부/PRNG에는 1비트도 적용하지 않음)
+    const isShadow = this._regimeEffectsMode === 'SHADOW';
+    const virtualRegimeContext: RegimeEffectsContext =
+      isShadow && activeRegimeState
+        ? Object.freeze({
+            enabled: true as const,
+            regime: activeRegimeState.regime,
+            transitionId: activeRegimeState.transitionId,
+            parameters: activeRegimeState.parameters,
+          })
+        : null;
+    const virtualBotEffectParams: BotEffectParams = resolveBotEffectParams(virtualRegimeContext);
+    const virtualLpEffectParams: LpEffectParams = resolveLpEffectParams(virtualRegimeContext);
+    const virtualMultipliers: Record<string, number> = virtualRegimeContext
+      ? {
+          bot_buyArrival: virtualBotEffectParams.buyArrivalMultiplier,
+          bot_sellArrival: virtualBotEffectParams.sellArrivalMultiplier,
+          bot_orderSize: virtualBotEffectParams.orderSizeMultiplier,
+          bot_riskTolerance: virtualBotEffectParams.riskToleranceMultiplier,
+          bot_trendSensitivity: virtualBotEffectParams.trendSensitivity,
+          bot_valueSensitivity: virtualBotEffectParams.valueSensitivity,
+          bot_uncertainty: virtualBotEffectParams.uncertaintyMultiplier,
+          bot_newsHalfLife: virtualBotEffectParams.newsHalfLifeMultiplier,
+          bot_cashPreference: virtualBotEffectParams.cashPreference,
+          lp_spread: virtualLpEffectParams.lpSpreadMultiplier,
+          lp_depth: virtualLpEffectParams.lpDepthMultiplier,
+          lp_uncertainty: virtualLpEffectParams.uncertaintyMultiplier,
+        }
+      : {};
+
+    // 섀도우 진단 통계 수집 변수
+    let actualIntentsCount = 0;
+    let virtualIntentsCount = 0;
+    let actualBuyCount = 0;
+    let actualSellCount = 0;
+    let actualHoldCount = 0;
+    let virtualBuyCount = 0;
+    let virtualSellCount = 0;
+    let virtualHoldCount = 0;
+    let actualOrderVolumeSum = 0;
+    let virtualOrderVolumeSum = 0;
+    let actualLpSpreadSum = 0;
+    let actualLpDepthSum = 0;
+    let virtualLpSpreadSum = 0;
+    let virtualLpDepthSum = 0;
+    let lpEvaluatedStockCount = 0;
+    let directionChangedCount = 0;
+    let sizeChangedCount = 0;
+    let expectedDeferrals = 0;
+
 
     // 2. 시계를 t1 = t0 + dt로 전진
     const { time: simTime, step: nextStepId } = this.clock.advance(dt);
@@ -801,9 +901,28 @@ export class AgentManager {
         } else {
           // 기존 실행 경로 (효과 OFF): 단일 장부 기준 계획으로 취소 후 제출 (동작 보존)
           const plan = evaluateLpStrategy(obs, lpAgent, this.lpConfig);
+          if (isShadow) {
+            lpEvaluatedStockCount++;
+            actualLpDepthSum += plan.newOrders.reduce((sum, o) => sum + o.size, 0);
+            const buys = plan.newOrders.filter((o) => o.side === 'buy');
+            const sells = plan.newOrders.filter((o) => o.side === 'sell');
+            if (buys.length > 0 && sells.length > 0) {
+              actualLpSpreadSum += Math.max(0, sells[0].price - buys[0].price);
+            }
+
+            // 가상 LP 주문 산출 (PRNG 소비 없음, 장부 미반영)
+            const virtualPlan = evaluateLpStrategy(obs, lpAgent, this.lpConfig, virtualLpEffectParams);
+            virtualLpDepthSum += virtualPlan.newOrders.reduce((sum, o) => sum + o.size, 0);
+            const vBuys = virtualPlan.newOrders.filter((o) => o.side === 'buy');
+            const vSells = virtualPlan.newOrders.filter((o) => o.side === 'sell');
+            if (vBuys.length > 0 && vSells.length > 0) {
+              virtualLpSpreadSum += Math.max(0, vSells[0].price - vBuys[0].price);
+            }
+          }
           await this.cancelLpOrders(lpAgent, plan.cancels);
           await this.submitLpOrders(lpAgent, stock.id, plan.newOrders, simTime);
         }
+
       }
     }
 
@@ -815,10 +934,15 @@ export class AgentManager {
 
       const agentPrng = this.agentPrngs.get(accountId) || this.prng;
 
+      // SHADOW 모드: 실제 실행 전 PRNG 상태를 스냅샷하여 격리된 가상 시뮬레이션에 제공
+      const preAgentPrngState = isShadow ? agentPrng.getState() : 0;
+      const actualDecisionsByStock = new Map<string, { action: 'buy' | 'sell' | 'hold'; size: number }>();
+
       // 활동 게이트 (스텝당 정확히 1회 난수 소비 — 효과 OFF와 PRNG 소비 순서 동일)
       let activityRoll = 0;
       let pBuy = 1;
       let pSell = 1;
+      let actualArrived = false;
       if (effectsActive) {
         // 국면 방향별 발생 확률: pCandidate = max(pBuy, pSell)로 활동을 판단하고,
         // 전략이 선택한 방향에 따라 pBuy/pSell로 제출을 필터링한다 (기존 확률로 먼저 탈락시키지 않음).
@@ -834,173 +958,297 @@ export class AgentManager {
         if (activityRoll >= probs.pCandidate) {
           continue;
         }
+        actualArrived = true;
       } else {
-        // 기존 실행 경로 (효과 OFF): 단일 Poisson 도착 확률
+        // 기존 실행 경로 (효과 OFF 및 SHADOW): 단일 Poisson 도착 확률
         const arrivalProb = 1 - Math.exp(-agent.activityRate * dt);
         if (agentPrng.next() >= arrivalProb) {
-          continue;
+          if (isShadow) {
+            actualHoldCount++;
+          }
+          if (!isShadow) {
+            continue;
+          }
+        } else {
+          actualArrived = true;
         }
       }
 
-      // Filter events visible to this agent based on information latency
-      // Internal truth (isRumorFake) is strictly redacted from bot observations
-      const visibleEvents = getVisibleMarketEvents(this.events, simTime, agent.infoLatency ?? 0);
+      if (actualArrived) {
+        // Filter events visible to this agent based on information latency
+        // Internal truth (isRumorFake) is strictly redacted from bot observations
+        const visibleEvents = getVisibleMarketEvents(this.events, simTime, agent.infoLatency ?? 0);
 
-      // Select candidate stocks to evaluate (eliminates fixed-order full evaluation)
-      const candidateStocks = this.selectCandidateStocks(agent, stockList, agentPrng);
+        // Select candidate stocks to evaluate (eliminates fixed-order full evaluation)
+        const candidateStocks = this.selectCandidateStocks(agent, stockList, agentPrng);
 
-      for (const stock of candidateStocks) {
-        const obs = buildMarketObservation(
-          stock.id,
-          accountId,
-          simTime,
-          20,
-          this.attentionMap,
-          this.uncertaintyMap,
-          visibleEvents,
-          windowStatsMap.get(stock.id)
-        );
-        if (!obs) continue;
-
-        let intent: AgentOrderIntent = { action: 'hold', stockId: stock.id };
-
-        if (agent.strategyType === 'value') {
-          const trueF = this.fundamentals.get(stock.id) || stock.current_price;
-          intent = evaluateValueStrategy(
-            obs,
-            agent,
-            this.valueConfig,
-            trueF,
-            agentPrng,
-            effectsActive ? botEffectParams : undefined
+        for (const stock of candidateStocks) {
+          const obs = buildMarketObservation(
+            stock.id,
+            accountId,
+            simTime,
+            20,
+            this.attentionMap,
+            this.uncertaintyMap,
+            visibleEvents,
+            windowStatsMap.get(stock.id)
           );
-        } else if (agent.strategyType === 'trend') {
-          intent = evaluateTrendStrategy(obs, agent, this.trendConfig, effectsActive ? botEffectParams : undefined);
-        }
+          if (!obs) continue;
 
-        if (intent.action === 'hold') {
-          continue;
-        }
+          let intent: AgentOrderIntent = { action: 'hold', stockId: stock.id };
 
-        if (intent.action === 'cancel' && intent.cancelOrderId) {
-          await LocalMarketService.cancelOrder({
-            orderId: intent.cancelOrderId,
-            userId: accountId,
-          });
-          this.diagnostics.recordOrderCancel(agent.strategyType);
-          agent.stats.ordersCancelled++;
-          continue;
-        }
+          if (agent.strategyType === 'value') {
+            const trueF = this.fundamentals.get(stock.id) || stock.current_price;
+            intent = evaluateValueStrategy(
+              obs,
+              agent,
+              this.valueConfig,
+              trueF,
+              agentPrng,
+              effectsActive ? botEffectParams : undefined
+            );
+          } else if (agent.strategyType === 'trend') {
+            intent = evaluateTrendStrategy(obs, agent, this.trendConfig, effectsActive ? botEffectParams : undefined);
+          }
 
-        if (intent.action === 'buy' || intent.action === 'sell') {
-          if (!intent.price || !intent.size || intent.size <= 0) continue;
-
-          // 방향별 발생 확률 필터: 전략 방향을 강제로 뒤집지 않고 제출 여부만 제한한다.
-          // 취소·필수 위험 관리 처리는 위에서 이미 처리되어 이 필터의 영향을 받지 않는다.
-          if (effectsActive) {
-            const directionalGate = intent.action === 'buy' ? pBuy : pSell;
-            if (activityRoll >= directionalGate) {
-              continue;
+          if (isShadow) {
+            const actAction = intent.action === 'buy' || intent.action === 'sell' ? intent.action : 'hold';
+            actualDecisionsByStock.set(stock.id, { action: actAction, size: intent.size || 0 });
+            if (actAction === 'buy') {
+              actualBuyCount++;
+              actualIntentsCount++;
+              actualOrderVolumeSum += intent.size || 0;
+            } else if (actAction === 'sell') {
+              actualSellCount++;
+              actualIntentsCount++;
+              actualOrderVolumeSum += intent.size || 0;
+            } else {
+              actualHoldCount++;
             }
           }
 
-          const seq = this.clock.nextSequence();
-          const decisionId = `decision_${agent.agentId}_${simTime}_${seq}`;
-          const matchRes = await LocalMarketService.submitOrder({
-            userId: accountId,
-            stockId: stock.id,
-            side: intent.action,
-            price: intent.price,
-            size: intent.size,
-            isLp: false,
-            orderType: intent.orderType || 'limit',
-            simulationTime: simTime,
-            createdAt: new Date(simTime).toISOString(),
-            sequence: seq,
-            participantType: 'bot',
-            accountId: accountId,
-            agentId: agent.agentId,
-          });
+          if (intent.action === 'hold') {
+            continue;
+          }
 
-          this.diagnostics.recordOrderSubmit(agent.strategyType);
-          agent.stats.ordersSubmitted++;
+          if (intent.action === 'cancel' && intent.cancelOrderId) {
+            await LocalMarketService.cancelOrder({
+              orderId: intent.cancelOrderId,
+              userId: accountId,
+            });
+            this.diagnostics.recordOrderCancel(agent.strategyType);
+            agent.stats.ordersCancelled++;
+            continue;
+          }
 
-          const causalEventIds = visibleEvents
-            .filter((event) => event.targetStockIds.includes(stock.id) && event.effectiveFrom <= simTime)
-            .map((event) => event.eventId);
+          if (intent.action === 'buy' || intent.action === 'sell') {
+            if (!intent.price || !intent.size || intent.size <= 0) continue;
 
-          this.diagnostics.recordCausalTrace({
-            timestamp: simTime,
-            stockId: stock.id,
-            agentId: agent.agentId,
-            decisionId,
-            orderId: matchRes.orderId,
-            eventIds: causalEventIds,
-            stage: 'ORDER_SUBMIT',
-            details: `[${agent.strategyType}] ${intent.action.toUpperCase()} ${intent.size}sh @ ${intent.price} (reason: ${intent.reason})`,
-            isCausalConnected: true,
-            regime: activeRegimeState?.regime,
-            regimeTransitionId: activeRegimeState?.transitionId,
-            regimeEffectsEnabled: effectsActive,
-            appliedMultipliers: regimeContext ? appliedMultipliers : undefined,
-          });
-
-          if (matchRes.success) {
-            if (matchRes.filledQty > 0) {
-              const fills = matchRes.fills || [{
-                tradeId: '',
-                price: matchRes.avgPrice ?? matchRes.execPrice ?? intent.price,
-                size: matchRes.filledQty,
-                makerOrderId: '',
-                takerOrderId: matchRes.orderId || '',
-              }];
-              const allTradeIds = fills.map((f) => f.tradeId).filter(Boolean);
-
-              for (const fill of fills) {
-                // The incoming order is the taker for every actual match;
-                // IOC is not a reliable proxy for maker/taker role.
-                this.diagnostics.recordOrderFill(agent.strategyType, fill.size, false);
-                agent.stats.fillsCount++;
-                agent.stats.volumeTraded += fill.size;
-
-                const makerOrder = fill.makerOrderId ? memoryDb.orders.get(fill.makerOrderId) : undefined;
-                const makerAgent = makerOrder?.account_id ? this.agents.get(makerOrder.account_id) : undefined;
-                if (makerAgent) {
-                  const makerStrategy = makerAgent.strategyType;
-                  this.diagnostics.recordOrderFill(makerStrategy, fill.size, true);
-                  makerAgent.stats.fillsCount++;
-                  makerAgent.stats.volumeTraded += fill.size;
-                }
-              }
-
-              for (const fill of fills) {
-                this.diagnostics.recordCausalTrace({
-                  timestamp: simTime,
-                  stockId: stock.id,
-                  agentId: agent.agentId,
-                  decisionId,
-                  orderId: matchRes.orderId,
-                  tradeId: fill.tradeId,
-                  tradeIds: allTradeIds,
-                  stage: 'ORDER_FILL',
-                  details: `Filled ${fill.size}sh @ ${fill.price} (weighted order avg ${matchRes.avgPrice ?? matchRes.execPrice ?? intent.price}; makerOrder=${fill.makerOrderId || 'unknown'})`,
-                  isCausalConnected: true,
-                });
+            // 방향별 발생 확률 필터: 전략 방향을 강제로 뒤집지 않고 제출 여부만 제한한다.
+            // 취소·필수 위험 관리 처리는 위에서 이미 처리되어 이 필터의 영향을 받지 않는다.
+            if (effectsActive) {
+              const directionalGate = intent.action === 'buy' ? pBuy : pSell;
+              if (activityRoll >= directionalGate) {
+                continue;
               }
             }
-          } else {
-            this.diagnostics.recordRejection(accountId, stock.id, matchRes.message || 'order_rejected', simTime);
+
+            const seq = this.clock.nextSequence();
+            const decisionId = `decision_${agent.agentId}_${simTime}_${seq}`;
+            const matchRes = await LocalMarketService.submitOrder({
+              userId: accountId,
+              stockId: stock.id,
+              side: intent.action,
+              price: intent.price,
+              size: intent.size,
+              isLp: false,
+              orderType: intent.orderType || 'limit',
+              simulationTime: simTime,
+              createdAt: new Date(simTime).toISOString(),
+              sequence: seq,
+              participantType: 'bot',
+              accountId: accountId,
+              agentId: agent.agentId,
+            });
+
+            this.diagnostics.recordOrderSubmit(agent.strategyType);
+            agent.stats.ordersSubmitted++;
+
+            const causalEventIds = visibleEvents
+              .filter((event) => event.targetStockIds.includes(stock.id) && event.effectiveFrom <= simTime)
+              .map((event) => event.eventId);
+
             this.diagnostics.recordCausalTrace({
               timestamp: simTime,
               stockId: stock.id,
               agentId: agent.agentId,
               decisionId,
               orderId: matchRes.orderId,
-              stage: 'ORDER_REJECTED',
-              details: `Order rejected: ${matchRes.message || 'order_rejected'}`,
+              eventIds: causalEventIds,
+              stage: 'ORDER_SUBMIT',
+              details: `[${agent.strategyType}] ${intent.action.toUpperCase()} ${intent.size}sh @ ${intent.price} (reason: ${intent.reason})`,
               isCausalConnected: true,
+              regime: activeRegimeState?.regime,
+              regimeTransitionId: activeRegimeState?.transitionId,
+              regimeEffectsEnabled: effectsActive,
+              appliedMultipliers: regimeContext ? appliedMultipliers : undefined,
             });
+
+            if (matchRes.success) {
+              if (matchRes.filledQty > 0) {
+                const fills = matchRes.fills || [{
+                  tradeId: '',
+                  price: matchRes.avgPrice ?? matchRes.execPrice ?? intent.price,
+                  size: matchRes.filledQty,
+                  makerOrderId: '',
+                  takerOrderId: matchRes.orderId || '',
+                }];
+                const allTradeIds = fills.map((f) => f.tradeId).filter(Boolean);
+
+                for (const fill of fills) {
+                  // The incoming order is the taker for every actual match;
+                  // IOC is not a reliable proxy for maker/taker role.
+                  this.diagnostics.recordOrderFill(agent.strategyType, fill.size, false);
+                  agent.stats.fillsCount++;
+                  agent.stats.volumeTraded += fill.size;
+
+                  const makerOrder = fill.makerOrderId ? memoryDb.orders.get(fill.makerOrderId) : undefined;
+                  const makerAgent = makerOrder?.account_id ? this.agents.get(makerOrder.account_id) : undefined;
+                  if (makerAgent) {
+                    const makerStrategy = makerAgent.strategyType;
+                    this.diagnostics.recordOrderFill(makerStrategy, fill.size, true);
+                    makerAgent.stats.fillsCount++;
+                    makerAgent.stats.volumeTraded += fill.size;
+                  }
+                }
+
+                for (const fill of fills) {
+                  this.diagnostics.recordCausalTrace({
+                    timestamp: simTime,
+                    stockId: stock.id,
+                    agentId: agent.agentId,
+                    decisionId,
+                    orderId: matchRes.orderId,
+                    tradeId: fill.tradeId,
+                    tradeIds: allTradeIds,
+                    stage: 'ORDER_FILL',
+                    details: `Filled ${fill.size}sh @ ${fill.price} (weighted order avg ${matchRes.avgPrice ?? matchRes.execPrice ?? intent.price}; makerOrder=${fill.makerOrderId || 'unknown'})`,
+                    isCausalConnected: true,
+                  });
+                }
+              }
+            } else {
+              this.diagnostics.recordRejection(accountId, stock.id, matchRes.message || 'order_rejected', simTime);
+              this.diagnostics.recordCausalTrace({
+                timestamp: simTime,
+                stockId: stock.id,
+                agentId: agent.agentId,
+                decisionId,
+                orderId: matchRes.orderId,
+                stage: 'ORDER_REJECTED',
+                details: `Order rejected: ${matchRes.message || 'order_rejected'}`,
+                isCausalConnected: true,
+              });
+            }
           }
+        }
+      }
+
+      // SHADOW 모드: 가상 의사결정 집계 (실제 PRNG에 영향 없는 격리된 fork SimPrng 사용)
+      if (isShadow) {
+        try {
+          const shadowPrng = new SimPrng();
+          shadowPrng.setState(preAgentPrngState);
+
+          const vProbs = computeDirectionalArrivalProbabilities(
+            agent.activityRate,
+            virtualBotEffectParams.buyArrivalMultiplier,
+            virtualBotEffectParams.sellArrivalMultiplier,
+            dt
+          );
+          const vActivityRoll = shadowPrng.next();
+          const vArrived = vActivityRoll < vProbs.pCandidate;
+
+          const virtualDecisionsByStock = new Map<string, { action: 'buy' | 'sell' | 'hold'; size: number }>();
+
+          if (!vArrived) {
+            virtualHoldCount++;
+          } else {
+            const vVisibleEvents = getVisibleMarketEvents(this.events, simTime, agent.infoLatency ?? 0);
+            const vCandidateStocks = this.selectCandidateStocks(agent, stockList, shadowPrng);
+            for (const vStock of vCandidateStocks) {
+              const vObs = buildMarketObservation(
+                vStock.id,
+                accountId,
+                simTime,
+                20,
+                this.attentionMap,
+                this.uncertaintyMap,
+                vVisibleEvents,
+                windowStatsMap.get(vStock.id)
+              );
+              if (!vObs) continue;
+
+              let vIntent: AgentOrderIntent = { action: 'hold', stockId: vStock.id };
+              if (agent.strategyType === 'value') {
+                const trueF = this.fundamentals.get(vStock.id) || vStock.current_price;
+                vIntent = evaluateValueStrategy(
+                  vObs,
+                  agent,
+                  this.valueConfig,
+                  trueF,
+                  shadowPrng,
+                  virtualBotEffectParams
+                );
+              } else if (agent.strategyType === 'trend') {
+                vIntent = evaluateTrendStrategy(vObs, agent, this.trendConfig, virtualBotEffectParams);
+              }
+
+              let vAction: 'buy' | 'sell' | 'hold' = 'hold';
+              let vSize = 0;
+
+              if (vIntent.action === 'buy' || vIntent.action === 'sell') {
+                const vGate = vIntent.action === 'buy' ? vProbs.pBuy : vProbs.pSell;
+                if (vActivityRoll < vGate && vIntent.price && vIntent.size && vIntent.size > 0) {
+                  vAction = vIntent.action;
+                  vSize = vIntent.size;
+                }
+              }
+
+              if (vAction === 'buy') {
+                virtualBuyCount++;
+                virtualIntentsCount++;
+                virtualOrderVolumeSum += vSize;
+              } else if (vAction === 'sell') {
+                virtualSellCount++;
+                virtualIntentsCount++;
+                virtualOrderVolumeSum += vSize;
+              } else {
+                virtualHoldCount++;
+              }
+
+              virtualDecisionsByStock.set(vStock.id, { action: vAction, size: vSize });
+            }
+          }
+
+          // 의사결정 차이 집계 (actual vs virtual)
+          const allEvaluatedStockIds = new Set([
+            ...actualDecisionsByStock.keys(),
+            ...virtualDecisionsByStock.keys(),
+          ]);
+
+          for (const sId of allEvaluatedStockIds) {
+            const act = actualDecisionsByStock.get(sId) || { action: 'hold' as const, size: 0 };
+            const virt = virtualDecisionsByStock.get(sId) || { action: 'hold' as const, size: 0 };
+
+            if (act.action !== virt.action) {
+              directionChangedCount++;
+            } else if (act.action !== 'hold' && act.size !== virt.size) {
+              sizeChangedCount++;
+            }
+          }
+        } catch (shadowErr) {
+          console.warn(`[SHADOW] Error evaluating virtual agent ${agent.agentId}:`, shadowErr);
         }
       }
     }
@@ -1156,6 +1404,42 @@ export class AgentManager {
       // 완성된 t1 스냅샷 원자적 게시
       this.marketStateEngine.publishSnapshot(simTime);
     }
+
+    // SHADOW 모드 스텝 레코드 기록 (bounded buffer 100)
+    if (isShadow) {
+      const shadowRecord: ShadowDiagnosticsStepRecord = {
+        simulationTime: simTime,
+        stepId: currentStepId,
+        detectedRegime: activeRegimeState?.regime ?? null,
+        transitionId: activeRegimeState?.transitionId ?? null,
+        virtualMultipliers,
+        actualIntentsCount,
+        virtualIntentsCount,
+        actualBuyCount,
+        actualSellCount,
+        actualHoldCount,
+        virtualBuyCount,
+        virtualSellCount,
+        virtualHoldCount,
+        actualOrderVolumeSum,
+        virtualOrderVolumeSum,
+        actualLpSpread: lpEvaluatedStockCount > 0 ? actualLpSpreadSum / lpEvaluatedStockCount : 0,
+        virtualLpSpread: lpEvaluatedStockCount > 0 ? virtualLpSpreadSum / lpEvaluatedStockCount : 0,
+        actualLpDepth: lpEvaluatedStockCount > 0 ? actualLpDepthSum / lpEvaluatedStockCount : 0,
+        virtualLpDepth: lpEvaluatedStockCount > 0 ? virtualLpDepthSum / lpEvaluatedStockCount : 0,
+        directionChangedCount,
+        sizeChangedCount,
+        expectedDeferrals,
+        shadowCalculationStatus: 'COMPLETED',
+      };
+      this.shadowDiagnosticsHistory.push(shadowRecord);
+      if (this.shadowDiagnosticsHistory.length > 100) {
+        this.shadowDiagnosticsHistory = this.shadowDiagnosticsHistory.slice(-100);
+      }
+    }
+
+    // 8. 런타임 불변식 검증 (PRNG 미소비, 쿨다운 중복 억제, bounded buffer)
+    this.checkRuntimeInvariants(simTime, currentStepId, effectsActive, regimeContext ? appliedMultipliers : undefined);
   }
 
   /**
@@ -1281,7 +1565,212 @@ export class AgentManager {
     return selected;
   }
 
+  /**
+   * 런타임 불변식 검증 (PRNG 미소비, 핑거프린트 쿨다운 기반 중복 억제, bounded buffer)
+   */
+  public checkRuntimeInvariants(
+    simTime: number,
+    stepId: number,
+    effectsActive: boolean,
+    appliedMultipliers?: Record<string, number>
+  ): void {
+    const reportViolation = (
+      code: string,
+      entityType: 'profile' | 'holding' | 'order' | 'trade' | 'regime' | 'system',
+      entityId: string,
+      details: string
+    ) => {
+      const fingerprint = `${code}:${entityType}:${entityId}`;
+      const lastReported = this.reportedInvariantFingerprints.get(fingerprint);
+      if (lastReported !== undefined && stepId - lastReported < 10) {
+        // 동일 위반 10스텝 쿨다운 중복 억제
+        return;
+      }
+      this.reportedInvariantFingerprints.set(fingerprint, stepId);
+      this.invariantViolationCount++;
+      this.invariantViolations.push({
+        code,
+        simulationTime: simTime,
+        entityType,
+        entityId,
+        message: details,
+        stepId,
+      });
+      if (this.invariantViolations.length > 100) {
+        this.invariantViolations = this.invariantViolations.slice(-100);
+      }
+      if (this.reportedInvariantFingerprints.size > 500) {
+        // 오래된 핑거프린트 정리
+        for (const [fp, reportedStep] of this.reportedInvariantFingerprints.entries()) {
+          if (stepId - reportedStep >= 20) {
+            this.reportedInvariantFingerprints.delete(fp);
+          }
+        }
+      }
+    };
+
+    // 1. 프로필/계좌 잔고 검사: 현금 음수 또는 비유한수
+    for (const [accId, profile] of memoryDb.profiles.entries()) {
+      if (!Number.isFinite(profile.cash) || profile.cash < 0) {
+        reportViolation(
+          'INVALID_CASH_BALANCE',
+          'profile',
+          accId,
+          `Invalid cash balance: ${profile.cash}`
+        );
+      }
+    }
+
+    // 2. 보유량 검사: 수량 음수 또는 비유한수
+    for (const [holdingId, holding] of memoryDb.holdings.entries()) {
+      if (!Number.isFinite(holding.quantity) || holding.quantity < 0) {
+        reportViolation(
+          'INVALID_HOLDING_QUANTITY',
+          'holding',
+          holdingId,
+          `Invalid holding quantity: ${holding.quantity}`
+        );
+      }
+    }
+
+    // 3. 미체결 주문 기반 예약 자산 검사: reserved cash/holding 음수
+    if (memoryDb.orderUserIndex) {
+      for (const [userId, orderIds] of memoryDb.orderUserIndex.entries()) {
+        const userOrders: OpenOrderForRisk[] = [];
+        for (const oId of orderIds) {
+          const ord = memoryDb.orders.get(oId);
+          if (ord && (ord.status === 'open' || ord.status === 'partial')) {
+            userOrders.push(ord as OpenOrderForRisk);
+          }
+        }
+        const resCash = calculateReservedCash(userOrders);
+        if (!Number.isFinite(resCash) || resCash < 0) {
+          reportViolation(
+            'INVALID_RESERVED_CASH',
+            'profile',
+            userId,
+            `Negative or non-finite reserved cash: ${resCash}`
+          );
+        }
+
+        // 보유 종목별 reserved holding 검사
+        const userHoldingIds = memoryDb.holdingUserIndex.get(userId);
+        if (userHoldingIds) {
+          for (const hId of userHoldingIds) {
+            const h = memoryDb.holdings.get(hId);
+            if (h) {
+              const resHold = calculateReservedQty(userOrders, h.stock_id);
+              if (!Number.isFinite(resHold) || resHold < 0) {
+                reportViolation(
+                  'INVALID_RESERVED_HOLDING',
+                  'holding',
+                  hId,
+                  `Negative or non-finite reserved holding: ${resHold}`
+                );
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // 4. 주문 상태 검사: filled < 0 또는 > size, 잔량 <= 0 (open/partial), 비양수/비유한수 size
+    for (const [orderId, order] of memoryDb.orders.entries()) {
+      if (!Number.isFinite(order.size) || order.size <= 0) {
+        reportViolation(
+          'INVALID_ORDER_SIZE',
+          'order',
+          orderId,
+          `Invalid order size: ${order.size}`
+        );
+      }
+      const filled = order.filled || 0;
+      if (!Number.isFinite(filled) || filled < 0 || filled > order.size) {
+        reportViolation(
+          'INVALID_ORDER_FILLED',
+          'order',
+          orderId,
+          `Invalid filled qty: ${filled} / ${order.size}`
+        );
+      }
+      if (order.status === 'open' || order.status === 'partial') {
+        const remaining = order.size - filled;
+        if (remaining <= 0) {
+          reportViolation(
+            'INVALID_OPEN_ORDER_REMAINING',
+            'order',
+            orderId,
+            `Open/partial order has zero or negative remaining qty: ${remaining}`
+          );
+        }
+      }
+    }
+
+    // 5. 최근 체결 검사: 체결 가격·수량이 비양수 또는 비유한수
+    const tradesToCheck = memoryDb.trades.slice(-50);
+    for (const trade of tradesToCheck) {
+      if (!Number.isFinite(trade.price) || trade.price <= 0) {
+        reportViolation(
+          'INVALID_TRADE_PRICE',
+          'trade',
+          trade.id,
+          `Invalid trade price: ${trade.price}`
+        );
+      }
+      if (!Number.isFinite(trade.size) || trade.size <= 0) {
+        reportViolation(
+          'INVALID_TRADE_SIZE',
+          'trade',
+          trade.id,
+          `Invalid trade size: ${trade.size}`
+        );
+      }
+    }
+
+    // 6. 보조 인덱스 정합성 검사
+    if (memoryDb.orderStockIndex) {
+      for (const [stockId, oIds] of memoryDb.orderStockIndex.entries()) {
+        for (const oId of oIds) {
+          const ord = memoryDb.orders.get(oId);
+          if (!ord || ord.stock_id !== stockId) {
+            reportViolation(
+              'INDEX_MISMATCH_STOCK',
+              'system',
+              `${stockId}:${oId}`,
+              `Stock order index mismatch for order ${oId}`
+            );
+          }
+        }
+      }
+    }
+
+    // 7. 국면 효과 정책 검사: OFF/SHADOW인데 실제 applied multiplier가 활성화된 경우
+    if (!effectsActive && appliedMultipliers && Object.keys(appliedMultipliers).length > 0) {
+      reportViolation(
+        'ILLEGAL_MULTIPLIER_USAGE',
+        'regime',
+        this._regimeEffectsMode,
+        `Multipliers applied while mode is ${this._regimeEffectsMode}`
+      );
+    }
+
+    // 8. 동일 스텝에서 허용되지 않은 복수 모드 활성화 검사
+    if (
+      this._regimeEffectsMode !== 'OFF' &&
+      this._regimeEffectsMode !== 'SHADOW' &&
+      this._regimeEffectsMode !== 'EXPERIMENTAL_ON'
+    ) {
+      reportViolation(
+        'INVALID_REGIME_MODE',
+        'regime',
+        String(this._regimeEffectsMode),
+        `Unrecognized regime mode: ${this._regimeEffectsMode}`
+      );
+    }
+  }
+
   public reset(seed: number = 42): void {
+    const prevMode = this._regimeEffectsMode;
     this.clock.reset();
     this.prng = new SimPrng(seed);
     this.fundamentalPrng = this.prng.split(100);
@@ -1307,10 +1796,27 @@ export class AgentManager {
     this.lastObservation = null;
     this.emptyBookStockRatio = 0;
     this.lpDeferrals.clear();
+
+    // Reset 운용 모드 및 진단 상태 원자적 초기화 (안전 정책)
+    this._regimeEffectsMode = 'OFF';
     this.pendingEffectsMode = null;
-    this.modeChangeHistory = [];
+    this.pendingReason = null;
     this.recentDeferralCount = 0;
     this.invariantViolationCount = 0;
+    this.shadowDiagnosticsHistory = [];
+    this.invariantViolations = [];
+    this.reportedInvariantFingerprints.clear();
+
+    // 감사 이력 정합성: simulation_reset_fail_safe 기록
+    this.modeChangeHistory = [
+      {
+        timestamp: this.clock.simulationTime,
+        fromMode: prevMode,
+        toMode: 'OFF',
+        appliedAtStepId: this.clock.simulationStep,
+        reason: 'simulation_reset_fail_safe',
+      },
+    ];
 
     this.registerDefaultAgents();
     this.initFundamentals();

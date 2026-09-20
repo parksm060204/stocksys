@@ -35,10 +35,9 @@ export class LocalMarketEngineInstance {
   private readonly MAX_RETAINED_LP_ORDERS_PER_STOCK: number = 30;
   private isTicking: boolean = false;
 
-  // 국면 효과(Stage 2)는 기본 비활성. 명시적 실행 설정(ENABLE_REGIME_EFFECTS=true)에서만 켠다.
-  private agentManager: AgentManager = new AgentManager(42, 1773500000000, {
-    enableRegimeEffects: process.env.ENABLE_REGIME_EFFECTS === 'true',
-  });
+  // 국면 효과(Stage 2) 운용 모드는 안전 기본값 'OFF'로 시작.
+  private agentManager: AgentManager = new AgentManager(42, 1773500000000);
+
 
   // SDE: Merton Jump-Diffusion 가치 변동
   private fundamentals: Record<string, number> = {};

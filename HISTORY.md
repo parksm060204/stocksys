@@ -4602,3 +4602,26 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
   - `npx tsc --noEmit` (Exit Code 0)
   - `npm run build` (Next.js 16.2.9 production build Exit Code 0)
 
+---
+## 2026-09-20 13:25
+
+**요청 요약:** STOCKSYS 시장 국면 2단계 운용 모드 최종 안전성 보완 (인증 우회 제거, reset 안전 정책, SHADOW 가상 계산 및 불변식 진단 완성, 상세 페이지 가격 이력 정합성 수정).
+
+**수행 결과:**
+- `lib/engine/simulation/regime/regimeAuth.ts` (신규):
+  - 불투명 심볼(unique symbol) 브랜디드 `RegimeExperimentCapability` 구조 구현.
+  - Fail-closed 정책의 `ServerRegimeAuthorizationProvider` 구현 (환경변수 미설정, 과거 기본키 `STOCKSYS_REGIME_ADMIN`, 테스트키 `TEST_PERMITTED` 등 비인가 시도 즉시 차단).
+  - 테스트 격리용 `createTestRegimeCapability` 및 사용자 사유 정규화(`sanitizeReason`) 구현.
+- `lib/engine/simulation/agentManager.ts`:
+  - 생성자에서 `EXPERIMENTAL_ON` 또는 `enableRegimeEffects: true`를 통한 직접 활성화 경로 원천 차단 (OFF 강제 및 보안 경고 출력).
+  - `setRegimeEffectsMode`에 Capability 인가 검증 및 원자적 스텝 경계 예약(`pendingEffectsMode`, `pendingReason`) 적용.
+  - `reset()` 호출 시 무조건 `OFF` 복귀, pending 모드 및 배수 초기화, `simulation_reset_fail_safe` 감사 이력 정합성 보존.
+  - `SHADOW` 모드 의사결정 집계 구현: 실제 봇/LP PRNG 소비 및 장부 영향 제로(Zero-Impact), 격리된 fork `SimPrng`를 통한 가상 파라미터 전략 시뮬레이션 및 실제 vs 가상 의사결정 차이(`directionChangedCount`, `sizeChangedCount`, LP spread/depth 등) 산출.
+  - `checkRuntimeInvariants` 런타임 진단 구현: PRNG 미소비, 핑거프린트 쿨다운(10스텝) 기반 중복 억제, 음수 잔고/보유량/예약자산, 주문 상태 모순, 비정상 체결 검증 및 마스킹된 위반 DTO 제공.
+- `lib/engine/localStandaloneServer.ts`:
+  - 인가 없는 환경변수 직접 활성화 경로 제거 (`regimeEffectsMode: 'OFF'`).
+- `app/stocks/[id]/page.tsx`:
+  - 가격 히스토리 조회 시 URL 파라미터 `id` 대신 정규 `stock.id`로 우선 조회하고, 미발견 시 `stock.ticker` fallback 지원.
+- `scripts/test-regime-activation-modes.ts`:
+  - 1단계(보안/reset), 2단계(SHADOW 무영향성/재현성/불변식 진단), 3단계(티커 상세 페이지 조회) 결정론적 종합 검증 스위트 확장 및 전체 통과.
+

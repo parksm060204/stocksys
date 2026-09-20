@@ -267,6 +267,48 @@ export interface RegimeModeChangeRecord {
   readonly reason: string;
 }
 
+export interface ShadowDiagnosticsStepRecord {
+  readonly simulationTime: number;
+  readonly stepId: number;
+  readonly detectedRegime: MarketRegime | null;
+  readonly transitionId: string | number | null;
+  readonly virtualMultipliers: Record<string, number>;
+  readonly actualIntentsCount: number;
+  readonly virtualIntentsCount: number;
+  readonly actualBuyCount: number;
+  readonly actualSellCount: number;
+  readonly actualHoldCount: number;
+  readonly virtualBuyCount: number;
+  readonly virtualSellCount: number;
+  readonly virtualHoldCount: number;
+  readonly actualOrderVolumeSum: number;
+  readonly virtualOrderVolumeSum: number;
+  readonly actualLpSpread: number;
+  readonly virtualLpSpread: number;
+  readonly actualLpDepth: number;
+  readonly virtualLpDepth: number;
+  readonly directionChangedCount: number;
+  readonly sizeChangedCount: number;
+  readonly expectedDeferrals: number;
+  readonly shadowCalculationStatus: 'OK' | 'DEGRADED' | 'SKIPPED' | 'COMPLETED';
+}
+
+export interface InvariantViolationRecord {
+  readonly code: string;
+  readonly simulationTime: number;
+  readonly stepId: number;
+  readonly entityType: 'profile' | 'holding' | 'order' | 'trade' | 'regime' | 'system';
+  readonly entityId: string;
+  readonly message: string;
+}
+
+export interface InvariantViolationDTO {
+  readonly code: string;
+  readonly simulationTime: number;
+  readonly entityType: string;
+  readonly redactedEntityId: string;
+}
+
 export interface RegimeModeDiagnostics {
   readonly currentMode: RegimeEffectsMode;
   readonly pendingMode: RegimeEffectsMode | null;
@@ -276,7 +318,10 @@ export interface RegimeModeDiagnostics {
   readonly recentDeferrals: number;
   readonly invariantViolationCount: number;
   readonly modeChangeHistory: readonly RegimeModeChangeRecord[];
+  readonly shadowDiagnostics?: ShadowDiagnosticsStepRecord | null;
+  readonly violations?: readonly InvariantViolationDTO[];
 }
+
 
 export interface MarketStateEngineConfig {
   readonly initialRegime: MarketRegime;

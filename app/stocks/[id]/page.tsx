@@ -150,19 +150,32 @@ export default async function StockDetail({
     console.warn("Failed to fetch market news:", e);
   }
 
-  // Fetch price history records
+  // Fetch price history records (정규 stock.id 우선 조회 및 티커 fallback 지원)
   let priceHistory: any[] = [];
   try {
-    const { data: priceHistoryData } = await supabase
+    let { data: priceHistoryData } = await supabase
       .from('stock_price_history')
       .select('*')
-      .eq('stock_id', id)
+      .eq('stock_id', stock.id)
       .order('created_at', { ascending: false })
       .limit(50);
+
+    if ((!priceHistoryData || priceHistoryData.length === 0) && stock.ticker && stock.ticker !== stock.id) {
+      const { data: fallbackData } = await supabase
+        .from('stock_price_history')
+        .select('*')
+        .eq('stock_id', stock.ticker)
+        .order('created_at', { ascending: false })
+        .limit(50);
+      if (fallbackData && fallbackData.length > 0) {
+        priceHistoryData = fallbackData;
+      }
+    }
     priceHistory = priceHistoryData || [];
   } catch (e) {
     console.warn("Failed to fetch price history:", e);
   }
+
 
   // 채권 자산의 경우 priceHistory가 비어있으면 초기 포인트 제공
   if (stock.market === 'bonds' && priceHistory.length === 0) {

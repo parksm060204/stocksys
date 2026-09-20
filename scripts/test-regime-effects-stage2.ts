@@ -38,6 +38,7 @@ import {
 import { AgentManager } from '../lib/engine/simulation/agentManager';
 import { memoryDb, OrderRecord, TradeRecord } from '../lib/memoryDb/memoryStore';
 import { SimPrng } from '../lib/engine/simulation/simClock';
+import { createTestRegimeCapability } from '../lib/engine/simulation/regime/regimeAuth';
 
 const startMs = 1773500000000;
 
@@ -331,7 +332,6 @@ async function runIntegration(
   memoryDb.resetToSeedData();
   const mgr = new AgentManager(seed, startMs, {
     enableRegimeEngine: enableEngine,
-    enableRegimeEffects: effectsEnabled,
     regimeEngineConfig: {
       thresholds: {
         ...DEFAULT_REGIME_THRESHOLDS,
@@ -340,6 +340,14 @@ async function runIntegration(
       },
     },
   });
+
+  if (effectsEnabled) {
+    const testCap = createTestRegimeCapability();
+    mgr.setRegimeEffectsMode('EXPERIMENTAL_ON', {
+      capability: testCap,
+      reason: 'authorized_test_stage2',
+    });
+  }
 
   const segmentSteps = new Set([10, 20, 30]);
   const segments: SegmentMetrics[] = [];

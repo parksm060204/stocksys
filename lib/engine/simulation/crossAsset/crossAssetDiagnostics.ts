@@ -35,6 +35,15 @@ export interface AssetDecisionTrace {
   readonly sourceEventIds: readonly string[];
 }
 
+export interface OrderGateHoldRecord {
+  readonly agentId: string;
+  readonly assetId: string;
+  readonly orderAction: 'buy' | 'sell';
+  readonly heldReason: string;
+  readonly macroVersion: number;
+  readonly simulationTime: number;
+}
+
 export interface CrossAssetStepSnapshot {
   readonly agentId: string;
   readonly simulationTime: number;
@@ -46,14 +55,35 @@ export interface CrossAssetStepSnapshot {
   readonly aggregateFactorExposure: Readonly<Record<string, number>>;
   readonly decisions: readonly AssetDecisionTrace[];
   readonly generalHeldReasons: Readonly<Record<string, string>>;
+  readonly orderGateHolds?: readonly OrderGateHoldRecord[];
 }
 
 export class CrossAssetDiagnosticsManager {
   private history: CrossAssetStepSnapshot[] = [];
+  private orderGateHolds: OrderGateHoldRecord[] = [];
   private readonly maxHistoryLimit: number;
 
   constructor(maxHistoryLimit: number = 100) {
     this.maxHistoryLimit = Math.max(10, maxHistoryLimit);
+  }
+
+  /**
+   * 주문 위험 게이트 보류 기록 (순수 읽기/방어적 복사)
+   */
+  public recordOrderGateHold(record: OrderGateHoldRecord): void {
+    this.orderGateHolds.push({ ...record });
+    if (this.orderGateHolds.length > this.maxHistoryLimit * 5) {
+      this.orderGateHolds = this.orderGateHolds.slice(-this.maxHistoryLimit * 5);
+    }
+  }
+
+  /**
+   * 보류 기록 조회 (순수 읽기)
+   */
+  public getOrderGateHolds(agentId?: string, limit: number = 100): readonly OrderGateHoldRecord[] {
+    const clampedLimit = Math.min(this.maxHistoryLimit * 5, Math.max(1, limit));
+    const filtered = agentId ? this.orderGateHolds.filter((r) => r.agentId === agentId) : this.orderGateHolds;
+    return filtered.slice(-clampedLimit).map((r) => ({ ...r }));
   }
 
   /**
@@ -83,6 +113,7 @@ export class CrossAssetDiagnosticsManager {
         sourceEventIds: [...d.sourceEventIds],
         primaryDriver: d.primaryDriver ? { ...d.primaryDriver } : undefined,
       })),
+      orderGateHolds: snapshot.orderGateHolds?.map((h) => ({ ...h })),
     };
 
     this.history.push(defensiveCopy);
@@ -120,6 +151,7 @@ export class CrossAssetDiagnosticsManager {
    */
   public reset(): void {
     this.history = [];
+    this.orderGateHolds = [];
   }
 
   private cloneSnapshot(s: CrossAssetStepSnapshot): CrossAssetStepSnapshot {
@@ -144,6 +176,7 @@ export class CrossAssetDiagnosticsManager {
         constraintsApplied: [...d.constraintsApplied],
         sourceEventIds: [...d.sourceEventIds],
       })),
+      orderGateHolds: s.orderGateHolds?.map((h) => ({ ...h })),
     };
   }
 }

@@ -89,4 +89,6 @@ export interface PortfolioAllocationResult {
   readonly targetAllocations: readonly TargetExposure[];
   readonly aggregateFactorExposure: Record<string, number>;
   readonly heldReasons: Record<string, string>;
+  readonly converged: boolean;
+  readonly appliedConstraints: readonly string[];
 }

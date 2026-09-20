@@ -79,13 +79,13 @@ export function evaluateTrendStrategy(
 
   // Combined momentum: 70% price return + 30% signed taker order flow
   let rawSignal = 0.70 * Math.tanh(rollingReturn / config.trendScale) + 0.30 * flowSignal;
-  if (crossAssetSignal) {
+  if (crossAssetSignal && agent.macroProfile) {
     const macroDir = crossAssetSignal.direction * crossAssetSignal.confidence;
-    const macroSens = agent.macroProfile?.macroSensitivity ?? 0.25;
-    const microSens = agent.macroProfile?.microSensitivity ?? 0.75;
+    const macroSens = agent.macroProfile.macroSensitivity;
+    const microSens = agent.macroProfile.microSensitivity;
     const totalSens = macroSens + microSens;
-    const normMacro = totalSens > 0 ? macroSens / totalSens : 0.25;
-    const normMicro = totalSens > 0 ? microSens / totalSens : 0.75;
+    const normMacro = totalSens > 0 ? macroSens / totalSens : 0.50;
+    const normMicro = totalSens > 0 ? microSens / totalSens : 0.50;
     rawSignal = rawSignal * normMicro + macroDir * normMacro;
   }
   // 국면 trendSensitivity: 추세 신호 반응 강도 (원본 가격/체결 데이터는 변경하지 않음)

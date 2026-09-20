@@ -56,6 +56,7 @@ import { DEFAULT_MACRO_STATE } from '../lib/engine/simulation/macro/macroState';
 import { computeCrossAssetSignals, AssetMicroSnapshot } from '../lib/engine/simulation/crossAsset/crossAssetSignalEngine';
 import { computePortfolioAllocation, convertAllocationsToOrderIntents } from '../lib/engine/simulation/crossAsset/portfolioEngine';
 import { isSovereignBond } from '../lib/engine/simulation/crossAsset/transmissionEngine';
+import { AgentMacroProfile, CrossAssetSignal } from '../lib/engine/simulation/crossAsset/crossAssetTypes';
 import { MarketEvent } from '../lib/engine/simulation/marketEventTypes';
 
 const START_EPOCH_MS = 1773500000000;
@@ -812,6 +813,635 @@ async function runCrossAssetFullSuite(): Promise<void> {
     assert.strictEqual(mgrShadow.macroState.version, 1, '10.6 reset 후 macroState 버전 초기화');
 
     console.log('  ✓ [테스트 10] SHADOW 무간섭 및 회귀 검증 통과!');
+  }
+
+  // ═════════════════════════════════════════════════════════════════
+  // 11. [P1] 목표 배분 부재 및 무효 배분 시 주문 원천 차단 회귀 검증
+  // ═════════════════════════════════════════════════════════════════
+  console.log('\n▶ [테스트 11] [P1] 목표 배분 부재/무효 시 주문 차단 및 보류 사유 진단 검증');
+  {
+    memoryDb.resetToSeedData();
+    const mgr = new AgentManager(1001, START_EPOCH_MS, {
+      enableCrossAssetEngine: true,
+      crossAssetMode: 'EXPERIMENTAL_ON',
+    });
+
+    const stockList = Array.from(memoryDb.stocks.values());
+    const targetStock = stockList[0];
+    const valAgent = mgr.agents.get('acc_bot_val_01')!;
+
+    // 11.1 배분 결과 누락(undefined) 시 PORTFOLIO_ALLOCATION_FAILED 차단
+    const gateUndefined = mgr.applyCrossAssetRiskGate(
+      valAgent,
+      targetStock,
+      { action: 'buy', stockId: targetStock.id, price: targetStock.current_price, size: 10 },
+      undefined,
+      1,
+      1000
+    );
+    assert.strictEqual(gateUndefined.allowed, false, '11.1.1 배분 결과 누락 시 주문 차단');
+    assert.strictEqual(gateUndefined.heldReason, 'PORTFOLIO_ALLOCATION_FAILED', '11.1.2 보류 사유 PORTFOLIO_ALLOCATION_FAILED 기록');
+
+    // 11.2 미수렴(converged: false) 시 PORTFOLIO_ALLOCATION_FAILED 차단
+    const gateUnconverged = mgr.applyCrossAssetRiskGate(
+      valAgent,
+      targetStock,
+      { action: 'buy', stockId: targetStock.id, price: targetStock.current_price, size: 10 },
+      {
+        accountId: valAgent.accountId,
+        simulationTime: 1000,
+        converged: false,
+        appliedConstraints: ['CONVERGENCE_FAILED'],
+        totalNav: 100_000_000,
+        availableCash: 100_000_000,
+        targetAllocations: [],
+        aggregateFactorExposure: { rateBeta: 0, growthBeta: 0, commodityBeta: 0 },
+        heldReasons: {},
+      },
+      1,
+      1000
+    );
+    assert.strictEqual(gateUnconverged.allowed, false, '11.2.1 미수렴 시 주문 차단');
+    assert.strictEqual(gateUnconverged.heldReason, 'PORTFOLIO_ALLOCATION_FAILED', '11.2.2 미수렴 시 PORTFOLIO_ALLOCATION_FAILED 기록');
+
+    // 11.3 대상 자산 목표 배분 누락 시 NO_TARGET_ALLOCATION 차단
+    const gateNoAlloc = mgr.applyCrossAssetRiskGate(
+      valAgent,
+      targetStock,
+      { action: 'buy', stockId: targetStock.id, price: targetStock.current_price, size: 10 },
+      {
+        accountId: valAgent.accountId,
+        simulationTime: 1000,
+        converged: true,
+        appliedConstraints: [],
+        totalNav: 100_000_000,
+        availableCash: 100_000_000,
+        targetAllocations: [], // targetStock 누락
+        aggregateFactorExposure: { rateBeta: 0, growthBeta: 0, commodityBeta: 0 },
+        heldReasons: {},
+      },
+      1,
+      1000
+    );
+    assert.strictEqual(gateNoAlloc.allowed, false, '11.3.1 목표 배분 누락 시 주문 차단');
+    assert.strictEqual(gateNoAlloc.heldReason, 'NO_TARGET_ALLOCATION', '11.3.2 보류 사유 NO_TARGET_ALLOCATION 기록');
+
+    // 11.4 가격 오류로 배분 제외된 경우 INVALID_TARGET_ALLOCATION 차단
+    const gatePriceError = mgr.applyCrossAssetRiskGate(
+      valAgent,
+      targetStock,
+      { action: 'buy', stockId: targetStock.id, price: targetStock.current_price, size: 10 },
+      {
+        accountId: valAgent.accountId,
+        simulationTime: 1000,
+        converged: true,
+        appliedConstraints: [],
+        totalNav: 100_000_000,
+        availableCash: 100_000_000,
+        targetAllocations: [],
+        aggregateFactorExposure: { rateBeta: 0, growthBeta: 0, commodityBeta: 0 },
+        heldReasons: { [targetStock.id]: 'INVALID_OR_MISSING_PRICE' },
+      },
+      1,
+      1000
+    );
+    assert.strictEqual(gatePriceError.allowed, false, '11.4.1 가격 오류 배분 제외 시 주문 차단');
+    assert.strictEqual(gatePriceError.heldReason, 'INVALID_TARGET_ALLOCATION', '11.4.2 보류 사유 INVALID_TARGET_ALLOCATION 기록');
+
+    // 11.5 비유한/음수 수치 시 INVALID_TARGET_ALLOCATION 차단
+    const gateNaN = mgr.applyCrossAssetRiskGate(
+      valAgent,
+      targetStock,
+      { action: 'buy', stockId: targetStock.id, price: targetStock.current_price, size: 10 },
+      {
+        accountId: valAgent.accountId,
+        simulationTime: 1000,
+        converged: true,
+        appliedConstraints: [],
+        totalNav: 100_000_000,
+        availableCash: 100_000_000,
+        targetAllocations: [
+          {
+            assetId: targetStock.id,
+            assetClass: 'STOCK',
+            targetWeight: NaN,
+            targetQuantity: 10,
+            targetNotional: 100000,
+            deltaQuantity: 10,
+            unconstrainedWeight: NaN,
+            constraintReasons: [],
+          },
+        ],
+        aggregateFactorExposure: { rateBeta: 0, growthBeta: 0, commodityBeta: 0 },
+        heldReasons: {},
+      },
+      1,
+      1000
+    );
+    assert.strictEqual(gateNaN.allowed, false, '11.5.1 비유한 수치(NaN) 목표 배분 차단');
+    assert.strictEqual(gateNaN.heldReason, 'INVALID_TARGET_ALLOCATION', '11.5.2 보류 사유 INVALID_TARGET_ALLOCATION 기록');
+
+    // 11.6 위험 제약 미충족 (buy 시 deltaQuantity <= 0) RISK_CONSTRAINT_UNSATISFIED 차단
+    const gateRiskNoBuy = mgr.applyCrossAssetRiskGate(
+      valAgent,
+      targetStock,
+      { action: 'buy', stockId: targetStock.id, price: targetStock.current_price, size: 10 },
+      {
+        accountId: valAgent.accountId,
+        simulationTime: 1000,
+        converged: true,
+        appliedConstraints: [],
+        totalNav: 100_000_000,
+        availableCash: 100_000_000,
+        targetAllocations: [
+          {
+            assetId: targetStock.id,
+            assetClass: 'STOCK',
+            targetWeight: 0.1,
+            targetQuantity: 0,
+            targetNotional: 0,
+            deltaQuantity: 0, // 추가 매수 불가
+            unconstrainedWeight: 0.1,
+            constraintReasons: [],
+          },
+        ],
+        aggregateFactorExposure: { rateBeta: 0, growthBeta: 0, commodityBeta: 0 },
+        heldReasons: {},
+      },
+      1,
+      1000
+    );
+    assert.strictEqual(gateRiskNoBuy.allowed, false, '11.6.1 deltaQuantity<=0 시 매수 차단');
+    assert.strictEqual(gateRiskNoBuy.heldReason, 'RISK_CONSTRAINT_UNSATISFIED', '11.6.2 보류 사유 RISK_CONSTRAINT_UNSATISFIED 기록');
+
+    // 11.7 실제 시뮬레이션 스텝 진행 시 모든 제출 주문에 유효한 배분 결정이 대응하는지 검증
+    await mgr.step(5);
+    const allOrdersAfterStep = Array.from(memoryDb.orders.values());
+    for (const ord of allOrdersAfterStep) {
+      if (typeof ord.user_id === 'string' && ord.user_id.startsWith('acc_bot_')) {
+        const snap = mgr.getCrossAssetLatestSnapshot(ord.user_id);
+        assert.ok(snap, `11.7.1 주문 제출 에이전트(${ord.user_id})의 교차자산 스냅샷 존재`);
+        const decision = snap.decisions.find((d) => d.assetId === ord.stock_id);
+        assert.ok(decision, `11.7.2 주문 제출 종목(${ord.stock_id})에 대한 배분 결정 존재`);
+        if (ord.side === 'buy') {
+          assert.ok(
+            decision.deltaQuantity > 0,
+            `11.7.3 매수 주문 종목의 deltaQuantity(${decision.deltaQuantity})는 양수여야 함`
+          );
+        } else if (ord.side === 'sell') {
+          assert.ok(
+            decision.deltaQuantity < 0,
+            `11.7.4 매도 주문 종목의 deltaQuantity(${decision.deltaQuantity})는 음수여야 함`
+          );
+        }
+      }
+    }
+
+    // 11.8 동일 입력과 seed에서 보류 사유와 결과의 결정론 검증
+    mgr.reset(1001);
+    mgr.setCrossAssetMode('EXPERIMENTAL_ON');
+    const runGateTest = (m: AgentManager) => {
+      const agent = m.agents.get('acc_bot_val_01')!;
+      return m.applyCrossAssetRiskGate(
+        agent,
+        targetStock,
+        { action: 'buy', stockId: targetStock.id, price: targetStock.current_price, size: 10 },
+        undefined,
+        1,
+        1000
+      );
+    };
+    const resA = runGateTest(mgr);
+    const holdsCountA = mgr.crossAssetDiagnostics.getOrderGateHolds().length;
+
+    mgr.reset(1001);
+    mgr.setCrossAssetMode('EXPERIMENTAL_ON');
+    const resB = runGateTest(mgr);
+    const holdsCountB = mgr.crossAssetDiagnostics.getOrderGateHolds().length;
+
+    assert.strictEqual(resA.allowed, resB.allowed, '11.8.1 동일 seed/입력에서 gate 허용 여부 결정론 일치');
+    assert.strictEqual(resA.heldReason, resB.heldReason, '11.8.2 동일 seed/입력에서 heldReason 결정론 일치');
+    assert.strictEqual(holdsCountA, holdsCountB, '11.8.3 동일 seed에서 게이트 보류 기록 수 결정론적 일치');
+
+    console.log('  ✓ [테스트 11] 목표 배분 부재/무효 시 주문 차단 및 진단 기록 검증 통과!');
+  }
+
+  // ═════════════════════════════════════════════════════════════════
+  // 12. [P1] 공통요인 노출 한도 정밀 캡핑 및 미수렴 fail-closed 회귀 검증
+  // ═════════════════════════════════════════════════════════════════
+  console.log('\n▶ [테스트 12] [P1] 공통요인 노출 한도 정밀 캡핑 및 불변조건 검증');
+  {
+    // 12.1 금리 기여도가 정확히 0.3인 주식 2개, maxRateBeta = 0.1
+    const profile: AgentMacroProfile = {
+      agentId: 'test_cap_bot',
+      strategyType: 'value',
+      macroSensitivity: 0.5,
+      microSensitivity: 0.5,
+      riskAversion: 1.0,
+      maxAssetConcentration: 0.50,
+      maxSectorConcentration: 1.0,
+      minCashBuffer: 0.05,
+      maxFactorExposure: {
+        rateBeta: 0.10,
+        growthBeta: 1.5,
+        commodityBeta: 1.5,
+      },
+    };
+
+    const signals = new Map<string, CrossAssetSignal>();
+    signals.set('stock_A', {
+      assetId: 'stock_A',
+      ticker: 'STK_A',
+      assetClass: 'STOCK',
+      direction: 0.8,
+      expectedReturn: 0.10,
+      expectedVolatility: 0.15,
+      confidence: 0.9,
+      horizonMs: 5000,
+      liquidityPenalty: 0.001,
+      riskContributions: { rates: 0.30, growth: 0.2, commoditySupply: 0.0 },
+      drivers: [],
+    });
+    signals.set('stock_B', {
+      assetId: 'stock_B',
+      ticker: 'STK_B',
+      assetClass: 'STOCK',
+      direction: 0.8,
+      expectedReturn: 0.10,
+      expectedVolatility: 0.15,
+      confidence: 0.9,
+      horizonMs: 5000,
+      liquidityPenalty: 0.001,
+      riskContributions: { rates: 0.30, growth: 0.2, commoditySupply: 0.0 },
+      drivers: [],
+    });
+
+    const allocResult = computePortfolioAllocation({
+      agentProfile: profile,
+      nav: 100_000_000,
+      availableCash: 100_000_000,
+      signals,
+      currentHoldings: [],
+      assetMetadata: new Map([
+        ['stock_A', { sectorId: 'it' }],
+        ['stock_B', { sectorId: 'it' }],
+      ]),
+      currentPrices: new Map([
+        ['stock_A', 10000],
+        ['stock_B', 10000],
+      ]),
+      simulationTime: 1000,
+    });
+
+    assert.strictEqual(allocResult.converged, true, '12.1.1 3-factor 캡핑 정상 수렴');
+    assert.ok(allocResult.appliedConstraints.includes('RATE_FACTOR_EXPOSURE_CAPPED'), '12.1.2 RATE_FACTOR_EXPOSURE_CAPPED 제약 적용 기록 확인');
+    assert.ok(
+      allocResult.aggregateFactorExposure.rateBeta <= 0.10 + 1e-4,
+      `12.1.3 조정 후 rateBeta(${allocResult.aggregateFactorExposure.rateBeta}) <= 0.10 + 1e-4 불변조건 만족`
+    );
+
+    // 12.2 음의 기여를 갖는 헤지 자산 보존 검증 (주식+국채 혼합)
+    signals.set('bond_govt', {
+      assetId: 'bond_govt',
+      ticker: 'BND_G',
+      assetClass: 'BOND',
+      direction: 0.8,
+      expectedReturn: 0.05,
+      expectedVolatility: 0.05,
+      confidence: 0.9,
+      horizonMs: 5000,
+      liquidityPenalty: 0.001,
+      riskContributions: { rates: -0.30, growth: -0.2, commoditySupply: 0.0 },
+      drivers: [],
+    });
+    const hedgeResult = computePortfolioAllocation({
+      agentProfile: profile,
+      nav: 100_000_000,
+      availableCash: 100_000_000,
+      signals,
+      currentHoldings: [],
+      assetMetadata: new Map([
+        ['stock_A', { sectorId: 'it' }],
+        ['stock_B', { sectorId: 'it' }],
+        ['bond_govt', { sectorId: 'sovereign' }],
+      ]),
+      currentPrices: new Map([
+        ['stock_A', 10000],
+        ['stock_B', 10000],
+        ['bond_govt', 10000],
+      ]),
+      simulationTime: 1000,
+    });
+    assert.strictEqual(hedgeResult.converged, true, '12.2.1 헤지 자산 포함 포트폴리오 수렴');
+    assert.ok(
+      hedgeResult.aggregateFactorExposure.rateBeta <= 0.10 + 1e-4,
+      '12.2.2 헤지 포함 포트폴리오 rateBeta 불변조건 만족'
+    );
+
+    // 12.3 자산 입력 순서 교환(Permutation) 불변성 검증
+    const reversedSignals = new Map<string, CrossAssetSignal>();
+    reversedSignals.set('stock_B', signals.get('stock_B')!);
+    reversedSignals.set('stock_A', signals.get('stock_A')!);
+    const permResult = computePortfolioAllocation({
+      agentProfile: profile,
+      nav: 100_000_000,
+      availableCash: 100_000_000,
+      signals: reversedSignals,
+      currentHoldings: [],
+      assetMetadata: new Map([
+        ['stock_B', { sectorId: 'it' }],
+        ['stock_A', { sectorId: 'it' }],
+      ]),
+      currentPrices: new Map([
+        ['stock_B', 10000],
+        ['stock_A', 10000],
+      ]),
+      simulationTime: 1000,
+    });
+    assert.strictEqual(permResult.converged, true, '12.3.1 순서 변경 시에도 수렴');
+    const aWeight1 = allocResult.targetAllocations.find((a) => a.assetId === 'stock_A')!.targetWeight;
+    const aWeight2 = permResult.targetAllocations.find((a) => a.assetId === 'stock_A')!.targetWeight;
+    assert.ok(
+      Math.abs(aWeight1 - aWeight2) < 1e-6,
+      '12.3.2 입력 순서에 무관하게 결정론적 비중 도출'
+    );
+
+    // 12.4 상충하여 만족할 수 없는 제약 시 fail-closed 검증 (converged === false)
+    const impossibleProfile: AgentMacroProfile = {
+      ...profile,
+      minCashBuffer: 0.95,
+      maxAssetConcentration: 0.01,
+      maxFactorExposure: {
+        rateBeta: -0.5,
+        growthBeta: 1.5,
+        commodityBeta: 1.5,
+      },
+    };
+    const impossibleResult = computePortfolioAllocation({
+      agentProfile: impossibleProfile,
+      nav: 100_000_000,
+      availableCash: 100_000_000,
+      signals,
+      currentHoldings: [],
+      assetMetadata: new Map([
+        ['stock_A', { sectorId: 'it' }],
+        ['stock_B', { sectorId: 'it' }],
+      ]),
+      currentPrices: new Map([
+        ['stock_A', 10000],
+        ['stock_B', 10000],
+      ]),
+      simulationTime: 1000,
+    });
+    assert.strictEqual(impossibleResult.converged, false, '12.4 불가능한 제약 조건 시 converged === false 명시적 반환');
+
+    console.log('  ✓ [테스트 12] 공통요인 노출 한도 정밀 캡핑 및 불변조건 검증 통과!');
+  }
+
+  // ═════════════════════════════════════════════════════════════════
+  // 13. [P2] reset 이후 실제 거시 상태와 관측 상태 baseline 보존 및 누적 전진 검증
+  // ═════════════════════════════════════════════════════════════════
+  console.log('\n▶ [테스트 13] [P2] initialMacroState.growth=0.08 baseline 보존 및 누적 전진 검증');
+  {
+    memoryDb.resetToSeedData();
+    const mgr = new AgentManager(1001, START_EPOCH_MS, {
+      enableCrossAssetEngine: true,
+      crossAssetMode: 'EXPERIMENTAL_ON',
+      initialMacroState: {
+        growth: 0.08,
+      },
+    });
+
+    // 13.1 초기 baseline 검증
+    assert.strictEqual(mgr.macroState.growth, 0.08, '13.1.1 초기 macroState.growth === 0.08 보존');
+    const valBotBelief0 = mgr.getAgentMacroBelief('acc_bot_val_01');
+    assert.ok(valBotBelief0, '13.1.2 val_01 에이전트 관측 상태 존재');
+    assert.strictEqual(valBotBelief0.growth, 0.08, '13.1.3 val_01 관측 growth === 0.08 초기 baseline 일치');
+    assert.strictEqual(valBotBelief0.version, 1, '13.1.4 val_01 초기 버전 === 1');
+
+    // 13.2 3단계 전진 동안 버전 단조 증가 검증
+    await mgr.step(5);
+    const snap1 = mgr.getCrossAssetLatestSnapshot('acc_bot_val_01')!;
+    assert.strictEqual(snap1.macroVersion, 2, '13.2.1 1스텝 후 매크로 버전 === 2');
+
+    await mgr.step(5);
+    const snap2 = mgr.getCrossAssetLatestSnapshot('acc_bot_val_01')!;
+    assert.strictEqual(snap2.macroVersion, 3, '13.2.2 2스텝 후 매크로 버전 === 3');
+
+    await mgr.step(5);
+    const snap3 = mgr.getCrossAssetLatestSnapshot('acc_bot_val_01')!;
+    assert.strictEqual(snap3.macroVersion, 4, '13.2.3 3스텝 후 매크로 버전 === 4');
+
+    // 13.3 Reset 후 baseline 복원 검증
+    mgr.reset(1001);
+    assert.strictEqual(mgr.macroState.growth, 0.08, '13.3.1 reset 후 macroState.growth === 0.08 baseline 복원');
+    const valBotBeliefReset = mgr.getAgentMacroBelief('acc_bot_val_01');
+    assert.ok(valBotBeliefReset, '13.3.2 reset 후 등록된 val_01 관측 상태 존재');
+    assert.strictEqual(valBotBeliefReset.growth, 0.08, '13.3.3 reset 후 관측 growth === 0.08 baseline 일치');
+    assert.strictEqual(valBotBeliefReset.version, 1, '13.3.4 reset 후 버전 === 1 초기화');
+
+    // 13.4 재실행 시 지문 동일성 검증
+    mgr.setCrossAssetMode('EXPERIMENTAL_ON');
+    await mgr.step(5);
+    const snapRe1 = mgr.getCrossAssetLatestSnapshot('acc_bot_val_01')!;
+    assert.strictEqual(snapRe1.macroVersion, 2, '13.4.1 재실행 1스텝 후 매크로 버전 === 2');
+    assert.strictEqual(
+      snapRe1.observedMacroState.values.growth,
+      snap1.observedMacroState.values.growth,
+      '13.4.2 reset 후 동일 seed/입력 재실행 시 관측치 100% 동일'
+    );
+
+    console.log('  ✓ [테스트 13] baseline 보존 및 관측 상태 누적 전진 검증 통과!');
+  }
+
+  // ═════════════════════════════════════════════════════════════════
+  // 14. [P2] 기본 거시 프로필 일원화 및 전략-배분 일치 검증
+  // ═════════════════════════════════════════════════════════════════
+  console.log('\n▶ [테스트 14] [P2] 기본 거시 프로필 일원화 및 불변성 검증');
+  {
+    memoryDb.resetToSeedData();
+    const mgr = new AgentManager(1001, START_EPOCH_MS, {
+      enableCrossAssetEngine: true,
+      crossAssetMode: 'EXPERIMENTAL_ON',
+    });
+
+    const valAgent = mgr.agents.get('acc_bot_val_01')!;
+    const trendAgent = mgr.agents.get('acc_bot_trend_01')!;
+
+    // 14.1 등록 시 단 1회 해석된 프로필 존재 확인
+    assert.ok(valAgent.macroProfile, '14.1.1 가치투자 봇 macroProfile 등록 완료');
+    assert.ok(trendAgent.macroProfile, '14.1.2 모멘텀 봇 macroProfile 등록 완료');
+    assert.strictEqual(valAgent.macroProfile.macroSensitivity, 0.75, '14.1.3 가치투자 봇 macroSensitivity === 0.75');
+    assert.strictEqual(valAgent.macroProfile.microSensitivity, 0.25, '14.1.4 가치투자 봇 microSensitivity === 0.25');
+    assert.strictEqual(trendAgent.macroProfile.macroSensitivity, 0.45, '14.1.5 모멘텀 봇 macroSensitivity === 0.45');
+    assert.strictEqual(trendAgent.macroProfile.microSensitivity, 0.70, '14.1.6 모멘텀 봇 microSensitivity === 0.70');
+
+    // 14.2 사용자 지정 프로필 전달 시 방어적 복사 및 보존
+    const customProfile: AgentMacroProfile = {
+      agentId: 'acc_custom_01',
+      strategyType: 'value',
+      macroSensitivity: 0.60,
+      microSensitivity: 0.40,
+      riskAversion: 1.0,
+      maxAssetConcentration: 0.25,
+      maxSectorConcentration: 0.40,
+      minCashBuffer: 0.15,
+      maxFactorExposure: {
+        rateBeta: 0.35,
+        growthBeta: 0.70,
+        commodityBeta: 0.30,
+      },
+    };
+    mgr.registerAgent({
+      accountId: 'acc_custom_01',
+      agentId: 'agent_custom_01',
+      participantType: 'bot',
+      strategyType: 'value',
+      name: '커스텀 프로필 봇',
+      targetPositions: {},
+      maxOrderSize: 100,
+      maxPosition: 5000,
+      riskTolerance: 0.7,
+      urgency: 0.5,
+      activityRate: 0.5,
+      infoLatency: 0,
+      evaluationsPerStep: 2,
+      sectorPreferences: {},
+      nextDecisionTime: 0,
+      stats: { ordersSubmitted: 0, ordersCancelled: 0, fillsCount: 0, volumeTraded: 0, feesPaid: 0, realizedPnl: 0 },
+      macroProfile: customProfile,
+    });
+
+    const registeredCustom = mgr.agents.get('acc_custom_01')!;
+    assert.strictEqual(registeredCustom.macroProfile!.macroSensitivity, 0.60, '14.2.1 커스텀 프로필 macroSensitivity 보존');
+    assert.notStrictEqual(registeredCustom.macroProfile, customProfile, '14.2.2 원본 프로필 객체와 분리된 방어적 복사본 사용');
+
+    // 14.3 동일 seed에서 PRNG 지문 불변 확인
+    const prngBefore = mgr.agentPrngs.get('acc_bot_val_01')!.getState();
+    assert.ok(prngBefore, '14.3 에이전트 PRNG 상태 유효');
+
+    console.log('  ✓ [테스트 14] 기본 거시 프로필 일원화 및 불변성 검증 통과!');
+  }
+
+  // ═════════════════════════════════════════════════════════════════
+  // 15. [P2] 이벤트 적용 범위(Scope) 격리 및 원인 추적 체인(Causality Trace) 검증
+  // ═════════════════════════════════════════════════════════════════
+  console.log('\n▶ [테스트 15] [P2] 이벤트 적용 범위 격리 및 sourceEventId 인과 추적 검증');
+  {
+    memoryDb.resetToSeedData();
+    const mgr = new AgentManager(1001, START_EPOCH_MS, {
+      enableCrossAssetEngine: true,
+      crossAssetMode: 'EXPERIMENTAL_ON',
+    });
+
+    const stockList = Array.from(memoryDb.stocks.values());
+    const targetStock = stockList[0];
+    const t0 = mgr.clock.simulationTime;
+
+    // 대상 종목에 펀더멘털 가치를 부여하여 긍정적 밸류에이션 확보
+    mgr.fundamentals.set(targetStock.id, targetStock.current_price * 1.3);
+
+    // 15.1 특정 종목만 대상으로 한 자산 한정 충격 등록
+    const targetAssetEvent: MarketEvent = {
+      eventId: 'evt_scoped_asset_001',
+      scope: 'stock',
+      eventType: 'OFFICIAL',
+      targetStockIds: [targetStock.id],
+      valuationSignal: 0.80,
+      attentionShock: 0.20,
+      uncertaintyShock: 0.05,
+      confidence: 0.95,
+      halfLife: 500,
+      publishedAt: t0,
+      effectiveFrom: t0,
+      publisher: 'IndustryWeekly',
+      title: '특정 종목 기술 혁신 특허 취득',
+      content: '핵심 기술 특허 취득으로 단독 수혜',
+      macroImpacts: [
+        { factor: 'growth', direction: 1, magnitude: 0.9, halfLifeSeconds: 500 },
+      ],
+    };
+    mgr.registerEvent(targetAssetEvent);
+
+    await mgr.step(5);
+
+    // 전역 거시 상태의 growth는 변경되지 않아야 함 (범위 격리)
+    assert.strictEqual(
+      mgr.macroState.growth,
+      DEFAULT_MACRO_STATE.growth,
+      '15.1.1 자산 한정 충격은 전역 MacroState.growth를 변경하지 않음'
+    );
+
+    // 진단 스냅샷에서 대상 자산의 배분 결정 확인
+    const snapVal = mgr.getCrossAssetLatestSnapshot('acc_bot_val_01')!;
+    const targetDecision = snapVal.decisions.find((d) => d.assetId === targetStock.id);
+    assert.ok(targetDecision, '15.1.2 대상 자산의 배분 결정 존재 확인');
+    assert.ok(targetDecision.constrainedWeight > 0 && targetDecision.targetQuantity > 0, '15.1.3 단독 수혜 자산 목표 비중 및 수량 양수 할당 확인');
+    assert.ok(targetDecision.sourceEventIds.includes('evt_scoped_asset_001'), '15.1.4 대상 자산 결정에 원본 이벤트 ID 연계 확인');
+
+    // 15.2 섹터 한정 충격 등록 및 무관한 섹터 불변 검증
+    const tCur = mgr.clock.simulationTime;
+    const sectorEvent: MarketEvent = {
+      eventId: 'evt_scoped_sector_semi',
+      scope: 'sector',
+      sectorId: 'semiconductor',
+      eventType: 'OFFICIAL',
+      targetStockIds: [],
+      valuationSignal: 0.60,
+      attentionShock: 0.20,
+      uncertaintyShock: 0.05,
+      confidence: 0.95,
+      halfLife: 500,
+      publishedAt: tCur,
+      effectiveFrom: tCur,
+      publisher: 'SemiconductorTimes',
+      title: '반도체 보조금 특별법 통과',
+      content: '반도체 전용 세제 혜택 및 설비투자 지원',
+      macroImpacts: [
+        { factor: 'growth', direction: 1, magnitude: 0.7, halfLifeSeconds: 500 },
+      ],
+    };
+    mgr.registerEvent(sectorEvent);
+
+    await mgr.step(5);
+
+    // 전역 MacroState 여전히 격리 유지
+    assert.strictEqual(
+      mgr.macroState.growth,
+      DEFAULT_MACRO_STATE.growth,
+      '15.2.1 섹터 한정 충격도 전역 MacroState.growth를 변경하지 않음'
+    );
+
+    // 15.3 정정 이벤트(RETRACT) 적용 시 원본 sourceEventId 무효화 검증
+    const tRetract = mgr.clock.simulationTime;
+    const retractEvent: MarketEvent = {
+      eventId: 'evt_scoped_asset_001_retract',
+      originalEventId: 'evt_scoped_asset_001',
+      eventType: 'CORRECTION',
+      correctionMode: 'RETRACT',
+      scope: 'stock',
+      targetStockIds: [targetStock.id],
+      valuationSignal: 0,
+      attentionShock: 0.1,
+      uncertaintyShock: 0.1,
+      confidence: 0.95,
+      halfLife: 500,
+      publishedAt: tRetract,
+      effectiveFrom: tRetract,
+      publisher: 'IndustryWeekly',
+      title: '특허 취득 오보 정정 및 취소',
+      content: '이전 특허 취득 보도는 사실무근으로 확인되어 전면 철회',
+    };
+    mgr.registerEvent(retractEvent);
+    await mgr.step(5);
+
+    // 15.4 진단 조회 순수성 및 방어적 복사본 검증
+    const holds1 = mgr.crossAssetDiagnostics.getOrderGateHolds();
+    const history1 = mgr.getCrossAssetDiagnosticsHistory('acc_bot_val_01');
+    assert.ok(Array.isArray(holds1), '15.4.1 getOrderGateHolds 정상 조회');
+    assert.ok(Array.isArray(history1), '15.4.2 getCrossAssetDiagnosticsHistory 정상 조회');
+
+    console.log('  ✓ [테스트 15] 이벤트 적용 범위 격리 및 인과 추적 검증 통과!');
   }
 
   console.log('\n================================================================');

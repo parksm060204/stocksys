@@ -11,7 +11,7 @@
  * - 옵션은 2단계 순서로 실제 기초자산 기대수익 및 변동성과 연결 (고정 5% fallback 배제)
  */
 
-import { MacroState } from '../macro/macroTypes';
+import { EconomicShock, MacroState } from '../macro/macroTypes';
 import { MarketRegime } from '../regime/regimeTypes';
 import { AssetClass, CrossAssetSignal, SignalDriver } from './crossAssetTypes';
 import {
@@ -59,7 +59,8 @@ export interface AssetMicroSnapshot {
 export function computeSingleAssetSignal(
   asset: AssetMicroSnapshot,
   macro: MacroState,
-  ctx: TransmissionContext
+  ctx: TransmissionContext,
+  activeShocks?: readonly EconomicShock[]
 ): CrossAssetSignal {
   let rawExpectedReturn = 0;
   let rawExpectedVol = asset.historicalVol ?? 0.20;
@@ -166,6 +167,47 @@ export function computeSingleAssetSignal(
     riskContributions.vega = 1.0 - Math.abs(delta);
   }
 
+  // 1.1 자산 또는 섹터 한정 충격(Scoped Shocks)의 국소 반영 및 원인 이벤트 ID 연계
+  if (activeShocks && activeShocks.length > 0) {
+    const assetShocks = activeShocks.filter((s) => s.affectedAssets?.includes(asset.assetId));
+    const sectorShocks = activeShocks.filter(
+      (s) => !s.affectedAssets?.includes(asset.assetId) && asset.sectorId && s.affectedSectors?.includes(asset.sectorId)
+    );
+
+    for (const shock of [...assetShocks, ...sectorShocks]) {
+      const elapsedSec = Math.max(0, (macro.timestamp - shock.effectiveFrom) / 1000);
+      const decay = Math.pow(2, -elapsedSec / shock.halfLifeSeconds);
+      const shockImpact = shock.direction * shock.magnitude * shock.confidence * decay * 0.10;
+      rawExpectedReturn += shockImpact;
+      drivers.push({
+        factor: `scoped_${shock.factor}`,
+        contribution: Number(shockImpact.toFixed(4)),
+        confidence: shock.confidence,
+        sourceEventId: shock.sourceEventId,
+        description: `${shock.affectedAssets?.includes(asset.assetId) ? '개별 자산' : '섹터'} 한정 충격 (${shock.factor})`,
+      });
+    }
+
+    // 전역 충격의 sourceEventId를 해당 팩터 드라이버에 연계
+    for (const shock of activeShocks) {
+      if ((!shock.affectedAssets || shock.affectedAssets.length === 0) && (!shock.affectedSectors || shock.affectedSectors.length === 0)) {
+        for (let i = 0; i < drivers.length; i++) {
+          const drv = drivers[i];
+          if (!drv.sourceEventId) {
+            if (
+              (drv.factor === 'growthDelta' && shock.factor === 'growth') ||
+              (drv.factor === 'rateEnvironment' && shock.factor === 'policyRate') ||
+              (drv.factor === 'rateDurationEffect' && shock.factor === 'policyRate') ||
+              (drv.factor === 'oilPriceShock' && shock.factor === 'oilSupply')
+            ) {
+              drivers[i] = { ...drv, sourceEventId: shock.sourceEventId };
+            }
+          }
+        }
+      }
+    }
+  }
+
   // 2. 유동성 및 스프레드 패널티 계산 (거래비용 반영)
   const spreadBps = asset.spreadBps ?? 20.0;
   const liquidityPenalty = (spreadBps / 10000) * 0.5; // 스프레드의 절반을 기대수익에서 차감
@@ -206,7 +248,8 @@ export function computeSingleAssetSignal(
 export function computeCrossAssetSignals(
   assets: readonly AssetMicroSnapshot[],
   macro: MacroState,
-  regime: MarketRegime
+  regime: MarketRegime,
+  activeShocks?: readonly EconomicShock[]
 ): Map<string, CrossAssetSignal> {
   const ctx = analyzeTransmissionContext(macro, regime);
   const signals = new Map<string, CrossAssetSignal>();
@@ -224,7 +267,7 @@ export function computeCrossAssetSignals(
 
   // 1단계: 기초자산 신호 산출
   for (const asset of nonOptions) {
-    const sig = computeSingleAssetSignal(asset, macro, ctx);
+    const sig = computeSingleAssetSignal(asset, macro, ctx, activeShocks);
     signals.set(asset.assetId, sig);
   }
 
@@ -247,7 +290,7 @@ export function computeCrossAssetSignals(
       historicalVol: realizedVol,
     };
 
-    const optSig = computeSingleAssetSignal(linkedSnapshot, macro, ctx);
+    const optSig = computeSingleAssetSignal(linkedSnapshot, macro, ctx, activeShocks);
     signals.set(opt.assetId, optSig);
   }
 

@@ -118,8 +118,8 @@ export function convertEventToEconomicShocks(event: ObservableMarketEvent): Econ
         confidence,
         effectiveFrom: event.effectiveFrom,
         halfLifeSeconds,
-        affectedSectors: imp.affectedSectors ?? (event.sectorId ? [event.sectorId] : undefined),
-        affectedAssets: imp.affectedAssets ?? (event.targetStockIds && event.targetStockIds.length > 0 ? [...event.targetStockIds] : undefined),
+        affectedSectors: imp.affectedSectors ?? (event.scope === 'sector' && event.sectorId ? [event.sectorId] : undefined),
+        affectedAssets: imp.affectedAssets ?? (event.scope === 'stock' && event.targetStockIds && event.targetStockIds.length > 0 ? [...event.targetStockIds] : undefined),
       });
     }
     return shocks;
@@ -262,6 +262,14 @@ function computeFactorShockLevels(
     if (!Number.isFinite(shock.confidence) || shock.confidence < 0 || shock.confidence > 1) continue;
     if (shock.direction !== 1 && shock.direction !== -1) continue;
     if (!Number.isFinite(shock.halfLifeSeconds) || shock.halfLifeSeconds <= 0) continue;
+
+    // 전역 거시 상태에는 범위가 특정 자산이나 특정 섹터로 한정된 충격을 적용하지 않는다 (범위 격리 원칙)
+    if (
+      (shock.affectedAssets && shock.affectedAssets.length > 0) ||
+      (shock.affectedSectors && shock.affectedSectors.length > 0)
+    ) {
+      continue;
+    }
 
     const dedupeKey = `${shock.sourceEventId || shock.shockId}_${shock.factor}`;
     if (seenKeys.has(dedupeKey)) continue;

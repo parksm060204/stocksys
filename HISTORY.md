@@ -4860,3 +4860,46 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
   - 전체 회귀 테스트: `test-market-regime-foundation.ts` (33개 통과), `test-regime-activation-modes.ts` (100% 통과), `test-news-lifecycle-and-causal-flow.ts` (A~F 통과), `test-stage2-review-fixes-v2.ts` (A~H 통과).
   - `npx tsc --noEmit` (0 errors), `npm run lint` (0 errors), `npm run build` (Next.js 빌드 성공), `git diff --check` (클린).
 
+---
+## 2026-09-21 01:15
+
+**요청 요약:** 교차자산 거시 의사결정 엔진 잔여 결함(5대 문제) 수정 및 전체 회귀 검증
+- 목표 배분 부재/무효 시 주문 우회 방지 및 보류 사유 진단 기록 [P1]
+- 임의의 0.3 상한값 제거 및 다차원 공통요인 노출(3-Factor) 엄밀한 캡핑 및 불변조건 강제 [P1]
+- initialMacroState baseline 보존 및 에이전트 관측 상태 누적 전진 [P2]
+- 기본 거시 프로필 일원화 및 전략별 하드코딩 fallback 제거 [P2]
+- 자산/섹터 한정 충격의 전역 거시 상태 오염 차단 및 sourceEventId 인과 추적 연계 [P2]
+
+**수행 결과:**
+- `lib/engine/simulation/crossAsset/crossAssetTypes.ts`: `PortfolioAllocationResult`에 `converged: boolean` 및 `appliedConstraints: readonly string[]` 필드 추가.
+- `lib/engine/simulation/crossAsset/crossAssetDiagnostics.ts`: `OrderGateHoldRecord` 인터페이스 정의 및 순수/방어적 복사본을 제공하는 `recordOrderGateHold`, `getOrderGateHolds` 진단 API 구현.
+- `lib/engine/simulation/macro/macroState.ts`:
+  - `computeFactorShockLevels`에서 자산/섹터 범위 한정 충격(`affectedAssets` 또는 `affectedSectors` 존재)이 전역 `MacroState`에 오염 누적되지 않도록 필터링 격리.
+  - `convertEventToEconomicShocks`에서 `scope: 'stock'`인 경우에만 `affectedAssets`로 해석하도록 범위를 정밀화하여 시장 전역 이벤트가 자산 한정 충격으로 잘못 분류되는 결함 수정.
+- `lib/engine/simulation/crossAsset/portfolioEngine.ts`:
+  - `> 0.3`, `> 0.4` 임의 임계값을 완전히 제거하고, 양의 한계 기여도를 갖는 모든 자산(`rContrib > 0` 등)을 비례 축소하되 헤지 포지션을 보존하는 엄밀한 다차원 스케일링 캡핑 구현.
+  - 반복 루프 완료 후 엄격한 불변조건 검증($|rBeta| \le maxRateBeta + 1e-4$, cash buffer, negative/NaN/Infinity 가중치)을 수행하고, 미수렴 시 `converged: false` 및 `PORTFOLIO_ALLOCATION_FAILED`로 fail-closed 처리.
+- `lib/engine/simulation/crossAsset/crossAssetSignalEngine.ts`:
+  - `computeSingleAssetSignal` 및 `computeCrossAssetSignals`에 `activeShocks` 파라미터를 추가하여 대상 자산/섹터에 국소 충격(`scoped_${factor}`)을 주입하고, `SignalDriver`에 `sourceEventId` 인과 체인을 명시적으로 연계.
+- `lib/engine/simulation/strategies/valueStrategy.ts` & `trendStrategy.ts`:
+  - 전략 내부의 하드코딩 fallback 가중치(0.30, 0.70, 0.25, 0.75)를 제거하고 `agent.macroProfile`을 직접 참조하여 일관된 신호 합성 보장.
+- `lib/engine/simulation/agentManager.ts`:
+  - `_immutableBaselineMacroState` 불변 동결 저장 및 `reset()` 시 원본 기준 상태와 에이전트 관측 상태 복원.
+  - `agentMacroBeliefs`를 인스턴스 맵으로 영속화하여 스텝 간 관측 상태 누적 전진 및 단조 증가하는 버전(`version`) 관리 (`getAgentMacroBelief` 제공).
+  - `registerAgent()` 호출 시 기본 거시 프로필을 1회 생성·동결하여 에이전트에 등록.
+  - `applyCrossAssetRiskGate` 공개 메서드를 구현하여 `NO_TARGET_ALLOCATION`, `INVALID_TARGET_ALLOCATION`, `RISK_CONSTRAINT_UNSATISFIED`, `PORTFOLIO_ALLOCATION_FAILED` 등 4대 보류 사유를 명시적으로 진단 및 차단.
+  - 주문 제출 시 `EXPERIMENTAL_ON` 모드에서 모든 전략 주문이 위험 게이트를 통과하도록 강제.
+- `scripts/test-cross-asset-full-suite.ts`:
+  - 테스트 11(목표 배분 부재/무효 시 차단 및 보류 진단 기록), 테스트 12(공통요인 노출 한도 정밀 캡핑 및 불변조건), 테스트 13(baseline 보존 및 누적 전진), 테스트 14(기본 거시 프로필 일원화), 테스트 15(범위 격리 및 인과 추적) 등 5개 신규 검증 블록(테스트 11~15) 추가 및 15개 전수 통과(100%).
+- 전체 품질 검증 및 회귀 보존:
+  - `npm audit --omit=dev` (0 vulnerabilities).
+  - `npm run lint` (0 errors, 133 pre-existing warnings).
+  - `npx tsc --noEmit` (0 errors).
+  - `npm run build` (Next.js 16.3.5 Turbopack 빌드 100% 성공).
+  - `npx tsx scripts/test-cross-asset-foundation.ts` (100% 통과).
+  - `npx tsx scripts/test-cross-asset-full-suite.ts` (15개 테스트 100% 통과).
+  - `npx tsx scripts/test-market-regime-foundation.ts` (33개 테스트 전수 통과).
+  - `npx tsx scripts/test-regime-activation-modes.ts` (100% 통과).
+  - `npx tsx scripts/test-news-lifecycle-and-causal-flow.ts` (100% 통과).
+  - `npx tsx scripts/test-stage2-review-fixes-v2.ts` (100% 통과).
+  - `git diff --check` (클린).

@@ -111,6 +111,8 @@ export function computePortfolioAllocation(
       targetAllocations: [],
       aggregateFactorExposure: { rateBeta: 0, growthBeta: 0, commodityBeta: 0 },
       heldReasons: { all: `INVALID_PROFILE: ${profileErr}` },
+      converged: false,
+      appliedConstraints: [],
     };
   }
 
@@ -123,6 +125,8 @@ export function computePortfolioAllocation(
       targetAllocations: [],
       aggregateFactorExposure: { rateBeta: 0, growthBeta: 0, commodityBeta: 0 },
       heldReasons: { all: 'NAV_NON_POSITIVE' },
+      converged: false,
+      appliedConstraints: [],
     };
   }
 
@@ -186,40 +190,61 @@ export function computePortfolioAllocation(
     totalPositiveWeight += rawWeight;
   }
 
-  // 2. 전체 투자 비중 한도 (1.0 - 최소 현금 버퍼) 적용
-  const maxTotalInvestableWeight = Math.max(0.1, 1.0 - agentProfile.minCashBuffer);
-  if (totalPositiveWeight > maxTotalInvestableWeight && totalPositiveWeight > 0) {
-    const scaleFactor = maxTotalInvestableWeight / totalPositiveWeight;
+  // 자산 입력 순서에 무관한 결정론적 불변성 보장을 위해 assetId 기준 사전 정렬
+  candidates.sort((a, b) => a.assetId.localeCompare(b.assetId));
+
+  // 2. 반복 수렴 캡핑: 공통 요인 노출(금리, 성장, 원자재 Beta) + 단일 자산/섹터 집중도 + 최소 현금 버퍼
+  const maxIterations = 20;
+  const EPS = 1e-4;
+  let converged = false;
+  const appliedConstraintsSet = new Set<string>();
+
+  for (let iter = 0; iter < maxIterations; iter++) {
+    // 2.1 전체 현금 버퍼 한도 검사 및 스케일링
+    let totalInvested = 0;
     for (const c of candidates) {
-      c.constrainedWeight *= scaleFactor;
-      c.constraints.push(`CASH_BUFFER_SCALE_${(scaleFactor * 100).toFixed(0)}PCT`);
+      totalInvested += c.constrainedWeight;
     }
-  }
-
-  // 3. 섹터별 집중도 한도 검사
-  const sectorWeightMap = new Map<string, number>();
-  for (const c of candidates) {
-    const sec = c.sectorId || 'unknown';
-    const curSec = sectorWeightMap.get(sec) || 0;
-    sectorWeightMap.set(sec, curSec + c.constrainedWeight);
-  }
-
-  for (const [sec, totalSecWeight] of sectorWeightMap.entries()) {
-    if (totalSecWeight > agentProfile.maxSectorConcentration && totalSecWeight > 0) {
-      const secScale = agentProfile.maxSectorConcentration / totalSecWeight;
+    const maxTotalInvestable = Math.max(0.0, 1.0 - agentProfile.minCashBuffer);
+    if (totalInvested > maxTotalInvestable + EPS && totalInvested > 0) {
+      const scale = maxTotalInvestable / totalInvested;
       for (const c of candidates) {
-        if ((c.sectorId || 'unknown') === sec) {
-          c.constrainedWeight *= secScale;
-          c.constraints.push(`SECTOR_CAP_EXCEEDED_${sec.toUpperCase()}`);
+        c.constrainedWeight *= scale;
+        if (!c.constraints.includes('CASH_BUFFER_CAPPED')) c.constraints.push('CASH_BUFFER_CAPPED');
+        appliedConstraintsSet.add('CASH_BUFFER_CAPPED');
+      }
+    }
+
+    // 2.2 단일 자산 집중도 한도 검사
+    for (const c of candidates) {
+      if (c.constrainedWeight > agentProfile.maxAssetConcentration + EPS) {
+        c.constrainedWeight = agentProfile.maxAssetConcentration;
+        if (!c.constraints.includes('SINGLE_ASSET_CAP_EXCEEDED')) c.constraints.push('SINGLE_ASSET_CAP_EXCEEDED');
+        appliedConstraintsSet.add('SINGLE_ASSET_CAP_EXCEEDED');
+      }
+    }
+
+    // 2.3 섹터별 집중도 한도 검사
+    const sectorWeights = new Map<string, number>();
+    for (const c of candidates) {
+      const sec = c.sectorId || 'unknown';
+      sectorWeights.set(sec, (sectorWeights.get(sec) || 0) + c.constrainedWeight);
+    }
+    for (const [sec, secWeight] of sectorWeights.entries()) {
+      if (secWeight > agentProfile.maxSectorConcentration + EPS && secWeight > 0) {
+        const secScale = agentProfile.maxSectorConcentration / secWeight;
+        for (const c of candidates) {
+          if ((c.sectorId || 'unknown') === sec) {
+            c.constrainedWeight *= secScale;
+            const reason = `SECTOR_CAP_EXCEEDED_${sec.toUpperCase()}`;
+            if (!c.constraints.includes(reason)) c.constraints.push(reason);
+            appliedConstraintsSet.add(reason);
+          }
         }
       }
     }
-  }
 
-  // 4. 공통 요인 노출(Common Factor Exposure: 금리, 성장, 원자재 Beta) 반복 수렴 캡핑
-  // maxFactorExposure는 각 팩터의 절대 위험 노출 상한선(Upper Bound)을 의미합니다.
-  const maxIterations = 10;
-  for (let iter = 0; iter < maxIterations; iter++) {
+    // 2.4 공통 요인 노출 계산
     let curRateBeta = 0;
     let curGrowthBeta = 0;
     let curCommBeta = 0;
@@ -234,20 +259,41 @@ export function computePortfolioAllocation(
       curCommBeta += c.constrainedWeight * cContrib;
     }
 
-    const rateScale = curRateBeta > agentProfile.maxFactorExposure.rateBeta && curRateBeta > 0
-      ? agentProfile.maxFactorExposure.rateBeta / curRateBeta
-      : 1.0;
-    const growthScale = curGrowthBeta > agentProfile.maxFactorExposure.growthBeta && curGrowthBeta > 0
-      ? agentProfile.maxFactorExposure.growthBeta / curGrowthBeta
-      : 1.0;
-    const commScale = curCommBeta > agentProfile.maxFactorExposure.commodityBeta && curCommBeta > 0
-      ? agentProfile.maxFactorExposure.commodityBeta / curCommBeta
-      : 1.0;
+    const rateExceeded = curRateBeta > agentProfile.maxFactorExposure.rateBeta + EPS;
+    const growthExceeded = curGrowthBeta > agentProfile.maxFactorExposure.growthBeta + EPS;
+    const commExceeded = curCommBeta > agentProfile.maxFactorExposure.commodityBeta + EPS;
 
-    // 모든 한도 충족 시 즉시 수렴
-    if (rateScale >= 0.9999 && growthScale >= 0.9999 && commScale >= 0.9999) {
+    // 모든 한도 및 요인 노출 충족 시 즉시 수렴
+    if (!rateExceeded && !growthExceeded && !commExceeded) {
+      converged = true;
       break;
     }
+
+    // 임의 임계값 배제: 양의 한계 기여(marginal contribution > 0)를 하는 모든 자산을 비례 축소
+    // 헤지 자산(기여도 <= 0)은 잘못 축소하지 않음
+    let posRateWeight = 0;
+    let posGrowthWeight = 0;
+    let posCommWeight = 0;
+
+    for (const c of candidates) {
+      const rContrib = Math.abs(c.signal.riskContributions.rates ?? (c.assetClass === 'BOND' ? 0.8 : 0.3));
+      const gContrib = Math.abs(c.signal.riskContributions.growth ?? (c.assetClass === 'STOCK' ? 0.7 : 0.1));
+      const cContrib = Math.abs(c.signal.riskContributions.commoditySupply ?? (c.assetClass === 'COMMODITY' ? 0.9 : 0.1));
+
+      if (rContrib > 0) posRateWeight += c.constrainedWeight * rContrib;
+      if (gContrib > 0) posGrowthWeight += c.constrainedWeight * gContrib;
+      if (cContrib > 0) posCommWeight += c.constrainedWeight * cContrib;
+    }
+
+    const rateScale = rateExceeded && posRateWeight > 0
+      ? agentProfile.maxFactorExposure.rateBeta / posRateWeight
+      : 1.0;
+    const growthScale = growthExceeded && posGrowthWeight > 0
+      ? agentProfile.maxFactorExposure.growthBeta / posGrowthWeight
+      : 1.0;
+    const commScale = commExceeded && posCommWeight > 0
+      ? agentProfile.maxFactorExposure.commodityBeta / posCommWeight
+      : 1.0;
 
     for (const c of candidates) {
       const rContrib = Math.abs(c.signal.riskContributions.rates ?? (c.assetClass === 'BOND' ? 0.8 : 0.3));
@@ -255,24 +301,80 @@ export function computePortfolioAllocation(
       const cContrib = Math.abs(c.signal.riskContributions.commoditySupply ?? (c.assetClass === 'COMMODITY' ? 0.9 : 0.1));
 
       let assetScale = 1.0;
-      if (rateScale < 1.0 && (rContrib > 0.3 || c.assetClass === 'BOND')) {
+      if (rateScale < 1.0 && rContrib > 0) {
         assetScale = Math.min(assetScale, rateScale);
         if (!c.constraints.includes('RATE_FACTOR_EXPOSURE_CAPPED')) c.constraints.push('RATE_FACTOR_EXPOSURE_CAPPED');
+        appliedConstraintsSet.add('RATE_FACTOR_EXPOSURE_CAPPED');
       }
-      if (growthScale < 1.0 && (gContrib > 0.4 || c.assetClass === 'STOCK')) {
+      if (growthScale < 1.0 && gContrib > 0) {
         assetScale = Math.min(assetScale, growthScale);
         if (!c.constraints.includes('GROWTH_FACTOR_EXPOSURE_CAPPED')) c.constraints.push('GROWTH_FACTOR_EXPOSURE_CAPPED');
+        appliedConstraintsSet.add('GROWTH_FACTOR_EXPOSURE_CAPPED');
       }
-      if (commScale < 1.0 && (cContrib > 0.4 || c.assetClass === 'COMMODITY')) {
+      if (commScale < 1.0 && cContrib > 0) {
         assetScale = Math.min(assetScale, commScale);
         if (!c.constraints.includes('COMMODITY_FACTOR_EXPOSURE_CAPPED')) c.constraints.push('COMMODITY_FACTOR_EXPOSURE_CAPPED');
+        appliedConstraintsSet.add('COMMODITY_FACTOR_EXPOSURE_CAPPED');
       }
 
       c.constrainedWeight *= assetScale;
     }
   }
 
-  // 5. 최종 목표 수량 및 델타 계산 (실제 유효 가격 기반)
+  // 3. 최종 불변조건 검증 (NaN, Infinity, 음수 가중치, 현금 버퍼 위반, 미수렴 요인 노출 초과 거부)
+  let finalRateBeta = 0;
+  let finalGrowthBeta = 0;
+  let finalCommBeta = 0;
+  let finalTotalWeight = 0;
+
+  for (const c of candidates) {
+    if (!Number.isFinite(c.constrainedWeight) || c.constrainedWeight < 0) {
+      return {
+        accountId: agentProfile.agentId,
+        simulationTime,
+        totalNav: nav,
+        availableCash,
+        targetAllocations: [],
+        aggregateFactorExposure: { rateBeta: 0, growthBeta: 0, commodityBeta: 0 },
+        heldReasons: { all: 'PORTFOLIO_ALLOCATION_FAILED: INVALID_WEIGHT_NON_FINITE_OR_NEGATIVE' },
+        converged: false,
+        appliedConstraints: Array.from(appliedConstraintsSet),
+      };
+    }
+    const rContrib = Math.abs(c.signal.riskContributions.rates ?? (c.assetClass === 'BOND' ? 0.8 : 0.3));
+    const gContrib = Math.abs(c.signal.riskContributions.growth ?? (c.assetClass === 'STOCK' ? 0.7 : 0.1));
+    const cContrib = Math.abs(c.signal.riskContributions.commoditySupply ?? (c.assetClass === 'COMMODITY' ? 0.9 : 0.1));
+
+    finalRateBeta += c.constrainedWeight * rContrib;
+    finalGrowthBeta += c.constrainedWeight * gContrib;
+    finalCommBeta += c.constrainedWeight * cContrib;
+    finalTotalWeight += c.constrainedWeight;
+  }
+
+  const finalRateOk = finalRateBeta <= agentProfile.maxFactorExposure.rateBeta + EPS;
+  const finalGrowthOk = finalGrowthBeta <= agentProfile.maxFactorExposure.growthBeta + EPS;
+  const finalCommOk = finalCommBeta <= agentProfile.maxFactorExposure.commodityBeta + EPS;
+  const finalCashOk = finalTotalWeight <= (1.0 - agentProfile.minCashBuffer) + EPS;
+
+  if (!converged || !finalRateOk || !finalGrowthOk || !finalCommOk || !finalCashOk) {
+    return {
+      accountId: agentProfile.agentId,
+      simulationTime,
+      totalNav: nav,
+      availableCash,
+      targetAllocations: [],
+      aggregateFactorExposure: {
+        rateBeta: Number(finalRateBeta.toFixed(4)),
+        growthBeta: Number(finalGrowthBeta.toFixed(4)),
+        commodityBeta: Number(finalCommBeta.toFixed(4)),
+      },
+      heldReasons: { all: 'PORTFOLIO_ALLOCATION_FAILED: UNABLE_TO_CONVERGE_CONSTRAINTS' },
+      converged: false,
+      appliedConstraints: Array.from(appliedConstraintsSet),
+    };
+  }
+
+  // 4. 최종 목표 수량 및 델타 계산 (실제 유효 가격 기반)
   for (const c of candidates) {
     const currentQty = currentHoldingMap.get(c.assetId)?.quantity ?? 0;
     const targetNotional = nav * c.constrainedWeight;
@@ -291,7 +393,7 @@ export function computePortfolioAllocation(
     });
   }
 
-  // 6. 캡핑 완료 후 최종 목표 비중 기반 aggregateFactorExposure 정확한 재계산
+  // 5. 캡핑 완료 후 최종 목표 비중 기반 aggregateFactorExposure 정확한 재계산
   let aggregateRateBeta = 0;
   let aggregateGrowthBeta = 0;
   let aggregateCommodityBeta = 0;
@@ -319,6 +421,8 @@ export function computePortfolioAllocation(
       commodityBeta: Number(aggregateCommodityBeta.toFixed(4)),
     },
     heldReasons,
+    converged: true,
+    appliedConstraints: Array.from(appliedConstraintsSet),
   };
 }
 

@@ -92,13 +92,13 @@ export function evaluateValueStrategy(
   let valGap = (estimatedValue - midPrice) / midPrice;
 
   // 2.1 교차자산 거시 신호 결합 (선택적)
-  if (crossAssetSignal) {
+  if (crossAssetSignal && agent.macroProfile) {
     const macroExpectedReturn = crossAssetSignal.expectedReturn * crossAssetSignal.confidence;
-    const macroSens = agent.macroProfile?.macroSensitivity ?? 0.30;
-    const microSens = agent.macroProfile?.microSensitivity ?? 0.70;
+    const macroSens = agent.macroProfile.macroSensitivity;
+    const microSens = agent.macroProfile.microSensitivity;
     const totalSens = macroSens + microSens;
-    const normMacro = totalSens > 0 ? macroSens / totalSens : 0.30;
-    const normMicro = totalSens > 0 ? microSens / totalSens : 0.70;
+    const normMacro = totalSens > 0 ? macroSens / totalSens : 0.50;
+    const normMicro = totalSens > 0 ? microSens / totalSens : 0.50;
     valGap = valGap * normMicro + macroExpectedReturn * normMacro;
   }
 

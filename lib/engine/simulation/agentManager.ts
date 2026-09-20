@@ -75,6 +75,7 @@ import {
   DEFAULT_MACRO_STATE,
   advanceMacroState,
   convertEventToEconomicShock,
+  extractEffectiveEconomicShocks,
   createObservableMacroState,
   EconomicShock,
 } from './macro';
@@ -85,7 +86,11 @@ import {
 import {
   CrossAssetSignal,
   AgentMacroProfile,
+  TargetExposure,
 } from './crossAsset/crossAssetTypes';
+import {
+  isSovereignBond,
+} from './crossAsset/transmissionEngine';
 import {
   computePortfolioAllocation,
   convertAllocationsToOrderIntents,
@@ -210,6 +215,7 @@ export class AgentManager {
   public readonly enableCrossAssetEngine: boolean;
   private _crossAssetMode: 'OFF' | 'SHADOW' | 'EXPERIMENTAL_ON' = 'OFF';
   public macroState: MacroState;
+  private _initialMacroState: MacroState;
   public crossAssetDiagnostics: CrossAssetDiagnosticsManager = new CrossAssetDiagnosticsManager();
 
   /** 현재 활성 중인 교차자산 거시 모드 ('OFF' | 'SHADOW' | 'EXPERIMENTAL_ON') */
@@ -238,6 +244,28 @@ export class AgentManager {
   private emptyBookStockRatio: number = 0;
   private marketIndexReturns: number[] = [];
   public lastObservation: RegimeObservation | null = null;
+
+  private getUserOpenOrders(userId: string): OpenOrderForRisk[] {
+    const userOrders: OpenOrderForRisk[] = [];
+    if (memoryDb.orderUserIndex) {
+      const orderIds = memoryDb.orderUserIndex.get(userId);
+      if (orderIds) {
+        for (const oId of orderIds) {
+          const ord = memoryDb.orders.get(oId);
+          if (ord && (ord.status === 'open' || ord.status === 'partial')) {
+            userOrders.push(ord as OpenOrderForRisk);
+          }
+        }
+      }
+    } else {
+      for (const ord of memoryDb.orders.values()) {
+        if (ord.user_id === userId && (ord.status === 'open' || ord.status === 'partial')) {
+          userOrders.push(ord as OpenOrderForRisk);
+        }
+      }
+    }
+    return userOrders;
+  }
 
   constructor(
     seed: number = 42,
@@ -276,11 +304,14 @@ export class AgentManager {
       (options?.crossAssetMode !== undefined && options?.crossAssetMode !== 'OFF');
     this._crossAssetMode =
       options?.crossAssetMode ?? (this.enableCrossAssetEngine ? 'EXPERIMENTAL_ON' : 'OFF');
-    this.macroState = {
+    this._initialMacroState = {
       ...DEFAULT_MACRO_STATE,
       ...(options?.initialMacroState ?? {}),
       timestamp: startEpochMs,
       version: 1,
+    };
+    this.macroState = {
+      ...this._initialMacroState,
     };
 
     this.clock = new SimulationClock(startEpochMs, 1.0);
@@ -833,21 +864,16 @@ export class AgentManager {
     this.processDueEffects(simTime);
 
     // ── 교차자산 거시 의사결정 파이프라인 (Cross-Asset Macroeconomic Decision Pipeline) ──
-    const crossAssetSignalsMap = new Map<string, CrossAssetSignal>();
+    const agentSignalsMap = new Map<string, Map<string, CrossAssetSignal>>();
+    const agentAllocationsMap = new Map<string, Map<string, TargetExposure>>();
+
     if (this._crossAssetMode !== 'OFF') {
-      // 1. 유효 발효된 시장 이벤트 수집 및 경제 충격 변환 (정보 경계 보장)
-      const shocks: EconomicShock[] = [];
-      for (const evt of this.publishedEvents) {
-        if (evt.publishedAt <= simTime && (evt.effectiveFrom ?? evt.publishedAt) <= simTime) {
-          const shock = convertEventToEconomicShock(evt);
-          if (shock) shocks.push(shock);
-        }
-      }
+      // 1. 전역 실제 거시 상태(True Macro State) 업데이트
+      // 전역 시스템에 실제로 발효된 시장 이벤트로부터 추출
+      const globalShocks = extractEffectiveEconomicShocks(this.publishedEvents, simTime);
+      this.macroState = advanceMacroState(this.macroState, globalShocks, dt, simTime);
 
-      // 2. 공통 거시 상태 결정론적 전진 (충격 지수감쇠 + 평균회귀 순수 계산)
-      this.macroState = advanceMacroState(this.macroState, shocks, dt, simTime);
-
-      // 3. 자산군별 미시 스냅샷 수집
+      // 2. 자산군별 미시 스냅샷 수집
       const assetSnapshots: AssetMicroSnapshot[] = [];
       const assetMetadataMap = new Map<string, { sectorId?: string; tickSize?: number; minOrderSize?: number }>();
       const currentPriceMap = new Map<string, number>();
@@ -878,7 +904,7 @@ export class AgentManager {
           currentPrice: bond.current_price,
           ytm: bond.ytm,
           duration: bond.duration,
-          isSovereign: bond.bond_type ? (bond.bond_type.includes('국채') || bond.bond_type.includes('sovereign')) : true,
+          isSovereign: isSovereignBond(bond.bond_type),
           spreadBps: 15,
         });
       }
@@ -905,39 +931,55 @@ export class AgentManager {
           currentPrice: opt.current_price,
           optionType: (opt.type || opt.option_type) as any,
           delta: opt.delta,
+          gamma: opt.gamma,
+          theta: opt.theta,
+          strikePrice: opt.strike_price,
+          underlyingAssetId: opt.underlying_stock_id,
           impliedVol: opt.implied_volatility,
           spreadBps: 50,
         });
       }
 
-      // 4. 교차자산 신호 일괄 산출 (순수 계산)
       const curRegime = activeRegimeState?.regime ?? 'SIDEWAYS';
-      const signals = computeCrossAssetSignals(assetSnapshots, this.macroState, curRegime);
-      for (const [k, v] of signals.entries()) {
-        crossAssetSignalsMap.set(k, v);
-      }
 
-      // 5. 에이전트별 포트폴리오 목표 배분 및 진단 스냅샷 기록
+      // 3. 에이전트별 정보 지연(infoLatency)을 반영한 관측 거시 상태 및 신호/포트폴리오 산출
       for (const [accId, agent] of this.agents.entries()) {
         if (agent.participantType === 'lp') continue;
 
+        // 에이전트 정보 경계: agent.infoLatency가 반영된 가시적 이벤트만 조회
+        const visibleEvents = getVisibleMarketEvents(this.events, simTime, agent.infoLatency ?? 0);
+        const agentShocks = extractEffectiveEconomicShocks(visibleEvents, simTime);
+        // 에이전트가 관측한 거시 상태 (Agent Observable Macro State / Macro Belief)
+        const agentMacroState = advanceMacroState(this._initialMacroState, agentShocks, dt, simTime);
+
+        // 2단계 교차자산 신호 계산 (옵션은 실제 기초자산과 연결)
+        const signals = computeCrossAssetSignals(assetSnapshots, agentMacroState, curRegime);
+        agentSignalsMap.set(accId, signals);
+
         const profile = agent.macroProfile || createDefaultMacroProfile(accId, agent.strategyType, agent.riskTolerance);
         const userProfile = memoryDb.profiles.get(accId);
-        const availableCash = userProfile?.cash ?? 50_000_000;
+        const rawCash = userProfile?.cash ?? 50_000_000;
+        const userOpenOrders = this.getUserOpenOrders(accId);
+        // 미체결 매수 주문 예약금 차감 (실제 가용 현금)
+        const reservedBuyCash = calculateReservedCash(userOpenOrders);
+        const availableCash = Math.max(0, rawCash - reservedBuyCash);
 
-        // 현재 보유 자산 집계
+        // 현재 보유 자산 집계 (미체결 매도 예약 수량 반영)
         const currentHoldings: CurrentHoldingSnapshot[] = [];
         let totalHoldingsValue = 0;
         for (const h of memoryDb.holdings.values()) {
           if (h.user_id === accId && h.quantity > 0) {
             const price = currentPriceMap.get(h.stock_id) || h.avg_price;
             totalHoldingsValue += h.quantity * price;
+            const reservedSellQty = calculateReservedQty(userOpenOrders, h.stock_id);
+            const availableHolding = Math.max(0, h.quantity - reservedSellQty);
             currentHoldings.push({
               assetId: h.stock_id,
               assetClass: 'STOCK',
               sectorId: memoryDb.stocks.get(h.stock_id)?.sector_id || memoryDb.stocks.get(h.stock_id)?.sector,
               quantity: h.quantity,
               currentPrice: price,
+              availableHolding,
             });
           }
         }
@@ -947,31 +989,40 @@ export class AgentManager {
           agentProfile: profile,
           nav: totalNav,
           availableCash,
-          signals: crossAssetSignalsMap,
+          signals,
           currentHoldings,
           assetMetadata: assetMetadataMap,
+          currentPrices: currentPriceMap,
           simulationTime: simTime,
         });
 
+        const targetMap = new Map<string, TargetExposure>();
+        for (const alloc of allocationResult.targetAllocations) {
+          targetMap.set(alloc.assetId, alloc);
+        }
+        agentAllocationsMap.set(accId, targetMap);
+
+        const availableHoldingsMap = new Map(currentHoldings.map((h) => [h.assetId, h.availableHolding ?? h.quantity]));
         const { intents: crossAssetOrderIntents, heldIntents } = convertAllocationsToOrderIntents(
           allocationResult.targetAllocations,
           availableCash,
-          currentPriceMap
+          currentPriceMap,
+          availableHoldingsMap
         );
 
         // 진단 스냅샷 구성 및 보존 (순수 읽기/방어적 복사)
         const snapshot: CrossAssetStepSnapshot = {
           agentId: accId,
           simulationTime: simTime,
-          macroVersion: this.macroState.version,
+          macroVersion: agentMacroState.version,
           marketRegime: curRegime,
-          observedMacroState: createObservableMacroState(this.macroState, curRegime),
+          observedMacroState: createObservableMacroState(agentMacroState, curRegime),
           totalNav: allocationResult.totalNav,
           availableCash: allocationResult.availableCash,
           aggregateFactorExposure: allocationResult.aggregateFactorExposure,
           generalHeldReasons: allocationResult.heldReasons,
           decisions: allocationResult.targetAllocations.map((alloc) => {
-            const sig = crossAssetSignalsMap.get(alloc.assetId);
+            const sig = signals.get(alloc.assetId);
             const held = heldIntents.find((h) => h.assetId === alloc.assetId);
             const intent = crossAssetOrderIntents.find((i) => i.stockId === alloc.assetId);
             return {
@@ -1258,6 +1309,9 @@ export class AgentManager {
           if (!obs) continue;
 
           let intent: AgentOrderIntent = { action: 'hold', stockId: stock.id };
+          const agentSignals = agentSignalsMap.get(accountId);
+          const crossAssetSig = this._crossAssetMode === 'EXPERIMENTAL_ON' ? agentSignals?.get(stock.id) : undefined;
+
           if (agent.strategyType === 'value') {
             const trueF = this.fundamentals.get(stock.id) || stock.current_price;
             intent = evaluateValueStrategy(
@@ -1267,7 +1321,7 @@ export class AgentManager {
               trueF,
               agentPrng,
               botEffectParams,
-              this._crossAssetMode === 'EXPERIMENTAL_ON' ? crossAssetSignalsMap.get(stock.id) : undefined
+              crossAssetSig
             );
           } else if (agent.strategyType === 'trend') {
             intent = evaluateTrendStrategy(
@@ -1275,7 +1329,7 @@ export class AgentManager {
               agent,
               this.trendConfig,
               botEffectParams,
-              this._crossAssetMode === 'EXPERIMENTAL_ON' ? crossAssetSignalsMap.get(stock.id) : undefined
+              crossAssetSig
             );
           }
 
@@ -1296,6 +1350,34 @@ export class AgentManager {
 
             const directionalGate = intent.action === 'buy' ? probs.pBuy : probs.pSell;
             if (activityRoll >= directionalGate) continue;
+
+            // ── 교차자산 위험 게이트 (EXPERIMENTAL_ON) ──
+            if (this._crossAssetMode === 'EXPERIMENTAL_ON') {
+              const targetAlloc = agentAllocationsMap.get(accountId)?.get(stock.id);
+              if (targetAlloc) {
+                if (intent.action === 'buy') {
+                  if (targetAlloc.deltaQuantity <= 0) continue;
+                  const userProfile = memoryDb.profiles.get(accountId);
+                  const openOrders = this.getUserOpenOrders(accountId);
+                  const reservedBuyCash = calculateReservedCash(openOrders);
+                  const availCash = Math.max(0, (userProfile?.cash ?? 0) - reservedBuyCash);
+                  const maxBuyAffordable = Math.floor(availCash / (intent.price * 1.0025));
+                  const finalBuySize = Math.min(intent.size, targetAlloc.deltaQuantity, maxBuyAffordable);
+                  if (finalBuySize <= 0) continue;
+                  intent.size = finalBuySize;
+                } else if (intent.action === 'sell') {
+                  if (targetAlloc.deltaQuantity >= 0) continue;
+                  const userHolding = memoryDb.holdings.get(`${accountId}:${stock.id}`);
+                  const holdingQty = userHolding?.quantity ?? 0;
+                  const openOrders = this.getUserOpenOrders(accountId);
+                  const reservedSellQty = calculateReservedQty(openOrders, stock.id);
+                  const availHolding = Math.max(0, holdingQty - reservedSellQty);
+                  const finalSellSize = Math.min(intent.size, Math.abs(targetAlloc.deltaQuantity), availHolding);
+                  if (finalSellSize <= 0) continue;
+                  intent.size = finalSellSize;
+                }
+              }
+            }
 
             await this.submitBotOrder(agent, stock, intent, simTime, visibleEvents, activeRegimeState, true, appliedMultipliers);
           }
@@ -1324,6 +1406,9 @@ export class AgentManager {
           if (!obs) continue;
 
           let intent: AgentOrderIntent = { action: 'hold', stockId: stock.id };
+          const agentSignals = agentSignalsMap.get(accountId);
+          const crossAssetSig = this._crossAssetMode === 'EXPERIMENTAL_ON' ? agentSignals?.get(stock.id) : undefined;
+
           if (agent.strategyType === 'value') {
             const trueF = this.fundamentals.get(stock.id) || stock.current_price;
             intent = evaluateValueStrategy(
@@ -1333,7 +1418,7 @@ export class AgentManager {
               trueF,
               agentPrng,
               undefined,
-              this._crossAssetMode === 'EXPERIMENTAL_ON' ? crossAssetSignalsMap.get(stock.id) : undefined
+              crossAssetSig
             );
           } else if (agent.strategyType === 'trend') {
             intent = evaluateTrendStrategy(
@@ -1341,7 +1426,7 @@ export class AgentManager {
               agent,
               this.trendConfig,
               undefined,
-              this._crossAssetMode === 'EXPERIMENTAL_ON' ? crossAssetSignalsMap.get(stock.id) : undefined
+              crossAssetSig
             );
           }
 
@@ -1359,6 +1444,35 @@ export class AgentManager {
 
           if (intent.action === 'buy' || intent.action === 'sell') {
             if (!intent.price || !intent.size || intent.size <= 0) continue;
+
+            // ── 교차자산 위험 게이트 (EXPERIMENTAL_ON) ──
+            if (this._crossAssetMode === 'EXPERIMENTAL_ON') {
+              const targetAlloc = agentAllocationsMap.get(accountId)?.get(stock.id);
+              if (targetAlloc) {
+                if (intent.action === 'buy') {
+                  if (targetAlloc.deltaQuantity <= 0) continue;
+                  const userProfile = memoryDb.profiles.get(accountId);
+                  const openOrders = this.getUserOpenOrders(accountId);
+                  const reservedBuyCash = calculateReservedCash(openOrders);
+                  const availCash = Math.max(0, (userProfile?.cash ?? 0) - reservedBuyCash);
+                  const maxBuyAffordable = Math.floor(availCash / (intent.price * 1.0025));
+                  const finalBuySize = Math.min(intent.size, targetAlloc.deltaQuantity, maxBuyAffordable);
+                  if (finalBuySize <= 0) continue;
+                  intent.size = finalBuySize;
+                } else if (intent.action === 'sell') {
+                  if (targetAlloc.deltaQuantity >= 0) continue;
+                  const userHolding = memoryDb.holdings.get(`${accountId}:${stock.id}`);
+                  const holdingQty = userHolding?.quantity ?? 0;
+                  const openOrders = this.getUserOpenOrders(accountId);
+                  const reservedSellQty = calculateReservedQty(openOrders, stock.id);
+                  const availHolding = Math.max(0, holdingQty - reservedSellQty);
+                  const finalSellSize = Math.min(intent.size, Math.abs(targetAlloc.deltaQuantity), availHolding);
+                  if (finalSellSize <= 0) continue;
+                  intent.size = finalSellSize;
+                }
+              }
+            }
+
             await this.submitBotOrder(agent, stock, intent, simTime, visibleEvents, activeRegimeState, false);
           }
         }

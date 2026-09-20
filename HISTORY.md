@@ -4822,3 +4822,41 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
   - `scripts/test-cross-asset-full-suite.ts`: 결정론, 진단 조회 PRNG 불변, 미발효 이벤트 정보 경계 차단, 요인 노출 캡핑, 단일 자산/섹터 한도, 미지원 자산 fail-closed, SHADOW 무간섭 지문 일치, reset 복원 100% 통과 (Exit Code 0).
   - 기존 회귀 검증: `test-market-regime-foundation.ts` (33개 테스트 전수 통과), `test-regime-activation-modes.ts` (7대 결함 보완 스위트 100% 통과).
   - 빌드 및 린트: `npx tsc --noEmit` (0 errors), `npm run lint` (0 errors), `npm run build` (Next.js 16.3.5 Turbopack 빌드 성공), `git diff --check` (클린).
+
+---
+## 2026-09-20 23:35
+
+**요청 요약:** STOCKSYS 교차자산 거시 의사결정 엔진의 P1 및 P2 아키텍처 결함(거시 충격 방향 모델 및 valuationSignal 분리, Closed-form 상태 전이 및 시간 의미 일관성, 에이전트별 정보 경계/정정 생명주기, 실제 주문 위험 게이트 및 수량 클램핑, 3-Factor 동시 수렴 캡핑 및 최종 노출 재계산, 50,000 fallback 제거 및 미체결 예약 자산 차감, 국채 정규화, 옵션 2단계 기초자산 연결) 전면 보완 및 정합성 검증
+
+**수행 결과:**
+- `lib/engine/simulation/macro/macroTypes.ts` & `marketEventTypes.ts`:
+  - `valuationSignal`과 독립적인 `MacroImpactDescriptor` (`factor`, `direction: 1 | -1`, `magnitude > 0`, `halfLife > 0`) 모델 정의.
+  - `MacroState`에 `initialTimestamp`, `initialValues` 필드를 추가하여 닫힌 형식(closed-form) 상태 전이 지원.
+  - `MarketEvent` 및 `ObservableMarketEvent`에 `macroImpacts?: readonly MacroImpactDescriptor[]`를 통합하고 `validateMarketEvent` 검증 적용.
+- `lib/engine/simulation/macro/macroState.ts`:
+  - `convertEventToEconomicShocks`: 주식 valuationSignal 오용을 완전 배제하고 `macroImpacts` 명시적 기술자만 해석(fail-closed).
+  - `extractEffectiveEconomicShocks`: 이벤트 정정 생명주기(`RETRACT`, `REPLACE`, `ADDITIVE`) 완벽 적용 및 이벤트 ID 기반 멱등 충격 축약.
+  - `advanceMacroState`: 오일러 적분 누적 오차와 $10\text{s} \times 1 \ne 1\text{s} \times 10$ 왜곡을 제거하고, 해석적 평균회귀 $(X_0 - \bar{X})e^{-\kappa \Delta t}$ 및 반감기 지수 감쇠 외생 충격 $S_F(t)$를 결합한 닫힌 형식 전이 함수로 개편.
+- `lib/engine/simulation/crossAsset/transmissionEngine.ts`:
+  - `isSovereignBond`에 `govt`, `government`, `sovereign`, `treasury`, `국채`, `국고채` 정규화 추가 및 미분류 채권 fail-closed 비국채 처리.
+  - 채권 및 옵션 전달 엔진에 실제 만기/민감도 및 델타/베가/세타/꼬리위험 풋 전달 로직 강화.
+- `lib/engine/simulation/crossAsset/crossAssetSignalEngine.ts`:
+  - 옵션 자산 신호 산출 시 2단계 거시 전달 모델 적용: 기초자산 주식의 기대수익률/변동성을 우선 산출한 뒤 옵션 그리스(Delta, Vega, Theta decay)를 합성. 기초자산 결측 시 중립(`direction: 0`, `expectedReturn: 0`) fail-closed 반환.
+- `lib/engine/simulation/crossAsset/portfolioEngine.ts`:
+  - 임의의 50,000원 fallback 제거: 결측 또는 비정상 가격 시 `INVALID_OR_MISSING_PRICE`로 fail-closed 안전 보류.
+  - 거시 민감도와 미시 민감도의 합이 1이 되도록 정규화 가중치 결합 적용.
+  - 3대 공통 요인(금리, 성장, 원자재 Beta) 노출의 다중 제약을 최대 10회 반복 동시 수렴하는 다차원 스케일링 캡핑 구현.
+  - 최종 목표 비중(`targetWeight`) 확정 후 실제 비중을 기준으로 `aggregateFactorExposure`를 재계산하여 제약과 일치 보장.
+  - `convertAllocationsToOrderIntents`에서 미체결 매수 주문 예약금과 0.25% 거래 수수료를 차감한 잔여 가용 현금 및 미체결 매도 예약 수량을 차감한 잔여 가용 수량만 주문으로 변환.
+- `lib/engine/simulation/strategies/valueStrategy.ts` & `trendStrategy.ts`:
+  - 전략 평가 시 `agent.macroProfile`의 `macroSensitivity`와 `microSensitivity`를 정규화하여 일관된 신호 합성 적용.
+- `lib/engine/simulation/agentManager.ts`:
+  - 참 거시 상태(`macroState`)와 각 에이전트의 정보 지연(`agent.infoLatency`)을 반영한 관측 신념(`observableMacroBelief`)을 엄격히 분리.
+  - `EXPERIMENTAL_ON` 모드에서 기존 directional 전략 주문이 위험 제약 목표 델타($\Delta$)와 충돌하지 않도록 검증하고, 반대 방향 주문 차단 및 주문 수량을 $\min(\text{size}, |\Delta|, \text{available})$로 클램핑하는 실제 주문 파이프라인 위험 게이트 통합.
+  - 사용자별 활성 주문 장부를 조회하여 미체결 매수 예약금 및 매도 예약 수량을 동적으로 집계하는 `getUserOpenOrders` 어댑터 연결.
+- 종합 테스트 및 무회귀 검증:
+  - `scripts/test-cross-asset-foundation.ts`: 4개 테스트 전수 통과 (Exit 0).
+  - `scripts/test-cross-asset-full-suite.ts`: 10개 테스트 블록(결정론, 정보 경계, 거시 충격 분리, 정보 지연/정정, 실제 주문 위험 게이트, 3-Factor 캡핑 및 재계산, 국채 정규화, 옵션 기초자산 연결, 50,000 fallback 제거 및 예약금 정합성, SHADOW 무간섭 및 OFF 회귀 보존) 100% 통과 (Exit 0).
+  - 전체 회귀 테스트: `test-market-regime-foundation.ts` (33개 통과), `test-regime-activation-modes.ts` (100% 통과), `test-news-lifecycle-and-causal-flow.ts` (A~F 통과), `test-stage2-review-fixes-v2.ts` (A~H 통과).
+  - `npx tsc --noEmit` (0 errors), `npm run lint` (0 errors), `npm run build` (Next.js 빌드 성공), `git diff --check` (클린).
+

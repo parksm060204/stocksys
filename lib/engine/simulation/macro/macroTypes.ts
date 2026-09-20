@@ -35,6 +35,10 @@ export interface MacroState {
   readonly timestamp: number;
   /** 상태 버전 카운터 */
   readonly version: number;
+  /** 기준 시각 (시뮬레이션 시작 epoch ms) */
+  readonly initialTimestamp?: number;
+  /** 초기 상태값 (평균회귀 잔차 추적용) */
+  readonly initialValues?: Readonly<Record<string, number>>;
 }
 
 export type MacroFactor =
@@ -47,11 +51,28 @@ export type MacroFactor =
   | 'oilSupply'
   | 'geopoliticalRisk';
 
+export interface MacroImpactDescriptor {
+  readonly factor: MacroFactor;
+  /** 거시 요인 증감 방향: +1 (요인 상승/확대), -1 (요인 하락/축소) */
+  readonly direction: -1 | 1;
+  /** 충격 강도 크기 (0.0 ~ 1.0) */
+  readonly magnitude: number;
+  /** 신뢰도 (0.0 ~ 1.0, 기본값: 이벤트 신뢰도) */
+  readonly confidence?: number;
+  /** 반감기 (초, 기본값: 이벤트 halfLife) */
+  readonly halfLifeSeconds?: number;
+  readonly affectedRegions?: readonly string[];
+  readonly affectedSectors?: readonly string[];
+  readonly affectedAssets?: readonly string[];
+}
+
 export interface EconomicShock {
   readonly shockId: string;
   readonly sourceEventId: string;
   readonly factor: MacroFactor;
-  /** 충격 강도 (-1.0 ~ +1.0) */
+  /** 거시 요인 증감 방향: +1 (상승), -1 (하락) */
+  readonly direction: -1 | 1;
+  /** 충격 강도 크기 (0.0 ~ 1.0) */
   readonly magnitude: number;
   /** 신뢰도 (0.0 ~ 1.0) */
   readonly confidence: number;
@@ -67,9 +88,9 @@ export interface EconomicShock {
 
 export interface MacroStateParameters {
   /** 각 변수별 평균회귀 속도 (연율화 kappa) */
-  readonly meanReversionSpeed: Record<keyof Omit<MacroState, 'timestamp' | 'version' | 'realRate'>, number>;
+  readonly meanReversionSpeed: Record<keyof Omit<MacroState, 'timestamp' | 'version' | 'realRate' | 'initialTimestamp' | 'initialValues'>, number>;
   /** 각 변수별 장기 정상 균형점 (baseline) */
-  readonly baseline: Record<keyof Omit<MacroState, 'timestamp' | 'version' | 'realRate'>, number>;
+  readonly baseline: Record<keyof Omit<MacroState, 'timestamp' | 'version' | 'realRate' | 'initialTimestamp' | 'initialValues'>, number>;
 }
 
 export interface ObservableMacroState {

@@ -8,6 +8,7 @@
  * - 순수 함수: PRNG 비소비, 시스템 시각 비의존, 동일 입력 시 비트 단위 동일 결과
  * - 미래 데이터 및 미공개 이벤트 차단
  * - NaN, Infinity 철저 클램핑
+ * - 옵션은 2단계 순서로 실제 기초자산 기대수익 및 변동성과 연결 (고정 5% fallback 배제)
  */
 
 import { MacroState } from '../macro/macroTypes';
@@ -44,7 +45,11 @@ export interface AssetMicroSnapshot {
   // 옵션 전용
   readonly optionType?: 'CALL' | 'PUT';
   readonly delta?: number;
+  readonly gamma?: number;
+  readonly theta?: number;
   readonly impliedVol?: number;
+  readonly strikePrice?: number;
+  readonly underlyingAssetId?: string;
   readonly underlyingExpectedReturn?: number;
 }
 
@@ -109,10 +114,50 @@ export function computeSingleAssetSignal(
     const optionType = asset.optionType ?? 'CALL';
     const delta = asset.delta ?? (optionType === 'CALL' ? 0.5 : -0.5);
     const iv = asset.impliedVol ?? 0.25;
-    const underlyingExpRet = asset.underlyingExpectedReturn ?? 0.05;
+
+    // 기초자산 기대수익이 없을 경우 고정 5% fallback 금지 -> fail-closed 중립 0.0 신호 즉시 반환
+    const hasUnderlying = typeof asset.underlyingExpectedReturn === 'number' && Number.isFinite(asset.underlyingExpectedReturn);
+    if (!hasUnderlying) {
+      return {
+        assetId: asset.assetId,
+        ticker: asset.ticker,
+        assetClass: 'OPTION',
+        direction: 0,
+        expectedReturn: 0,
+        expectedVolatility: Math.abs(delta) * 0.60,
+        confidence: 0.1,
+        horizonMs: 300_000,
+        liquidityPenalty: 0,
+        riskContributions: {},
+        drivers: [
+          {
+            factor: 'underlyingUnavailable',
+            contribution: 0,
+            confidence: 0.0,
+            description: '기초자산 기대수익 데이터 부재로 fail-closed 중립 보류',
+          },
+        ],
+      };
+    }
+
+    const underlyingExpRet = asset.underlyingExpectedReturn!;
     const realizedVolEst = asset.historicalVol ?? 0.22;
 
-    const optEval = evaluateOptionTransmission(optionType, underlyingExpRet, delta, iv, realizedVolEst, macro, ctx);
+    const optEval = evaluateOptionTransmission(
+      optionType,
+      underlyingExpRet,
+      delta,
+      iv,
+      realizedVolEst,
+      macro,
+      ctx,
+      {
+        gamma: asset.gamma,
+        theta: asset.theta,
+        strikePrice: asset.strikePrice,
+        underlyingPrice: asset.currentPrice > 0 ? asset.currentPrice : undefined,
+      }
+    );
     rawExpectedReturn += optEval.expectedReturnDelta;
     drivers.push(...optEval.drivers);
 
@@ -154,7 +199,9 @@ export function computeSingleAssetSignal(
 }
 
 /**
- * 순수 함수: 모든 자산 스냅샷에 대해 교차자산 신호 맵을 일괄 산출합니다.
+ * 순수 함수: 모든 자산 스냅샷에 대해 교차자산 신호 맵을 2단계로 일괄 산출합니다.
+ * 1단계: 주식, 채권, 원자재 등 비(非)옵션 자산 신호 산출
+ * 2단계: 옵션 계약을 실제 기초자산 신호(기대수익, 실현변동성)와 연결하여 산출
  */
 export function computeCrossAssetSignals(
   assets: readonly AssetMicroSnapshot[],
@@ -164,9 +211,44 @@ export function computeCrossAssetSignals(
   const ctx = analyzeTransmissionContext(macro, regime);
   const signals = new Map<string, CrossAssetSignal>();
 
+  const nonOptions: AssetMicroSnapshot[] = [];
+  const options: AssetMicroSnapshot[] = [];
+
   for (const asset of assets) {
+    if (asset.assetClass === 'OPTION') {
+      options.push(asset);
+    } else {
+      nonOptions.push(asset);
+    }
+  }
+
+  // 1단계: 기초자산 신호 산출
+  for (const asset of nonOptions) {
     const sig = computeSingleAssetSignal(asset, macro, ctx);
     signals.set(asset.assetId, sig);
+  }
+
+  // 2단계: 옵션 신호 산출 (실제 기초자산 기대수익 연결)
+  for (const opt of options) {
+    let underlyingReturn = opt.underlyingExpectedReturn;
+    let realizedVol = opt.historicalVol;
+
+    if (opt.underlyingAssetId) {
+      const underlyingSig = signals.get(opt.underlyingAssetId);
+      if (underlyingSig) {
+        underlyingReturn = underlyingSig.expectedReturn;
+        realizedVol = underlyingSig.expectedVolatility;
+      }
+    }
+
+    const linkedSnapshot: AssetMicroSnapshot = {
+      ...opt,
+      underlyingExpectedReturn: underlyingReturn,
+      historicalVol: realizedVol,
+    };
+
+    const optSig = computeSingleAssetSignal(linkedSnapshot, macro, ctx);
+    signals.set(opt.assetId, optSig);
   }
 
   return signals;

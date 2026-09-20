@@ -163,6 +163,24 @@ export function evaluateStockSectorTransmission(
 }
 
 /**
+ * 국채(Sovereign Bond) 유형 식별 정규화 함수
+ * - 'govt', 'government', 'sovereign', 'treasury', '국채', '국고채' 등을 국채로 인식
+ * - 알 수 없거나 회사채인 경우 false 반환
+ */
+export function isSovereignBond(bondType?: string | null): boolean {
+  if (!bondType || typeof bondType !== 'string') return false;
+  const s = bondType.toLowerCase().trim();
+  return (
+    s === 'govt' ||
+    s === 'government' ||
+    s === 'sovereign' ||
+    s === 'treasury' ||
+    s.includes('국채') ||
+    s.includes('국고채')
+  );
+}
+
+/**
  * 채권 자산 전달 신호 산출
  */
 export function evaluateBondTransmission(
@@ -265,6 +283,14 @@ export function evaluateCommodityTransmission(
   };
 }
 
+export interface OptionTransmissionDetails {
+  readonly gamma?: number;
+  readonly theta?: number;
+  readonly strikePrice?: number;
+  readonly underlyingPrice?: number;
+  readonly timeToExpiryYears?: number;
+}
+
 /**
  * 옵션 자산 전달 신호 산출
  */
@@ -275,33 +301,57 @@ export function evaluateOptionTransmission(
   impliedVol: number,
   realizedVolEst: number,
   macro: MacroState,
-  ctx: TransmissionContext
+  ctx: TransmissionContext,
+  optionDetails?: OptionTransmissionDetails
 ): { expectedReturnDelta: number; drivers: SignalDriver[] } {
   const drivers: SignalDriver[] = [];
   let returnDelta = 0;
 
-  // 1. 기초자산 방향성 전달: Delta * 기초자산 기대수익
-  const directionContribution = delta * underlyingExpectedReturn;
+  // 1. 기초자산 방향성 전달: CALL은 양수 delta, PUT은 음수 delta
+  // delta의 부호가 적절히 반영되어 underlyingExpectedReturn과 곱해짐
+  const effectiveDelta = optionType === 'PUT' ? (delta > 0 ? -delta : delta) : (delta < 0 ? -delta : delta);
+  const directionContribution = effectiveDelta * underlyingExpectedReturn;
   returnDelta += directionContribution;
   drivers.push({
     factor: 'deltaExposure',
     contribution: Number(directionContribution.toFixed(4)),
     confidence: 0.85,
-    description: `기초자산 방향성(Delta: ${delta.toFixed(2)}) 연동`,
+    description: `기초자산 방향성(Delta: ${effectiveDelta.toFixed(2)}, E[R]: ${(underlyingExpectedReturn * 100).toFixed(1)}%) 연동`,
   });
 
-  // 2. 변동성 괴리(Volatility Spread): 실현변동성 기대 > IV 이면 롱 옵션 유리, 반대면 숏 옵션 유리
+  // 2. 변동성 괴리(Volatility Spread) & Gamma/Vega 효과
   const volSpread = realizedVolEst - impliedVol;
-  const volSpreadImpact = volSpread * 1.5;
+  const gammaMultiplier = optionDetails?.gamma && optionDetails.gamma > 0
+    ? Math.min(2.5, 1.0 + optionDetails.gamma * 5.0)
+    : 1.5;
+  const volSpreadImpact = volSpread * gammaMultiplier;
   returnDelta += volSpreadImpact;
   drivers.push({
     factor: 'volatilityEdge',
     contribution: Number(volSpreadImpact.toFixed(4)),
     confidence: 0.75,
-    description: `변동성 괴리(예상실현: ${(realizedVolEst * 100).toFixed(1)}% vs IV: ${(impliedVol * 100).toFixed(1)}%)`,
+    description: `변동성 괴리(예상실현: ${(realizedVolEst * 100).toFixed(1)}% vs IV: ${(impliedVol * 100).toFixed(1)}%, Gamma배수: ${gammaMultiplier.toFixed(2)})`,
   });
 
-  // 3. 위험회피 급등 시 풋옵션 스큐/헤지 프리미엄
+  // 3. Theta 시간가치 소모 (롱 옵션 보유 시 연율화 시간가치 비용)
+  if (
+    optionDetails?.theta !== undefined &&
+    Number.isFinite(optionDetails.theta) &&
+    optionDetails.underlyingPrice &&
+    optionDetails.underlyingPrice > 0
+  ) {
+    const dailyThetaPct = optionDetails.theta / optionDetails.underlyingPrice;
+    const annualizedTheta = Math.max(-0.30, Math.min(0, dailyThetaPct * 252));
+    returnDelta += annualizedTheta;
+    drivers.push({
+      factor: 'thetaDecay',
+      contribution: Number(annualizedTheta.toFixed(4)),
+      confidence: 0.90,
+      description: `시간가치 소모(Theta: ${optionDetails.theta.toFixed(2)}/일)`,
+    });
+  }
+
+  // 4. 위험회피 급등 시 풋옵션 스큐/헤지 프리미엄
   if (optionType === 'PUT' && ctx.riskSentiment === 'RISK_OFF') {
     const putHedgeDemand = (macro.riskAversion - 0.30) * 0.15;
     returnDelta += putHedgeDemand;

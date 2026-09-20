@@ -11,6 +11,7 @@
 
 import { memoryDb, StockRecord } from '../../memoryDb/memoryStore';
 import { secondsToMs } from './simClock';
+import type { MacroImpactDescriptor } from './macro/macroTypes';
 
 export type EventScope = 'market' | 'sector' | 'stock';
 export type EventCategory = 'OFFICIAL' | 'RUMOR' | 'CORRECTION';
@@ -45,6 +46,8 @@ export interface ObservableMarketEvent {
   halfLife: number;           // Decay half-life in simulation seconds (duration)
   originalEventId?: string;   // Pointer to original rumor event for CORRECTION
   sequence?: number;          // Monotonic tie-breaker for equal timestamps
+  /** 명시적 거시 요인 충격 기술자 (선택적) */
+  macroImpacts?: readonly MacroImpactDescriptor[];
   // Display metadata for UI & terminal
   publisher: string;
   title: string;
@@ -81,6 +84,7 @@ export function toObservableMarketEvent(event: MarketEvent): ObservableMarketEve
     halfLife: event.halfLife,
     originalEventId: event.originalEventId,
     sequence: event.sequence,
+    macroImpacts: event.macroImpacts ? event.macroImpacts.map((m) => ({ ...m })) : undefined,
     publisher: event.publisher,
     title: event.title,
     content: event.content,
@@ -149,6 +153,44 @@ export function validateMarketEvent(event: MarketEvent): string | null {
       return `${name} must be between 0 and 1`;
     }
   }
+
+  // macroImpacts 검증 (선택적)
+  if (event.macroImpacts !== undefined) {
+    if (!Array.isArray(event.macroImpacts)) {
+      return 'macroImpacts must be an array';
+    }
+    const VALID_FACTORS = new Set([
+      'growth',
+      'inflation',
+      'policyRate',
+      'liquidity',
+      'riskAversion',
+      'creditSpread',
+      'oilSupply',
+      'geopoliticalRisk',
+    ]);
+    for (const impact of event.macroImpacts) {
+      if (!impact || typeof impact !== 'object') {
+        return 'each macroImpact must be an object';
+      }
+      if (!VALID_FACTORS.has(impact.factor)) {
+        return `invalid macroImpact factor: ${impact.factor}`;
+      }
+      if (impact.direction !== -1 && impact.direction !== 1) {
+        return 'macroImpact direction must be -1 or 1';
+      }
+      if (!Number.isFinite(impact.magnitude) || impact.magnitude < 0 || impact.magnitude > 1) {
+        return 'macroImpact magnitude must be a finite number between 0 and 1';
+      }
+      if (impact.confidence !== undefined && (!Number.isFinite(impact.confidence) || impact.confidence < 0 || impact.confidence > 1)) {
+        return 'macroImpact confidence must be a finite number between 0 and 1';
+      }
+      if (impact.halfLifeSeconds !== undefined && (!Number.isFinite(impact.halfLifeSeconds) || impact.halfLifeSeconds <= 0)) {
+        return 'macroImpact halfLifeSeconds must be a positive finite duration';
+      }
+    }
+  }
+
   return null;
 }
 

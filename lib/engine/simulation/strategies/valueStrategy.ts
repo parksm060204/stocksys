@@ -94,7 +94,12 @@ export function evaluateValueStrategy(
   // 2.1 교차자산 거시 신호 결합 (선택적)
   if (crossAssetSignal) {
     const macroExpectedReturn = crossAssetSignal.expectedReturn * crossAssetSignal.confidence;
-    valGap = valGap * 0.7 + macroExpectedReturn * 0.3;
+    const macroSens = agent.macroProfile?.macroSensitivity ?? 0.30;
+    const microSens = agent.macroProfile?.microSensitivity ?? 0.70;
+    const totalSens = macroSens + microSens;
+    const normMacro = totalSens > 0 ? macroSens / totalSens : 0.30;
+    const normMicro = totalSens > 0 ? microSens / totalSens : 0.70;
+    valGap = valGap * normMicro + macroExpectedReturn * normMacro;
   }
 
   // 3. Deadband (hysteresis) check: ignore small deviations

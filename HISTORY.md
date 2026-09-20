@@ -4462,3 +4462,100 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
   - `npx tsc --noEmit` 통과 (Exit Code 0).
   - `npm run build` 통과 (Next.js 16.2.9 Turbopack Exit Code 0).
   - `git diff --check` 통과 (Exit Code 0).
+
+---
+## 2026-09-20 11:05
+
+**요청 요약:** 최신 프로젝트 구현 상태를 바탕으로 README.md 전면 개정 및 보강 (시장 국면 2단계 활성 효과, 다중 자산 파생상품 정산 파이프라인, VM DB 프로덕션 운영 수칙, 전체 테스트 스위트 및 불변식 문서화).
+
+**수행 결과:**
+- `README.md`:
+  - 시장 국면(Market Regime) 섹션 갱신: 1단계 관측용 상태 전이 엔진 완료 및 2단계 활성 국면 효과(`regimeEffects`) 완결 반영 (방향별 확률 게이트, 민감도, 주문 크기 배수, 전체 NAV 기준 현금 선호, 불확실성 하 위험 축소 매도 허용, LP 5단계 라이프사이클 및 `lpDeferrals` 보류 메커니즘, Churn 방지).
+  - A/B 무결성 격리 및 픽스처 검증 체계 명시: `enableRegimeEffects=false` 기본값 유지, 이전 기준선 대비 100% 비트 단위 일치 실증, Shallow clone 대응 SHA-256 픽스처 5종 및 Golden Output 117개 레코드 3자 검증 구조 기술.
+  - 다중 자산(Multi-Asset) 파생/정산 파이프라인 섹션 신설: 원자재 선물 8종 및 전용 봇 5종(`MarketMakerBot`, `TrendFollowingBot`, `MeanReversionBot`, `HedgerBot`, `NewsTraderBot`), 3단계 정산 파이프라인(선물 제로섬, 마진콜 강제청산, 옵션 만기 현금결제) 명시.
+  - 프로덕션 운영 안정성 수칙 섹션 신설: PostgreSQL WAL 및 디스크 포화 방지 롤링 슬라이딩 캡(Trades 5,000건, Price History 3,000건), 체결 로그와 영구 자산 장부(`institutional_portfolios`) 분리, NextAuth 장애 격리 및 환경변수 alias 호환성 정리.
+  - 테스트 및 검증 스위트 일람 갱신: 최신 시장 국면 검증 스크립트, A/B 기준선 검증, 정산 시스템 검증 명령어 및 5대 핵심 불변식(자산 비음수, 체결 한도, 거래 유효성, 자산 보존, 인덱스 1:1 정합) 정리.
+  - 문서 구조 정돈: Causal Market Flow, Simulation Correctness, Commands & Build, Verification, Notice/License 순서로 체계화.
+
+---
+## 2026-09-20 11:45
+
+**요청 요약:** STOCKSYS 시장 국면 장기 다중 시드 시뮬레이션 검증, 6대 시나리오 품질 평가, 및 3대 운용 모드(`OFF` / `SHADOW` / `EXPERIMENTAL_ON`) 기반 안전한 실험 활성화 체계 구현 및 전수 검증.
+
+**수행 결과:**
+- [1단계 — 장기 다중 시드 시뮬레이션 검증]:
+  - `scripts/test-market-regime-long-run.ts`:
+    - 20개 Seeds (11, 23, 37, 42, 59, 71, 89, 101, 137, 173, 211, 257, 307, 359, 401, 463, 509, 577, 641, 719) 대상 1거래일(86,400초, 5대 세션: Pre-open, Morning, Lunch, Afternoon, Post-close) 순환 시뮬레이션 실행.
+    - 동일 Seed 반복 실행 시 100% 결정론 일치 (장부, 주문, 체결, 프로필, PRNG 해시 비트 단위 일치, 불변식 위반 0건).
+    - 13대 필수 불변식 검증 완료 (음수 자산 부재, NaN/Infinity 0건, 총주식 수량 보존, 세션 롤오버 전 시드 통과).
+    - ON vs OFF 기술통계 비교(체결량, 거래대금, 스프레드, 깊이) 및 극단값 시드 분석 완료.
+- [2단계 — 국면 효과 품질 및 현실성 평가]:
+  - `scripts/test-market-regime-scenarios.ts`:
+    - 5개 시드 × 6대 시나리오(BULL, BEAR, HIGH_VOLATILITY, LIQUIDITY_CRISIS, SIDEWAYS, RUMOR & CORRECTION) = 총 30건 전수 검증.
+    - 결과: 30/30 전수 PASS (FAIL 0건, 불변식 위반 0건).
+    - 시나리오별 반응 지연(BULL/BEAR 30s, HIGH_VOL 12s, CRISIS 3s, SIDEWAYS 0s, CORRECTION 60s), LP 스프레드 및 깊이 변화율, 매수/매도 비율, 정상 국면 회복 관측 완료.
+- [3단계 — 안전한 실험 활성화 체계 구현 및 검증]:
+  - `lib/engine/simulation/regime/regimeTypes.ts`:
+    - `RegimeEffectsMode` ('OFF' | 'SHADOW' | 'EXPERIMENTAL_ON'), `DEFAULT_REGIME_EFFECTS_MODE = 'OFF'`, `RegimeModeDiagnostics`, `RegimeModeChangeRecord` 정의.
+  - `lib/engine/simulation/agentManager.ts`:
+    - 3대 모드 체계, 인가 키 검증(`regime-eval-auth`) 및 비인가 차단 정책 구현.
+    - 스텝 경계(`pendingEffectsMode`) 무중단 원자적 모드 적용 및 전환 이력 로깅 구현.
+    - `effectsActive = this._regimeEffectsMode === 'EXPERIMENTAL_ON' && activeRegimeState !== null` 적용.
+    - `getRegimeModeDiagnostics()` API 제공 (현재 모드, 예약 모드, 탐지 국면, 실제 적용 국면, 적용 배수, 보류 수, 불변식 위반 수, 전환 이력).
+  - `scripts/test-regime-activation-modes.ts`:
+    - TEST 1(기본 OFF 보존), TEST 2(인가 및 유효성 검사 차단), TEST 3(스텝 경계 전이 및 이력), TEST 4(SHADOW 무영향성 100% 비트 일치), TEST 5(EXPERIMENTAL_ON 실제 효과 배수 반영), TEST 6(진단 API) 전수 PASS.
+- [종합 회귀 및 빌드 검증]:
+  - `test-market-regime-scenarios.ts` (Exit Code 0, 30/30 PASS)
+  - `test-regime-activation-modes.ts` (Exit Code 0, 6/6 PASS)
+  - `test-regime-effects-stage2.ts` (Exit Code 0)
+  - `test-stage2-review-fixes-v2.ts` (Exit Code 0)
+  - `test-market-regime-foundation.ts` (Exit Code 0)
+  - `test-agent-based-market.ts` (Exit Code 0)
+  - `npm run test:settlement` (Exit Code 0)
+  - `npx tsc --noEmit` (Exit Code 0)
+  - `npm run build` (Next.js 16.2.9 production build Exit Code 0)
+- [운영 기본값 준수]:
+  - `regimeEffectsMode = 'OFF'` (`enableRegimeEffects = false`) 기본값 엄격 유지.
+
+---
+## 2026-09-20 12:10
+
+**요청 요약:** 종목 테이블 및 주요 UI에서 마우스 호버(하이라이트) 시 적용되는 검은색 배경이 너무 짙어 텍스트 가독성을 해치는 문제 수정.
+
+**수행 결과:**
+- `app/components/StockTable.tsx`:
+  - 행 마우스 호버 시 짙은 검은색(`hover:bg-[#161B22]`) 대신 부드러운 테마 대응형 하이라이트(`hover:bg-black/[0.03] dark:hover:bg-white/[0.04]`)로 수정.
+  - 테이블 컨테이너 및 thead/tbody 배경, 테두리, 구분선, 종목명/티커/거래량/시가총액 텍스트를 CSS 테마 변수(`bg-panel`, `bg-panel2`, `text-[var(--text-main)]`, `text-muted`, `text-dim`, `divide-border`)와 연동하여 라이트/다크 모드 전반에서 또렷한 가독성 확보.
+- `app/globals.css`:
+  - 라이트 모드 적응형 클래스(`@media (prefers-color-scheme: light)`, `html[data-theme="light"]`, `html.light`)에 `.hover:bg-[#161B22]` 등 다크 호버 클래스 오버라이드(`background-color: var(--bg-hover) !important`) 추가.
+- `app/mypage/page.tsx`, `app/exchange/page.tsx`, `app/components/OptionsPanel.tsx`, `app/components/market-flow/LeaderStockTable.tsx`:
+  - 테이블 행 호버 스타일을 `hover:bg-black/[0.03] dark:hover:bg-white/[0.04]`로 일관되게 적용.
+- 검증:
+  - `npx tsc --noEmit` (Exit Code 0)
+  - `npm run build` (Next.js 16.2.9 production build Exit Code 0)
+
+---
+## 2026-09-20 12:13
+
+**요청 요약:** 좌측 사이드바에 표시되는 스크롤바(드래그 썸/휠 UI) 제거 요청.
+
+**수행 결과:**
+- `app/components/Sidebar.tsx`:
+  - 사이드바 내비게이션(`<nav>`) 요소에 `no-scrollbar`, `[scrollbar-width:none]`, `[-ms-overflow-style:none]`, `[&::-webkit-scrollbar]:hidden` 유틸리티를 적용하여 화면에 노출되던 회색 드래그 스크롤바 트랙/썸을 완전히 숨김 처리.
+  - 마우스 휠 및 터치 스크롤 기능은 정상 유지되도록 하여 하단 메뉴 탐색 편의성 보존.
+- 검증:
+  - `npx tsc --noEmit` (Exit Code 0)
+
+---
+## 2026-09-20 12:16
+
+**요청 요약:** 좌측 사이드바 영역에 마우스를 올릴 때 사이드바 전체가 검게 강조(hover)되는 문제를 해결하고, 개별 메뉴 버튼에만 하이라이트가 적용되도록 수정.
+
+**수행 결과:**
+- `app/globals.css`:
+  - `.bg-panel` 클래스에 임의로 지정되어 있던 전역 카드 호버 스타일(`.bg-panel:hover { background: var(--card-bg-hover) !important; }`)을 제거.
+  - `.bg-panel`을 사용하는 사이드바(`aside`) 등 대형 레이아웃 컨테이너 전체에 마우스가 닿았을 때 검은색 배경 전환이 일어나는 부작용 원천 차단.
+- `app/components/Sidebar.tsx`:
+  - 사이드바 전체 배경은 고정 유지되고, 오직 각 `NavItem` 및 관리자 버튼 영역에 마우스를 올릴 때만 해당 버튼 단위로 부드럽고 세련되게 하이라이트(`hover:bg-hover hover:text-tx`)가 한정 적용되도록 정돈.
+- 검증:
+  - `npx tsc --noEmit` (Exit Code 0)

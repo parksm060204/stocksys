@@ -245,9 +245,10 @@ Next.js Node Process
 * 호가창 건전성: 스프레드(bps), 호가 뎁스, 단방향/빈 호가 상태 지속 틱수 모니터링.
 * 주문 거절 사유 추적 (원형 링 버퍼 기반 200건 캡으로 메모리 누수 원천 차단).
 
-### 6. 현실을 단순화한 가정 및 미구현 기능
-* **기관 포트폴리오 리밸런싱, 개인 투자자 군집 행동, 레버리지, 공매도, 복잡한 금융 위기 시나리오**는 향후 플러그인 확장이 용이하도록 `StrategyType` 및 `MarketObservation` 인터페이스로 설계되어 있으며, 이번 버전에서는 무차입 현물 시장에 집중하여 구현되었습니다.
-* 외부 실시간 시세 및 외부 DB 연동 없이 독립적인 Standalone 인메모리 환경에서 구동됩니다.
+### 6. 현실을 단순화한 가정 및 확장 인터페이스
+* **주식 시장 무차입 원칙**: 주식 시장은 무차입 현물 거래를 기본 원칙으로 하며(공매도·신용 레버리지 제한), 기관 포트폴리오 리밸런싱, 개인 군집 행동 등은 `StrategyType` 및 `MarketObservation` 확장 인터페이스를 통해 모듈식으로 설계되어 있습니다.
+* **파생상품 정산 분리**: 원자재 선물 및 옵션과 같은 파생상품은 별도의 전용 정산 파이프라인(마진콜, 제로섬 일일정산, 만기 현금결제)을 통해 안전하게 처리됩니다.
+* **완전 독립형 구동**: 외부 실시간 시세 및 외부 호스팅 DB 연동 없이 로컬 인메모리 환경에서 자율적·결정론적으로 구동됩니다.
 
 ---
 
@@ -325,72 +326,6 @@ STOCKSYS는 외부 DB나 호스팅 서버 없이 Next.js 단일 프로세스 내
 
 ---
 
-## Commands & Build
-
-패키지 스크립트는 `package.json`에 정의된 명령어를 사용합니다.
-
-### 실행 명령어
-
-- **로컬 개발 서버**:
-  ```bash
-  npm run dev
-  ```
-- **프로덕션 빌드**:
-  ```bash
-  npm run build
-  ```
-- **프로덕션 서버 시작**:
-  ```bash
-  npm run start
-  ```
-- **린트 검사**:
-  ```bash
-  npm run lint
-  ```
-- **정산 시스템 검증**:
-  ```bash
-  npm run test:settlement
-  ```
-
----
-
-## Verification
-
-TypeScript:
-
-```bash
-npx tsc --noEmit
-```
-
-Production build:
-
-```bash
-npm run build
-```
-
-Order risk, security and settlement tests:
-
-```bash
-npx tsx scripts/test-order-risk-and-settlement.ts
-npx tsx scripts/test-order-security-and-atomic.ts
-```
-
-검증해야 할 핵심 invariant:
-
-```text
-cash >= 0
-
-holdings.quantity >= 0
-
-order.filled <= order.size
-
-trade.price > 0
-
-trade.size > 0
-```
-
----
-
 ## Causal Market Flow Architecture
 
 STOCKSYS의 주식 시장은 가격과 거래량을 임의로 조작하지 않고, 구조화된 경제 이벤트와 봇의 인과적 의사결정 및 실제 주문 매칭을 통해서만 시장 가격과 주도주가 형성되는 단일 인과 구조(Causal Market Flow)를 갖추고 있습니다.
@@ -435,38 +370,6 @@ LP 호가 공급 & 봇 주문 제출
 - 취소 예정 주문은 실제 취소 성공이 확정된 후 신규 호가를 제출하여 예약 자산 한도를 초과하지 않습니다.
 
 ---
-
-## Important Notice
-
-STOCKSYS는 실제 증권 거래소가 아닙니다.
-
-이 프로젝트에서 표시되는:
-
-- 가격
-- 뉴스
-- 주문
-- 거래량
-- 기업
-- 자산
-- 투자자 행동
-
-등의 일부 또는 전체는 시뮬레이션을 위해 생성되거나 단순화된 데이터일 수 있습니다.
-
-실제 투자 의사결정에 사용하지 마십시오.
-
----
-
-## Project History
-
-상세한 구현 변경 이력은 [`HISTORY.md`](./HISTORY.md)를 참고하십시오.
-
----
-
-## License
-
-This project is currently developed as an experimental simulation project.
-
-Copyright © STOCKSYS / MUMYEONG.
 
 ## Simulation Correctness & Architecture
 
@@ -518,35 +421,247 @@ SerialExecutionQueue (시뮬레이션 큐)
 - 체결 로그의 평균 체결가는 실제 체결 레코드 가중평균으로 계산되며, 주문 거절은 `ORDER_REJECTED`로 독립 기록됩니다.
 - ID 체인이 완전하게 연결된 이벤트는 `[인과 추적]`으로 배지 표기되며, 단순 상관 기록은 `[시장 이벤트 흐름]`으로 명확히 구분하여 표기합니다.
 
-### 8. 시장 국면(Market Regime) 및 거래 세션(Trading Session) 기반 엔진 (1단계)
-* **시장 국면(MarketRegime) 타입**:
-  - `BULL` (상승장), `BEAR` (하락장), `SIDEWAYS` (횡보장), `HIGH_VOLATILITY` (고변동성), `LIQUIDITY_CRISIS` (유동성 위기)
-* **거래 세션(TradingSession) 타입**:
+### 8. 시장 국면(Market Regime) 및 거래 세션(Trading Session) 기반 엔진
+
+STOCKSYS는 거시 경제 지표와 수급 충격에 적응하는 **시장 국면(Regime) & 세션(Session) 엔진**을 갖추고 있습니다.
+
+#### (1) 시장 국면(MarketRegime) 및 거래 세션(TradingSession) 체계
+* **5대 시장 국면**:
+  - `BULL` (상승장): 양의 모멘텀, 매수 우위, 호가 스프레드 축소
+  - `BEAR` (하락장): 음의 모멘텀, 매도 우위, 리스크 회피
+  - `SIDEWAYS` (횡보장): 낮은 변동성, 좁은 스프레드, 박스권 횡보
+  - `HIGH_VOLATILITY` (고변동성): 실현 변동성 급증, 스프레드 확대, 호가 두께 축소
+  - `LIQUIDITY_CRISIS` (유동성 위기): 유효 호가 공백 지속, 스프레드 폭등, 호가 깊이 붕괴
+* **5대 거래 세션**:
   - `PRE_OPEN` (장개시전), `OPENING_AUCTION` (시초가 동시호가), `CONTINUOUS` (정규 단일가/연속매매), `CLOSING_AUCTION` (종가 동시호가), `CLOSED` (장마감 후 익일 롤오버)
-* **거래일 시간 기준점 및 `[start, end)` 세션 경계 규칙**:
-  - 거래일 시작 기준점(`tradingDayAnchorMs`)을 기반으로 시뮬레이션 경과 시간(`elapsedMs`)의 양의 모듈로 연산을 통해 일중 시간(`timeWithinDayMs`)을 계산합니다.
-  - 세션 구간은 `[start, end)` 반열린 구간 규칙을 엄격히 적용하여 경계 1ms 직전에는 이전 세션, 정확한 경계 시각에는 다음 세션으로 전환됩니다. 큰 `dt` 경과 시 중간의 모든 세션 전환 경계가 누락 없이 순서대로 기록되며, 86,400초 경과 시 익일 롤오버 및 `tradingDayIndex`가 증가합니다.
-* **국면 전환 우선순위 및 진입/이탈 분리 히스테리시스**:
-  - `Date.now()`, `Math.random()` 사용을 원천 배제하고 초기 시드로부터 유도된 독립 Seeded PRNG(`market-regime-v1`)와 완료된 스텝의 확정 통계(`RegimeObservation`)만으로 동작합니다.
-  - 평가 우선순위: 유동성 위기(`LIQUIDITY_CRISIS`) → 고변동성(`HIGH_VOLATILITY`) → 상승/하락장(`BULL`/`BEAR`) → 횡보장(`SIDEWAYS`).
-  - 단순 진입 조건의 부정이 아닌, 진입 임계치와 회복(이탈) 임계치를 분리한 양방향 히스테리시스, 최소 유지 시간(`minRegimeDurationSeconds`), 전환 쿨다운(`regimeCooldownSeconds`)을 통해 경계 부근의 잦은 국면 진동을 방지합니다.
+* **시간 기준점 및 반열린 구간 `[start, end)` 규칙**:
+  - 거래일 시작 기준점(`tradingDayAnchorMs`)과 시뮬레이션 경과 시간(`elapsedMs`)의 양의 모듈로 연산을 통해 일중 시간(`timeWithinDayMs`)을 계산합니다.
+  - 세션 구간은 `[start, end)` 반열린 구간 규칙을 엄격히 적용하여 경계 1ms 직전에는 이전 세션, 정확한 경계 시각에는 다음 세션으로 전환됩니다. 86,400초 경과 시 익일 롤오버 및 `tradingDayIndex`가 증가합니다.
+
+#### (2) 1단계: 관측용 상태 전이 엔진 및 불변성 보장
+* **완전한 런타임 불변성**:
+  - `MarketStateEngine` 생성자에서 설정 및 세션 스케줄 전체를 `deepFreeze(deepClone(...))`하여 원본 변조를 차단합니다.
+  - `getSnapshot()`, `getThresholds()`, `getRegimeHistory()`는 깊은 동결 복제본을 반환하여 외부 변조 시 `TypeError`를 발생시킵니다.
+* **단일 권위 시가총액 산출**:
+  - 순수 함수 `calculateAuthoritativeMarketCap`을 통해 `shares_outstanding`(부재 시 `floating_shares`) 기준으로 시총 가중 지수 수익률을 산출하여 대형주/소형주 가중치 왜곡을 원천 방지합니다.
+* **양방향 히스테리시스 및 국면 전이 억제**:
+  - 진입 임계치와 회복(이탈) 임계치를 분리하고, 최소 유지 시간(`minRegimeDurationSeconds`), 전환 쿨다운(`regimeCooldownSeconds`)을 두어 잦은 국면 진동(churning)을 방지합니다.
+* **양측 유효 호가(`hasValidTwoSidedQuote`) 기반 위기 탐지**:
+  - 매수/매도 중 한쪽만 남은 단측 호가(One-Sided Book)나 교차 호가를 정상 호가로 오인하지 않고 공백으로 집계(`emptyBookStockRatio >= 30%` & 지속시간 >= 2s 시 유동성 위기 진입).
 * **다음 스텝 지연 활성화 원칙 (No Circular Causality)**:
-  - 현재 스텝 $t_1$ 종료 시 확정 통계로 평가된 국면은 `pendingTransition`(`decisionStepId: currentStepId`, `effectiveAt: nextStepStartTime`)에 등록되며, 동일 스텝 내에서는 활성화되지 않습니다.
-  - 다음 스텝 $t_2$ 시작 시점(`decisionStepId < currentStepId && effectiveAt <= currentStepStartTime`)에 비로소 실제 활성화되어 `previousRegime`, `regimeStartedAt`, 이력이 갱신됩니다.
-  - 이를 통해 스텝의 경제적 결과가 같은 스텝의 시장 국면을 바꾸고 다시 그 스텝의 주문을 바꾸는 순환 인과 및 시간 역행을 원천 차단합니다.
-* **원자적 상태 스냅샷 (Atomic Snapshot Swap)**:
-  - 스텝 진행 중 가변 객체가 중간 노출되지 않도록, 모든 계산 완료 후 완전한 `MarketStateSnapshot`을 단일 참조 교체(atomic reference swap)로 게시합니다.
-  - 단조 증가하는 `stateVersion`을 부여하며, `getMarketStateSnapshot()`은 내부 상태를 깊은 복제(deep clone) 및 동결(freeze)하여 반환하므로 순수 읽기 전용으로 부작용이 0이며 외부 변조가 불가능합니다.
-* **1단계 구현 범위 및 무영향성 명시 (중요)**:
-  - **현재 단계는 관측용 기반 엔진(타입·설정·결정론적 상태 전환) 구축 단계입니다.**
-  - **국면별 파라미터(`DEFAULT_REGIME_PARAMETERS`)는 아직 주문 생성, 봇 전략, LP 호가, 체결, 주가에 일절 적용되지 않습니다.**
-  - **거래 세션 상태(`CLOSED`, `OPENING_AUCTION` 등) 역시 현재는 거래나 주문 허용 여부를 제한하지 않으며, 기존 주문·정산 구조는 그대로 동작합니다.**
-  - 스냅샷 메타데이터:
-    - `implementationStage: 1`
-    - `marketMechanicsApplied: false`
-    - `capabilities: { regimeDetection: true, sessionTracking: true, botBehaviorAdjustment: false, lpAdjustment: false, auctionMatching: false, sessionOrderRestriction: false }`
-* **1단계 최종 정합성 보완 (커밋 31e458c9 후속)**:
-  - **설정의 완전한 불변성 보장**: `MarketStateEngine` 생성자에서 `sessionSchedule`, `thresholds`, `this.config` 및 중첩 객체 전체를 `deepFreeze(deepClone(...))`하여 원본 참조 보관을 원천 차단. `getThresholds()` 호출 시에도 `deepFreeze(deepClone(...))`을 반환하여 외부 변조를 방어하고 런타임 동결 상태를 보장.
-  - **시가총액 단일 권위**: `shares_outstanding`을 1차 권위로 사용하고, 부재 시 `floating_shares`, 둘 다 부재 시 `FALLBACK_SHARES`(100,000)를 사용하는 순수 함수 `getAuthoritativeShares`와 `calculateAuthoritativeMarketCap`(`Math.max(1, current_price * authoritativeShares)`)으로 시가총액 정의를 통일. 유동주식수는 회전율/유동성 계산에만 한정 사용하며, 시장수익률 가중치에서 대형주/소형주 가중치 역전 현상을 교정.
-  - **reset() 세션 시각 재계산**: `reset(initialEpochMs)` 호출 시 생성 당시의 `initialSession`을 재사용하지 않고 `calculateSessionAtTime(initialEpochMs)`를 호출하여 5대 세션(`PRE_OPEN`, `OPENING_AUCTION`, `CONTINUOUS`, `CLOSING_AUCTION`, `CLOSED`) 및 익일 롤오버 시점에 맞는 논리적 세션 시작/전이 시점을 정확히 재계산.
-  - **빈 장부 판정 시 주문·인덱스 1:1 정합성**: `orders` Map 직접 삭제 대신 `cancelled` 상태 변경, `removeOrderFromIndex`, `orders.delete`를 함께 수행하는 안전 삭제 헬퍼를 적용하고, `memoryDb.orders`와 `orderStockIndex` 간의 1:1 양방향 정합성 및 stale index 부재를 상시 검증.
+  - 현재 스텝 $t_1$ 종료 시 확정 통계로 평가된 국면은 `pendingTransition`에 등록되며, 다음 스텝 $t_2$ 시작 시점에 활성화됩니다.
+  - 이를 통해 한 스텝의 경제적 결과가 같은 스텝의 시장 국면을 바꾸고 다시 그 스텝의 주문을 바꾸는 순환 인과 및 시간 역행을 원천 차단합니다.
+
+#### (3) 2단계: 활성 국면 효과(Regime Effects) 및 봇/LP 행동 적응
+시장 국면 2단계는 활성화된 국면 파라미터가 봇의 주문 의사결정과 LP의 호가 공급에 직접 반영되는 시스템입니다.
+
+* **순수 파라미터 변환 계층 (`regimeEffects.ts`)**:
+  - 엔진 내부 상태를 직접 변이하지 않고, 활성 국면과 기본 설정을 결합하여 불변 컨텍스트(`AppliedRegimeContext`)를 도출하는 순수 함수 계층입니다.
+* **봇 전략의 동적 적응**:
+  - **방향별 주문 발생 확률**: $p_{\text{candidate}} = \max(p_{\text{buy}}, p_{\text{sell}})$ 게이트를 통해 불필요한 연산을 줄이고 국면 성향에 따라 비대칭 주문 제출.
+  - **신호 민감도**: 가치 투자자(`valueSensitivity`) 및 추세 추종자(`trendSensitivity`)의 신호 반응 강도 조절.
+  - **주문 크기 배수 (`orderSizeMultiplier`)**: 기본 희망 수량에 배수를 적용하되, 절대 한도/참여율/가용 자산으로 엄격히 클램핑.
+  - **계좌 전체 NAV 기준 현금 선호 (`cashPreference`)**: 개별 종목의 호가창이 아닌 계좌 내 모든 보유 종목의 권위적 체결가(`current_price`) 기반 순자산 가치($\text{NAV} = \text{Cash} + \text{HoldingsValue}$)를 기준으로 목표 현금 비중을 유지.
+  - **불확실성(`uncertaintyMultiplier`)과 위험 축소 매도 허용**: 불확실성 증폭 시 신규 매수(위험 노출 확대)는 엄격히 억제하지만, 기존 보유 포지션의 하락 방어 매도(`(risk_reduction)`)는 차단하지 않아 포트폴리오 건전성을 보존.
+* **LP(유동성 공급자)의 5단계 라이프사이클 및 자산 보호**:
+  - **5단계 절차**: 취소 대상 선정 → 취소 실행 → 최신 장부·자산 재조회(`fresh_observation`) → 신규 수량 확정 → 신규 호가 제출.
+  - **취소 실패 방어 및 중복 방지 (`lpDeferrals`)**:
+    - 체결 경합 등으로 인해 기존 호가의 취소가 실패한 경우, 동일 가격/변경된 가격을 불문하고 신규 호가 제출을 안전하게 보류(`unresolved_active_cancel_orders`)하여 호가 중복 팽창(예: 1,000주 취소 실패 + 200주 추가 제출) 및 자산 이중 지출을 원천 방지.
+    - 다음 스텝에서 취소 완료 또는 체결 확인 시 보류가 정상 해제되고 최신 잔고 기반으로 재계획.
+  - **지속 가능 목표 깊이 (`sustainableTargetSize`) 기반 Churn 방지**:
+    - 가용 예산이 부족할 때 구조적 목표치 대신 가용 자산 한도 내 지속 가능 수량을 기준으로 삼아, 호가 가격과 예산이 동일하면 기존 주문 ID와 시간 우선순위를 유지(반복 취소·재호가 방지).
+* **운영 안전성 및 A/B 무결성 격리**:
+  - `enableRegimeEffects` 기본값은 `false`로 설정되어 있어 프로덕션 기본 동작은 완벽히 보호됩니다.
+  - 효과 OFF 시 2단계 도입 직전 커밋(`4701f11`, `827dd60`) 대비 주문·체결·호가·시세·잔고·PRNG가 비트 단위로 100% 동일함을 증명하는 진정한 A/B 검증 체계를 갖추고 있습니다.
+  - Shallow clone 환경에서도 검증이 가능하도록 픽스처 5종 및 Golden Output 117개 레코드의 SHA-256 해시 잠금을 유지합니다.
+
+---
+
+### 9. 다중 자산 파생 및 정산 파이프라인 (Multi-Asset Settlement Pipeline)
+
+STOCKSYS는 현물 주식 외에도 원자재 선물(Commodity Futures)과 옵션(Options Contracts) 등 다양한 파생상품을 시뮬레이션하며, 정합성을 보장하는 다단계 정산 파이프라인을 갖추고 있습니다.
+
+#### (1) 원자재 선물 시장 및 5대 전문 봇 생태계
+- 8대 주요 원자재 선물(WTI 원유, 금, 은, 구리, 천연가스, 대두, 옥수수, 밀)을 자체 오더북(`CommodityOrderBook`)을 통해 지원합니다.
+- 전문 트레이딩 봇 5종:
+  - **`MarketMakerBot`**: 양방향 호가 공급 및 스프레드 캡처
+  - **`TrendFollowingBot`**: 장단기 이동평균선 기반 모멘텀 추종
+  - **`MeanReversionBot`**: 볼린저 밴드 및 RSI 기반 과매수/과매도 반전 매매
+  - **`HedgerBot`**: 실물 생산자/소비자의 가격 변동성 헤지 주문
+  - **`NewsTraderBot`**: 수급 보고서 및 지정학적 뉴스 충격 기반 모멘텀
+
+#### (2) 파생상품 3단계 정산 파이프라인 (`npm run test:settlement`)
+1. **Step 1: 선물 제로섬(Zero-Sum) 불변식 검증 (`step1_zerosum.ts`)**:
+   - 모든 롱 포지션 평가손익의 합과 숏 포지션 평가손익의 합의 대수적 총합이 정확히 0임을 일일 정산(Mark-to-Market) 시마다 검증합니다.
+2. **Step 2: 마진콜(Margin Call) & 강제 청산 (`step2_margincall.ts`)**:
+   - 유지 증거금(Maintenance Margin) 미달 계좌를 탐지하고, 추가 증거금 납부 유예 및 미납 시 시장가 반대매매 강제 청산 파이프라인을 실행합니다.
+3. **Step 3: 옵션 만기(Option Expiry) 현금 결제 (`step3_option_expiry.ts`)**:
+   - 만기 시점 기초자산 종가 기준 행사가격(Strike)과의 내재가치(Intrinsic Value)를 산출하여 ITM(In-The-Money) 계약은 즉시 현금 차액 결제, OTM(Out-Of-The-Money) 계약은 가치 소멸(무가 만기)로 처리합니다.
+
+---
+
+### 10. 프로덕션 운영 및 고가용성 안정성 수칙 (Production Reliability & VM DB Lessons)
+
+실제 프로덕션 및 장기 시뮬레이션 환경에서 검증된 핵심 운영 원칙입니다:
+
+1. **디스크 포화 방지 롤링 슬라이딩 캡 (Rolling Ring Buffer)**:
+   - 24시간 연속 가동되는 기관 봇 환경에서 `trades` 테이블은 매 20틱마다 슬라이딩 윈도우로 최신 5,000건만 유지합니다.
+   - `stock_price_history` 역시 최신 3,000건을 초과하는 과거 레코드는 자동 정리하여 PostgreSQL WAL 누적 및 디스크 100% 포화를 원천 방지합니다.
+2. **체결 로그와 영구 자산 장부의 엄격한 분리**:
+   - 화면 렌더링용 체결 내역(`trades`)과 영구 자산 장부(`institutional_portfolios`)를 분리하고, 봇 자산은 In-Place `UPSERT` 방식으로 고정된 Row 수만 유지합니다.
+3. **PostgreSQL WAL 및 Docker 로깅 제한**:
+   - DB 컨테이너 기동 시 `-c max_wal_size=1GB -c min_wal_size=80MB`를 필수로 적용하며, 모든 서비스 컨테이너에 Docker log rotation(`max-size: 10m, max-file: 3`)을 설정합니다.
+4. **인증(NextAuth) 및 DB 장애 격리**:
+   - NextAuth 콜백 내부의 DB 조회는 전수 `try-catch`로 감싸고 `.maybeSingle()`을 사용하여 DB 지연이나 일시 다운 상황에서도 500 HTML 파싱 에러(`CLIENT_FETCH_ERROR`)가 발생하지 않도록 격리합니다.
+5. **환경변수 하위 호환 Alias 유지**:
+   - `NEXT_PUBLIC_ENGINE_DB_URL`과 `NEXT_PUBLIC_SUPABASE_URL`을 상호 폴백으로 동시에 유지하여 의존성 라이브러리의 누락 크래시를 방지합니다.
+
+---
+
+## Commands & Build
+
+패키지 스크립트는 `package.json`에 정의된 명령어를 사용합니다.
+
+### 실행 명령어
+
+- **로컬 개발 서버**:
+  ```bash
+  npm run dev
+  ```
+- **프로덕션 빌드 (Turbopack)**:
+  ```bash
+  npm run build
+  ```
+- **프로덕션 서버 시작**:
+  ```bash
+  npm run start
+  ```
+- **린트 검사**:
+  ```bash
+  npm run lint
+  ```
+- **파생상품 정산 파이프라인 검증 (선물 제로섬, 마진콜, 옵션 만기)**:
+  ```bash
+  npm run test:settlement
+  ```
+
+---
+
+## Verification & Test Suites
+
+STOCKSYS는 시스템의 무결성, 동시성, 정산 불변식, 그리고 시장 국면 및 A/B 결정론을 전수 검증하기 위한 포괄적인 테스트 스위트를 갖추고 있습니다.
+
+### 1. 타입 검사 및 프로덕션 빌드
+```bash
+npx tsc --noEmit
+npm run build
+```
+
+### 2. 시장 국면(Market Regime) 및 효과(Effects) 검증 스위트
+- **시장 국면 1단계 기반 엔진 검증 (33대 시나리오 전수 검증)**:
+  ```bash
+  npx tsx scripts/test-market-regime-foundation.ts
+  ```
+- **시장 국면 2단계 효과(Regime Effects) 검증 (방향별 확률, 민감도, 주문크기, NAV 현금선호, LP Churn 방지)**:
+  ```bash
+  npx tsx scripts/test-regime-effects-stage2.ts
+  ```
+- **2단계 코드 리뷰 및 체결 경합 정산 불변식 검증 (A~H 사례, 부분/전량체결, 1:1 보조인덱스 정합성)**:
+  ```bash
+  npx tsx scripts/test-stage2-review-fixes-v2.ts
+  npx tsx scripts/test-stage2-review-fixes.ts
+  ```
+- **과거 기준선(827dd60) 대비 3자 병렬 A/B 검증 (Shallow Clone SHA-256 픽스처 5종 + Golden Output 117건)**:
+  ```bash
+  npx tsx scripts/test-comparison-827dd60.ts
+  ```
+- **장기 다중 시드 시뮬레이션 검증 (20 Seeds × 86,400s 1거래일 5대 세션 순환, 결정론 100%, 불변식 위반 0건)**:
+  ```bash
+  npx tsx scripts/test-market-regime-long-run.ts
+  ```
+- **국면 효과 품질 및 현실성 평가 (5개 시드 × 6대 시나리오 30건 전수 통과, 지연·스프레드·회복 관측)**:
+  ```bash
+  npx tsx scripts/test-market-regime-scenarios.ts
+  ```
+- **안전한 실험 활성화 모드 및 무중단 전환 검증 (OFF / SHADOW / EXPERIMENTAL_ON 3대 모드)**:
+  ```bash
+  npx tsx scripts/test-regime-activation-modes.ts
+  ```
+
+### 3대 국면 효과 운용 모드 (Regime Effects Modes)
+1. **`OFF` (기본값, 기본 운영 모드)**:
+   - 국면 탐지 엔진 및 국면 효과가 완전히 비활성화되거나 효과 배수가 중립(1.0)으로 유지됩니다.
+   - 기존의 안정적인 기준선(baseline) 시장 동작을 100% 보장합니다.
+2. **`SHADOW` (섀도 관측 모드)**:
+   - 국면 탐지 엔진은 백그라운드에서 실시간으로 시장 지표를 분석하여 국면을 탐지하지만, 봇 및 LP에는 일절 효과를 주지 않습니다 (`appliedRegime = null`, 무영향성 100% 비트 단위 일치 검증 완료).
+   - 관측과 실제 적용을 명확히 분리하여 안전한 모니터링을 지원합니다.
+3. **`EXPERIMENTAL_ON` (제한적 실험 모드)**:
+   - 인가 키(`regime-eval-auth`) 및 비인가 차단 정책을 통해서만 전환 가능하며, 진행 중인 스텝 중간이 아닌 다음 스텝 경계(`pendingEffectsMode`)에서 원자적으로 적용됩니다.
+   - 이상 징후나 불변식 위반 감지 시 즉시 `OFF` 모드로 롤백 가능한 킬 스위치가 동작합니다.
+   - `mgr.getRegimeModeDiagnostics()` API를 통해 현재 모드, 대기 모드, 탐지 국면, 실제 적용 국면, 적용 배수, 최근 호가 보류 횟수, 전환 이력을 실시간 모니터링할 수 있습니다.
+
+### 3. 주문 위험, 트랜잭션 및 정산 검증 스위트
+- **주문 리스크 및 단일 권위 예약 자산 검증**:
+  ```bash
+  npx tsx scripts/test-order-risk-and-settlement.ts
+  ```
+- **동시성 경합 및 원자적 롤백(Atomic Rollback) 보안 검증**:
+  ```bash
+  npx tsx scripts/test-order-security-and-atomic.ts
+  npx tsx scripts/test-transaction-isolation.ts
+  npx tsx scripts/test-concurrency-and-stale-ref.ts
+  ```
+- **다중 자산 파생상품 정산(선물/옵션 만기) 검증**:
+  ```bash
+  npm run test:settlement
+  ```
+
+### 4. 에이전트 기반 시장(ABM) 및 인과 흐름 검증
+```bash
+npx tsx scripts/test-agent-based-market.ts
+npx tsx scripts/test-causal-market-flow.ts
+npx tsx scripts/test-news-lifecycle-and-causal-flow.ts
+```
+
+### 핵심 불변식 (Invariants):
+```text
+1. 자산 비음수: cash >= 0, holdings.quantity >= 0 (차입/공매도 원천 차단)
+2. 체결 한도: order.filled <= order.size
+3. 거래 유효성: trade.price > 0, trade.size > 0
+4. 자산 보존: 거래소 순수수료 = ∑(총 현금 변화), 주식 발행 총량 불변
+5. 인덱스 정합: memoryDb.orders ↔ orderStockIndex / orderUserIndex 1:1 양방향 일치
+```
+
+---
+
+## Important Notice
+
+STOCKSYS는 실제 증권 거래소가 아닙니다.
+
+이 프로젝트에서 표시되는:
+
+- 가격
+- 뉴스
+- 주문
+- 거래량
+- 기업
+- 자산
+- 투자자 행동
+
+등의 일부 또는 전체는 시뮬레이션을 위해 생성되거나 단순화된 데이터일 수 있습니다.
+
+실제 투자 의사결정에 사용하지 마십시오.
+
+---
+
+## Project History
+
+상세한 구현 변경 이력은 [`HISTORY.md`](./HISTORY.md)를 참고하십시오.
+
+---
+
+## License
+
+This project is currently developed as an experimental simulation project.
+
+Copyright © STOCKSYS / MUMYEONG.

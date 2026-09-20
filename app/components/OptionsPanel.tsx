@@ -320,7 +320,7 @@ export default function OptionsPanel({ stockId, ticker = "STOCK" }: OptionsPanel
                       return (
                         <tr 
                           key={opt.id} 
-                          className={`transition-colors hover:bg-[#161B22] border-b border-border last:border-none ${
+                          className={`transition-colors hover:bg-black/[0.03] dark:hover:bg-white/[0.04] border-b border-border last:border-none ${
                             isITM 
                               ? "bg-up/5 border-l-4 border-l-[#F04452]" 
                               : isOTM 

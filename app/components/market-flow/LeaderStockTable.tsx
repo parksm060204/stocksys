@@ -68,7 +68,7 @@ export const LeaderStockTable: React.FC<LeaderStockTableProps> = ({
                   key={item.stockId}
                   onClick={() => onSelectStock?.(item.stockId)}
                   className={`cursor-pointer transition-colors ${
-                    isSelected ? 'bg-cyan-950/40 border-l-4 border-cyan-400' : 'hover:bg-[#161B22]/80'
+                    isSelected ? 'bg-cyan-950/40 border-l-4 border-cyan-400' : 'hover:bg-black/[0.03] dark:hover:bg-white/[0.04]'
                   }`}
                 >
                   {/* 주도주 순위 (Leader Rank) */}

@@ -239,6 +239,45 @@ export interface RegimeThresholdConfig {
   readonly highVolatilityRecoveryVolatility?: number;
 }
 
+/**
+ * 시장 국면 효과 활성화 모드 체계 (3단계):
+ * - OFF: 효과 완전 비활성화 (기본값)
+ * - SHADOW: 국면 판정·통계·진단만 기록하고 봇·LP에는 효과 배수를 적용하지 않음 (무영향 관측 모드)
+ * - EXPERIMENTAL_ON: 명시적 실험 플래그가 켜진 테스트/연구 환경에서만 효과 적용
+ */
+export type RegimeEffectsMode = 'OFF' | 'SHADOW' | 'EXPERIMENTAL_ON';
+
+export const DEFAULT_REGIME_EFFECTS_MODE: RegimeEffectsMode = 'OFF';
+
+export const VALID_REGIME_EFFECTS_MODES: readonly RegimeEffectsMode[] = [
+  'OFF',
+  'SHADOW',
+  'EXPERIMENTAL_ON',
+] as const;
+
+export function isValidRegimeEffectsMode(mode: unknown): mode is RegimeEffectsMode {
+  return typeof mode === 'string' && (VALID_REGIME_EFFECTS_MODES as readonly string[]).includes(mode);
+}
+
+export interface RegimeModeChangeRecord {
+  readonly timestamp: number;
+  readonly fromMode: RegimeEffectsMode;
+  readonly toMode: RegimeEffectsMode;
+  readonly appliedAtStepId: number;
+  readonly reason: string;
+}
+
+export interface RegimeModeDiagnostics {
+  readonly currentMode: RegimeEffectsMode;
+  readonly pendingMode: RegimeEffectsMode | null;
+  readonly detectedRegime: MarketRegime;
+  readonly appliedRegime: MarketRegime | null;
+  readonly appliedMultipliers: Record<string, number>;
+  readonly recentDeferrals: number;
+  readonly invariantViolationCount: number;
+  readonly modeChangeHistory: readonly RegimeModeChangeRecord[];
+}
+
 export interface MarketStateEngineConfig {
   readonly initialRegime: MarketRegime;
   readonly initialSession?: TradingSession;

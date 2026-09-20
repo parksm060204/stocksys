@@ -233,7 +233,7 @@ export default function CurrencyExchangePage() {
                     const isDown = diff < 0;
 
                     return (
-                      <tr key={rate.currency_code} className="hover:bg-[#161B22] transition-colors border-b border-border last:border-none">
+                      <tr key={rate.currency_code} className="hover:bg-black/[0.03] dark:hover:bg-white/[0.04] transition-colors border-b border-border last:border-none">
                         <td className="px-6 py-4 border-none font-extrabold text-white flex items-center gap-3">
                           <span className="grid h-8 w-8 place-items-center rounded-xl bg-[#161B22] text-up font-mono text-[13px] border border-border font-black">
                             {CURRENCY_ICONS[rate.currency_code]}

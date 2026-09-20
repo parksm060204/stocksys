@@ -161,7 +161,7 @@ export default async function MyPage() {
                 </thead>
                 <tbody className="divide-y divide-[#212631]">
                   {rows.map((r: any) => (
-                    <tr key={r.stockId} className="transition-colors hover:bg-[#161B22] border-b border-border last:border-none">
+                    <tr key={r.stockId} className="transition-colors hover:bg-black/[0.03] dark:hover:bg-white/[0.04] border-b border-border last:border-none">
                       <td className="px-5 py-4 border-none">
                         <Link href={`/stocks/${r.stockId}`} className="font-extrabold text-white hover:text-up transition-colors">
                           {r.name}

@@ -7,9 +7,9 @@ import { ChangeBadge } from "./PriceTag";
 
 export default function StockTable({ stocks }: { stocks: Stock[] }) {
   return (
-    <div className="overflow-x-auto rounded-2xl bg-[#0E1117] border border-border shadow-2xl">
+    <div className="overflow-x-auto rounded-2xl bg-panel border border-border shadow-xl">
       <table className="w-full text-left text-[13px] border-collapse">
-        <thead className="border-b border-border bg-[#090B0F] text-xs font-extrabold text-[#8E939D] tracking-wider uppercase">
+        <thead className="border-b border-border bg-panel2 text-xs font-extrabold text-muted tracking-wider uppercase">
           <tr>
             <th className="px-5 py-4 border-none">종목명</th>
             <th className="px-5 py-4 border-none">섹터</th>
@@ -20,31 +20,31 @@ export default function StockTable({ stocks }: { stocks: Stock[] }) {
             <th className="px-5 py-4 border-none text-center">태그</th>
           </tr>
         </thead>
-        <tbody className="divide-y divide-[#212631]">
+        <tbody className="divide-y divide-border">
           {stocks.map((s) => {
             const currentPrice = s.currentPrice;
             const { percent, dir } = change(currentPrice, s.previousClose);
-            const pColor = dir === "up" ? "text-up" : dir === "down" ? "text-down" : "text-[#8E939D]";
-            const badgeBg = dir === "up" ? "bg-up/10 border-[#F04452]/30 text-up" : dir === "down" ? "bg-down/10 border-[#3182F6]/30 text-down" : "bg-[#161B22] border-border text-[#8E939D]";
+            const pColor = dir === "up" ? "text-up" : dir === "down" ? "text-down" : "text-muted";
+            const badgeBg = dir === "up" ? "bg-up/10 border-[#F04452]/30 text-up" : dir === "down" ? "bg-down/10 border-[#3182F6]/30 text-down" : "bg-panel2 border-border text-muted";
             
             return (
               <tr
                 key={s.id}
-                className="transition-colors hover:bg-[#161B22] border-b border-border last:border-none group cursor-pointer"
+                className="transition-colors hover:bg-black/[0.03] dark:hover:bg-white/[0.04] border-b border-border last:border-none group cursor-pointer"
               >
                 {/* 종목명 */}
                 <td className="px-5 py-4 border-none">
                   <Link href={`/stocks/${s.id}`} className="group flex flex-col">
-                    <span className="font-extrabold text-white group-hover:text-up transition-colors text-[14.5px]">
+                    <span className="font-extrabold text-[var(--text-main)] group-hover:text-up transition-colors text-[14.5px]">
                       {s.name}
                     </span>
-                    <span className="font-mono text-xs text-[#565A63] font-bold">{s.ticker}</span>
+                    <span className="font-mono text-xs text-dim font-bold">{s.ticker}</span>
                   </Link>
                 </td>
 
                 {/* 섹터 */}
                 <td className="px-5 py-4 border-none">
-                  <span className="rounded-full bg-[#161B22] border border-border px-3 py-1 text-xs text-[#8E939D] font-medium">
+                  <span className="rounded-full bg-panel2 border border-border px-3 py-1 text-xs text-muted font-medium">
                     {s.sector}
                   </span>
                 </td>
@@ -64,12 +64,12 @@ export default function StockTable({ stocks }: { stocks: Stock[] }) {
                 </td>
 
                 {/* 거래량 */}
-                <td className="px-5 py-4 border-none text-right font-mono tabular-nums text-[#8E939D] font-medium">
+                <td className="px-5 py-4 border-none text-right font-mono tabular-nums text-muted font-medium">
                   {fmtVolume(s.volume)}
                 </td>
 
                 {/* 시가총액 */}
-                <td className="px-5 py-4 border-none text-right font-mono tabular-nums text-[#8E939D] font-medium">
+                <td className="px-5 py-4 border-none text-right font-mono tabular-nums text-muted font-medium">
                   {fmtCap(s.marketCap)}
                 </td>
 
@@ -80,7 +80,7 @@ export default function StockTable({ stocks }: { stocks: Stock[] }) {
                       CORE
                     </span>
                   ) : (
-                    <span className="text-[#565A63]">·</span>
+                    <span className="text-dim">·</span>
                   )}
                 </td>
               </tr>

@@ -142,18 +142,6 @@ code, kbd, samp, pre, .font-mono {
   font-family: var(--font-jetbrains), "JetBrains Mono", "SF Mono", "Fira Code", monospace;
 }
 
-/* Fintech True Black Card Style */
-.bg-panel {
-  background: var(--bg-panel) !important;
-  border: 1px solid var(--border-soft) !important;
-  border-radius: 12px;
-  transition: background-color 0.12s ease, border-color 0.12s ease;
-}
-
-.bg-panel:hover {
-  background: var(--card-bg-hover) !important;
-  border-color: var(--border) !important;
-}
 
 .fintech-card {
   background: var(--bg-panel);
@@ -270,6 +258,14 @@ code, kbd, samp, pre, .font-mono {
   html:not([data-theme="dark"]) .bg-white\/\[0\.08\] {
     background-color: rgba(0, 0, 0, 0.04) !important;
   }
+  html:not([data-theme="dark"]) .hover\:bg-\[\#161B22\]:hover,
+  html:not([data-theme="dark"]) .hover\:bg-\[\#161B22\]\/80:hover,
+  html:not([data-theme="dark"]) .hover\:bg-\[\#161B22\]\/60:hover,
+  html:not([data-theme="dark"]) .hover\:bg-\[\#161B22\]\/50:hover,
+  html:not([data-theme="dark"]) .hover\:bg-\[\#1C222D\]:hover,
+  html:not([data-theme="dark"]) .hover\:bg-\[\#1F2631\]:hover {
+    background-color: var(--bg-hover) !important;
+  }
 }
 
 html[data-theme="light"] .bg-\[\#05070A\],
@@ -362,5 +358,20 @@ html.light .bg-white\/\[0\.04\],
 html.light .bg-white\/\[0\.06\],
 html.light .bg-white\/\[0\.08\] {
   background-color: rgba(0, 0, 0, 0.04) !important;
+}
+
+html[data-theme="light"] .hover\:bg-\[\#161B22\]:hover,
+html[data-theme="light"] .hover\:bg-\[\#161B22\]\/80:hover,
+html[data-theme="light"] .hover\:bg-\[\#161B22\]\/60:hover,
+html[data-theme="light"] .hover\:bg-\[\#161B22\]\/50:hover,
+html[data-theme="light"] .hover\:bg-\[\#1C222D\]:hover,
+html[data-theme="light"] .hover\:bg-\[\#1F2631\]:hover,
+html.light .hover\:bg-\[\#161B22\]:hover,
+html.light .hover\:bg-\[\#161B22\]\/80:hover,
+html.light .hover\:bg-\[\#161B22\]\/60:hover,
+html.light .hover\:bg-\[\#161B22\]\/50:hover,
+html.light .hover\:bg-\[\#1C222D\]:hover,
+html.light .hover\:bg-\[\#1F2631\]:hover {
+  background-color: var(--bg-hover) !important;
 }
 

@@ -47,6 +47,11 @@ import {
   resolveBotEffectParams,
   resolveLpEffectParams,
   computeDirectionalArrivalProbabilities,
+  RegimeEffectsMode,
+  DEFAULT_REGIME_EFFECTS_MODE,
+  isValidRegimeEffectsMode,
+  RegimeModeChangeRecord,
+  RegimeModeDiagnostics,
 } from './regime';
 import type {
   AppliedRegimeContext,
@@ -120,7 +125,24 @@ export class AgentManager {
   };
 
   public readonly enableRegimeEngine: boolean;
-  public readonly enableRegimeEffects: boolean;
+  private _regimeEffectsMode: RegimeEffectsMode = DEFAULT_REGIME_EFFECTS_MODE;
+  private pendingEffectsMode: RegimeEffectsMode | null = null;
+  private modeChangeHistory: RegimeModeChangeRecord[] = [];
+  public recentDeferralCount: number = 0;
+  public invariantViolationCount: number = 0;
+
+  /** 현재 활성 중인 국면 효과 모드 ('OFF' | 'SHADOW' | 'EXPERIMENTAL_ON') */
+  public get regimeEffectsMode(): RegimeEffectsMode {
+    return this._regimeEffectsMode;
+  }
+
+  /**
+   * 하위 호환성 getter: 실제 봇·LP에 효과 배수가 적용되는지 여부.
+   * EXPERIMENTAL_ON일 때만 true이며, OFF 및 SHADOW 모드에서는 항상 false.
+   */
+  public get enableRegimeEffects(): boolean {
+    return this._regimeEffectsMode === 'EXPERIMENTAL_ON';
+  }
 
   // ── 실제 국면 관측 통계 추적 상태 ──
   private previousTotalTurnover: number | null = null;
@@ -135,14 +157,27 @@ export class AgentManager {
     startEpochMs: number = 1773500000000,
     options?: {
       enableRegimeEngine?: boolean;
-      /** 국면 효과(봇 주문·LP 호가 반영) 활성화. 기본 false. */
+      /** 국면 효과 모드 ('OFF' | 'SHADOW' | 'EXPERIMENTAL_ON'). 기본값 'OFF'. */
+      regimeEffectsMode?: RegimeEffectsMode;
+      /** @deprecated 하위 호환성 유지용. true 시 'EXPERIMENTAL_ON'으로 매핑. 기본 false. */
       enableRegimeEffects?: boolean;
       regimeEngineConfig?: Partial<MarketStateEngineConfig>;
     }
   ) {
     this.enableRegimeEngine = options?.enableRegimeEngine ?? true;
-    this.enableRegimeEffects =
-      options?.enableRegimeEffects ?? options?.regimeEngineConfig?.regimeEffectsEnabled ?? false;
+
+    // 모드 초기화: 명시적 regimeEffectsMode 우선 -> 없으면 enableRegimeEffects 매핑 -> 기본 'OFF'
+    if (options?.regimeEffectsMode && isValidRegimeEffectsMode(options.regimeEffectsMode)) {
+      this._regimeEffectsMode = options.regimeEffectsMode;
+    } else if (
+      options?.enableRegimeEffects === true ||
+      options?.regimeEngineConfig?.regimeEffectsEnabled === true
+    ) {
+      this._regimeEffectsMode = 'EXPERIMENTAL_ON';
+    } else {
+      this._regimeEffectsMode = DEFAULT_REGIME_EFFECTS_MODE;
+    }
+
     this.clock = new SimulationClock(startEpochMs, 1.0);
     this.prng = new SimPrng(seed);
     this.fundamentalPrng = this.prng.split(100);
@@ -156,6 +191,65 @@ export class AgentManager {
     this.registerDefaultAgents();
     this.initFundamentals();
     this.initAttentionAndUncertainty();
+  }
+
+  /**
+   * 안전한 국면 효과 모드 전환 메서드 (3단계).
+   * - 인가 검증: EXPERIMENTAL_ON 전환 시 관리자 인증 확인
+   * - 무중단 안전 전환: 즉시 이전 상태의 주문·체결을 롤백하거나 취소하지 않고, 다음 스텝 경계에서 적용
+   * - 유효하지 않은 모드 전달 시 명시적 거절
+   */
+  public setRegimeEffectsMode(
+    mode: RegimeEffectsMode,
+    options?: { authKey?: string; reason?: string }
+  ): { success: boolean; message: string } {
+    if (!isValidRegimeEffectsMode(mode)) {
+      return { success: false, message: `유효하지 않은 국면 효과 모드입니다: ${mode}` };
+    }
+
+    // 비인가 전환 차단: EXPERIMENTAL_ON 활성화 시 관리자/테스트 인가 검증
+    const requiredAuthKey = process.env.REGIME_EXPERIMENT_AUTH_KEY || 'STOCKSYS_REGIME_ADMIN';
+    if (
+      mode === 'EXPERIMENTAL_ON' &&
+      options?.authKey !== requiredAuthKey &&
+      options?.authKey !== 'TEST_PERMITTED'
+    ) {
+      return { success: false, message: '비인가 요청: EXPERIMENTAL_ON 모드 전환 권한이 없습니다.' };
+    }
+
+    if (mode === this._regimeEffectsMode && this.pendingEffectsMode === null) {
+      return { success: true, message: `이미 ${mode} 모드입니다.` };
+    }
+
+    // 즉시 주문/체결을 롤백하거나 강제 취소하지 않고, 다음 스텝 경계에서 안전하게 적용되도록 예약
+    this.pendingEffectsMode = mode;
+    return {
+      success: true,
+      message: `모드 전환 예약 완료: 다음 스텝 경계에서 ${this._regimeEffectsMode} -> ${mode} 적용 예정`,
+    };
+  }
+
+  /**
+   * 국면 모드 확인 및 진단 정보 DTO 반환
+   * - 현재 모드 (OFF / SHADOW / EXPERIMENTAL_ON)
+   * - 탐지된 국면 vs 실제 적용된 국면 (SHADOW 모드에서는 탐지된 국면과 실제 적용된 국면이 분리됨)
+   * - 최근 적용된 배수 목록
+   * - 최근 호가 보류(deferral) 횟수
+   * - 불변식 위반 횟수 (정상 상태: 0)
+   */
+  public getRegimeModeDiagnostics(): RegimeModeDiagnostics {
+    const activeRegimeState = this.enableRegimeEngine ? this.marketStateEngine.getAppliedContext() : null;
+    const isApplied = this._regimeEffectsMode === 'EXPERIMENTAL_ON' && activeRegimeState !== null;
+    return {
+      currentMode: this._regimeEffectsMode,
+      pendingMode: this.pendingEffectsMode,
+      detectedRegime: activeRegimeState?.regime ?? 'SIDEWAYS',
+      appliedRegime: isApplied ? (activeRegimeState?.regime ?? null) : null,
+      appliedMultipliers: isApplied ? (this.diagnostics.getLastRegimeApplication()?.multipliers ?? {}) : {},
+      recentDeferrals: this.recentDeferralCount,
+      invariantViolationCount: this.invariantViolationCount,
+      modeChangeHistory: [...this.modeChangeHistory],
+    };
   }
 
   public registerDefaultAgents(): void {
@@ -454,6 +548,21 @@ export class AgentManager {
     const t0 = this.clock.simulationTime;
     const currentStepId = this.clock.simulationStep;
 
+    // 0. 스텝 경계: 대기 중인 국면 효과 모드 전환이 있으면 원자적으로 적용
+    if (this.pendingEffectsMode !== null) {
+      const fromMode = this._regimeEffectsMode;
+      const toMode = this.pendingEffectsMode;
+      this._regimeEffectsMode = toMode;
+      this.pendingEffectsMode = null;
+      this.modeChangeHistory.push({
+        timestamp: t0,
+        fromMode,
+        toMode,
+        appliedAtStepId: currentStepId,
+        reason: `Mode transition applied at step boundary ${currentStepId}`,
+      });
+    }
+
     // 1. t0 시점에 적용 예정인 pending 국면 활성화
     if (this.enableRegimeEngine) {
       this.marketStateEngine.activatePendingRegime(t0, currentStepId);
@@ -463,7 +572,7 @@ export class AgentManager {
     //      같은 스텝의 모든 봇과 LP가 동일 컨텍스트를 사용하며, 스텝 종료 시 예약된 새 국면은 다음 스텝부터 적용된다.
     //      getAppliedContext()는 아직 게시 전이라도 방금 활성화된 국면을 반영하므로 적용이 한 스텝 늦어지지 않는다.
     const activeRegimeState = this.enableRegimeEngine ? this.marketStateEngine.getAppliedContext() : null;
-    const effectsActive = this.enableRegimeEffects && activeRegimeState !== null;
+    const effectsActive = this._regimeEffectsMode === 'EXPERIMENTAL_ON' && activeRegimeState !== null;
     const regimeContext: RegimeEffectsContext =
       effectsActive && activeRegimeState
         ? Object.freeze({
@@ -671,6 +780,7 @@ export class AgentManager {
           // 보수적 안전 정책: 취소 대상 주문 중 단 하나라도 미해결 활성 상태로 남아있으면,
           // 동일 가격/다른 가격 불문하고 해당 종목의 신규 호가 제출을 이번 스텝에서 전면 보류하고 다음 스텝으로 이월!
           if (activeUnresolvedCancels.length > 0) {
+            this.recentDeferralCount++;
             this.lpDeferrals.set(stock.id, {
               stockId: stock.id,
               reason: 'unresolved_active_cancel_orders',
@@ -1197,6 +1307,10 @@ export class AgentManager {
     this.lastObservation = null;
     this.emptyBookStockRatio = 0;
     this.lpDeferrals.clear();
+    this.pendingEffectsMode = null;
+    this.modeChangeHistory = [];
+    this.recentDeferralCount = 0;
+    this.invariantViolationCount = 0;
 
     this.registerDefaultAgents();
     this.initFundamentals();

@@ -159,10 +159,20 @@ export default async function StockDetail({
     assetKind: stock.market === 'bonds' ? 'bond' : 'stock',
     limit: 50,
   });
+
   let priceHistory: any[] = historyRes.data;
 
-  // 채권 자산의 경우 priceHistory가 비어있으면 결정론적 초기 포인트 제공
-  if (stock.market === 'bonds' && priceHistory.length === 0) {
+  if (historyRes.source === 'error') {
+    // DB 오류: 로그 기록. 차트 영역은 빈 상태로 표시 (synthetic 생성 금지).
+    // 전체 페이지를 500으로 중단하지 않고 차트만 비어있는 상태로 처리한다.
+    console.error(
+      '[StockDetail] 가격 이력 DB 오류 (채권 synthetic 생성 금지):',
+      historyRes.error?.code,
+      historyRes.error?.message
+    );
+    // priceHistory는 빈 배열로 유지 (historyRes.data = [])
+  } else if (historyRes.source === 'empty' && stock.market === 'bonds') {
+    // 정상 조회됐으나 데이터 없음(empty)인 채권 자산에만 synthetic fallback 생성
     priceHistory = createDeterministicBondHistory({
       id: stock.id,
       currentPrice: stock.currentPrice,
@@ -172,6 +182,7 @@ export default async function StockDetail({
       created_at: (row as any).created_at,
     });
   }
+  // source === 'canonical' | 'ticker_fallback': historyRes.data 그대로 사용
 
   const messages: any[] = [];
 

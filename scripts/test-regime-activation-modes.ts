@@ -522,8 +522,7 @@ async function runAllTests(): Promise<void> {
       assetKind: 'stock',
     });
     assert(res3.source === 'empty' && res3.data.length === 0, '3.1-C 양쪽 모두 부재 시 정상 빈 결과 반환');
-
-    // 시나리오 4: DB 조회 오류 시 정상 빈 배열 반환 및 error 객체 포착
+    // 시나리오 4: DB 조회 오류 시 source === 'error' 반환 (정상 empty와 명확히 구분)
     const failingDb = createMockSupabase('stock_price_history');
     const res4 = await fetchCanonicalPriceHistory({
       db: failingDb,
@@ -531,7 +530,8 @@ async function runAllTests(): Promise<void> {
       ticker: '0010',
       assetKind: 'stock',
     });
-    assert(res4.source === 'empty' && res4.error !== null, '3.1-D DB 오류 격리 및 graceful 처리');
+    // 수정된 정책: DB 오류는 source === 'error' (이전 'empty'와 구분)
+    assert(res4.source === 'error' && res4.error !== undefined && res4.error.code !== undefined, '3.1-D DB 오류 격리: source === error, 오류 코드 포함');
   }
 
   // 3.2 채권 synthetic price history 결정론 검증 (Date.now 미사용)

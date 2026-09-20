@@ -266,6 +266,10 @@ export interface RegimeModeChangeRecord {
   readonly appliedAtStepId: number;
   readonly reason: string;
   readonly eventType?: 'MODE_CHANGE' | 'RESET_FAIL_SAFE' | 'RESET';
+  /** reset 이후 시뮬레이션 시각 (reset 이벤트 전용 선택 필드) */
+  readonly nextSimulationTime?: number;
+  /** reset 이후 스텝 ID (reset 이벤트 전용 선택 필드) */
+  readonly nextStepId?: number;
 }
 
 export interface ShadowDiagnosticsStepRecord {
@@ -291,7 +295,7 @@ export interface ShadowDiagnosticsStepRecord {
   readonly directionChangedCount: number;
   readonly sizeChangedCount: number;
   readonly expectedDeferrals: number;
-  readonly shadowCalculationStatus: 'COMPLETED' | 'SKIPPED' | 'DEGRADED' | 'ERROR' | 'OK';
+  readonly shadowCalculationStatus: 'COMPLETED' | 'SKIPPED' | 'DEGRADED' | 'ERROR';
   readonly errorCode?: string | null;
   readonly failureCount?: number;
 }

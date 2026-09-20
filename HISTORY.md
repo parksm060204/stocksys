@@ -4653,4 +4653,26 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
   - 12대 필수 회귀 스위트 전체 통과 (`test-market-regime-long-run`, `test-market-regime-scenarios`, `test-market-regime-foundation`, `test-stage2-review-fixes`, `test-stage2-review-fixes-v2`, `test-comparison-827dd60`, `test-agent-based-market`, `test-causal-market-flow`, `test-concurrency-and-stale-ref`, `test-order-security-and-atomic`, `test-transaction-isolation`, `test-order-risk-and-settlement`).
   - `npx tsc --noEmit` (Exit Code 0), `npm run build` (Exit Code 0), `git diff --check` (Exit Code 0).
 
+---
+## 2026-09-20 17:02
 
+**요청 요약:** 시장 국면 운용 모드의 남은 보안·감사·SHADOW·가격 이력 정합성 결함 수정 및 검증
+**수행 결과:**
+- `lib/engine/simulation/regime/regimeAuth.ts`:
+  - `_createRegimeCapabilityRaw` 직접 export 제거 및 내부 비공개화로 비인가 발급 경로 완전 차단.
+  - `RegimeCapabilityVerifier` 및 `OperationalRegimeCapabilityVerifier` 구현 (DI 패턴 적용).
+  - consumed capability 정리 정책 개선: 만료된 ID만 제거하고, 미만료 ID는 보존하며 상한(1,000건) 포화 시 fail-closed 적용.
+- `lib/engine/simulation/agentManager.ts`:
+  - `capabilityVerifier` DI 주입 지원 (운영 기본: `OperationalRegimeCapabilityVerifier`).
+  - `reset()` 시 감사 이력 시간 역행 방지: reset 직전 시점(`preResetTime`, `preResetStepId`)으로 이력 기록 및 `nextSimulationTime`, `nextStepId` 명시.
+  - reset 시 미만료 consumed capability 보존 및 verifier 위임.
+- `lib/services/priceHistoryService.ts` & `app/stocks/[id]/page.tsx`:
+  - DB 오류 발생 시 `source: 'error'`와 `source: 'empty'` 분리, DB 오류 시 채권 synthetic 이력 생성 차단(조용한 폴백 방지).
+  - 민감정보 제거된 `SafePriceHistoryError` DTO 반환.
+  - `assetKind` 스키마 제약 사항 명시 및 canonical UUID 우선 조회로 격리.
+  - `Date.now()` 배제 및 결정론적 채권 fallback 시계 유지.
+- `scripts/test-support/testRegimeAuth.ts` & `scripts/test-regime-activation-modes.ts`:
+  - 테스트 전용 DI 검증기(`TestRegimeCapabilityVerifier`) 적용 및 비공개 raw factory 미접근 구조 구축.
+  - DB 오류 격리 assertion(`source === 'error'`) 업데이트 및 7대 전수 검증 통과.
+- 전체 빌드 및 검증:
+  - `npx tsc --noEmit` (Exit Code 0), `npm run build` (Exit Code 0), `scripts/test-regime-activation-modes.ts` (Exit Code 0).

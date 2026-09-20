@@ -59,6 +59,8 @@ import {
   RegimeExperimentCapability,
   isValidRegimeExperimentCapability,
   sanitizeReason,
+  RegimeCapabilityVerifier,
+  OperationalRegimeCapabilityVerifier,
 } from './regime';
 
 import type {
@@ -142,7 +144,12 @@ export class AgentManager {
   private shadowDiagnosticsHistory: ShadowDiagnosticsStepRecord[] = [];
   private invariantViolations: InvariantViolationRecord[] = [];
   private reportedInvariantFingerprints: Map<string, number> = new Map();
-  private consumedCapabilityIds: Map<string, number> = new Map();
+  /**
+   * Capability 검증·소비 인스턴스 (Dependency Injection).
+   * 운영 기본값: OperationalRegimeCapabilityVerifier
+   * 테스트: scripts/test-support의 TestRegimeCapabilityVerifier를 생성자 옵션으로 주입
+   */
+  private capabilityVerifier: RegimeCapabilityVerifier;
 
   /** 현재 활성 중인 국면 효과 모드 ('OFF' | 'SHADOW' | 'EXPERIMENTAL_ON') */
   public get regimeEffectsMode(): RegimeEffectsMode {
@@ -175,6 +182,12 @@ export class AgentManager {
       /** @deprecated 생성자 직접 활성화는 금지되며 무시됩니다. 기본값 'OFF'. */
       enableRegimeEffects?: boolean;
       regimeEngineConfig?: Partial<MarketStateEngineConfig>;
+      /**
+       * Capability 검증기 DI (Dependency Injection).
+       * 생략 시 OperationalRegimeCapabilityVerifier(운영 기본값) 사용.
+       * 테스트에서만 TestRegimeCapabilityVerifier를 주입하라.
+       */
+      capabilityVerifier?: RegimeCapabilityVerifier;
     }
   ) {
     this.enableRegimeEngine = options?.enableRegimeEngine ?? true;
@@ -199,6 +212,9 @@ export class AgentManager {
         '[AgentManager] 하위호환 경고: enableRegimeEffects 직접 설정은 더 이상 지원되지 않습니다. OFF 모드로 안전하게 초기화됩니다.'
       );
     }
+
+    // Capability 검증기: DI 주입값 우선, 없으면 운영 기본값(OperationalRegimeCapabilityVerifier)
+    this.capabilityVerifier = options?.capabilityVerifier ?? new OperationalRegimeCapabilityVerifier();
 
     this.clock = new SimulationClock(startEpochMs, 1.0);
     this.prng = new SimPrng(seed);
@@ -235,36 +251,24 @@ export class AgentManager {
       ? options.nowMs
       : Date.now();
 
-    // 비인가 전환 차단: EXPERIMENTAL_ON 활성화 시 Capability 인가 검증
+    // 비인가 전환 차단: EXPERIMENTAL_ON 활성화 시 Capability 검증기(DI) 사용
     if (mode === 'EXPERIMENTAL_ON') {
       const cap = options?.capability;
-      if (!isValidRegimeExperimentCapability(cap, nowMs)) {
-        return {
-          success: false,
-          message: '비인가 요청: EXPERIMENTAL_ON 모드 전환을 위한 유효한 승인 capability가 필요합니다.',
-        };
-      }
 
-      // 단회용 검증: 이미 사용(소비)된 capability 재사용 방지
-      if (this.consumedCapabilityIds.has(cap.id)) {
+      // capabilityVerifier.verifyAndConsume()은:
+      // 1. 만료 항목 정리 2. 유효성 검증 3. 재사용 거절 4. 포화 fail-closed 5. 성공 시 소비
+      const verifyResult = this.capabilityVerifier.verifyAndConsume(cap, nowMs);
+      if (!verifyResult.success) {
         return {
           success: false,
-          message: '비인가 요청: 이미 사용(소비)된 일회용 capability입니다. 재사용할 수 없습니다.',
+          message: `비인가 요청: EXPERIMENTAL_ON 모드 전환 거절 (errorCode: ${verifyResult.errorCode ?? 'UNKNOWN'})`,
         };
       }
+      // verifyAndConsume 성공 시 이미 capability가 소비됨 → 별도 consumedCapabilityIds 관리 불필요
     }
 
     if (mode === this._regimeEffectsMode && this.pendingEffectsMode === null) {
       return { success: true, message: `이미 ${mode} 모드입니다.` };
-    }
-
-    // 전환 예약 성공 시 일회용 capability를 consumed 처리
-    if (mode === 'EXPERIMENTAL_ON' && options?.capability) {
-      this.consumedCapabilityIds.set(options.capability.id, nowMs);
-      if (this.consumedCapabilityIds.size > 1000) {
-        const oldestKey = this.consumedCapabilityIds.keys().next().value;
-        if (oldestKey) this.consumedCapabilityIds.delete(oldestKey);
-      }
     }
 
     // 즉시 주문/체결을 롤백하거나 강제 취소하지 않고, 다음 스텝 경계에서 안전하게 적용되도록 예약
@@ -2049,12 +2053,22 @@ export class AgentManager {
   }
 
   public reset(seed: number = 42): void {
+    // ── reset 직전 상태를 먼저 캡처 (감사 이력 시간 역행 방지) ──
+    // clock.reset() 이후의 초기 시각(0 또는 startEpoch)을 감사 이벤트 timestamp로 사용하면
+    // 이력 시간이 역행한다. 따라서 reset 수행 전에 먼저 캡처한다.
+    const preResetTime = this.clock.simulationTime;
+    const preResetStepId = this.clock.simulationStep;
     const prevMode = this._regimeEffectsMode;
+
+    // ── clock 및 시뮬레이션 상태 초기화 ──
     this.clock.reset();
+    const postResetTime = this.clock.simulationTime;
+    const postResetStepId = this.clock.simulationStep;
+
     this.prng = new SimPrng(seed);
     this.fundamentalPrng = this.prng.split(100);
     if (this.enableRegimeEngine) {
-      this.marketStateEngine.reset(this.clock.simulationTime, seed);
+      this.marketStateEngine.reset(postResetTime, seed);
     }
     this.previousTotalTurnover = null;
     this.previousTotalDepth = null;
@@ -2076,7 +2090,7 @@ export class AgentManager {
     this.emptyBookStockRatio = 0;
     this.lpDeferrals.clear();
 
-    // Reset 운용 모드 및 진단 상태 원자적 초기화 (안전 정책)
+    // ── 운용 모드 및 진단 상태 초기화 (안전 정책) ──
     this._regimeEffectsMode = 'OFF';
     this.pendingEffectsMode = null;
     this.pendingReason = null;
@@ -2086,14 +2100,23 @@ export class AgentManager {
     this.invariantViolations = [];
     this.reportedInvariantFingerprints.clear();
 
-    // 감사 이력 정합성: 기존 감사 이력을 덮어쓰지 않고 append 및 bounded buffer 유지
+    // ── consumed capability: 미만료 기록 유지, 만료된 기록만 정리 ──
+    // reset 후에도 미만료 소비 기록은 반드시 유지해야 한다.
+    // 만료 정리는 verifier에 위임한다.
+    this.capabilityVerifier.pruneExpiredConsumed(postResetTime);
+
+    // ── 감사 이력 정합성: append 방식, timestamp 역행 방지 ──
+    // 이 인메모리 bounded history는 영구 보안 감사 로그가 아니라 최근 진단 이력이다.
+    // (최대 100건 유지, 프로세스 재시작 시 소멸)
     this.modeChangeHistory.push({
-      timestamp: this.clock.simulationTime,
+      timestamp: preResetTime,           // reset 직전 시각 (역행 방지)
       fromMode: prevMode,
       toMode: 'OFF',
-      appliedAtStepId: this.clock.simulationStep,
-      reason: 'simulation_reset_fail_safe',
+      appliedAtStepId: preResetStepId,   // reset 직전 step ID
+      reason: prevMode === 'OFF' ? 'simulation_reset' : 'simulation_reset_fail_safe',
       eventType: prevMode === 'OFF' ? 'RESET' : 'RESET_FAIL_SAFE',
+      nextSimulationTime: postResetTime, // reset 이후 시각 (별도 필드)
+      nextStepId: postResetStepId,       // reset 이후 step ID (별도 필드)
     });
     if (this.modeChangeHistory.length > 100) {
       this.modeChangeHistory = this.modeChangeHistory.slice(-100);

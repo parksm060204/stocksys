@@ -233,6 +233,7 @@ const BidRow = memo(({
     </div>
   );
 });
+BidRow.displayName = 'BidRow';
 
 export interface OrderbookViewProps {
   visibleAsks: OrderbookLevel[];

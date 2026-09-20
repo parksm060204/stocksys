@@ -15,7 +15,6 @@ async function profileScaling(userCount: number) {
     });
   }
 
-  let totalLockWaitMs = 0;
   let totalRpcExecMs = 0;
   let totalArrayFilterMs = 0;
   const iterations = 50;

@@ -745,7 +745,7 @@ export class AgentManager {
     let lpEvaluatedStockCount = 0;
     let directionChangedCount = 0;
     let sizeChangedCount = 0;
-    let expectedDeferrals = 0;
+    const expectedDeferrals = 0;
     let shadowStatus: 'COMPLETED' | 'SKIPPED' | 'DEGRADED' | 'ERROR' = 'COMPLETED';
     let shadowErrorCode: string | null = null;
     let shadowFailureCount = 0;

@@ -297,7 +297,7 @@ export class MemoryQueryBuilder {
 
       if (this.action === 'update') {
         // 필터 조건에 매칭되는 레코드 수정
-        let matched = this.applyFilters(targetList);
+        const matched = this.applyFilters(targetList);
         for (const item of matched) {
           Object.assign(item, this.payloadData);
           db.publish(`${this.tableName}_changes`, { eventType: 'UPDATE', new: item });
@@ -306,7 +306,7 @@ export class MemoryQueryBuilder {
       }
 
       if (this.action === 'delete') {
-        let matched = this.applyFilters(targetList);
+        const matched = this.applyFilters(targetList);
         for (const item of matched) {
           if (this.tableName === 'orders') {
             db.orders.delete(item.id);

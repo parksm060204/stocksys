@@ -299,7 +299,7 @@ export class MarketDiagnostics {
     const stocks = Array.from(memoryDb.stocks.values());
     let marketTotalTurnover = 0;
     let marketReturnSum = 0;
-    let stockReturns: Map<string, number> = new Map();
+    const stockReturns: Map<string, number> = new Map();
 
     // 1단계: 종목별 최근 구간 체결 집계
     for (const stock of stocks) {

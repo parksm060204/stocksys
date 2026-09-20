@@ -196,14 +196,22 @@ async function runAllTests(): Promise<void> {
       '1.3-C 런타임에 capabilityVerifier 주입 시도해도 OperationalRegimeCapabilityVerifier 강제 유지'
     );
 
-    // [P1 수정 검증 1] verifier 인스턴스에 pruneExpiredConsumed 공개 메서드가 존재하지 않음 확인
+    // [P1 수정 검증 1] verifier 클래스 및 인스턴스에 pruneExpired, pruneExpiredConsumed, consumedCapabilities가 전혀 노출되지 않음 확인 (Module-private closure)
     const opVerifierInstance = new OperationalRegimeCapabilityVerifier();
     assert(
       typeof (opVerifierInstance as any).pruneExpiredConsumed === 'undefined',
-      '1.3-D pruneExpiredConsumed 공개 메서드 완전 제거 확인 (인터페이스 및 클래스)'
+      '1.3-D1 인스턴스 pruneExpiredConsumed 공개 메서드 부재 확인'
+    );
+    assert(
+      typeof (OperationalRegimeCapabilityVerifier as any).pruneExpired === 'undefined',
+      '1.3-D2 클래스 pruneExpired 정적 메서드 부재 확인 (런타임 private 은닉)'
+    );
+    assert(
+      typeof (OperationalRegimeCapabilityVerifier as any).consumedCapabilities === 'undefined',
+      '1.3-D3 클래스 consumedCapabilities 정적 저장소 부재 확인 (모듈 비공개 영역 은닉)'
     );
 
-    // [P1 수정 검증 2] 악의적인 nowMs: MAX_SAFE_INTEGER 주입을 통한 process-wide 저장소 삭제 공격 원천 차단
+    // [P1 수정 검증 2] 런타임 리플렉션 및 nowMs: MAX_SAFE_INTEGER 주입을 통한 process-wide 저장소 삭제 공격 원천 차단
     {
       const capAttack = issueRealCapability();
       const mgrAttack = new AgentManager(42, START_EPOCH_MS);
@@ -211,7 +219,13 @@ async function runAllTests(): Promise<void> {
       assert(resInit.success === true, '1.3-E 정상 capability 1차 소비 성공');
       mgrAttack.reset(42);
 
-      // 공격 시도: nowMs: MAX_SAFE_INTEGER를 주입하여 기존 소비 기록을 prune 시도
+      // 공격 1: 런타임 리플렉션을 통한 정적 메서드 호출 / 맵 clear 시도
+      try {
+        (OperationalRegimeCapabilityVerifier as any).pruneExpired?.(Number.MAX_SAFE_INTEGER);
+        (OperationalRegimeCapabilityVerifier as any).consumedCapabilities?.clear();
+      } catch {}
+
+      // 공격 2: nowMs: MAX_SAFE_INTEGER를 주입하여 기존 소비 기록을 prune 시도
       const resExploit = mgrAttack.setRegimeEffectsMode('EXPERIMENTAL_ON', {
         capability: createUnauthenticatedTestCapability(),
         nowMs: Number.MAX_SAFE_INTEGER,
@@ -222,7 +236,7 @@ async function runAllTests(): Promise<void> {
       const resReplay = mgrAttack.setRegimeEffectsMode('EXPERIMENTAL_ON', { capability: capAttack });
       assert(
         !resReplay.success && resReplay.errorCode === 'ALREADY_CONSUMED',
-        '1.3-G nowMs 주입 공격 후에도 기존 소비 기록이 보존되어 ALREADY_CONSUMED 거절 (P1 공격 차단 성공)'
+        '1.3-G 런타임 리플렉션 및 nowMs 주입 공격 후에도 기존 소비 기록이 보존되어 ALREADY_CONSUMED 거절 (P1 공격 차단 성공)'
       );
     }
 

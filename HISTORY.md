@@ -4746,3 +4746,33 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
   - `npx tsx scripts/test-market-regime-foundation.ts` (33개 테스트 전체 통과, Exit Code 0)
   - `npx tsx scripts/test-stage2-review-fixes-v2.ts` (전체 통과, Exit Code 0)
   - `git diff --check` (공백/줄바꿈 경고 없음, Exit Code 0)
+
+---
+## 2026-09-20 20:59
+
+**요청 요약:** 커밋 d518f85 리뷰 지적사항 반영 - [P1] 런타임 private 모듈 비공개 스코프 격리(리플렉션/as any 초기화 원천 차단), [P1] Next.js 16.3.5 보안 업데이트로 Critical 취약점 전면 해소, [P2] ESLint 7개 오류 해결(0 errors 달성)
+**수행 결과:**
+- `lib/engine/simulation/regime/regimeAuth.ts`:
+  - `OperationalRegimeCapabilityVerifier` 내부의 `consumedCapabilities` 및 `pruneExpired`를 클래스 밖의 모듈 비공개 스코프(`processWideConsumedCapabilities`, `pruneExpiredConsumedModule`)로 완전 이동.
+  - TypeScript `private static`이 JavaScript 런타임에 클래스 속성으로 노출되어 `(OperationalRegimeCapabilityVerifier as any).pruneExpired(...)` 또는 `.consumedCapabilities.clear()`로 접근·초기화되던 런타임 리플렉션 보안 우회 원천 차단.
+- `package.json` & `package-lock.json`:
+  - `next` 및 `eslint-config-next`를 `16.3.5`로 업데이트하여 의존성 Critical(1건), High(3건), Moderate(1건) 취약점 전면 해소 (`npm audit --omit=dev`: found 0 vulnerabilities).
+- ESLint 오류 7건 전수 수정 (`npm run lint`: 0 errors):
+  - `app/components/Orderbook.tsx`: `BidRow`에 `BidRow.displayName = 'BidRow'` 추가하여 `react/display-name` 오류 해결.
+  - `lib/engine/simulation/agentManager.ts`: `let expectedDeferrals = 0` -> `const expectedDeferrals = 0` (`prefer-const`).
+  - `lib/engine/simulation/marketDiagnostics.ts`: `let stockReturns` -> `const stockReturns` (`prefer-const`).
+  - `lib/engine/simulation/simClock.ts`: `let u2` -> `const u2` (`prefer-const`).
+  - `lib/memoryDb/memoryDbClient.ts`: `let matched` 2건 -> `const matched` (`prefer-const`).
+  - `scripts/loadtest/profileBottlenecks.ts`: 미사용 `totalLockWaitMs` 제거 (`prefer-const`).
+- `scripts/test-regime-activation-modes.ts`:
+  - 클래스 및 인스턴스에 `pruneExpired`, `consumedCapabilities` 속성이 존재하지 않음(`undefined`)을 검증하는 런타임 은닉 assertion 추가.
+  - 런타임 리플렉션 조작 시도 및 `nowMs: MAX_SAFE_INTEGER` 주입 공격 후에도 기존 소비 기록이 보존되어 `ALREADY_CONSUMED` 거절됨을 확인하는 회귀 테스트 강화.
+- 검증 완료:
+  - `npm audit --omit=dev` & `npm audit`: found 0 vulnerabilities (Exit Code 0)
+  - `npm run lint`: 0 errors (Exit Code 0)
+  - `npx tsc --noEmit`: (Exit Code 0)
+  - `npm run build`: Next.js 16.3.5 Turbopack 최적화 빌드 완료 (Exit Code 0)
+  - `npx tsx scripts/test-regime-activation-modes.ts`: 전체 통과 (Exit Code 0)
+  - `npx tsx scripts/test-market-regime-foundation.ts`: 33개 테스트 전체 통과 (Exit Code 0)
+  - `npx tsx scripts/test-stage2-review-fixes-v2.ts`: 전체 통과 (Exit Code 0)
+  - `git diff --check`: (Exit Code 0)

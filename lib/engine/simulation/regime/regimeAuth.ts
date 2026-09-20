@@ -193,19 +193,29 @@ export interface RegimeAuthorizationProvider {
  *   중앙 원자적 분산 캐시(Redis `SET key value NX EX ttl` 등) 또는 DB 트랜잭션 기반 저장소가 필수적이다.
  *   본 모듈은 단일 프로세스 아키텍처 범위 내에서 process-wide 불변식을 엄격히 보장한다.
  */
-export class OperationalRegimeCapabilityVerifier implements RegimeCapabilityVerifier {
-  private static readonly CONSUMED_MAX_SIZE = 1000;
-  // Process-wide 싱글톤 소비 저장소: Map<capabilityId, expiresAt>
-  private static readonly consumedCapabilities: Map<string, number> = new Map();
+// Module-private process-wide storage and pruning function
+// 클래스 외부 모듈 비공개 스코프로 은닉되어 export되지 않으며,
+// TypeScript private static의 런타임 노출(리플렉션/as any 접근 및 조작)을 원천 차단한다.
+const CONSUMED_MAX_SIZE = 1000;
+const processWideConsumedCapabilities: Map<string, number> = new Map();
 
+function pruneExpiredConsumedModule(nowMs: number): void {
+  for (const [id, expiresAt] of processWideConsumedCapabilities) {
+    if (expiresAt <= nowMs) {
+      processWideConsumedCapabilities.delete(id);
+    }
+  }
+}
+
+export class OperationalRegimeCapabilityVerifier implements RegimeCapabilityVerifier {
   public verifyAndConsume(
     capability: unknown
   ): CapabilityVerificationResult {
     // 외부 조작 불가능한 신뢰할 수 있는 시스템 시계(wall-clock)를 내부에서 단 1회 직접 조회
     const nowMs = Date.now();
 
-    // 1. 만료된 소비 기록 정리 (신뢰 가능한 현재 시각으로만 내부 private 정리)
-    OperationalRegimeCapabilityVerifier.pruneExpired(nowMs);
+    // 1. 만료된 소비 기록 정리 (신뢰 가능한 현재 시각으로만 모듈 비공개 정리)
+    pruneExpiredConsumedModule(nowMs);
 
     // 2. capability 기본 유효성 검증
     if (!isValidRegimeExperimentCapability(capability, nowMs)) {
@@ -215,36 +225,23 @@ export class OperationalRegimeCapabilityVerifier implements RegimeCapabilityVeri
     const cap = capability as RegimeExperimentCapability;
 
     // 3. 이미 소비된 capability 재사용 거절 (프로세스 전체 범위)
-    if (OperationalRegimeCapabilityVerifier.consumedCapabilities.has(cap.id)) {
+    if (processWideConsumedCapabilities.has(cap.id)) {
       return { success: false, errorCode: 'ALREADY_CONSUMED' };
     }
 
     // 4. 저장소 포화 검사: 만료 정리 후에도 상한에 도달했다면 fail-closed
-    if (OperationalRegimeCapabilityVerifier.consumedCapabilities.size >= OperationalRegimeCapabilityVerifier.CONSUMED_MAX_SIZE) {
+    if (processWideConsumedCapabilities.size >= CONSUMED_MAX_SIZE) {
       return { success: false, errorCode: 'CONSUMED_STORE_SATURATED' };
     }
 
     // 5. 소비 기록 등록 (expiresAt 저장으로 미래 만료 정리 가능)
-    OperationalRegimeCapabilityVerifier.consumedCapabilities.set(cap.id, cap.expiresAt);
+    processWideConsumedCapabilities.set(cap.id, cap.expiresAt);
 
     return { success: true };
   }
 
   public isConsumed(capabilityId: string): boolean {
-    return OperationalRegimeCapabilityVerifier.consumedCapabilities.has(capabilityId);
-  }
-
-  /**
-   * 신뢰 가능한 wall-clock 기준으로 만료된 항목만 정리하는 내부 private 메서드.
-   * 외부(공개 인터페이스 또는 인스턴스 메서드)에서 임의의 미래 시각을 전달하여
-   * process-wide 저장소를 비우는 보안 우회를 원천 차단한다.
-   */
-  private static pruneExpired(nowMs: number): void {
-    for (const [id, expiresAt] of OperationalRegimeCapabilityVerifier.consumedCapabilities) {
-      if (expiresAt <= nowMs) {
-        OperationalRegimeCapabilityVerifier.consumedCapabilities.delete(id);
-      }
-    }
+    return processWideConsumedCapabilities.has(capabilityId);
   }
 }
 

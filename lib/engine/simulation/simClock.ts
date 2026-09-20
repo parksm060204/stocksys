@@ -39,7 +39,7 @@ export class SimPrng {
    */
   public nextGaussian(): number {
     let u1 = this.next();
-    let u2 = this.next();
+    const u2 = this.next();
     // Guard against u1 === 0 which produces -Infinity with Math.log
     while (u1 <= 1e-12) {
       u1 = this.next();

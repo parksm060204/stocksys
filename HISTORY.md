@@ -4676,3 +4676,25 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
   - DB 오류 격리 assertion(`source === 'error'`) 업데이트 및 7대 전수 검증 통과.
 - 전체 빌드 및 검증:
   - `npx tsc --noEmit` (Exit Code 0), `npm run build` (Exit Code 0), `scripts/test-regime-activation-modes.ts` (Exit Code 0).
+
+---
+## 2026-09-20 18:18
+
+**요청 요약:** capability 보안 우회(공개 테스트 발급 경로) 제거 및 전환 확정 전 일회용 capability 조기 소비 결함 수정
+**수행 결과:**
+- `lib/engine/simulation/regime/regimeAuth.ts` & `lib/engine/simulation/regime/index.ts`:
+  - 공개 테스트 발급 함수 `createTestCapabilityForVerifier` 완전 삭제 및 barrel export 제거.
+  - `_createRegimeCapabilityRaw`는 파일 내부 비공개 함수로만 유지하여 운영 심볼 Capability는 오직 `ServerRegimeAuthorizationProvider`의 정상 키 인증 경로로만 발급되도록 차단.
+- `lib/engine/simulation/agentManager.ts`:
+  - `setRegimeEffectsMode` 소비 시점 3대 상태 구분 로직 적용:
+    1. 현재 활성 모드와 같고 pending이 없는 경우: 성공 no-op 반환, capability 미검증·미소비.
+    2. 동일 모드 전환이 이미 pending 대기 중인 경우: 중복 예약 no-op 반환, capability 미소비.
+    3. 실질적인 전환 예약 확정 시에만(신규 모드 전환 또는 pending OFF 취소/덮어쓰기) `EXPERIMENTAL_ON` capability를 검증하고 성공 시 단 1회 소비.
+  - 프로덕션 환경(`NODE_ENV === 'production'`)에서 임의 커스텀 `capabilityVerifier` 주입 시도 차단 및 `OperationalRegimeCapabilityVerifier` 강제 적용.
+- `scripts/test-support/testRegimeAuth.ts`:
+  - 운영 raw factory 및 운영 모듈에 의존하지 않는 독립 테스트 객체(`TEST_CAPABILITY_BRAND`) 및 `TestRegimeCapabilityVerifier` 구축.
+  - 테스트 객체는 운영 검증기(`OperationalRegimeCapabilityVerifier`)에서 항상 거절됨을 보장.
+- `scripts/test-regime-activation-modes.ts` & 테스트 스위트:
+  - 보안 경계 전수 검증(운영 배럴 미노출, 운영 코드 내 test-support 미임포트 정적 검사, 서버 키 미설정/폐기키 거절, 운영 vs 테스트 capability 상호 격리 등).
+  - 소비 시점 전수 검증(신규 예약 1회 소비, 중복 pending no-op 미소비, 활성 no-op 미소비, pending OFF 덮어쓰기 소비, 재사용 거절, 거절 시 미소비 보존, reset 후 재사용 차단, 1,000건 포화 fail-closed).
+  - 전체 테스트 통과: `scripts/test-regime-activation-modes.ts` (Exit Code 0), `test-market-regime-foundation`, `test-market-regime-scenarios`, `test-market-regime-long-run`, `test-agent-based-market`, `test-causal-market-flow`, `test-order-security-and-atomic`, `test-transaction-isolation`, `test-concurrency-and-stale-ref`, `test-order-risk-and-settlement`, `npx tsc --noEmit` (Exit Code 0), `npm run build` (Exit Code 0), `git diff --check` (Exit Code 0).

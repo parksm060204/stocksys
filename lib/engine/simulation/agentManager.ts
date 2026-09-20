@@ -213,8 +213,15 @@ export class AgentManager {
       );
     }
 
-    // Capability 검증기: DI 주입값 우선, 없으면 운영 기본값(OperationalRegimeCapabilityVerifier)
-    this.capabilityVerifier = options?.capabilityVerifier ?? new OperationalRegimeCapabilityVerifier();
+    // Capability 검증기: 프로덕션 환경에서는 임의 verifier 주입을 엄격히 차단 (운영 인증 우회 방지)
+    if (process.env.NODE_ENV === 'production' && options?.capabilityVerifier) {
+      console.warn(
+        '[AgentManager] 보안 경계 경고: 프로덕션 환경에서는 커스텀 capabilityVerifier 주입이 금지됩니다. OperationalRegimeCapabilityVerifier가 강제 적용됩니다.'
+      );
+      this.capabilityVerifier = new OperationalRegimeCapabilityVerifier();
+    } else {
+      this.capabilityVerifier = options?.capabilityVerifier ?? new OperationalRegimeCapabilityVerifier();
+    }
 
     this.clock = new SimulationClock(startEpochMs, 1.0);
     this.prng = new SimPrng(seed);
@@ -237,6 +244,13 @@ export class AgentManager {
    * - 무중단 안전 전환: 즉시 이전 상태의 주문·체결을 롤백하거나 취소하지 않고, 다음 스텝 경계에서 적용
    * - OFF, SHADOW 전환은 안전한 축소 전환이므로 사유 정규화 후 허용
    * - 유효하지 않은 모드 전달 시 명시적 거절
+   *
+   * 모드 상태 3대 구분 정책:
+   * 1. 현재 모드와 요청 모드가 같고 대기 중인 전환이 없는 경우 -> no-op 응답, capability 미검증·미소비
+   * 2. 동일한 모드 전환이 이미 대기 중인 경우 -> 중복 예약 no-op 응답, capability 미소비
+   * 3. 실질적인 전환 예약이 확정되는 경우에만 EXPERIMENTAL_ON capability 검증 및 성공 시 단 1회 소비:
+   *    - (a) 현재 모드와 다른 모드로 전환 (mode !== this._regimeEffectsMode)
+   *    - (b) 현재 모드와 같지만 반대 방향 대기 전환이 존재하는 경우 (pending 취소/덮어쓰기 권한 변경)
    */
   public setRegimeEffectsMode(
     mode: RegimeEffectsMode,
@@ -251,7 +265,22 @@ export class AgentManager {
       ? options.nowMs
       : Date.now();
 
-    // 비인가 전환 차단: EXPERIMENTAL_ON 활성화 시 Capability 검증기(DI) 사용
+    // 1. 현재 모드와 요청 모드가 같고 대기 중인 전환이 없는 경우
+    //    -> 성공적인 no-op 응답을 반환하며, capability를 검증하거나 소비하지 않는다.
+    if (mode === this._regimeEffectsMode && this.pendingEffectsMode === null) {
+      return { success: true, message: `이미 ${mode} 모드입니다.` };
+    }
+
+    // 2. 동일한 모드 전환이 이미 대기 중인 경우
+    //    -> 중복 예약 no-op 응답을 반환하며, capability를 소비하지 않는다.
+    if (this.pendingEffectsMode === mode) {
+      return { success: true, message: `이미 ${mode} 모드로 전환 예약 대기 중입니다.` };
+    }
+
+    // 3. 실질적인 전환 예약이 확정되는 경우:
+    //    - mode !== this._regimeEffectsMode
+    //    - 또는 현재 모드와 요청 모드는 같지만 반대 방향의 전환이 대기 중인 경우 (예: 현재 EXPERIMENTAL_ON, pending이 OFF)
+    //    이 실질적 권한 변경/상승 요청에 대해서만 EXPERIMENTAL_ON capability를 검증하고 성공 시 소비한다.
     if (mode === 'EXPERIMENTAL_ON') {
       const cap = options?.capability;
 
@@ -264,11 +293,6 @@ export class AgentManager {
           message: `비인가 요청: EXPERIMENTAL_ON 모드 전환 거절 (errorCode: ${verifyResult.errorCode ?? 'UNKNOWN'})`,
         };
       }
-      // verifyAndConsume 성공 시 이미 capability가 소비됨 → 별도 consumedCapabilityIds 관리 불필요
-    }
-
-    if (mode === this._regimeEffectsMode && this.pendingEffectsMode === null) {
-      return { success: true, message: `이미 ${mode} 모드입니다.` };
     }
 
     // 즉시 주문/체결을 롤백하거나 강제 취소하지 않고, 다음 스텝 경계에서 안전하게 적용되도록 예약

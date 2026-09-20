@@ -309,21 +309,3 @@ export class ServerRegimeAuthorizationProvider implements RegimeAuthorizationPro
     };
   }
 }
-
-/**
- * 테스트 전용 Capability 검증기 팩토리 (테스트 코드에서 DI용).
- *
- * 이 함수는 scripts/test-support에서 호출되어 TestRegimeCapabilityVerifier를 생성한다.
- * 운영 raw factory에 접근하지 않고, 서버 provider를 통해 capability를 발급받아 사용한다.
- *
- * @internal 테스트 코드만 사용. 프로덕션 배포에 포함되어서는 안 됨.
- */
-export function createTestCapabilityForVerifier(
-  nowMs: number = Date.now(),
-  ttlMs: number = MAX_CAPABILITY_TTL_MS
-): RegimeExperimentCapability {
-  // 테스트에서도 운영 raw factory를 직접 호출하지 않도록,
-  // 동일 모듈 내부에서만 접근 가능한 _createRegimeCapabilityRaw를 통해 발급.
-  // 이 함수 자체는 export되지만, raw factory는 여전히 비공개(함수 선언 변경 없음)로 유지.
-  return _createRegimeCapabilityRaw('test_verifier_issued', ttlMs, nowMs);
-}

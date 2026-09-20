@@ -37,7 +37,7 @@ import {
 } from '../lib/engine/simulation/agentTypes';
 import { AgentManager } from '../lib/engine/simulation/agentManager';
 import { memoryDb, OrderRecord, TradeRecord } from '../lib/memoryDb/memoryStore';
-import { createTestRegimeCapability } from './test-support/testRegimeAuth';
+import { createTestRegimeCapability, TestRegimeCapabilityVerifier } from './test-support/testRegimeAuth';
 import { SimPrng } from '../lib/engine/simulation/simClock';
 
 const startMs = 1773500000000;
@@ -332,6 +332,7 @@ async function runIntegration(
   memoryDb.resetToSeedData();
   const mgr = new AgentManager(seed, startMs, {
     enableRegimeEngine: enableEngine,
+    capabilityVerifier: new TestRegimeCapabilityVerifier(),
     regimeEngineConfig: {
       thresholds: {
         ...DEFAULT_REGIME_THRESHOLDS,

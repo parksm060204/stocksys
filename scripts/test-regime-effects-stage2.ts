@@ -37,8 +37,8 @@ import {
 } from '../lib/engine/simulation/agentTypes';
 import { AgentManager } from '../lib/engine/simulation/agentManager';
 import { memoryDb, OrderRecord, TradeRecord } from '../lib/memoryDb/memoryStore';
+import { createTestRegimeCapability } from './test-support/testRegimeAuth';
 import { SimPrng } from '../lib/engine/simulation/simClock';
-import { createTestRegimeCapability } from '../lib/engine/simulation/regime/regimeAuth';
 
 const startMs = 1773500000000;
 

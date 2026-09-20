@@ -265,6 +265,7 @@ export interface RegimeModeChangeRecord {
   readonly toMode: RegimeEffectsMode;
   readonly appliedAtStepId: number;
   readonly reason: string;
+  readonly eventType?: 'MODE_CHANGE' | 'RESET_FAIL_SAFE' | 'RESET';
 }
 
 export interface ShadowDiagnosticsStepRecord {
@@ -290,7 +291,9 @@ export interface ShadowDiagnosticsStepRecord {
   readonly directionChangedCount: number;
   readonly sizeChangedCount: number;
   readonly expectedDeferrals: number;
-  readonly shadowCalculationStatus: 'OK' | 'DEGRADED' | 'SKIPPED' | 'COMPLETED';
+  readonly shadowCalculationStatus: 'COMPLETED' | 'SKIPPED' | 'DEGRADED' | 'ERROR' | 'OK';
+  readonly errorCode?: string | null;
+  readonly failureCount?: number;
 }
 
 export interface InvariantViolationRecord {

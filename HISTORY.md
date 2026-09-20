@@ -4625,3 +4625,32 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 - `scripts/test-regime-activation-modes.ts`:
   - 1단계(보안/reset), 2단계(SHADOW 무영향성/재현성/불변식 진단), 3단계(티커 상세 페이지 조회) 결정론적 종합 검증 스위트 확장 및 전체 통과.
 
+---
+## 2026-09-20 14:15
+
+**요청 요약:** 시장 국면 운용 모드의 남은 7대 정합성 결함 수정 (Capability 보안 경계 강화, 테스트 발급기 운영 분리, 동일 스냅샷 기반 SHADOW 및 불변식 검사 강화, reset 감사 이력 보존, 정규 가격 이력 조회 서비스 추출 및 채권 fallback 결정론 확보).
+
+**수행 결과:**
+- `lib/engine/simulation/regime/regimeAuth.ts`:
+  - Capability 검증 함수 `isValidRegimeExperimentCapability` 강화: 기준 시각 `nowMs` 주입 지원, 안전 정수 검사(`Number.isSafeInteger`), 허용 시계 오차(5초) 검사, 만료 검사, 논리적 순서 검사, 최대 TTL(5분) 검사, 브랜드 심볼 무결성 검증 적용.
+  - 운영 barrel(`regime/index.ts`)에서 테스트 발급기(`TestRegimeAuthorizationProvider`, `createTestRegimeCapability`) 및 미사용 관리자 세션 필드 제거.
+- `scripts/test-support/testRegimeAuth.ts` (신규):
+  - 테스트 전용 발급기를 분리하여 프로덕션 런타임 코드와의 구조적 격리 달성.
+- `lib/engine/simulation/agentManager.ts`:
+  - 단회용 Capability 소비 추적(`consumedCapabilityIds`) 구현: 전환 예약 성공 시 capability 소비 처리, 중복 재사용 거절, TTL/크기 제한(1,000건) 관리, reset 후에도 소비 이력 보존.
+  - `reset()` 시 감사 이력 보존: 기존 이력을 덮어쓰지 않고 `push` 및 bounded buffer(100건) 유지, `RESET_FAIL_SAFE` 및 `RESET` 이벤트 타입 구분.
+  - 동일 스냅샷 기반 SHADOW 실행 순서 재설계: 실제 주문 제출 전에 동일한 사전 관측 스냅샷(`obs`)을 생성하여 실제 OFF 판단과 가상 국면 효과 판단을 먼저 산출하고, 두 계산 완료 후에만 실제 주문 제출/체결을 실행하도록 격리.
+  - SHADOW 진단 상태 세분화: `COMPLETED`, `SKIPPED`, `DEGRADED`, `ERROR` 상태 코드 및 실패 건수/오류 코드 추적.
+  - 런타임 불변식 검사(`checkRuntimeInvariants`) 대폭 강화: `reservedCash <= cash`, `reservedSellQty <= holding.quantity`, 종료 주문 상태 일관성(`filled`, `cancelled`, `expired`), 체결 가격/수량 양수 검증 및 4대 보조 인덱스(`orderStockIndex`, `orderUserIndex`, `tradeStockIndex`, `holdingUserIndex`)에 대한 원본 레코드 존재 여부 및 양방향 zombie/누락 전수 검증 추가.
+  - 진단 getter(`getRegimeModeDiagnostics`, `getShadowDiagnosticsHistory`) 방어적 복사(deep clone/freeze) 적용으로 내부 참조 누출 방지.
+- `lib/services/priceHistoryService.ts` (신규):
+  - `fetchCanonicalPriceHistory`: 정규 `stock.id` 우선 조회, canonical 결과 존재 시 ticker fallback 미호출, 결과 부재 시에만 ticker fallback 수행, DB 에러 격리, 주식/채권 kind 분리.
+  - `createDeterministicBondHistory`: `Date.now()` 제거, 시뮬레이션 시각 -> `stock.updated_at` -> `stock.created_at` -> 고정 fallback epoch 우선순위를 따르는 순수 결정론적 채권 fallback 이력 생성기 구현.
+- `app/stocks/[id]/page.tsx`:
+  - 인라인 가격 조회 쿼리 및 `Date.now()` 비결정적 채권 mock을 `fetchCanonicalPriceHistory` 및 `createDeterministicBondHistory`로 대체.
+- 검증 및 회귀 테스트:
+  - `scripts/test-regime-activation-modes.ts` 7대 항목 전수 검증 확장 및 통과 (Exit Code 0).
+  - 12대 필수 회귀 스위트 전체 통과 (`test-market-regime-long-run`, `test-market-regime-scenarios`, `test-market-regime-foundation`, `test-stage2-review-fixes`, `test-stage2-review-fixes-v2`, `test-comparison-827dd60`, `test-agent-based-market`, `test-causal-market-flow`, `test-concurrency-and-stale-ref`, `test-order-security-and-atomic`, `test-transaction-isolation`, `test-order-risk-and-settlement`).
+  - `npx tsc --noEmit` (Exit Code 0), `npm run build` (Exit Code 0), `git diff --check` (Exit Code 0).
+
+

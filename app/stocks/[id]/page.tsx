@@ -5,6 +5,7 @@ import RealtimePriceHeader from "@/app/components/RealtimePriceHeader";
 import { createClient } from "@/lib/db/server";
 import { sanitizePublicNewsRecord } from "@/lib/engine/simulation/marketEventTypes";
 import type { Stock } from "@/lib/types";
+import { fetchCanonicalPriceHistory, createDeterministicBondHistory } from "@/lib/services/priceHistoryService";
 import StockDetailClient from "./StockDetailClient";
 
 export const revalidate = 0;
@@ -151,38 +152,25 @@ export default async function StockDetail({
   }
 
   // Fetch price history records (정규 stock.id 우선 조회 및 티커 fallback 지원)
-  let priceHistory: any[] = [];
-  try {
-    let { data: priceHistoryData } = await supabase
-      .from('stock_price_history')
-      .select('*')
-      .eq('stock_id', stock.id)
-      .order('created_at', { ascending: false })
-      .limit(50);
+  const historyRes = await fetchCanonicalPriceHistory({
+    db: supabase,
+    assetId: stock.id,
+    ticker: stock.ticker,
+    assetKind: stock.market === 'bonds' ? 'bond' : 'stock',
+    limit: 50,
+  });
+  let priceHistory: any[] = historyRes.data;
 
-    if ((!priceHistoryData || priceHistoryData.length === 0) && stock.ticker && stock.ticker !== stock.id) {
-      const { data: fallbackData } = await supabase
-        .from('stock_price_history')
-        .select('*')
-        .eq('stock_id', stock.ticker)
-        .order('created_at', { ascending: false })
-        .limit(50);
-      if (fallbackData && fallbackData.length > 0) {
-        priceHistoryData = fallbackData;
-      }
-    }
-    priceHistory = priceHistoryData || [];
-  } catch (e) {
-    console.warn("Failed to fetch price history:", e);
-  }
-
-
-  // 채권 자산의 경우 priceHistory가 비어있으면 초기 포인트 제공
+  // 채권 자산의 경우 priceHistory가 비어있으면 결정론적 초기 포인트 제공
   if (stock.market === 'bonds' && priceHistory.length === 0) {
-    priceHistory = [
-      { id: 'bh_1', stock_id: stock.id, price: stock.currentPrice, volume: stock.volume, created_at: new Date().toISOString() },
-      { id: 'bh_2', stock_id: stock.id, price: stock.previousClose, volume: Math.floor(stock.volume * 0.9), created_at: new Date(Date.now() - 60000).toISOString() },
-    ];
+    priceHistory = createDeterministicBondHistory({
+      id: stock.id,
+      currentPrice: stock.currentPrice,
+      previousClose: stock.previousClose,
+      volume: stock.volume,
+      updated_at: (row as any).updated_at,
+      created_at: (row as any).created_at,
+    });
   }
 
   const messages: any[] = [];

@@ -21,9 +21,14 @@ export default function BondDetailPanel({ stock }: { stock: Stock }) {
   // 주기적 가격 폴링 (YTM 동기화)
   useEffect(() => {
     const fetchLatestPrice = async () => {
-      const { data } = await supabase.from('stocks').select('current_price').eq('id', stock.id).single();
-      if (data?.current_price) {
-        setCurrentPrice(data.current_price);
+      try {
+        const table = stock.market === 'bonds' ? 'bonds' : 'stocks';
+        const { data } = await supabase.from(table).select('current_price').eq('id', stock.id).maybeSingle();
+        if (data?.current_price) {
+          setCurrentPrice(Number(data.current_price));
+        }
+      } catch (e) {
+        console.warn("Failed to poll bond price:", e);
       }
     };
 
@@ -32,7 +37,7 @@ export default function BondDetailPanel({ stock }: { stock: Stock }) {
     return () => {
       clearInterval(interval);
     };
-  }, [stock.id, supabase]);
+  }, [stock.id, stock.market, supabase]);
 
   if (!bm) return null;
 

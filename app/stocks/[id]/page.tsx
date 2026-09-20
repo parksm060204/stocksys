@@ -13,15 +13,15 @@ export const revalidate = 0;
 const REAL_IPO_DATES: Record<string, string> = {
   // 한국
   "005930": "1975-06-11", // 삼성전자
-  "000660": "1996-12-26", // SK하이닙스
+  "000660": "1996-12-26", // SK하이닉스
   "035420": "2008-11-28", // NAVER
-  "005380": "1994-11-16", // 현대자
-  "000270": "2000-12-29", // 기아자
+  "005380": "1994-11-16", // 현대차
+  "000270": "2000-12-29", // 기아
   "035720": "2010-11-11", // 카카오
   "051910": "2003-02-03", // LG화학
   "006400": "1994-08-08", // 삼성SDI
   "068270": "2015-12-15", // 셀트리온
-  "207940": "2021-01-22", // 삼성바이오로직
+  "207940": "2021-01-22", // 삼성바이오로직스
   // 미국
   AAPL: "1980-12-12",
   MSFT: "1986-03-13",
@@ -65,6 +65,50 @@ export default async function StockDetail({
     const { data: rowByTicker } = await supabase.from('stocks').select('*').eq('ticker', id).maybeSingle();
     row = rowByTicker;
   }
+
+  let bondMeta: any = undefined;
+
+  // stocks 테이블에 없는 경우 채권(bonds) 테이블에서 조회
+  if (!row) {
+    let { data: bondRow } = await supabase.from('bonds').select('*').eq('id', id).maybeSingle();
+    if (!bondRow) {
+      const { data: bondByTicker } = await supabase.from('bonds').select('*').eq('ticker', id).maybeSingle();
+      bondRow = bondByTicker;
+    }
+    if (bondRow) {
+      const curPrice = Number(bondRow.current_price) || 100;
+      const prevClose = Number(bondRow.previous_close) || curPrice;
+      row = {
+        id: bondRow.id || bondRow.ticker,
+        name: bondRow.name,
+        ticker: bondRow.ticker,
+        market: 'bonds',
+        sector: bondRow.bond_type === 'govt' ? '국채' : bondRow.bond_type === 'corp_ig' ? '우량회사채' : '투기회사채',
+        current_price: curPrice,
+        previous_close: prevClose,
+        description: `${bondRow.name} (${bondRow.ticker}) - 잔존만기 ${bondRow.maturity || '2Y'}, 표면금리 ${bondRow.coupon_rate || 3.25}%, 액면가 ${bondRow.face_value || 10000}원, 듀레이션 ${bondRow.duration || 1.9}년 채권 자산입니다.`,
+        market_cap: (bondRow.face_value || 10000) * (bondRow.volume || 10000),
+        open_price: prevClose,
+        high: Math.max(curPrice, prevClose),
+        low: Math.min(curPrice, prevClose),
+        volume: Number(bondRow.volume) || 15000,
+        relevance_weight: 1,
+        target_price: curPrice,
+        is_core: true,
+        listed_at: '2020-01-01',
+      };
+      bondMeta = {
+        faceValue: 100, // 100원 기준 계산
+        couponRate: bondRow.coupon_rate || 3.25,
+        maturityYears: bondRow.maturity ? parseInt(bondRow.maturity) || 2 : 2,
+        currentYtm: bondRow.ytm || 3.35,
+        riskCategory: bondRow.bond_type === 'govt' ? 'sovereign' : bondRow.bond_type === 'corp_ig' ? 'corporate_ig' : 'high_yield',
+        countryCode: bondRow.ticker?.startsWith('US') ? 'US' : 'KR',
+        issuerName: bondRow.name,
+      };
+    }
+  }
+
   if (!row) notFound();
 
   const stock: Stock = {
@@ -86,13 +130,12 @@ export default async function StockDetail({
     isCore: row.is_core || false,
     listedAt: formatListedAt(row.ticker, row.listed_at),
     financials: row.financials || null,
+    bondMeta: bondMeta || (row as any).bondMeta,
   };
 
   const isUSD = stock.market === "overseas" || stock.market === "europe" || stock.market === "commodities";
   const tradingValueStr = isUSD ? `$${fmtCap(stock.currentPrice * stock.volume)}` : `₩${fmtCap(stock.currentPrice * stock.volume)}`;
 
-
-  
   // Fetch news related to this stock or its sector
   let relatedNews: any[] = [];
   try {
@@ -121,13 +164,21 @@ export default async function StockDetail({
     console.warn("Failed to fetch price history:", e);
   }
 
-  // For now, chat messages are empty or we can fetch them if there's a chat table
+  // 채권 자산의 경우 priceHistory가 비어있으면 초기 포인트 제공
+  if (stock.market === 'bonds' && priceHistory.length === 0) {
+    priceHistory = [
+      { id: 'bh_1', stock_id: stock.id, price: stock.currentPrice, volume: stock.volume, created_at: new Date().toISOString() },
+      { id: 'bh_2', stock_id: stock.id, price: stock.previousClose, volume: Math.floor(stock.volume * 0.9), created_at: new Date(Date.now() - 60000).toISOString() },
+    ];
+  }
+
   const messages: any[] = [];
 
   const marketMap: Record<string, { href: string; label: string }> = {
     domestic: { href: "/stocks?tab=kospi", label: "국내주식" },
     overseas: { href: "/stocks?tab=sp50", label: "미국주식" },
     europe: { href: "/stocks?tab=eurostoxx50", label: "유럽주식" },
+    bonds: { href: "/markets/bonds", label: "채권" },
   };
   const marketLink = marketMap[stock.market] || { href: `/markets/${stock.market}`, label: stock.market };
 

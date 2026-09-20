@@ -4559,3 +4559,46 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
   - 사이드바 전체 배경은 고정 유지되고, 오직 각 `NavItem` 및 관리자 버튼 영역에 마우스를 올릴 때만 해당 버튼 단위로 부드럽고 세련되게 하이라이트(`hover:bg-hover hover:text-tx`)가 한정 적용되도록 정돈.
 - 검증:
   - `npx tsc --noEmit` (Exit Code 0)
+
+---
+## 2026-09-20 12:32
+
+**요청 요약:** 국고채(채권) 상세 화면 접근 시 404 Not Found 에러가 반환되는 원인 분석 및 해결.
+
+**수행 결과:**
+- 원인 분석:
+  - 채권 시장 목록(`/markets/bonds`)에서 국고채 종목 클릭 시 `/stocks/[id]` 경로로 이동하나, `app/stocks/[id]/page.tsx`가 `stocks` 테이블만 단독 조회하고 있어 채권 데이터(`bonds` 테이블)를 찾지 못하고 `notFound()`(404)를 반환함.
+- 수정 사항:
+  - `app/stocks/[id]/page.tsx`:
+    - `stocks` 테이블에 없는 종목 ID/티커 요청 시 `bonds` 테이블을 폴백 조회하도록 보완.
+    - 국고채 등 채권 레코드 조회 시 만기, 표면금리, YTM, 듀레이션, 액면가 등 채권 메타데이터(`bondMeta`)를 구성하여 `Stock` 규격으로 완벽 매핑.
+    - 상단 네비게이션 빵가루에 `bonds`(`/markets/bonds`, '채권') 링크 지원.
+    - 채권 가격 히스토리가 비어있는 경우 기본 차트 렌더링 포인트 제공.
+  - `app/components/BondDetailPanel.tsx`:
+    - 채권 자산의 실시간 가격 폴링 시 `stocks` 대신 `bonds` 테이블을 안전하게(`.maybeSingle()`) 조회하도록 개선.
+- 검증:
+  - `npx tsc --noEmit` (Exit Code 0)
+  - `npm run build` (Next.js 16.2.9 production build Exit Code 0)
+
+---
+## 2026-09-20 12:44
+
+**요청 요약:** ETF 카드 및 관련 위젯의 시각적 색 밸런스 부조화, 어두운 캡슐 대비 저하, iNAV 붉은색 오표시 및 통화 기호(`₩`) 글꼴 겹침 결함 수정.
+
+**수행 결과:**
+- `app/components/ETFItemCard.tsx`:
+  - 카드 전체 배경과 테두리를 하드코딩된 다크 스타일(`bg-[#0E1117]`, `bg-[#161B22]`)에서 테마 연동 변수(`bg-panel`, `border-border`, `hover:bg-hover`, `text-tx`)로 일원화.
+  - '주요 비중:' 캡슐의 시커먼 어두운 배경(`bg-[#05070A]/60`)을 부드러운 `bg-panel2 border-border`로 변경하고 텍스트 색상을 `text-dim font-bold` 및 `text-tx`로 조정하여 라이트/다크 모드 전반의 가독성과 색 밸런스 개선.
+  - 하락 종목임에도 붉은색(`text-up`)으로 강조되던 '실시간 iNAV' 가격 색상을 시장가와 동일한 본문색(`text-tx`)으로 정상화.
+  - '현재 시장가'와 '실시간 iNAV'에서 통화 기호(`₩` / `$`)와 숫자가 겹쳐 뭉개지던 글리프 렌더링 결함을 물리적 분리 렌더링(`<span className="text-xs font-normal text-muted mr-1">{currencySymbol}</span>`)을 통해 해결.
+  - 괴리율 뱃지에서 ±0.05% 미만의 미세 차이는 중립 스타일(`bg-panel2 text-muted border-border`)로 표현하여 불필요한 시각적 경고 완화.
+- `app/components/ETFMonitorWidget.tsx`:
+  - iNAV 상세 모니터 패널 및 분해 모달의 하드코딩 색상을 테마 변수(`bg-panel`, `bg-panel2`, `divide-border`, `text-tx`, `text-muted`)로 통합.
+- `app/components/ETFStructureCard.tsx`:
+  - 상품 개요 및 PDF(구성종목) 테이블의 배경, 테두리, 구분선을 `bg-panel`, `bg-panel2`, `divide-border`, `text-tx`로 동기화.
+- `app/components/ETFUserUnderlyingHoldings.tsx`:
+  - 보유 ETF의 실물 담보 주식 카드 그리드를 테마 규격(`bg-panel`, `bg-panel2`, `text-tx`)으로 조화롭게 정돈.
+- 검증:
+  - `npx tsc --noEmit` (Exit Code 0)
+  - `npm run build` (Next.js 16.2.9 production build Exit Code 0)
+

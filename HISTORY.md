@@ -4790,3 +4790,35 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
   - `npx tsc --noEmit`: (Exit Code 0)
   - `npm run lint`: 0 errors (Exit Code 0)
   - `npx tsx scripts/test-regime-activation-modes.ts`: (Exit Code 0)
+
+---
+## 2026-09-20 22:25
+
+**요청 요약:** STOCKSYS 봇 의사결정 로직 개선 — 주식·옵션·채권·원자재 시장을 공통 거시경제 환경(MacroState)과 시장 미시구조를 통해 연결하여 판단하는 다층 의사결정 파이프라인(경제 충격 → 공통 거시 상태 → 국면별 전달 경로 → 자산별 펀더멘털/미시 상태 → 교차자산 신호/위험 평가 → 에이전트 이질성 해석 → 목표 포트폴리오/위험 한도 제약 → Fail-Closed 주문 및 순수 읽기 진단) 설계 및 구현.
+
+**수행 결과:**
+- `lib/engine/simulation/macro/` (신규):
+  - `macroTypes.ts`: `MacroState`, `MacroFactor`, `EconomicShock`, `MacroStateParameters`, `ObservableMacroState` 도메인 타입 정의.
+  - `macroState.ts`: 순수 수학적 평균회귀(Ornstein-Uhlenbeck) 및 지수 반감기 감쇠 전진 함수(`advanceMacroState`), 시장 이벤트의 `EconomicShock` 결정론적 변환기(`convertEventToEconomicShock`), 봇 주관적 관측치 생성기(`createObservableMacroState`) 구현.
+  - `index.ts`: 매크로 배럴 파일.
+- `lib/engine/simulation/crossAsset/` (신규):
+  - `crossAssetTypes.ts`: `CrossAssetSignal`, `SignalDriver`, `AgentMacroProfile`, `TargetExposure`, `PortfolioAllocationResult` 등 정의.
+  - `transmissionEngine.ts`: 금리 변동 원인별(성장주도/인플레/긴축/신용위험) 분기 전파, 주식 섹터별(기술/금융/에너지/제조), 채권(만기/듀레이션/신용), 원자재(유가/금/구리), 옵션(델타/베가/IV 스프레드/꼬리위험 풋) 전달 분석 순수 모듈.
+  - `crossAssetSignalEngine.ts`: 표준화된 교차자산 신호 일괄 산출 순수 모듈(`computeCrossAssetSignals`, `computeSingleAssetSignal`).
+  - `portfolioEngine.ts`: 공통 요인 노출(금리, 성장, 원자재 Beta) 한도 캡핑, 단일 자산/섹터 집중도 한도, 최소 현금 버퍼 제약, 자산별 거래 엔진 지원 판정(`checkAssetExecutionSupport`), 미지원 자산군(채권, 원자재, 옵션) 안전 보류(`EXECUTION_NOT_SUPPORTED_FOR_*`) 및 주식 재밸런싱 주문 변환기(`convertAllocationsToOrderIntents`), 기본 거시 프로필 생성기(`createDefaultMacroProfile`).
+  - `crossAssetDiagnostics.ts`: 거시 버전, 국면, 자산별 신호, 목표 배분, 요인 노출, 보류 사유를 사후 추적 가능한 `CrossAssetDiagnosticsManager` (순수 읽기, 방어적 복사, PRNG 부수효과 0, 링버퍼 메모리 제한).
+  - `index.ts`: 교차자산 배럴 파일.
+- `lib/engine/simulation/agentTypes.ts`:
+  - `AgentAccount`에 `macroProfile?: AgentMacroProfile` 선택적 속성 추가.
+- `lib/engine/simulation/strategies/valueStrategy.ts` & `trendStrategy.ts`:
+  - `evaluateValueStrategy` 및 `evaluateTrendStrategy`에 선택적 `crossAssetSignal?: CrossAssetSignal` 매개변수 지원. 전달 시 거시 기대수익/방향성을 결합하고, 미전달 시 기존 동작과 PRNG 소비 시퀀스를 100% 동일하게 보존.
+- `lib/engine/simulation/agentManager.ts`:
+  - `enableCrossAssetEngine` (기본 false), `crossAssetMode` ('OFF' | 'SHADOW' | 'EXPERIMENTAL_ON'), `macroState`, `crossAssetDiagnostics` 통합.
+  - `step(dt)` 내부에서 발효된 이벤트로 거시 상태를 전진시키고, 4대 자산 스냅샷 기반 교차자산 신호 및 포트폴리오 목표 배분을 순수 계산하여 진단 기록.
+  - SHADOW 모드에서 기존 실제 장부/체결/PRNG 지문을 100% 비트 단위로 보존하면서 신규 교차자산 진단을 병렬 기록.
+  - `reset()` 시 거시 상태, 진단 이력, 모드를 안전하게 초기화.
+- 검증 완료:
+  - `scripts/test-cross-asset-foundation.ts`: 거시 상태 결정론, 평균회귀, 이벤트 충격 변환, 10대 경제 시나리오 차별화 전달 100% 통과 (Exit Code 0).
+  - `scripts/test-cross-asset-full-suite.ts`: 결정론, 진단 조회 PRNG 불변, 미발효 이벤트 정보 경계 차단, 요인 노출 캡핑, 단일 자산/섹터 한도, 미지원 자산 fail-closed, SHADOW 무간섭 지문 일치, reset 복원 100% 통과 (Exit Code 0).
+  - 기존 회귀 검증: `test-market-regime-foundation.ts` (33개 테스트 전수 통과), `test-regime-activation-modes.ts` (7대 결함 보완 스위트 100% 통과).
+  - 빌드 및 린트: `npx tsc --noEmit` (0 errors), `npm run lint` (0 errors), `npm run build` (Next.js 16.3.5 Turbopack 빌드 성공), `git diff --check` (클린).

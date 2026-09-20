@@ -3,6 +3,7 @@
  */
 
 import { OrderRecord } from '../../memoryDb/memoryStore';
+import type { AgentMacroProfile } from './crossAsset/crossAssetTypes';
 
 export type ParticipantType = 'human' | 'bot' | 'lp';
 export type StrategyType = 'value' | 'trend' | 'market_maker';
@@ -31,6 +32,7 @@ export interface AgentAccount {
   infoLatency?: number;       // Information observation latency in simulation seconds (e.g. 2.0s)
   evaluationsPerStep?: number; // Max number of candidate stocks to evaluate when activated (e.g. 2~3)
   sectorPreferences?: Record<string, number>; // Sector preference weight multipliers (e.g. { semiconductor: 1.2 })
+  macroProfile?: AgentMacroProfile;           // Cross-asset macro & factor exposure profile
   nextDecisionTime: number;   // Simulation time for next action check
   stats: AgentStats;
 }

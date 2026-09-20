@@ -18,12 +18,14 @@ import {
   applyUncertaintyMultiplier,
   clamp01,
 } from '../regime/regimeEffects';
+import type { CrossAssetSignal } from '../crossAsset/crossAssetTypes';
 
 export function evaluateTrendStrategy(
   obs: MarketObservation,
   agent: AgentAccount,
   config: TrendStrategyConfig,
-  effectParams?: BotEffectParams
+  effectParams?: BotEffectParams,
+  crossAssetSignal?: CrossAssetSignal
 ): AgentOrderIntent {
   const effects = effectParams ?? NEUTRAL_BOT_EFFECT_PARAMS;
   const trendSensitivity = effects.trendSensitivity;
@@ -76,7 +78,11 @@ export function evaluateTrendStrategy(
   }
 
   // Combined momentum: 70% price return + 30% signed taker order flow
-  const rawSignal = 0.70 * Math.tanh(rollingReturn / config.trendScale) + 0.30 * flowSignal;
+  let rawSignal = 0.70 * Math.tanh(rollingReturn / config.trendScale) + 0.30 * flowSignal;
+  if (crossAssetSignal) {
+    const macroDir = crossAssetSignal.direction * crossAssetSignal.confidence;
+    rawSignal = rawSignal * 0.75 + macroDir * 0.25;
+  }
   // 국면 trendSensitivity: 추세 신호 반응 강도 (원본 가격/체결 데이터는 변경하지 않음)
   const normTrend = Math.tanh(rawSignal * trendSensitivity);
 

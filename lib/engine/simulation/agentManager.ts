@@ -70,6 +70,33 @@ import type {
   LpEffectParams,
 } from './regime';
 
+import {
+  MacroState,
+  DEFAULT_MACRO_STATE,
+  advanceMacroState,
+  convertEventToEconomicShock,
+  createObservableMacroState,
+  EconomicShock,
+} from './macro';
+import {
+  AssetMicroSnapshot,
+  computeCrossAssetSignals,
+} from './crossAsset/crossAssetSignalEngine';
+import {
+  CrossAssetSignal,
+  AgentMacroProfile,
+} from './crossAsset/crossAssetTypes';
+import {
+  computePortfolioAllocation,
+  convertAllocationsToOrderIntents,
+  createDefaultMacroProfile,
+  CurrentHoldingSnapshot,
+} from './crossAsset/portfolioEngine';
+import {
+  CrossAssetDiagnosticsManager,
+  CrossAssetStepSnapshot,
+} from './crossAsset/crossAssetDiagnostics';
+
 export interface AgentManagerOptions {
   enableRegimeEngine?: boolean;
   /** 국면 효과 모드 ('OFF' | 'SHADOW' 허용. 'EXPERIMENTAL_ON'은 생성자 직접 활성화 금지). 기본값 'OFF'. */
@@ -77,6 +104,12 @@ export interface AgentManagerOptions {
   /** @deprecated 생성자 직접 활성화는 금지되며 무시됩니다. 기본값 'OFF'. */
   enableRegimeEffects?: boolean;
   regimeEngineConfig?: Partial<MarketStateEngineConfig>;
+  /** 교차자산 거시 의사결정 엔진 활성화 여부 (기본값 false). */
+  enableCrossAssetEngine?: boolean;
+  /** 교차자산 실행 모드 ('OFF' | 'SHADOW' | 'EXPERIMENTAL_ON'). 기본값 'OFF'. */
+  crossAssetMode?: 'OFF' | 'SHADOW' | 'EXPERIMENTAL_ON';
+  /** 초기 거시 경제 상태 덮어쓰기 (테스트 및 시나리오 주입용) */
+  initialMacroState?: Partial<MacroState>;
 }
 
 export class AgentManager {
@@ -173,6 +206,31 @@ export class AgentManager {
     return this._regimeEffectsMode === 'EXPERIMENTAL_ON';
   }
 
+  // ── Cross-Asset Macroeconomic Decision Engine State ──
+  public readonly enableCrossAssetEngine: boolean;
+  private _crossAssetMode: 'OFF' | 'SHADOW' | 'EXPERIMENTAL_ON' = 'OFF';
+  public macroState: MacroState;
+  public crossAssetDiagnostics: CrossAssetDiagnosticsManager = new CrossAssetDiagnosticsManager();
+
+  /** 현재 활성 중인 교차자산 거시 모드 ('OFF' | 'SHADOW' | 'EXPERIMENTAL_ON') */
+  public get crossAssetMode(): 'OFF' | 'SHADOW' | 'EXPERIMENTAL_ON' {
+    return this._crossAssetMode;
+  }
+
+  public setCrossAssetMode(mode: 'OFF' | 'SHADOW' | 'EXPERIMENTAL_ON'): void {
+    this._crossAssetMode = mode;
+  }
+
+  /** 최신 교차자산 의사결정 진단 스냅샷 조회 (순수 읽기, PRNG 부수효과 없음) */
+  public getCrossAssetLatestSnapshot(agentId?: string): CrossAssetStepSnapshot | undefined {
+    return this.crossAssetDiagnostics.getLatestSnapshot(agentId);
+  }
+
+  /** 교차자산 진단 이력 조회 (순수 읽기, PRNG 부수효과 없음) */
+  public getCrossAssetDiagnosticsHistory(agentId?: string, limit: number = 50): readonly CrossAssetStepSnapshot[] {
+    return this.crossAssetDiagnostics.getHistory(agentId, limit);
+  }
+
   // ── 실제 국면 관측 통계 추적 상태 ──
   private previousTotalTurnover: number | null = null;
   private previousTotalDepth: number | null = null;
@@ -211,6 +269,19 @@ export class AgentManager {
 
     // Capability 검증기: 항상 단일화된 운영 검증기(Process-wide singleton 저장소 공유)를 직접 사용
     this.capabilityVerifier = new OperationalRegimeCapabilityVerifier();
+
+    // Cross-Asset Engine 초기화
+    this.enableCrossAssetEngine =
+      options?.enableCrossAssetEngine ??
+      (options?.crossAssetMode !== undefined && options?.crossAssetMode !== 'OFF');
+    this._crossAssetMode =
+      options?.crossAssetMode ?? (this.enableCrossAssetEngine ? 'EXPERIMENTAL_ON' : 'OFF');
+    this.macroState = {
+      ...DEFAULT_MACRO_STATE,
+      ...(options?.initialMacroState ?? {}),
+      timestamp: startEpochMs,
+      version: 1,
+    };
 
     this.clock = new SimulationClock(startEpochMs, 1.0);
     this.prng = new SimPrng(seed);
@@ -761,6 +832,176 @@ export class AgentManager {
     this.processDuePublications(simTime);
     this.processDueEffects(simTime);
 
+    // ── 교차자산 거시 의사결정 파이프라인 (Cross-Asset Macroeconomic Decision Pipeline) ──
+    const crossAssetSignalsMap = new Map<string, CrossAssetSignal>();
+    if (this._crossAssetMode !== 'OFF') {
+      // 1. 유효 발효된 시장 이벤트 수집 및 경제 충격 변환 (정보 경계 보장)
+      const shocks: EconomicShock[] = [];
+      for (const evt of this.publishedEvents) {
+        if (evt.publishedAt <= simTime && (evt.effectiveFrom ?? evt.publishedAt) <= simTime) {
+          const shock = convertEventToEconomicShock(evt);
+          if (shock) shocks.push(shock);
+        }
+      }
+
+      // 2. 공통 거시 상태 결정론적 전진 (충격 지수감쇠 + 평균회귀 순수 계산)
+      this.macroState = advanceMacroState(this.macroState, shocks, dt, simTime);
+
+      // 3. 자산군별 미시 스냅샷 수집
+      const assetSnapshots: AssetMicroSnapshot[] = [];
+      const assetMetadataMap = new Map<string, { sectorId?: string; tickSize?: number; minOrderSize?: number }>();
+      const currentPriceMap = new Map<string, number>();
+
+      for (const stock of memoryDb.stocks.values()) {
+        const f = this.fundamentals.get(stock.id) || stock.current_price;
+        const vGap = stock.current_price > 0 ? (f - stock.current_price) / stock.current_price : 0;
+        currentPriceMap.set(stock.id, stock.current_price);
+        assetMetadataMap.set(stock.id, { sectorId: stock.sector_id || stock.sector });
+        assetSnapshots.push({
+          assetId: stock.id,
+          ticker: stock.ticker,
+          assetClass: 'STOCK',
+          currentPrice: stock.current_price,
+          sectorId: stock.sector_id || stock.sector,
+          valuationGap: vGap,
+          spreadBps: stock.base_spread_bps ?? 20,
+        });
+      }
+
+      for (const bond of memoryDb.bonds.values()) {
+        currentPriceMap.set(bond.id, bond.current_price);
+        assetMetadataMap.set(bond.id, { tickSize: 10 });
+        assetSnapshots.push({
+          assetId: bond.id,
+          ticker: bond.ticker,
+          assetClass: 'BOND',
+          currentPrice: bond.current_price,
+          ytm: bond.ytm,
+          duration: bond.duration,
+          isSovereign: bond.bond_type ? (bond.bond_type.includes('국채') || bond.bond_type.includes('sovereign')) : true,
+          spreadBps: 15,
+        });
+      }
+
+      for (const comm of memoryDb.commodities.values()) {
+        currentPriceMap.set(comm.id, comm.current_price);
+        assetMetadataMap.set(comm.id, { tickSize: comm.tick_size });
+        assetSnapshots.push({
+          assetId: comm.id,
+          ticker: comm.ticker,
+          assetClass: 'COMMODITY',
+          currentPrice: comm.current_price,
+          category: comm.category,
+          spreadBps: 25,
+        });
+      }
+
+      for (const opt of memoryDb.optionsContracts.values()) {
+        currentPriceMap.set(opt.id, opt.current_price);
+        assetSnapshots.push({
+          assetId: opt.id,
+          ticker: opt.ticker,
+          assetClass: 'OPTION',
+          currentPrice: opt.current_price,
+          optionType: (opt.type || opt.option_type) as any,
+          delta: opt.delta,
+          impliedVol: opt.implied_volatility,
+          spreadBps: 50,
+        });
+      }
+
+      // 4. 교차자산 신호 일괄 산출 (순수 계산)
+      const curRegime = activeRegimeState?.regime ?? 'SIDEWAYS';
+      const signals = computeCrossAssetSignals(assetSnapshots, this.macroState, curRegime);
+      for (const [k, v] of signals.entries()) {
+        crossAssetSignalsMap.set(k, v);
+      }
+
+      // 5. 에이전트별 포트폴리오 목표 배분 및 진단 스냅샷 기록
+      for (const [accId, agent] of this.agents.entries()) {
+        if (agent.participantType === 'lp') continue;
+
+        const profile = agent.macroProfile || createDefaultMacroProfile(accId, agent.strategyType, agent.riskTolerance);
+        const userProfile = memoryDb.profiles.get(accId);
+        const availableCash = userProfile?.cash ?? 50_000_000;
+
+        // 현재 보유 자산 집계
+        const currentHoldings: CurrentHoldingSnapshot[] = [];
+        let totalHoldingsValue = 0;
+        for (const h of memoryDb.holdings.values()) {
+          if (h.user_id === accId && h.quantity > 0) {
+            const price = currentPriceMap.get(h.stock_id) || h.avg_price;
+            totalHoldingsValue += h.quantity * price;
+            currentHoldings.push({
+              assetId: h.stock_id,
+              assetClass: 'STOCK',
+              sectorId: memoryDb.stocks.get(h.stock_id)?.sector_id || memoryDb.stocks.get(h.stock_id)?.sector,
+              quantity: h.quantity,
+              currentPrice: price,
+            });
+          }
+        }
+        const totalNav = availableCash + totalHoldingsValue;
+
+        const allocationResult = computePortfolioAllocation({
+          agentProfile: profile,
+          nav: totalNav,
+          availableCash,
+          signals: crossAssetSignalsMap,
+          currentHoldings,
+          assetMetadata: assetMetadataMap,
+          simulationTime: simTime,
+        });
+
+        const { intents: crossAssetOrderIntents, heldIntents } = convertAllocationsToOrderIntents(
+          allocationResult.targetAllocations,
+          availableCash,
+          currentPriceMap
+        );
+
+        // 진단 스냅샷 구성 및 보존 (순수 읽기/방어적 복사)
+        const snapshot: CrossAssetStepSnapshot = {
+          agentId: accId,
+          simulationTime: simTime,
+          macroVersion: this.macroState.version,
+          marketRegime: curRegime,
+          observedMacroState: createObservableMacroState(this.macroState, curRegime),
+          totalNav: allocationResult.totalNav,
+          availableCash: allocationResult.availableCash,
+          aggregateFactorExposure: allocationResult.aggregateFactorExposure,
+          generalHeldReasons: allocationResult.heldReasons,
+          decisions: allocationResult.targetAllocations.map((alloc) => {
+            const sig = crossAssetSignalsMap.get(alloc.assetId);
+            const held = heldIntents.find((h) => h.assetId === alloc.assetId);
+            const intent = crossAssetOrderIntents.find((i) => i.stockId === alloc.assetId);
+            return {
+              assetId: alloc.assetId,
+              assetClass: alloc.assetClass,
+              direction: sig?.direction ?? 0,
+              expectedReturn: sig?.expectedReturn ?? 0,
+              expectedVolatility: sig?.expectedVolatility ?? 0,
+              confidence: sig?.confidence ?? 0,
+              horizonMs: sig?.horizonMs ?? 300_000,
+              unconstrainedWeight: alloc.unconstrainedWeight,
+              constrainedWeight: alloc.targetWeight,
+              currentQuantity: alloc.targetQuantity - alloc.deltaQuantity,
+              targetQuantity: alloc.targetQuantity,
+              deltaQuantity: alloc.deltaQuantity,
+              orderAction: intent ? (intent.action as any) : 'hold',
+              orderSize: intent?.size,
+              primaryDriver: sig?.drivers[0],
+              drivers: sig?.drivers ?? [],
+              riskContributions: sig?.riskContributions ?? {},
+              constraintsApplied: alloc.constraintReasons,
+              heldReason: held?.reason ?? allocationResult.heldReasons[alloc.assetId],
+              sourceEventIds: sig?.drivers.map((d) => d.sourceEventId).filter((id): id is string => Boolean(id)) ?? [],
+            };
+          }),
+        };
+        this.crossAssetDiagnostics.recordStep(snapshot);
+      }
+    }
+
     // 관측/추적: 이번 스텝에 적용된 국면 컨텍스트 진단 기록 (효과 ON/OFF 및 주요 배수 포함)
     if (this.enableRegimeEngine && activeRegimeState) {
       this.diagnostics.recordRegimeApplication({
@@ -1025,10 +1266,17 @@ export class AgentManager {
               this.valueConfig,
               trueF,
               agentPrng,
-              botEffectParams
+              botEffectParams,
+              this._crossAssetMode === 'EXPERIMENTAL_ON' ? crossAssetSignalsMap.get(stock.id) : undefined
             );
           } else if (agent.strategyType === 'trend') {
-            intent = evaluateTrendStrategy(obs, agent, this.trendConfig, botEffectParams);
+            intent = evaluateTrendStrategy(
+              obs,
+              agent,
+              this.trendConfig,
+              botEffectParams,
+              this._crossAssetMode === 'EXPERIMENTAL_ON' ? crossAssetSignalsMap.get(stock.id) : undefined
+            );
           }
 
           if (intent.action === 'hold') continue;
@@ -1083,10 +1331,18 @@ export class AgentManager {
               agent,
               this.valueConfig,
               trueF,
-              agentPrng
+              agentPrng,
+              undefined,
+              this._crossAssetMode === 'EXPERIMENTAL_ON' ? crossAssetSignalsMap.get(stock.id) : undefined
             );
           } else if (agent.strategyType === 'trend') {
-            intent = evaluateTrendStrategy(obs, agent, this.trendConfig);
+            intent = evaluateTrendStrategy(
+              obs,
+              agent,
+              this.trendConfig,
+              undefined,
+              this._crossAssetMode === 'EXPERIMENTAL_ON' ? crossAssetSignalsMap.get(stock.id) : undefined
+            );
           }
 
           if (intent.action === 'hold') continue;
@@ -2110,6 +2366,15 @@ export class AgentManager {
     this.shadowDiagnosticsHistory = [];
     this.invariantViolations = [];
     this.reportedInvariantFingerprints.clear();
+
+    // ── 교차자산 거시 상태 및 진단 초기화 ──
+    this.macroState = {
+      ...DEFAULT_MACRO_STATE,
+      timestamp: postResetTime,
+      version: 1,
+    };
+    this.crossAssetDiagnostics.reset();
+    this._crossAssetMode = 'OFF';
 
     // ── consumed capability 정합성 정책 ──
     // reset은 capability 소비 기록을 삭제하거나 만료 정리하지 않는다.

@@ -21,6 +21,7 @@ import {
   applyUncertaintyMultiplier,
   clamp01,
 } from '../regime/regimeEffects';
+import type { CrossAssetSignal } from '../crossAsset/crossAssetTypes';
 
 /**
  * 순수 함수: 관측 가능한 시장 이벤트 목록으로부터 특정 종목의 유효 뉴스 가치평가 신호(delta)를 산출합니다.
@@ -58,7 +59,8 @@ export function evaluateValueStrategy(
   config: ValueStrategyConfig,
   trueFundamental: number,
   prng: SimPrng,
-  effectParams?: BotEffectParams
+  effectParams?: BotEffectParams,
+  crossAssetSignal?: CrossAssetSignal
 ): AgentOrderIntent {
   const effects = effectParams ?? NEUTRAL_BOT_EFFECT_PARAMS;
   const valueSensitivity = effects.valueSensitivity;
@@ -87,7 +89,13 @@ export function evaluateValueStrategy(
     return { action: 'hold', stockId: obs.stockId, reason: 'invalid_mid_price' };
   }
 
-  const valGap = (estimatedValue - midPrice) / midPrice;
+  let valGap = (estimatedValue - midPrice) / midPrice;
+
+  // 2.1 교차자산 거시 신호 결합 (선택적)
+  if (crossAssetSignal) {
+    const macroExpectedReturn = crossAssetSignal.expectedReturn * crossAssetSignal.confidence;
+    valGap = valGap * 0.7 + macroExpectedReturn * 0.3;
+  }
 
   // 3. Deadband (hysteresis) check: ignore small deviations
   if (Math.abs(valGap) < config.deadbandPct) {

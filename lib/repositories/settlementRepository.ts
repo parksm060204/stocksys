@@ -7,7 +7,11 @@ import type {
   SettlementBatchResult,
   BondRecord,
   OptionContractRecord,
-  HoldingRecord
+  HoldingRecord,
+  MatchedBatchCommitInput,
+  OptionExpirySettlementParams,
+  BondMaturitySettlementParams,
+  NonTradeSettlementResult
 } from './types';
 
 export interface SettlementRepository {
@@ -23,9 +27,42 @@ export interface SettlementRepository {
   ): Promise<SettlementBatchResult>;
 
   /**
+   * 단일 Unit-of-Work 원자적 커밋 API:
+   * 동일한 MemoryDatabase를 사용하는 거래 정산, 주문 상태, 시세, 가격 이력을
+   * 하나의 스냅샷/롤백 경계 안에서 원자적으로 반영한다.
+   * 사전 검증 실패나 실행 오류 시 모든 상태가 100% 원복된다.
+   */
+  commitMatchedBatchAtomically(
+    batch: MatchedBatchCommitInput
+  ): Promise<SettlementBatchResult>;
+
+  /**
+   * 옵션 만기 지급과 포지션 청산을 단일 원자적 작업으로 처리한다.
+   * 멱등성 검사, 지급액 검증, 현금 지급, 정산 이력 기록, 만기 포지션 제거, settlement ledger 기록을
+   * 단일 트랜잭션 경계에서 수행하며, 실패 시 100% 롤백된다.
+   */
+  settleOptionExpiryAtomically(
+    params: OptionExpirySettlementParams
+  ): Promise<NonTradeSettlementResult>;
+
+  /**
+   * 채권 만기 원금 상환과 포지션 청산을 단일 원자적 작업으로 처리한다.
+   * 멱등성 검사, 원금/최종쿠폰 검증, 현금 지급, 지급 이력 기록, 채권 포지션 제거, settlement ledger 기록을
+   * 단일 트랜잭션 경계에서 수행하며, 실패 시 100% 롤백된다.
+   */
+  settleBondMaturityAtomically(
+    params: BondMaturitySettlementParams
+  ): Promise<NonTradeSettlementResult>;
+
+  /**
    * Authoritative settlement ledger를 조회한다 (인스턴스 재생성과 무관).
    */
   isTradeSettled(tradeId: string): boolean;
+
+  /**
+   * 최근 정산 실패 시의 reason code를 조회한다 (성공 시 null).
+   */
+  getLastSettlementError(): string | null;
 
   /**
    * 만기 도래 옵션 계약 조회 (simulation clock 기준).

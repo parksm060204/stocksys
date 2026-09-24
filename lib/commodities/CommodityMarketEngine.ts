@@ -14,6 +14,11 @@ import { CommodityOrderBook, MatchResult } from './CommodityOrderBook';
 import { CommodityEventSystem } from './eventSystem';
 import { CommodityBot, createBotSwarm, BotRatios } from './bots';
 import { scenarioManager } from '../scenario/ScenarioManager';
+import type { SimulationContext } from '../engine/simulation/runtime/simulationContext';
+import { createSimulationContext } from '../engine/simulation/runtime/simulationContext';
+import type { SimulationTimeSource } from '../engine/simulation/runtime/simulationTimeSource';
+import type { SimulationRandomSource } from '../engine/simulation/runtime/simulationRandom';
+import { SIMULATION_NAMESPACES } from '../engine/simulation/runtime/simulationNamespaces';
 
 export interface TickSummary {
   tick: number;
@@ -26,6 +31,15 @@ export interface TickSummary {
   newNews: CommodityNewsItem[];
 }
 
+export interface CommodityEngineOptions {
+  customDefinitions?: CommodityDefinition[];
+  totalBots?: number;
+  botRatios?: BotRatios;
+  eventProbability?: number;
+  initialTick?: number;
+  simulationContext?: SimulationContext;
+}
+
 export class CommodityMarketEngine {
   public currentTick: number = 0;
   public commodities: Map<string, CommodityState> = new Map();
@@ -33,20 +47,25 @@ export class CommodityMarketEngine {
   public eventSystem: CommodityEventSystem;
   public bots: CommodityBot[] = [];
   public tradesHistory: CommodityTrade[] = [];
+  public readonly simContext: SimulationContext;
+  public readonly clock: SimulationTimeSource;
+  private readonly priceRandom: SimulationRandomSource;
+  private readonly eventRandom: SimulationRandomSource;
+  private readonly engineRandom: SimulationRandomSource;
+  private userOrderSeq: number = 0;
 
   private isRunning: boolean = false;
   private intervalTimer: NodeJS.Timeout | null = null;
   private tickIntervalMs: number = 1000;
   private onTickCallbacks: ((summary: TickSummary) => void)[] = [];
 
-  constructor(options?: {
-    customDefinitions?: CommodityDefinition[];
-    totalBots?: number;
-    botRatios?: BotRatios;
-    eventProbability?: number;
-    initialTick?: number;
-  }) {
+  constructor(options?: CommodityEngineOptions) {
     const definitions = options?.customDefinitions || COMMODITY_DEFINITIONS;
+    this.simContext = options?.simulationContext ?? createSimulationContext({ seed: 42 });
+    this.clock = this.simContext.clock;
+    this.engineRandom = this.simContext.fork(SIMULATION_NAMESPACES.COMMODITIES.ENGINE);
+    this.eventRandom = this.simContext.fork(SIMULATION_NAMESPACES.COMMODITIES.EVENTS);
+    this.priceRandom = this.simContext.fork(SIMULATION_NAMESPACES.COMMODITIES.PRICE);
 
     // 1. 원자재 종목 초기화
     for (const def of definitions) {
@@ -61,16 +80,22 @@ export class CommodityMarketEngine {
         priceHistory: [{ tick: 0, price: def.basePrice, volume: 0 }],
       });
 
-      this.orderBooks.set(def.id, new CommodityOrderBook(def.id));
+      this.orderBooks.set(def.id, new CommodityOrderBook(def.id, this.clock));
     }
 
     // 2. 이벤트 시스템 초기화
-    this.eventSystem = new CommodityEventSystem(options?.eventProbability ?? 0.02);
+    this.eventSystem = new CommodityEventSystem(
+      options?.eventProbability ?? 0.02,
+      this.eventRandom,
+      this.clock
+    );
 
     // 3. 봇 군단 초기화
     this.bots = createBotSwarm({
       totalBots: options?.totalBots ?? 50,
       ...(options?.botRatios ? { ratios: options.botRatios } : {}),
+      context: this.simContext,
+      clock: this.clock,
     });
 
     this.currentTick = options?.initialTick ?? 0;
@@ -82,7 +107,7 @@ export class CommodityMarketEngine {
   public nextTick(): TickSummary {
     this.currentTick += 1;
     const tick = this.currentTick;
-    const now = Date.now();
+    const now = this.clock.now();
 
     // ── 1. 이벤트 발생 판정 & 감쇄 ──
     const { newEvents, newNews } = this.eventSystem.tick(tick);
@@ -109,6 +134,11 @@ export class CommodityMarketEngine {
 
     // ── 3. 봇들의 주문 생성 & 오더북에 제출 ──
     for (const bot of this.bots) {
+      if (bot.type === 'market_maker') {
+        for (const book of this.orderBooks.values()) {
+          book.cancelBotOrders(bot.id);
+        }
+      }
       const orders = bot.generateOrders(tick);
       for (const order of orders) {
         const book = this.orderBooks.get(order.commodityId);
@@ -173,6 +203,7 @@ export class CommodityMarketEngine {
         netBuyVolume: biasedNetBuyVolume,
         activeEvents,
         impactCoefficient: 0.006,
+        random: this.priceRandom,
       });
 
       // 강제 추가 충격 (Event Shock) 합성
@@ -257,12 +288,13 @@ export class CommodityMarketEngine {
    * 사용자 주문 제출 인터페이스
    */
   public submitUserOrder(order: Omit<CommodityOrder, 'id' | 'filled' | 'createdAtTick' | 'createdAtTime'>): CommodityOrder {
+    this.userOrderSeq += 1;
     const fullOrder: CommodityOrder = {
       ...order,
-      id: `usr_${this.currentTick}_${Math.random().toString(36).slice(2, 7)}`,
+      id: `usr_${this.currentTick}_${this.userOrderSeq}`,
       filled: 0,
       createdAtTick: this.currentTick,
-      createdAtTime: Date.now(),
+      createdAtTime: this.clock.now(),
     };
 
     const book = this.orderBooks.get(order.commodityId);

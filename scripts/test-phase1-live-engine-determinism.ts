@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Phase 1 Test: Live MarketEngine Real-Tick Determinism Verification
  *
  * Verifies that:
@@ -103,17 +103,66 @@ class RecordingExecutionObserver implements MarketExecutionObserver {
   }
 }
 
-async function populateInitialDb(repositories: RepositoryBundle) {
+async function populateInitialDb(memoryDb: MemoryDatabase, repositories: RepositoryBundle) {
   const fixture = createDeterministicFixtureData();
   await repositories.market.upsertStocks(fixture.stocks as never);
   await repositories.market.upsertBonds(fixture.bonds as never);
   await repositories.market.upsertCommodities(fixture.commodities as never);
 
-  // Initial user orders to match against bot orders
+  const user1Id = 'usr_det_01';
+  const user2Id = 'usr_det_02';
+
+  memoryDb.profiles.set(user1Id, {
+    id: user1Id,
+    user_id: user1Id,
+    username: 'DetUser1',
+    nickname: 'DetUser1',
+    cash: 500_000_000,
+    net_worth: 500_000_000,
+    rank_tier: 'GOLD',
+    created_at: '2026-09-24T00:00:00.000Z',
+  });
+  memoryDb.profileUserIdIndex.set(user1Id, user1Id);
+
+  memoryDb.profiles.set(user2Id, {
+    id: user2Id,
+    user_id: user2Id,
+    username: 'DetUser2',
+    nickname: 'DetUser2',
+    cash: 500_000_000,
+    net_worth: 500_000_000,
+    rank_tier: 'GOLD',
+    created_at: '2026-09-24T00:00:00.000Z',
+  });
+  memoryDb.profileUserIdIndex.set(user2Id, user2Id);
+
+  const h1 = {
+    id: `${user1Id}_0010`,
+    user_id: user1Id,
+    stock_id: '0010',
+    quantity: 1000,
+    avg_price: 70000,
+    created_at: '2026-09-24T00:00:00.000Z',
+  };
+  memoryDb.holdings.set(h1.id, h1);
+  memoryDb.addHoldingToIndex(h1);
+
+  const h2 = {
+    id: `${user1Id}_0015`,
+    user_id: user1Id,
+    stock_id: '0015',
+    quantity: 500,
+    avg_price: 250000,
+    created_at: '2026-09-24T00:00:00.000Z',
+  };
+  memoryDb.holdings.set(h2.id, h2);
+  memoryDb.addHoldingToIndex(h2);
+
+  // Initial user orders to match against bot orders and each other
   await repositories.market.insertOrders([
-    { id: 'USR_ORD_01', stock_id: '0010', side: 'sell', price: 70000, size: 200, filled: 0, status: 'open', is_lp: false, created_at: '2026-09-24T00:00:00.000Z' } as never,
-    { id: 'USR_ORD_02', stock_id: '0010', side: 'buy', price: 69900, size: 100, filled: 0, status: 'open', is_lp: false, created_at: '2026-09-24T00:00:00.000Z' } as never,
-    { id: 'USR_ORD_03', stock_id: '0015', side: 'sell', price: 250000, size: 50, filled: 0, status: 'open', is_lp: false, created_at: '2026-09-24T00:00:00.000Z' } as never
+    { id: 'USR_ORD_01', stock_id: '0010', user_id: user1Id, participantId: user1Id, side: 'sell', price: 70000, size: 200, filled: 0, status: 'open', is_lp: false, created_at: '2026-09-24T00:00:00.000Z' } as never,
+    { id: 'USR_ORD_02', stock_id: '0010', user_id: user2Id, participantId: user2Id, side: 'buy', price: 70000, size: 100, filled: 0, status: 'open', is_lp: false, created_at: '2026-09-24T00:00:00.000Z' } as never,
+    { id: 'USR_ORD_03', stock_id: '0015', user_id: user1Id, participantId: user1Id, side: 'sell', price: 250000, size: 50, filled: 0, status: 'open', is_lp: false, created_at: '2026-09-24T00:00:00.000Z' } as never
   ]);
 }
 
@@ -124,7 +173,7 @@ async function runDeterministicSimulation(seed: number, startTime: number, tickC
     idGenerator: new SequentialIdGenerator(seed)
   });
   const repositories = createInMemoryRepositoryBundle(memoryDb);
-  await populateInitialDb(repositories);
+  await populateInitialDb(memoryDb, repositories);
 
   const context = createSimulationContext({
     seed,
@@ -163,7 +212,8 @@ async function runDeterministicSimulation(seed: number, startTime: number, tickC
     portfolios: persistence.recordedPortfolios,
     orders: finalOrders,
     stocks: finalStocks,
-    fundamentals: engine.fundamentals
+    fundamentals: engine.fundamentals,
+    ledgerCount: memoryDb.settlementLedger.size,
   };
 }
 
@@ -219,14 +269,19 @@ async function runTest() {
   console.log(`Run 2 Fundamentals Hash: ${fp2.fundamentals}`);
   console.log(`Run 3 Fundamentals Hash: ${fp3.fundamentals}`);
 
+  // Assertions: New trades and ledger entries must exist
+  assert(run1.trades.length > 50, `Run 1 must contain newly settled trades beyond dummy initial data (found: ${run1.trades.length})`);
+  assert(run1.ledgerCount > 0, `Run 1 must contain newly created settlement ledger entries (found: ${run1.ledgerCount})`);
+
   // Assertions: Run 1 and Run 2 must match 100%
-  assert(fp1.trades === fp2.trades, `Trades hash mismatch: ${fp1.trades} vs ${fp2.trades}`);
+  assert(fp1.trades === fp2.trades, `Trades hash mismatch between run 1 and run 2: ${fp1.trades} vs ${fp2.trades}`);
   assert(fp1.priceHistory === fp2.priceHistory, 'Price history hash mismatch between run 1 and run 2');
   assert(fp1.orders === fp2.orders, 'Final orders book hash mismatch between run 1 and run 2');
   assert(fp1.stocks === fp2.stocks, 'Final stock prices hash mismatch between run 1 and run 2');
   assert(fp1.fundamentals === fp2.fundamentals, 'Fundamentals hash mismatch between run 1 and run 2');
 
   // Assertions: Run 1 and Run 3 must diverge
+  assert(fp1.trades !== fp3.trades, 'Different seeds must produce different trade fingerprints');
   assert(fp1.fundamentals !== fp3.fundamentals, 'Different seeds must produce different fundamentals diffusion');
 
   // 3. Mutation Testing: Verify that mutating any single value in the arrays changes the fingerprint

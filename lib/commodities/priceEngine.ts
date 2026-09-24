@@ -3,19 +3,22 @@ import { CommodityDefinition, ActiveCommodityEvent } from './types';
 /**
  * Box-Muller 변환을 이용한 표준정규분포 N(0, 1) 난수 생성기
  */
-export function generateStandardGaussian(): number {
+export function generateStandardGaussian(random?: { next?(): number }): number {
   let u = 0;
   let v = 0;
-  while (u === 0) u = Math.random(); // (0, 1] 범위
-  while (v === 0) v = Math.random();
+  while (u === 0) u = (random && typeof random.next === 'function') ? random.next() : 0.5;
+  while (v === 0) v = (random && typeof random.next === 'function') ? random.next() : 0.5;
   return Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
 }
 
 /**
  * 평균 mean, 표준편차 stdDev의 정규분포 난수 N(mean, stdDev^2) 생성기
  */
-export function generateGaussianNoise(mean: number, stdDev: number): number {
-  return mean + stdDev * generateStandardGaussian();
+export function generateGaussianNoise(mean: number, stdDev: number, random?: { normal?(m?: number, s?: number): number; next?(): number }): number {
+  if (random && typeof random.normal === 'function') {
+    return random.normal(mean, stdDev);
+  }
+  return mean + stdDev * generateStandardGaussian(random);
 }
 
 /**
@@ -101,6 +104,7 @@ export function computeNextPrice(params: {
   netBuyVolume: number;
   activeEvents: ActiveCommodityEvent[];
   impactCoefficient?: number;
+  random?: { normal?(m?: number, s?: number): number; next?(): number };
 }): {
   nextPrice: number;
   drift: number;
@@ -116,6 +120,7 @@ export function computeNextPrice(params: {
     netBuyVolume,
     activeEvents,
     impactCoefficient = 0.004,
+    random,
   } = params;
 
   // 1. drift: 기본 카테고리 drift + 계절성 증분 Delta_S(t) + 실물 균형가 복원력(Mean Reversion Pull)
@@ -139,7 +144,7 @@ export function computeNextPrice(params: {
   const eventShock = calculateEventShock(commodity, activeEvents);
 
   // 4. noise: N(0, base_volatility^2)
-  const noise = generateGaussianNoise(0, commodity.baseVolatility);
+  const noise = generateGaussianNoise(0, commodity.baseVolatility, random);
 
   // 5. 총 틱 수익률 (합산)
   const returnPct = totalDrift + supplyDemandPressure + eventShock + noise;

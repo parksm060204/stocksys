@@ -67,7 +67,7 @@ export class TrendFollowingBot extends CommodityBot {
             size: Math.min(baseOrderQty, this.positionLimit - pos.quantity),
             filled: 0,
             createdAtTick: currentTick,
-            createdAtTime: Date.now(),
+            createdAtTime: this.clock ? this.clock.now() : 0,
           });
         }
       }
@@ -84,7 +84,7 @@ export class TrendFollowingBot extends CommodityBot {
             size: baseOrderQty,
             filled: 0,
             createdAtTick: currentTick,
-            createdAtTime: Date.now(),
+            createdAtTime: this.clock ? this.clock.now() : 0,
           });
         }
       }

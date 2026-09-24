@@ -91,24 +91,36 @@ export async function verifyParticipantProfile(
     return id === participantId;
   });
 
-  if (!bot) return null;
+  const profile = await repositories.participant.getProfile(participantId);
 
-  const participantKind = mapInstitutionalKindToParticipantKind(
-    (bot.participant_kind ?? bot.participantKind ?? bot.type ?? bot.strategy_type) as string | undefined
-  );
+  if (!bot && !profile) return null;
+
+  let participantKind: ParticipantKind = 'UNKNOWN';
+  if (bot) {
+    participantKind = mapInstitutionalKindToParticipantKind(
+      (bot.participant_kind ?? bot.participantKind ?? bot.type ?? bot.strategy_type) as string | undefined
+    );
+  } else if (profile) {
+    participantKind = 'HUMAN';
+  }
 
   if (participantKind === 'UNKNOWN') return null;
 
-  const policy = INSTITUTION_RISK_POLICY[
-    participantKind === 'DOMESTIC_INSTITUTION' ? 'DOMESTIC_INSTITUTION' : 'FOREIGN_INSTITUTION'
-  ];
   const isInstitution =
     participantKind === 'DOMESTIC_INSTITUTION' || participantKind === 'FOREIGN_INSTITUTION';
+  const policy = isInstitution
+    ? INSTITUTION_RISK_POLICY[
+        participantKind === 'DOMESTIC_INSTITUTION' ? 'DOMESTIC_INSTITUTION' : 'FOREIGN_INSTITUTION'
+      ]
+    : undefined;
 
-  const accountEquity = Number(
-    (bot.account_equity ?? bot.total_capital ?? bot.current_cash ?? 0) as number
-  );
-  const availableCash = Number((bot.current_cash ?? 0) as number);
+  // 참가자 현금과 포지션은 초기 botsConfig의 고정값이 아니라 authoritative 현재 상태를 조회해야 한다.
+  const availableCash = profile
+    ? Number(profile.cash ?? 0)
+    : Number((bot?.current_cash ?? 0) as number);
+  const accountEquity = profile
+    ? Number(profile.net_worth ?? profile.cash ?? 0)
+    : Number((bot?.account_equity ?? bot?.total_capital ?? bot?.current_cash ?? 0) as number);
 
   const holding = await repositories.participant.getHolding(participantId, stockId);
   const currentPosition = holding ? Number(holding.quantity || 0) : 0;
@@ -120,8 +132,8 @@ export async function verifyParticipantProfile(
     availableCash: Number.isFinite(availableCash) ? availableCash : 0,
     accountEquity: Number.isFinite(accountEquity) ? accountEquity : 0,
     currentPosition: Number.isFinite(currentPosition) ? currentPosition : 0,
-    positionLimit: isInstitution ? policy.positionLimit : 0,
-    riskBudget: isInstitution ? policy.riskBudget : 0,
+    positionLimit: policy ? policy.positionLimit : 0,
+    riskBudget: policy ? policy.riskBudget : 0,
     canPlaceStrategicOrder: isInstitution,
     isVerified: true,
   };
@@ -155,75 +167,67 @@ export function assessStrategicOrder(params: {
 }): StrategicOrderAssessment {
   const { profile, side, adv, isEmergencyLiquidation = false, requestedOrderType } = params;
 
-  // 전략 주문이 아닌데 참가자가 미검증이면, 기관 권한 없이 일반 child order 경로로만 진행한다.
-  // (fail-closed 규격은 '전략 주문' 요구사항에 대한 것이며, 일반 주문까지 전부 거부하지 않는다)
   if (!profile || !profile.isVerified) {
-    if (requestedOrderType === 'STRATEGIC_ORDER' && !isEmergencyLiquidation) {
-      return { accepted: false, rejection: 'REJECTED_UNKNOWN_PARTICIPANT' };
-    }
-    return {
-      accepted: true,
-      context: {
-        participantKind: 'UNKNOWN',
-        availableCash: 0,
-        adv: Number.isFinite(adv) && adv > 0 ? adv : 0,
-        orderType: requestedOrderType,
-      },
-    };
+    return { accepted: false, rejection: 'REJECTED_UNKNOWN_PARTICIPANT' };
   }
 
-  if (requestedOrderType !== 'STRATEGIC_ORDER') {
-    // 전략 주문이 아니면 child order 경로(기관 한도 미적용)
-    return {
-      accepted: true,
-      profile,
-      context: {
-        participantKind: profile.participantKind,
-        participantIdentity: profile.participantId,
-        availableCash: profile.availableCash,
-        accountEquity: profile.accountEquity,
-        adv,
-        orderType: 'CHILD_ORDER',
-      },
-    };
-  }
-
-  if (isEmergencyLiquidation) {
-    return {
-      accepted: true,
-      profile,
-      context: {
-        participantKind: profile.participantKind,
-        participantIdentity: profile.participantId,
-        availableCash: profile.availableCash,
-        accountEquity: profile.accountEquity,
-        adv,
-        orderType: 'STRATEGIC_ORDER',
-        isEmergencyLiquidation: true,
-      },
-    };
-  }
-
-  const isInstitution =
-    profile.participantKind === 'DOMESTIC_INSTITUTION' ||
-    profile.participantKind === 'FOREIGN_INSTITUTION';
-
-  if (!isInstitution) {
-    return { accepted: false, rejection: 'REJECTED_STRATEGIC_NON_INSTITUTION', profile };
-  }
   if (!Number.isFinite(adv) || adv <= 0) {
     return { accepted: false, rejection: 'REJECTED_ZERO_OR_UNKNOWN_ADV', profile };
   }
+
   if (side === 'buy' && !(profile.availableCash > 0)) {
     return { accepted: false, rejection: 'REJECTED_ZERO_CASH_BUY', profile };
   }
-  if (!(profile.riskBudget > 0)) {
-    return { accepted: false, rejection: 'REJECTED_INVALID_RISK_BUDGET', profile };
-  }
-  if (!(profile.positionLimit > 0)) {
-    return { accepted: false, rejection: 'REJECTED_INVALID_POSITION_LIMIT', profile };
+
+  if (requestedOrderType === 'STRATEGIC_ORDER') {
+    if (isEmergencyLiquidation) {
+      return {
+        accepted: true,
+        profile,
+        context: {
+          participantKind: profile.participantKind,
+          participantIdentity: profile.participantId,
+          availableCash: profile.availableCash,
+          accountEquity: profile.accountEquity,
+          adv,
+          orderType: 'STRATEGIC_ORDER',
+          isEmergencyLiquidation: true,
+        },
+      };
+    }
+
+    const isInstitution =
+      profile.participantKind === 'DOMESTIC_INSTITUTION' ||
+      profile.participantKind === 'FOREIGN_INSTITUTION';
+
+    if (!isInstitution) {
+      return { accepted: false, rejection: 'REJECTED_STRATEGIC_NON_INSTITUTION', profile };
+    }
+    if (!(profile.riskBudget > 0)) {
+      return { accepted: false, rejection: 'REJECTED_INVALID_RISK_BUDGET', profile };
+    }
+    if (!(profile.positionLimit > 0)) {
+      return { accepted: false, rejection: 'REJECTED_INVALID_POSITION_LIMIT', profile };
+    }
+
+    return {
+      accepted: true,
+      profile,
+      context: {
+        participantKind: profile.participantKind,
+        participantIdentity: profile.participantId,
+        availableCash: profile.availableCash,
+        accountEquity: profile.accountEquity,
+        adv,
+        currentPosition: profile.currentPosition,
+        positionLimit: profile.positionLimit,
+        riskBudget: profile.riskBudget,
+        orderType: 'STRATEGIC_ORDER',
+      },
+    };
   }
 
+  // CHILD_ORDER or LP_QUOTE
   return {
     accepted: true,
     profile,
@@ -233,10 +237,7 @@ export function assessStrategicOrder(params: {
       availableCash: profile.availableCash,
       accountEquity: profile.accountEquity,
       adv,
-      currentPosition: profile.currentPosition,
-      positionLimit: profile.positionLimit,
-      riskBudget: profile.riskBudget,
-      orderType: 'STRATEGIC_ORDER',
+      orderType: requestedOrderType,
     },
   };
 }

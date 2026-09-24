@@ -128,26 +128,14 @@ export class OptionSettlementEngine {
           underlyingClosePrice: underlyingPrice,
         });
 
-        if (settlement.payoutAmount > 0) {
-          // 1) 현금 지급 (authoritative)
-          const paid = await this.repositories.settlement.settleOptionPayout(
-            pos.userId,
-            contract.id,
-            settlement.payoutAmount,
-            key
-          );
-          if (!paid) continue; // 이미 처리됨 또는 실패
-        } else {
-          // OTM/무지급도 이력은 남기되 현금은 바꾸지 않는다.
-          this.repositories.settlement.settleOptionPayout(pos.userId, contract.id, 0, key);
-        }
+        const settlementRes = await this.repositories.settlement.settleOptionExpiryAtomically({
+          userId: pos.userId,
+          optionId: contract.id,
+          payoutAmount: settlement.payoutAmount,
+          idempotencyKey: key,
+        });
 
-        // 2) 만기 포지션 제거 (동일 멱등 단위)
-        this.repositories.settlement.closeExpiredOptionPosition(
-          pos.userId,
-          contract.id,
-          `${key}_close`
-        );
+        if (!settlementRes.success) continue;
 
         results.push(settlement);
         if (settlement.isItm) {

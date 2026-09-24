@@ -30,6 +30,14 @@ export const SIMULATION_NAMESPACES = {
     RETAIL_SWARM: (id: string) => `bot:retail_swarm:${id}`,
     QUANT: (id: string) => `bot:quant:${id}`,
     STAT_ARB: (id: string) => `bot:stat_arb:${id}`,
+  },
+  COMMODITIES: {
+    ENGINE: 'commodities:engine',
+    ORDERBOOK: 'commodities:orderbook',
+    EVENTS: 'commodities:events',
+    PRICE: 'commodities:price',
+    BOT_SWARM: 'commodities:bot_swarm',
+    BOT: (id: string) => `commodities:bot:${id}`,
   }
 } as const;
 

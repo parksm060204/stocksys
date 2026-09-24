@@ -1,4 +1,4 @@
-﻿import { COMMODITY_DEFINITIONS } from '../commodities/definitions';
+import { COMMODITY_DEFINITIONS } from '../commodities/definitions';
 
 // ── 고정 UUID 규격 (Production 스키마 완벽 호환) ──
 export const GUEST_USER_ID = '00000000-0000-4000-8000-000000000001';
@@ -127,6 +127,10 @@ export interface OrderRecord {
   is_lp: boolean;
   created_at: string;
   // ABM participant & sequencing fields
+  participantId?: string;
+  participantKind?: string;
+  strategyId?: string;
+  orderType?: string;
   participant_type?: 'human' | 'bot' | 'lp';
   account_id?: string;
   agent_id?: string;

@@ -1,4 +1,5 @@
 import { CommodityOrder, CommodityTrade } from './types';
+import type { SimulationTimeSource } from '../engine/simulation/runtime/simulationTimeSource';
 
 export interface MatchResult {
   trades: CommodityTrade[];
@@ -14,9 +15,11 @@ export class CommodityOrderBook {
   public bids: CommodityOrder[] = [];
   public asks: CommodityOrder[] = [];
   private tradeHistory: CommodityTrade[] = [];
+  private readonly clock?: SimulationTimeSource;
 
-  constructor(commodityId: string) {
+  constructor(commodityId: string, clock?: SimulationTimeSource) {
     this.commodityId = commodityId;
+    this.clock = clock;
   }
 
   /**
@@ -132,14 +135,14 @@ export class CommodityOrderBook {
       }
 
       const trade: CommodityTrade = {
-        id: `trade_${currentTick}_${trades.length + 1}_${Math.random().toString(36).slice(2, 6)}`,
+        id: `trade_${this.commodityId}_${currentTick}_${trades.length + 1}`,
         commodityId: this.commodityId,
         buyerId: topBid.botId || topBid.userId,
         sellerId: topAsk.botId || topAsk.userId,
         price: tradePrice,
         size: tradeSize,
         tick: currentTick,
-        timestamp: Date.now(),
+        timestamp: this.clock ? this.clock.now() : currentTick * 1000,
       };
 
       trades.push(trade);
@@ -236,6 +239,14 @@ export class CommodityOrderBook {
     this.bids = this.bids.filter((o) => currentTick - o.createdAtTick <= maxAgeTicks);
     this.asks = this.asks.filter((o) => currentTick - o.createdAtTick <= maxAgeTicks);
     return prevCount - (this.bids.length + this.asks.length);
+  }
+
+  /**
+   * 특정 봇의 미체결 주문 취소
+   */
+  public cancelBotOrders(botId: string): void {
+    this.bids = this.bids.filter((o) => o.botId !== botId);
+    this.asks = this.asks.filter((o) => o.botId !== botId);
   }
 
   /**

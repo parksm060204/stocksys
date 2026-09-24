@@ -42,7 +42,7 @@ export class MarketMakerBot extends CommodityBot {
           size: Math.min(orderQty, this.positionLimit - pos.quantity),
           filled: 0,
           createdAtTick: currentTick,
-          createdAtTime: Date.now(),
+          createdAtTime: this.clock ? this.clock.now() : 0,
         });
       }
 
@@ -58,7 +58,7 @@ export class MarketMakerBot extends CommodityBot {
           size: orderQty,
           filled: 0,
           createdAtTick: currentTick,
-          createdAtTime: Date.now(),
+          createdAtTime: this.clock ? this.clock.now() : 0,
         });
       }
     }

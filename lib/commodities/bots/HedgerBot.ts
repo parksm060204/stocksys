@@ -49,7 +49,7 @@ export class HedgerBot extends CommodityBot {
           size: Math.min(orderQty, this.positionLimit - pos.quantity),
           filled: 0,
           createdAtTick: currentTick,
-          createdAtTime: Date.now(),
+          createdAtTime: this.clock ? this.clock.now() : 0,
         });
       }
       // 계절성 고점(수요 성수기) 또는 재고 초과 ➔ 실수요 방출 매도
@@ -65,7 +65,7 @@ export class HedgerBot extends CommodityBot {
           size: Math.min(orderQty, pos.quantity),
           filled: 0,
           createdAtTick: currentTick,
-          createdAtTime: Date.now(),
+          createdAtTime: this.clock ? this.clock.now() : 0,
         });
       }
     }

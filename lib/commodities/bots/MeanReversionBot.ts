@@ -60,7 +60,7 @@ export class MeanReversionBot extends CommodityBot {
           size: Math.min(baseOrderQty, this.positionLimit - pos.quantity),
           filled: 0,
           createdAtTick: currentTick,
-          createdAtTime: Date.now(),
+          createdAtTime: this.clock ? this.clock.now() : 0,
         });
       }
       // 상단 밴드 이탈 ➔ 과매수(Overbought) 역발상 매도
@@ -75,7 +75,7 @@ export class MeanReversionBot extends CommodityBot {
           size: baseOrderQty,
           filled: 0,
           createdAtTick: currentTick,
-          createdAtTime: Date.now(),
+          createdAtTime: this.clock ? this.clock.now() : 0,
         });
       }
     }

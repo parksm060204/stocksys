@@ -92,6 +92,9 @@ export interface OrderUpdate {
   readonly id: string;
   readonly filled?: number;
   readonly status?: 'open' | 'partial' | 'filled' | 'cancelled' | 'expired';
+  readonly participantKind?: string;
+  readonly participantId?: string;
+  readonly strategyId?: string;
 }
 
 /**
@@ -148,4 +151,46 @@ export interface SettlementBatchResult {
   readonly rollbackOccurred: boolean;
   readonly settledTradeIds: readonly string[];
   readonly skippedTradeIds?: readonly string[];
+}
+
+export interface MatchedBatchCommitInput {
+  readonly trades: readonly TradeSettlementInput[];
+  readonly orderUpdates?: readonly {
+    readonly id: string;
+    readonly size: number;
+    readonly status: 'open' | 'partial' | 'filled' | 'cancelled' | 'expired';
+  }[];
+  readonly marketPriceUpdates?: readonly {
+    readonly stock_id: string;
+    readonly price: number;
+  }[];
+  readonly priceHistory?: readonly {
+    readonly stock_id: string;
+    readonly price: number;
+    readonly recorded_at: string;
+  }[];
+}
+
+export interface OptionExpirySettlementParams {
+  readonly userId: string;
+  readonly optionId: string;
+  readonly payoutAmount: number;
+  readonly idempotencyKey: string;
+  readonly faultInjection?: 'FAIL_AT_CLOSE' | 'FAIL_AT_LEDGER';
+}
+
+export interface BondMaturitySettlementParams {
+  readonly userId: string;
+  readonly bondId: string;
+  readonly principalAmount: number;
+  readonly couponAmount?: number;
+  readonly idempotencyKey: string;
+  readonly faultInjection?: 'FAIL_AT_CLOSE' | 'FAIL_AT_LEDGER';
+}
+
+export interface NonTradeSettlementResult {
+  readonly success: boolean;
+  readonly errorCode?: string;
+  readonly error?: string;
+  readonly rollbackOccurred?: boolean;
 }

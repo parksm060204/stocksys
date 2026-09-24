@@ -133,15 +133,13 @@ export class BondCouponEngine {
             periodKey: params.periodKey,
           });
 
-          const paid = await this.repositories.settlement.settleBondRedemption(
-            pos.userId,
-            bond.id,
-            redemption.paymentAmount,
-            mKey
-          );
-          if (!paid) continue;
-
-          this.repositories.settlement.closeMaturedBondPosition(pos.userId, bond.id, `${mKey}_close`);
+          const settlementRes = await this.repositories.settlement.settleBondMaturityAtomically({
+            userId: pos.userId,
+            bondId: bond.id,
+            principalAmount: redemption.paymentAmount,
+            idempotencyKey: mKey,
+          });
+          if (!settlementRes.success) continue;
 
           results.push(redemption);
           redemptionCount++;

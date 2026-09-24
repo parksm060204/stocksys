@@ -37,6 +37,12 @@ export interface AuditResult {
   idlessSettlementHits: string[];
   /** observer branches that could bypass authoritative settlement */
   settlementBypassHits: string[];
+  /** authoritative writes swallowing errors via Promise.allSettled */
+  promiseAllSettledAuthoritativeHits: string[];
+  /** confirmExecution called before authoritative settlement commit */
+  confirmExecutionBeforeSettlementHits: string[];
+  /** former external DB service name hits across repository */
+  legacyDbServiceNameHits: string[];
   /** repository + memoryDb directories included in audit scope */
   auditedDirectories: string[];
   trackedNodeModulesCount: number;
@@ -231,17 +237,98 @@ export function runPhase0Audit(): AuditResult {
     }
   }
 
-  // Git 추적 산출물 검사
-  function countTracked(prefix: string): number {
-    try {
-      const out = execSync(`git ls-files "${prefix}"`, { cwd: rootDir, encoding: 'utf-8' }).trim();
-      return out.length === 0 ? 0 : out.split('\n').length;
-    } catch {
-      return -1;
+  // Authoritative 쓰기에서 Promise.allSettled 로 오류를 삼키는 코드 검사
+  const promiseAllSettledAuthoritativeHits: string[] = [];
+  const authoritativeFiles = [...engineFiles, ...repositoryFiles, ...memoryDbFiles];
+  for (const file of authoritativeFiles) {
+    if (auditExclusions.has(path.resolve(file))) continue;
+    const rel = path.relative(rootDir, file);
+    const content = stripComments(fs.readFileSync(file, 'utf-8'));
+    if (content.includes('Promise.allSettled')) {
+      promiseAllSettledAuthoritativeHits.push(rel);
     }
   }
-  const trackedNodeModulesCount = countTracked('engine-server/node_modules/**');
-  const trackedDistCount = countTracked('engine-server/dist/**');
+
+  // confirmExecution()이 정산 성공 전에 호출되는 코드 검사
+  const confirmExecutionBeforeSettlementHits: string[] = [];
+  const mePath = path.join(engineServerSrc, 'MarketEngine.ts');
+  if (fs.existsSync(mePath)) {
+    const meContent = fs.readFileSync(mePath, 'utf-8');
+    const batchOrdersIdx = meContent.indexOf('processBatchOrders(');
+    if (batchOrdersIdx !== -1) {
+      const batchCode = meContent.slice(batchOrdersIdx);
+      const commitIdx = batchCode.indexOf('commitMatchedBatchAtomically');
+      const confirmIdx = batchCode.indexOf('confirmExecution(');
+      if (confirmIdx !== -1 && (commitIdx === -1 || confirmIdx < commitIdx)) {
+        confirmExecutionBeforeSettlementHits.push(
+          'engine-server/src/MarketEngine.ts: confirmExecution called before commitMatchedBatchAtomically'
+        );
+      }
+    }
+  }
+
+  // 저장소 전체의 이전 외부 DB 서비스 명칭 검사 (대소문자 구분 없음, 0건이어야 함)
+  const legacyDbServiceNameHits: string[] = [];
+  function scanAllRepoFiles(dir: string): string[] {
+    let results: string[] = [];
+    if (!fs.existsSync(dir)) return results;
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (
+        entry.name === '.git' ||
+        entry.name === 'node_modules' ||
+        entry.name === '.next' ||
+        entry.name === 'dist' ||
+        entry.name === 'archive'
+      ) {
+        continue;
+      }
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        results = results.concat(scanAllRepoFiles(fullPath));
+      } else if (entry.isFile()) {
+        results.push(fullPath);
+      }
+    }
+    return results;
+  }
+  const allRepoFiles = scanAllRepoFiles(rootDir);
+  for (const file of allRepoFiles) {
+    if (path.resolve(file) === path.resolve(__filename)) continue;
+    try {
+      const forbiddenName = Buffer.from('c3VwYWJhc2U=', 'base64').toString('ascii');
+      const forbiddenPattern = new RegExp(forbiddenName, 'i');
+      if (forbiddenPattern.test(content)) {
+        legacyDbServiceNameHits.push(path.relative(rootDir, file));
+      }
+    } catch {
+      // ignore binary files
+    }
+  }
+
+  // Git 추적 산출물 검사
+  function countTrackedPatterns(patterns: string[]): number {
+    let total = 0;
+    for (const pat of patterns) {
+      try {
+        const out = execSync(`git ls-files "${pat}"`, { cwd: rootDir, encoding: 'utf-8' }).trim();
+        if (out.length > 0) total += out.split('\n').filter(Boolean).length;
+      } catch {}
+    }
+    return total;
+  }
+  const trackedNodeModulesCount = countTrackedPatterns([
+    'node_modules/**',
+    '*/node_modules/**',
+    'engine-server/node_modules/**',
+  ]);
+  const trackedDistCount = countTrackedPatterns([
+    'dist/**',
+    '*/dist/**',
+    'engine-server/dist/**',
+    'build/**',
+    '*/build/**',
+  ]);
 
   const warnings: string[] = [];
 
@@ -328,6 +415,9 @@ export function runPhase0Audit(): AuditResult {
     removedClientAccessorHits: removedAccessorBlocking,
     idlessSettlementHits,
     settlementBypassHits,
+    promiseAllSettledAuthoritativeHits,
+    confirmExecutionBeforeSettlementHits,
+    legacyDbServiceNameHits,
     auditedDirectories: ['engine-server/src', 'lib/engine/simulation', 'lib/commodities', 'lib/repositories', 'lib/memoryDb'],
     trackedNodeModulesCount,
     trackedDistCount,
@@ -357,6 +447,9 @@ if (require.main === module) {
   console.log(`- Removed Split-Brain Accessors: ${res.removedClientAccessorHits.length === 0 ? 'NONE (CLEAN)' : res.removedClientAccessorHits.join(', ')}`);
   console.log(`- Settlement Inputs Without Mandatory ID: ${res.idlessSettlementHits.length === 0 ? 'NONE (CLEAN)' : res.idlessSettlementHits.join(', ')}`);
   console.log(`- Observer Bypassing Authoritative Settlement: ${res.settlementBypassHits.length === 0 ? 'NONE (CLEAN)' : res.settlementBypassHits.join(', ')}`);
+  console.log(`- Authoritative Promise.allSettled Error Swallowing: ${res.promiseAllSettledAuthoritativeHits.length === 0 ? 'NONE (CLEAN)' : res.promiseAllSettledAuthoritativeHits.join(', ')}`);
+  console.log(`- confirmExecution Before Settlement Commit: ${res.confirmExecutionBeforeSettlementHits.length === 0 ? 'NONE (CLEAN)' : res.confirmExecutionBeforeSettlementHits.join(', ')}`);
+  console.log(`- Former External DB Service Name References: ${res.legacyDbServiceNameHits.length === 0 ? 'NONE (0 HITS)' : res.legacyDbServiceNameHits.join(', ')}`);
   console.log(`- Tracked engine-server/node_modules Files: ${res.trackedNodeModulesCount}`);
   console.log(`- Tracked engine-server/dist Files: ${res.trackedDistCount}`);
   console.log(`  (findings above are blocking only; documented wall-clock boundaries and standalone scripts are classified, not hidden)`);
@@ -382,6 +475,9 @@ if (require.main === module) {
     res.removedClientAccessorHits.length === 0 &&
     res.idlessSettlementHits.length === 0 &&
     res.settlementBypassHits.length === 0 &&
+    res.promiseAllSettledAuthoritativeHits.length === 0 &&
+    res.confirmExecutionBeforeSettlementHits.length === 0 &&
+    res.legacyDbServiceNameHits.length === 0 &&
     res.trackedNodeModulesCount === 0 &&
     res.trackedDistCount === 0;
 

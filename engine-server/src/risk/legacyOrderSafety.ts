@@ -139,6 +139,7 @@ export function evaluateOrderSafety<T extends LegacyOrderInput>(
       context?.participantKind === 'FOREIGN_INSTITUTION';
 
     if (!isAuthorizedKind) {
+      reasonCodes.push('REJECTED_STRATEGIC_NON_INSTITUTION');
       reasonCodes.push('REJECTED_UNAUTHORIZED_STRATEGIC_PARTICIPANT');
     }
 

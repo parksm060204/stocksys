@@ -110,6 +110,9 @@ export class InMemoryMarketRepository implements MarketRepository {
       if (order) {
         if (u.filled !== undefined) order.filled = u.filled;
         if (u.status !== undefined) order.status = u.status;
+        if (u.participantKind !== undefined) (order as any).participantKind = u.participantKind;
+        if (u.participantId !== undefined) (order as any).participantId = u.participantId;
+        if (u.strategyId !== undefined) (order as any).strategyId = u.strategyId;
       }
     }
   }
@@ -137,12 +140,12 @@ export class InMemoryMarketRepository implements MarketRepository {
     }
   }
 
-  public async getRecentTrades(stockId?: string, limit: number = 50): Promise<TradeRecord[]> {
+  public async getRecentTrades(stockId?: string, limit?: number): Promise<TradeRecord[]> {
     if (stockId) {
       const list = this.db.tradeStockIndex.get(stockId) || [];
-      return list.slice(-limit).map((t) => ({ ...t }));
+      return typeof limit === 'number' ? list.slice(-limit).map((t) => ({ ...t })) : list.map((t) => ({ ...t }));
     }
-    return this.db.trades.slice(-limit).map((t) => ({ ...t }));
+    return typeof limit === 'number' ? this.db.trades.slice(-limit).map((t) => ({ ...t })) : this.db.trades.map((t) => ({ ...t }));
   }
 
   public async savePriceHistory(records: readonly StockPriceHistoryRecord[]): Promise<void> {

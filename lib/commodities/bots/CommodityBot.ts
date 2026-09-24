@@ -18,6 +18,8 @@ export abstract class CommodityBot {
   public readonly reactionDelay: number;
   public readonly stopLossPct: number;
   public readonly takeProfitPct: number;
+  public readonly clock?: import('../../engine/simulation/runtime/simulationTimeSource').SimulationTimeSource;
+  public readonly random?: import('../../engine/simulation/runtime/simulationRandom').SimulationRandomSource;
 
   // 종목별 보유 포지션: { quantity: number; avgEntryPrice: number }
   public positions: Map<string, { quantity: number; avgEntryPrice: number }> = new Map();
@@ -38,6 +40,8 @@ export abstract class CommodityBot {
     this.reactionDelay = Math.max(0, config.reactionDelay || 0);
     this.stopLossPct = config.stopLossPct ?? -0.05; // 기본 -5% 손절
     this.takeProfitPct = config.takeProfitPct ?? 0.10; // 기본 +10% 익절
+    this.clock = config.clock;
+    this.random = config.random;
   }
 
   /**
@@ -126,7 +130,7 @@ export abstract class CommodityBot {
           size: Math.abs(pos.quantity),
           filled: 0,
           createdAtTick: currentTick,
-          createdAtTime: Date.now(),
+          createdAtTime: this.clock ? this.clock.now() : 0,
         };
       }
     }

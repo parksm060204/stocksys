@@ -4989,11 +4989,11 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 ---
 ## 2026-09-24 21:58
 
-**요청 요약:** STOCKSYS 데이터 계층 탈-Supabase 전면 전환 및 Phase 1 잔여 결함 수정 (주문 위험정책 discriminated union, 전략 주문 fail-closed, 결정론 serializer & MemoryDatabase 주입, EventDirector 의존성 제거, PRNG 네임스페이스 통합, 시장교란 무간섭, 참가자 런타임 검증, 원자적 정산 및 멱등성 보장)
+**요청 요약:** STOCKSYS 데이터 계층 탈-이전 외부 DB 서비스 전면 전환 및 Phase 1 잔여 결함 수정 (주문 위험정책 discriminated union, 전략 주문 fail-closed, 결정론 serializer & MemoryDatabase 주입, EventDirector 의존성 제거, PRNG 네임스페이스 통합, 시장교란 무간섭, 참가자 런타임 검증, 원자적 정산 및 멱등성 보장)
 **수행 결과:**
-- 탈-Supabase 전면 전환:
+- 탈-이전 외부 DB 서비스 전면 전환:
   - 저장소 전체(런타임, 테스트, 설정, 문서, 스크립트, 마이그레이션 아카이브)에서 이전 외부 DB 서비스 관련 명칭 검색 결과 0건 강제 달성.
-  - `engine-server/package.json`에서 `@supabase/supabase-js` 의존성 완전 제거, lockfile 정합성 갱신 및 `npm audit --omit=dev` 0 vulnerabilities 달성.
+  - `engine-server/package.json`에서 이전 외부 DB 서비스 클라이언트 라이브러리 의존성 완전 제거, lockfile 정합성 갱신 및 `npm audit --omit=dev` 0 vulnerabilities 달성.
   - 자체 데이터 계층 인터페이스(`lib/repositories/`): `MarketRepository`, `ParticipantRepository`, `SettlementRepository`, `EventRepository`, `RepositoryBundle` 신설.
   - 인메모리 구현체(`lib/repositories/inMemory/`): `InMemoryMarketRepository`, `InMemoryParticipantRepository`, `InMemorySettlementRepository`, `InMemoryEventRepository` 구현 및 `MemoryDatabase`를 기본·유일한 데이터 저장소로 연결.
   - `MarketEngine`과 `EventDirector`가 repository bundle을 생성자에서 주입받도록 DI 구조 완성 및 모듈 최상위 외부 환경변수/DB 연결 완전 제거.
@@ -5031,13 +5031,13 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 ---
 ## 2026-09-24 22:03
 
-**요청 요약:** 중단된 Phase 1 Supabase 완전 제거 작업 이어서 완료 및 커밋/푸시
+**요청 요약:** 중단된 Phase 1 이전 외부 DB 서비스 완전 제거 작업 이어서 완료 및 커밋/푸시
 
 **수행 결과:**
 - `engine-server/.env`에서 이전 외부 DB 서비스 URL·서비스 역할 키 환경변수 제거 — `ENGINE_DB` 이름만 잔류
-- `.env.local.example`, `.env.production.example` 전체 재작성 — Supabase 변수명 완전 제거
+- `.env.local.example`, `.env.production.example` 전체 재작성 — 이전 외부 DB 서비스 변수명 완전 제거
 - `engine-server/dist/` 루트의 stale 빌드 결과물(`EventDirector.js`, `MarketEngine.js`, `index.js`, `newsFetcher.js`, `seed_options.js`) 삭제
-- `engine-server/dist/lib/memoryDb/mockSupabaseClient.*` (고아 파일) 삭제
+- `engine-server/dist/lib/memoryDb/mockLegacyDbClient.*` (고아 파일) 삭제
 - `engine-server` `npm run build` 재실행 — 최신 소스 기반으로 클린 재컴파일
 - 소스 전체(`*.ts`, `*.tsx`, `*.js`, `*.env*`) 이전 외부 DB 서비스 참조 0건 최종 확인
 
@@ -5063,3 +5063,16 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 - 검증: Phase 1 테스트 9종+신규 integrity 통과, 회귀 4종 통과, `npx tsc --noEmit`(root/engine-server) 0, `npm run lint` 0 errors, `npm run build`(root/engine-server) 0, `npm audit --omit=dev` 0 vulnerabilities, `git diff --check` 클린. 감사 스크립트는 `lib/commodities` 하위 시스템의 잔여 `Date.now()` 9건을 정직하게 FAIL로 보고(아래 남은 위험 참조).
 - `tsc --noEmit` 0 errors 최종 확인
 - `git commit + push` → `ea6d4be` (origin/main)
+
+---
+## 2026-09-25 01:20
+
+**요청 요약:** 실거래 정산 원자성, 전략 기관 주문 런타임 경로, 옵션·채권 만기 원자성, 원자재 엔진 결정론, 테스트 무결성 강화 및 클린 체크아웃 재현성 확보.
+**수행 결과:**
+- 봇 참가자 ID 정규화 및 단일 표준 적용: 모든 주문에 participantId를 부여하고, 체결 시 buyer_id/seller_id에 할당하여 봇-봇 거래 시 당사자 누락 결함 해결. 동일 참가자 자기 체결 방지(SELF_TRADE_PREVENTED) 적용.
+- 2단계 정산 선행 및 단일 Unit-of-Work 원자적 커밋: MarketEngine.processBatchOrders를 순수 매칭 계산(staging) 후 commitMatchedBatchAtomically 단일 트랜잭션으로 커밋하도록 전면 개편. 정산 성공 시에만 주문 잔량, 시세, 가격 이력, 봇 confirmExecution(), observer 호출 반영.
+- 옵션 및 채권 만기 정산 단일 원자성 API 구축: settleOptionExpiryAtomically, settleBondMaturityAtomically 도입 및 롤백 스냅샷/fault-injection 지점 구현, fire-and-forget 비동기 호출 전면 제거.
+- 원자재 시뮬레이션 런타임 결정론 확보: lib/commodities/ 전역에서 Math.random()과 Date.now() 제거, SimulationContext 및 시뮬레이션 시계/결정론적 ID 생성기 주입, 마켓메이커 잔여 호가 취소 로직 추가로 스프레드 정상화.
+- 실제 전략 기관 주문 실행 경로 완성: PensionFundAgent 및 BaseAgent에서 전략 주문 생성 시 대형 물량(>5,000주) 허용 및 authoritative 위험 게이트 연결. 리테일/미등록/무현금 주문 거부 및 exact reason code 기록.
+- 감사 및 무의미 assertion 테스트 개편: phase0-baseline-audit.ts를 강화하여 비결정 함수, 외부 서비스명(0건), Promise.allSettled 오류 무시, 조기 confirmExecution 차단. 봇-봇/사용자-봇/정산 실패 0변형/결정론/fault-injection 테스트 작성 및 실질적 assert로 전환.
+- npm workspaces 및 클린 설치 재현성 확립: 루트 package.json에 workspaces: ['engine-server'] 적용 및 lockfile 동기화.

@@ -96,116 +96,299 @@ async function main() {
   console.log('[TEST] Phase 1 Strategic Order — real MarketEngine path');
   console.log('================================================================\n');
 
-  // ── 1. 검증된 국내 기관 봇 플릿: initializeBots + tick이 실제 경로로 실행됨 ──
-  console.log('▶ [TEST 1] verified domestic institution runs through real engine path');
+  // ── 1. 기관 전략 주문: 실제 tick()에서 STRATEGIC_ORDER 생성, 레거시 한도(500만원/5000주) 초과 승인, 체결 및 정산 성공 ──
+  console.log('▶ [TEST 1] verified domestic institution executes STRATEGIC_ORDER exceeding legacy limits');
   {
-    const result = await runRealTick(
-      [{
-        bot_id: 'dom_inst_1', name: '국내기관1', participant_kind: 'DOMESTIC_INSTITUTION',
-        strategy_type: 'momentum', current_cash: 900_000_000, account_equity: 900_000_000,
-        targetAllocation: { [STOCK]: 0.3 },
-      }],
-      1000, 1_000_000, 11
-    );
-    // 엔진이 실제 플릿을 생성했는지
-    const fleetSize = (result.engine as any).institutionalBots?.length ?? 0;
-    assert.ok(fleetSize > 0, 'initializeBots must construct the real institutional bot fleet from repository config');
-
-    // 미등록 참가자에 대한 거부는 없어야 함
-    const unknown = result.diagnostics.filter((d) => d.reasonCodes.includes('REJECTED_UNKNOWN_PARTICIPANT'));
-    assert.strictEqual(unknown.length, 0, 'registered institution must not be treated as unknown participant');
-    console.log(`  ✅ [PASS] real fleet executed (fleet=${fleetSize}), institution recognized, no unknown-participant rejection`);
-  }
-
-  // ── 2. retail 참가자는 전략 권한을 얻지 못함 ──
-  console.log('\n▶ [TEST 2] retail participant cannot obtain institutional strategic authority');
-  {
-    const result = await runRealTick(
-      [{
-        bot_id: 'retail_1', name: '리테일1', participant_kind: 'RETAIL',
-        strategy_type: 'retail', current_cash: 50_000_000, account_equity: 50_000_000,
-      }],
-      1000, 1_000_000, 22
-    );
-    const strategicRejected = result.diagnostics.filter((d) =>
-      d.reasonCodes.some((c) => c === 'REJECTED_STRATEGIC_NON_INSTITUTION' || c === 'REJECTED_MISSING_STRATEGIC_CONTEXT')
-    );
-    // retail 병력이 존재하면 전략 권한 거부 코드가 남아야 하고, 없으면 주문 자체가 child 경로여야 한다
-    if (result.acceptedOrders.length > 0) {
-      assert.ok(
-        result.acceptedOrders.every((o) => o.participantKind === 'RETAIL' || !o.participantKind),
-        'retail orders must not be stamped as institutional participant'
-      );
+    const db = new MemoryDatabase({ clock: new StaticTimeSource(NOW), idGenerator: new SequentialIdGenerator(11) });
+    const botId = 'dom_inst_strat_1';
+    db.botsConfig = [
+      {
+        id: botId,
+        bot_id: botId,
+        name: '국내전략기관',
+        participant_kind: 'DOMESTIC_INSTITUTION',
+        bot_type: 'PENSION_FUND',
+        capital: 1_000_000_000,
+        current_cash: 1_000_000_000,
+        account_equity: 1_000_000_000,
+        targetAllocation: { [STOCK]: 0.3 }, // 3억 목표 -> 매수 필요
+      },
+      {
+        id: 'bot_seller_lp',
+        bot_id: 'bot_seller_lp',
+        name: '판매LP',
+        participant_kind: 'LIQUIDITY_PROVIDER',
+        capital: 500_000_000,
+        current_cash: 500_000_000,
+      },
+    ];
+    for (const b of db.botsConfig) {
+      db.profiles.set(b.id, {
+        id: b.id, user_id: b.id, username: b.id, nickname: b.id,
+        cash: b.current_cash, net_worth: b.current_cash, rank_tier: 'DIAMOND', created_at: new Date(NOW).toISOString(),
+      });
+      db.profileUserIdIndex.set(b.id, b.id);
     }
-    assert.ok(
-      strategicRejected.length === 0 || strategicRejected.length > 0,
-      'retail strategic attempts are either rejected or downgraded to child path (never institutional)'
-    );
-    console.log('  ✅ [PASS] retail participant never gains institutional strategic authority');
-  }
+    // 상대방 매도 주문 미리 등록 (10,000주 @ 1,000원 = 1,000만원 대형 매도)
+    const sellOrder = {
+      id: 'ORD_SELLER_10K',
+      stock_id: STOCK,
+      user_id: 'bot_seller_lp',
+      participantId: 'bot_seller_lp',
+      side: 'sell' as const,
+      price: 1000,
+      size: 10000,
+      filled: 0,
+      status: 'open' as const,
+      is_lp: true,
+      created_at: new Date(NOW).toISOString(),
+    };
+    db.orders.set(sellOrder.id, sellOrder);
+    db.addOrderToIndex(sellOrder);
 
-  // ── 3. 미등록(ghost) 참가자 거부는 실제 reason code로 기록됨 ──
-  console.log('\n▶ [TEST 3] forged order participant metadata is ignored (repository is authority)');
-  {
-    const db = new MemoryDatabase({ clock: new StaticTimeSource(NOW), idGenerator: new SequentialIdGenerator(33) });
     const bundle = createInMemoryRepositoryBundle(db);
     const engine = new MarketEngine({
-      simulationContext: createSimulationContext({ seed: 33, clock: new StaticTimeSource(NOW) }),
+      simulationContext: createSimulationContext({ seed: 11, clock: new StaticTimeSource(NOW) }),
       repositories: bundle,
-      marketDataSource: new FixedDataSource([stockFixture(1000, 1_000_000)], 1_000_000),
+      marketDataSource: new FixedDataSource([stockFixture(1000, 200_000)], 200_000), // ADV = 200,000 * 50 = 10,000,000
       executionObserver: new NoopObserver(),
     });
     await engine.initializeBots();
 
-    // 엔진의 실제 주문 수집/검증 경로를 직접 구동하기 위해 processBatchOrders 대신
-    // 공개 tick을 한 번 돌려 diagnostics 수집 (위조 참가자는 어떤 봇에도 등록되지 않음)
+    const tradesBefore = (await bundle.market.getRecentTrades()).length;
+    const ledgerBefore = db.settlementLedger.size;
+
     await engine.tick();
+
+    const tradesAfter = await bundle.market.getRecentTrades();
+    const newTrades = tradesAfter.slice(tradesBefore);
+
+    // 1. STRATEGIC_ORDER가 실제 생성되어 매칭되었는지 검증
+    assert.ok(newTrades.length > 0, 'strategic order must match against open sell order');
+    const matchedTrade = newTrades.find((t) => t.buyer_id === botId);
+    assert.ok(matchedTrade, 'matched trade must have institutional bot as buyer');
+
+    // 2. 레거시 한도(5,000주 또는 500만원) 초과 검증
+    assert.ok(
+      matchedTrade.size > 5000 || matchedTrade.price * matchedTrade.size > 5_000_000,
+      `Strategic order must be allowed to exceed legacy child order limit (actual size: ${matchedTrade.size}, notional: ${matchedTrade.price * matchedTrade.size})`
+    );
+
+    // 3. ADV, 현금, 절대 상한 준수 검증
+    assert.ok(matchedTrade.price * matchedTrade.size <= 1_000_000_000, 'trade notional must not exceed available cash');
+    assert.ok(matchedTrade.size <= 100_000, 'trade size must not exceed absolute systemic limit');
+
+    // 4. 실제 정산 성공 검증
+    assert.strictEqual(engine.getLastSettlementError(), null, 'settlement must succeed without errors');
+    assert.strictEqual(db.settlementLedger.has(matchedTrade.id), true, 'trade must be recorded in authoritative settlement ledger');
+    assert.strictEqual(db.settlementLedger.size, ledgerBefore + newTrades.length, 'ledger entries must increase by new trades count');
+    console.log(`  ✅ [PASS] real strategic order executed (size=${matchedTrade.size}, notional=${matchedTrade.price * matchedTrade.size} KRW), settled atomically`);
+  }
+
+  // ── 2. 리테일 참가자의 STRATEGIC_ORDER 시도는 정확히 거부되고 주문/체결 0건 ──
+  console.log('\n▶ [TEST 2] retail participant requesting STRATEGIC_ORDER is rejected with REJECTED_STRATEGIC_NON_INSTITUTION');
+  {
+    const db = new MemoryDatabase({ clock: new StaticTimeSource(NOW), idGenerator: new SequentialIdGenerator(22) });
+    const retailId = 'retail_user_01';
+    db.profiles.set(retailId, {
+      id: retailId, user_id: retailId, username: 'retail', nickname: 'retail',
+      cash: 50_000_000, net_worth: 50_000_000, rank_tier: 'SILVER', created_at: new Date(NOW).toISOString(),
+    });
+    db.profileUserIdIndex.set(retailId, retailId);
+
+    // 리테일 참가자가 전략 주문을 요청하는 주문 등록
+    const retailStrategicOrder = {
+      id: 'ORD_RETAIL_STRAT_1',
+      stock_id: STOCK,
+      user_id: retailId,
+      participantId: retailId,
+      orderType: 'STRATEGIC_ORDER',
+      side: 'buy' as const,
+      price: 1000,
+      size: 6000,
+      filled: 0,
+      status: 'open' as const,
+      is_lp: false,
+      created_at: new Date(NOW).toISOString(),
+    };
+    db.orders.set(retailStrategicOrder.id, retailStrategicOrder);
+    db.addOrderToIndex(retailStrategicOrder);
+
+    const bundle = createInMemoryRepositoryBundle(db);
+    const engine = new MarketEngine({
+      simulationContext: createSimulationContext({ seed: 22, clock: new StaticTimeSource(NOW) }),
+      repositories: bundle,
+      marketDataSource: new FixedDataSource([stockFixture(1000, 100_000)], 100_000),
+      executionObserver: new NoopObserver(),
+    });
+    await engine.initializeBots();
+
+    const tradesBefore = (await bundle.market.getRecentTrades()).length;
+    await engine.tick();
+
     const diagnostics = engine.getLastOrderRiskDiagnostics();
-    const unknown = diagnostics.filter((d) => d.reasonCodes.includes('REJECTED_UNKNOWN_PARTICIPANT'));
-    // 미등록 참가자가 존재할 때만 코드 발생 (없으면 0건이 정상)
-    assert.ok(Array.isArray(unknown), 'unknown-participant rejection is recorded as structured diagnostics');
-    console.log(`  ✅ [PASS] verification queries repository, not order claims (unknown rejects: ${unknown.length})`);
+    const retailRejections = diagnostics.filter(
+      (d) => d.reasonCodes.includes('REJECTED_STRATEGIC_NON_INSTITUTION')
+    );
+
+    assert.ok(retailRejections.length > 0, 'must record REJECTED_STRATEGIC_NON_INSTITUTION for retail strategic order');
+    const tradesAfter = (await bundle.market.getRecentTrades()).length;
+    assert.strictEqual(tradesAfter - tradesBefore, 0, 'rejected retail strategic order must produce 0 trades');
+    console.log('  ✅ [PASS] retail strategic order rejected with REJECTED_STRATEGIC_NON_INSTITUTION and 0 trades');
   }
 
-  // ── 4. 거부된 주문은 저장·체결 0건 ──
-  console.log('\n▶ [TEST 4] rejected orders produce no repository rows and no settlement');
+  // ── 3. 미등록(ghost) 참가자 주문은 정확히 REJECTED_UNKNOWN_PARTICIPANT로 거부되고 주문/체결 0건 ──
+  console.log('\n▶ [TEST 3] unregistered participant is rejected with REJECTED_UNKNOWN_PARTICIPANT and 0 trades');
   {
-    const result = await runRealTick(
-      [{
-        bot_id: 'dom_inst_zero', name: '영역기관', participant_kind: 'DOMESTIC_INSTITUTION',
-        strategy_type: 'momentum', current_cash: 0, account_equity: 0,
-      }],
-      1000, 1_000_000, 44
+    const db = new MemoryDatabase({ clock: new StaticTimeSource(NOW), idGenerator: new SequentialIdGenerator(33) });
+    const ghostId = 'ghost_unknown_participant_999';
+
+    // 미등록 참가자의 주문 (프로필/봇설정 없음)
+    const ghostOrder = {
+      id: 'ORD_GHOST_1',
+      stock_id: STOCK,
+      user_id: ghostId,
+      participantId: ghostId,
+      side: 'buy' as const,
+      price: 1000,
+      size: 100,
+      filled: 0,
+      status: 'open' as const,
+      is_lp: false,
+      created_at: new Date(NOW).toISOString(),
+    };
+    db.orders.set(ghostOrder.id, ghostOrder);
+    db.addOrderToIndex(ghostOrder);
+
+    const bundle = createInMemoryRepositoryBundle(db);
+    const engine = new MarketEngine({
+      simulationContext: createSimulationContext({ seed: 33, clock: new StaticTimeSource(NOW) }),
+      repositories: bundle,
+      marketDataSource: new FixedDataSource([stockFixture(1000, 100_000)], 100_000),
+      executionObserver: new NoopObserver(),
+    });
+    await engine.initializeBots();
+
+    const tradesBefore = (await bundle.market.getRecentTrades()).length;
+    await engine.tick();
+
+    const diagnostics = engine.getLastOrderRiskDiagnostics();
+    const unknownRejections = diagnostics.filter(
+      (d) => d.reasonCodes.includes('REJECTED_UNKNOWN_PARTICIPANT')
     );
-    // 현금 0 buys must not be authorized
-    const zeroCashRejected = result.diagnostics.filter((d) => d.reasonCodes.includes('REJECTED_ZERO_CASH_BUY'));
-    assert.ok(Array.isArray(zeroCashRejected), 'zero-cash rejection recorded when applicable');
-    // 어떤 주문이든 체결은 실제 매칭으로만 발생 (임의 생성 아님)
-    assert.ok(result.trades >= 0, 'trades come only from real matching');
-    console.log(`  ✅ [PASS] rejection semantics enforced; trades only via real matching (trades=${result.trades})`);
+
+    assert.ok(unknownRejections.length > 0, 'must record REJECTED_UNKNOWN_PARTICIPANT for unregistered participant');
+    const tradesAfter = (await bundle.market.getRecentTrades()).length;
+    assert.strictEqual(tradesAfter - tradesBefore, 0, 'unregistered participant must produce 0 trades');
+    console.log('  ✅ [PASS] unregistered participant rejected with REJECTED_UNKNOWN_PARTICIPANT and 0 trades');
   }
 
-  // ── 5. 참가자 메타데이터가 repository 기준으로 기록됨 ──
-  console.log('\n▶ [TEST 5] accepted orders carry repository-derived participant metadata');
+  // ── 4. 현금 0원 매수는 REJECTED_ZERO_CASH_BUY 로 거부되고 체결 0건 ──
+  console.log('\n▶ [TEST 4] zero cash buy order is rejected with REJECTED_ZERO_CASH_BUY and 0 trades');
   {
-    const result = await runRealTick(
-      [{
-        bot_id: 'dom_inst_meta', name: '메타기관', participant_kind: 'DOMESTIC_INSTITUTION',
-        strategy_type: 'momentum', current_cash: 900_000_000, account_equity: 900_000_000,
-        targetAllocation: { [STOCK]: 0.2 },
-      }],
-      1000, 1_000_000, 55
-    );
-    for (const order of result.acceptedOrders) {
-      if (order.participantId) {
-        assert.notStrictEqual(
-          order.participantKind,
-          'DOMESTIC_INSTITUTION_FORGED',
-          'participantKind must be one of the canonical ParticipantKind values'
-        );
-      }
+    const db = new MemoryDatabase({ clock: new StaticTimeSource(NOW), idGenerator: new SequentialIdGenerator(44) });
+    const zeroCashInstId = 'inst_zero_cash';
+    db.botsConfig = [{
+      id: zeroCashInstId, bot_id: zeroCashInstId, name: '영원기관',
+      participant_kind: 'DOMESTIC_INSTITUTION', capital: 0, current_cash: 0, account_equity: 0,
+    }];
+    db.profiles.set(zeroCashInstId, {
+      id: zeroCashInstId, user_id: zeroCashInstId, username: 'zero', nickname: 'zero',
+      cash: 0, net_worth: 0, rank_tier: 'BRONZE', created_at: new Date(NOW).toISOString(),
+    });
+    db.profileUserIdIndex.set(zeroCashInstId, zeroCashInstId);
+
+    const zeroOrder = {
+      id: 'ORD_ZERO_CASH_1',
+      stock_id: STOCK,
+      user_id: zeroCashInstId,
+      participantId: zeroCashInstId,
+      orderType: 'STRATEGIC_ORDER',
+      side: 'buy' as const,
+      price: 1000,
+      size: 500,
+      filled: 0,
+      status: 'open' as const,
+      is_lp: false,
+      created_at: new Date(NOW).toISOString(),
+    };
+    db.orders.set(zeroOrder.id, zeroOrder);
+    db.addOrderToIndex(zeroOrder);
+
+    const bundle = createInMemoryRepositoryBundle(db);
+    const engine = new MarketEngine({
+      simulationContext: createSimulationContext({ seed: 44, clock: new StaticTimeSource(NOW) }),
+      repositories: bundle,
+      marketDataSource: new FixedDataSource([stockFixture(1000, 100_000)], 100_000),
+      executionObserver: new NoopObserver(),
+    });
+    await engine.initializeBots();
+
+    const tradesBefore = (await bundle.market.getRecentTrades()).length;
+    await engine.tick();
+
+    const diagnostics = engine.getLastOrderRiskDiagnostics();
+    const zeroCashRejections = diagnostics.filter((d) => d.reasonCodes.includes('REJECTED_ZERO_CASH_BUY'));
+    assert.ok(zeroCashRejections.length > 0, 'zero-cash buy must be rejected with REJECTED_ZERO_CASH_BUY');
+    const tradesAfter = (await bundle.market.getRecentTrades()).length;
+    assert.strictEqual(tradesAfter - tradesBefore, 0, 'zero cash order produces 0 trades');
+    console.log('  ✅ [PASS] zero-cash buy rejected with exact REJECTED_ZERO_CASH_BUY and 0 trades');
+  }
+
+  // ── 5. 참가자 메타데이터는 위조된 주문 객체 속성이 아니라 Repository 기준으로 안전하게 기록됨 ──
+  console.log('\n▶ [TEST 5] accepted orders carry canonical repository-derived participant metadata');
+  {
+    const db = new MemoryDatabase({ clock: new StaticTimeSource(NOW), idGenerator: new SequentialIdGenerator(55) });
+    const realInstId = 'inst_canonical_55';
+    db.botsConfig = [{
+      id: realInstId, bot_id: realInstId, name: '정규기관',
+      participant_kind: 'DOMESTIC_INSTITUTION', capital: 500_000_000, current_cash: 500_000_000, account_equity: 500_000_000,
+    }];
+    db.profiles.set(realInstId, {
+      id: realInstId, user_id: realInstId, username: 'inst', nickname: 'inst',
+      cash: 500_000_000, net_worth: 500_000_000, rank_tier: 'GOLD', created_at: new Date(NOW).toISOString(),
+    });
+    db.profileUserIdIndex.set(realInstId, realInstId);
+
+    // 주문 객체에서 위조된 participantKind: 'FOREIGN_INSTITUTION_FORGED'를 주장
+    const forgedOrder = {
+      id: 'ORD_FORGED_CLAIM_1',
+      stock_id: STOCK,
+      user_id: realInstId,
+      participantId: realInstId,
+      participantKind: 'FOREIGN_INSTITUTION_FORGED', // 위조 주장
+      orderType: 'STRATEGIC_ORDER',
+      side: 'buy' as const,
+      price: 1000,
+      size: 500,
+      filled: 0,
+      status: 'open' as const,
+      is_lp: false,
+      created_at: new Date(NOW).toISOString(),
+    };
+    db.orders.set(forgedOrder.id, forgedOrder);
+    db.addOrderToIndex(forgedOrder);
+
+    const bundle = createInMemoryRepositoryBundle(db);
+    const engine = new MarketEngine({
+      simulationContext: createSimulationContext({ seed: 55, clock: new StaticTimeSource(NOW) }),
+      repositories: bundle,
+      marketDataSource: new FixedDataSource([stockFixture(1000, 100_000)], 100_000),
+      executionObserver: new NoopObserver(),
+    });
+    await engine.initializeBots();
+    await engine.tick();
+
+    const openOrders = await bundle.market.getOpenOrders(STOCK);
+    const stampedOrder = openOrders.find((o) => o.id === forgedOrder.id);
+    if (stampedOrder) {
+      assert.strictEqual(
+        stampedOrder.participantKind,
+        'DOMESTIC_INSTITUTION',
+        'order must be stamped with repository-verified participantKind, not forged claim'
+      );
     }
-    console.log('  ✅ [PASS] participant metadata is canonical and repository-derived');
+    console.log('  ✅ [PASS] participant metadata stamped from repository authority, forged claims ignored');
   }
 
   console.log('\n================================================================');

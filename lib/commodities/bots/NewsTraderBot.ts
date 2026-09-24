@@ -38,7 +38,8 @@ export class NewsTraderBot extends CommodityBot {
         let isBullish = ev.magnitude > 0;
 
         // 20% 확률로 뉴스 오판 (Noise Trader 성격)
-        if (Math.random() < this.misinterpretRate) {
+        const roll = this.random ? this.random.next() : 0.5;
+        if (roll < this.misinterpretRate) {
           isBullish = !isBullish;
         }
 
@@ -55,7 +56,7 @@ export class NewsTraderBot extends CommodityBot {
             size: Math.min(baseQty, this.positionLimit - pos.quantity),
             filled: 0,
             createdAtTick: currentTick,
-            createdAtTime: Date.now(),
+            createdAtTime: this.clock ? this.clock.now() : 0,
           });
         } else if (!isBullish && pos.quantity > -this.positionLimit) {
           orders.push({
@@ -68,7 +69,7 @@ export class NewsTraderBot extends CommodityBot {
             size: baseQty,
             filled: 0,
             createdAtTick: currentTick,
-            createdAtTime: Date.now(),
+            createdAtTime: this.clock ? this.clock.now() : 0,
           });
         }
       }

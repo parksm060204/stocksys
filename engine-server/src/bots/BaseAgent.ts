@@ -229,6 +229,14 @@ export class BaseAgent {
    * ⚠️ 중요: 이 함수는 주문 객체만 반환하며, 포트폴리오 상태를 절대 직접 수정하지 않습니다.
    *          실제 체결 후 MarketEngine에서 confirmExecution()을 호출해야 합니다.
    */
+  public isInstitutionalParticipant(): boolean {
+    const kind = (this.agentConfig as any).participant_kind || (this.agentConfig as any).participantKind;
+    if (kind === 'DOMESTIC_INSTITUTION' || kind === 'FOREIGN_INSTITUTION') return true;
+    const type = (this.agentConfig as any).type || (this.agentConfig as any).bot_type;
+    if (type === 'PENSION_FUND' || type === 'HEDGE_FUND' || type === 'QUANT_FUND' || type === 'COMMERCIAL_BANK' || type === 'PROP_DESK') return true;
+    return false;
+  }
+
   public executePortfolioRebalancing(marketState: any): any[] {
     const orders: any[] = [];
     
@@ -262,8 +270,18 @@ export class BaseAgent {
         const targetQty = Math.floor(Math.abs(stockDelta) * twapRatio / stock.current_price);
         if (targetQty > 0) {
           const side = stockDelta > 0 ? 'buy' : 'sell';
-          orders.push(...this.executeSmartOrder(stock, side, stock.current_price, targetQty, twapRatio * 5, marketState.activeEvents));
-          // ✅ 포트폴리오 선반영 제거: 실제 체결 후 confirmExecution()에서만 업데이트
+          const isStrategic = this.isInstitutionalParticipant();
+          const parentPlanId = `rebal_${this.botId}_${stock.id}_${this.clock ? this.clock.now() : 0}`;
+          orders.push(...this.executeSmartOrder(
+            stock,
+            side,
+            stock.current_price,
+            targetQty,
+            twapRatio * 5,
+            marketState.activeEvents,
+            isStrategic,
+            parentPlanId
+          ));
         }
       }
     }
@@ -276,7 +294,6 @@ export class BaseAgent {
         if (targetQty > 0) {
           const side = bondDelta > 0 ? 'buy' : 'sell';
           orders.push(...this.executeSmartOrder(bond, side, bond.current_price, targetQty, twapRatio * 5, marketState.activeEvents));
-          // ✅ 포트폴리오 선반영 제거
         }
       }
     }
@@ -289,7 +306,6 @@ export class BaseAgent {
         if (targetQty > 0) {
           const side = commodityDelta > 0 ? 'buy' : 'sell';
           orders.push(...this.executeSmartOrder(commodity, side, commodity.current_price, targetQty, twapRatio * 5, marketState.activeEvents));
-          // ✅ 포트폴리오 선반영 제거
         }
       }
     }
@@ -325,15 +341,8 @@ export class BaseAgent {
     return alignToLegacyTickSize(price);
   }
 
-  /**
-   * 기관급 트레이딩 안전장치 (Institutional Risk Controls)
-   * 1. Hard Limit: 1회 주문 최대 금액 5,000,000 KRW, 수량 5,000주 제한
-   * 2. 호가창 깊이(LOB Depth) 대비 최대 10% 비율 제한
-   * 3. 틱 단위 가격 정렬 (KRX Tick Alignment)
-   * -> Canonical module `legacyOrderSafety.ts`로 중앙화됨
-   */
-  public applyInstitutionalRiskControls(order: any, currentPrice: number, lobDepth: number = 50000): any {
-    return applyLegacyChildOrderSafetyLimits(order, currentPrice, lobDepth);
+  public applyInstitutionalRiskControls(order: any, currentPrice: number, lobDepth: number = 50000, context?: any): any {
+    return applyLegacyChildOrderSafetyLimits(order, currentPrice, lobDepth, context);
   }
 
   protected executeSmartOrder(
@@ -342,7 +351,9 @@ export class BaseAgent {
     targetPrice: number, 
     targetQty: number, 
     baseUrgency: number,
-    activeEvents: any[] = []
+    activeEvents: any[] = [],
+    isStrategic: boolean = false,
+    parentOrderId?: string
   ) {
     let urgency = baseUrgency;
     let finalTargetQty = targetQty;
@@ -366,6 +377,17 @@ export class BaseAgent {
     const tickSize = this.getTickSize(stock.current_price);
     const priceDiffRatio = Math.abs(stock.current_price - targetPrice) / stock.current_price;
 
+    const participantKind = this.isInstitutionalParticipant()
+      ? ((this.agentConfig as any).participant_kind || 'DOMESTIC_INSTITUTION')
+      : 'RETAIL';
+    const strategyId = (this.agentConfig as any).strategy_type || (this.agentConfig as any).type || 'MOMENTUM';
+    const orderType = isStrategic ? 'STRATEGIC_ORDER' : 'CHILD_ORDER';
+    const riskContext = isStrategic ? {
+      participantKind: participantKind as any,
+      participantIdentity: this.botId,
+      orderType: 'STRATEGIC_ORDER' as const,
+    } : undefined;
+
     // 1. 긴급성 최우선 판단 -> Sweep-to-fill
     if (urgency > 0.7) {
       const sweepTicks = urgency > 0.9 ? 4 : 2; 
@@ -377,14 +399,24 @@ export class BaseAgent {
         const rawOrder = {
           stock_id: stock.id,
           user_id: null,
+          participantId: this.botId,
+          participantKind,
+          strategyId,
+          orderType,
+          parent_order_id: parentOrderId,
           side: side,
           price: sweepPrice,
           size: Math.floor(finalTargetQty / sweepTicks) || 1,
           status: 'open',
-          is_lp: true,
+          is_lp: false,
           _botId: this.botId
         };
-        orders.push(this.applyInstitutionalRiskControls(rawOrder, stock.current_price));
+        if (isStrategic) {
+          orders.push(rawOrder);
+        } else {
+          const safe = this.applyInstitutionalRiskControls(rawOrder, stock.current_price, 50000);
+          if (safe) orders.push(safe);
+        }
       }
       return orders;
     }
@@ -399,57 +431,96 @@ export class BaseAgent {
       
       const spoofQty = Math.min(5000, finalTargetQty * 2);
 
-      orders.push(this.applyInstitutionalRiskControls({
+      const s1 = this.applyInstitutionalRiskControls({
         stock_id: stock.id,
         user_id: null,
+        participantId: this.botId,
+        participantKind,
+        strategyId,
+        orderType: 'CHILD_ORDER',
         side: spoofSide,
         price: spoofPrice,
         size: spoofQty,
         status: 'open',
-        is_lp: true,
+        is_lp: false,
+        is_spoof: true,
         _botId: this.botId
-      }, stock.current_price));
+      }, stock.current_price);
+      if (s1) orders.push(s1);
 
-      orders.push(this.applyInstitutionalRiskControls({
+      const rawOrder2 = {
         stock_id: stock.id,
         user_id: null,
+        participantId: this.botId,
+        participantKind,
+        strategyId,
+        orderType,
+        parent_order_id: parentOrderId,
         side: side,
         price: targetPrice,
         size: Math.floor(finalTargetQty * 0.05) || 1,
         status: 'open',
-        is_lp: true,
+        is_lp: false,
         _botId: this.botId
-      }, stock.current_price));
+      };
+      if (isStrategic) {
+        orders.push(rawOrder2);
+      } else {
+        const s2 = this.applyInstitutionalRiskControls(rawOrder2, stock.current_price, 50000);
+        if (s2) orders.push(s2);
+      }
       return orders;
     }
 
     // 3. 수량 부담 판단 -> Iceberg (빙산 주문)
     if (finalTargetQty > 500) {
       const icebergDisplayQty = Math.max(10, Math.floor(finalTargetQty * 0.02));
-      orders.push(this.applyInstitutionalRiskControls({
+      const rawOrder3 = {
         stock_id: stock.id,
         user_id: null,
+        participantId: this.botId,
+        participantKind,
+        strategyId,
+        orderType,
+        parent_order_id: parentOrderId,
         side: side,
         price: targetPrice,
         size: icebergDisplayQty,
         status: 'open',
-        is_lp: true,
+        is_lp: false,
         _botId: this.botId
-      }, stock.current_price));
+      };
+      if (isStrategic) {
+        orders.push(rawOrder3);
+      } else {
+        const s3 = this.applyInstitutionalRiskControls(rawOrder3, stock.current_price, 50000);
+        if (s3) orders.push(s3);
+      }
       return orders;
     }
 
     // 4. 일반적인 시장가/지정가 주문
-    orders.push(this.applyInstitutionalRiskControls({
+    const rawOrder4 = {
       stock_id: stock.id,
       user_id: null,
+      participantId: this.botId,
+      participantKind,
+      strategyId,
+      orderType,
+      parent_order_id: parentOrderId,
       side: side,
       price: targetPrice,
       size: finalTargetQty,
       status: 'open',
-      is_lp: true,
+      is_lp: false,
       _botId: this.botId
-    }, stock.current_price));
+    };
+    if (isStrategic) {
+      orders.push(rawOrder4);
+    } else {
+      const s4 = this.applyInstitutionalRiskControls(rawOrder4, stock.current_price, 50000);
+      if (s4) orders.push(s4);
+    }
     
     return orders;
   }
@@ -462,7 +533,9 @@ export class BaseAgent {
     side: 'buy' | 'sell',
     price: number,
     totalTargetQty: number,
-    displaySliceQty: number = 2000
+    displaySliceQty: number = 2000,
+    isStrategic: boolean = false,
+    parentOrderId?: string
   ): any {
     const alignedPrice = this.alignToTickSize(price);
     const key = `${stock.id}_${side}_${alignedPrice}`;
@@ -481,17 +554,37 @@ export class BaseAgent {
     const currentDisplay = Math.min(reserve.remainingQty, reserve.sliceQty);
     reserve.remainingQty -= currentDisplay;
 
-    return this.applyInstitutionalRiskControls({
+    const useStrategic = isStrategic || (this.isInstitutionalParticipant() && totalTargetQty > 5000);
+    const pid = parentOrderId || `parent_iceberg_${this.botId}_${stock.id}_${alignedPrice}`;
+    const participantKind = this.isInstitutionalParticipant()
+      ? ((this.agentConfig as any).participant_kind || 'DOMESTIC_INSTITUTION')
+      : 'RETAIL';
+    const strategyId = (this.agentConfig as any).strategy_type || (this.agentConfig as any).type || 'ICEBERG';
+
+    const rawOrder = {
       stock_id: stock.id,
       user_id: null,
+      participantId: this.botId,
+      participantKind,
+      strategyId,
+      orderType: useStrategic ? 'STRATEGIC_ORDER' : 'CHILD_ORDER',
+      parent_order_id: pid,
       side,
       price: alignedPrice,
       size: currentDisplay,
+      hidden_size: reserve.remainingQty,
+      peak_size: currentDisplay,
       status: 'open',
-      is_lp: true,
+      is_lp: false,
       is_iceberg: true,
       _botId: this.botId
-    }, stock.current_price);
+    };
+
+    if (useStrategic) {
+      return rawOrder;
+    }
+
+    return this.applyInstitutionalRiskControls(rawOrder, stock.current_price, 50000);
   }
 
   // =========================================================================

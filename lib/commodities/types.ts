@@ -108,6 +108,9 @@ export interface CommodityNewsItem {
   affectedCommodities: string[];
 }
 
+import type { SimulationTimeSource } from '../engine/simulation/runtime/simulationTimeSource';
+import type { SimulationRandomSource } from '../engine/simulation/runtime/simulationRandom';
+
 export type BotType =
   | 'trend_following' // 1. 트렌드추종형
   | 'mean_reversion'  // 2. 평균회귀형
@@ -125,6 +128,8 @@ export interface BotConfig {
   reactionDelay: number;   // 지연 틱 수 (0: 즉각, 1~5: 지연 반영)
   stopLossPct?: number;    // 손절 기준 (예: -0.05)
   takeProfitPct?: number;  // 익절 기준 (예: 0.10)
+  clock?: SimulationTimeSource;
+  random?: SimulationRandomSource;
 }
 
 export interface BotMarketSnapshot {

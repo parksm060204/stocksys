@@ -114,16 +114,27 @@ export const EVENT_TEMPLATES: CommodityEventTemplate[] = [
   },
 ];
 
+import type { SimulationRandomSource } from '../engine/simulation/runtime/simulationRandom';
+import type { SimulationTimeSource } from '../engine/simulation/runtime/simulationTimeSource';
+
 export class CommodityEventSystem {
   public activeEvents: ActiveCommodityEvent[] = [];
   public newsFeed: CommodityNewsItem[] = [];
   private eventHistory: ActiveCommodityEvent[] = [];
   private globalTriggerProbability: number = 0.02; // 틱당 2% 확률
+  private readonly random?: SimulationRandomSource;
+  private readonly clock?: SimulationTimeSource;
 
-  constructor(triggerProbability?: number) {
+  constructor(
+    triggerProbability?: number,
+    random?: SimulationRandomSource,
+    clock?: SimulationTimeSource
+  ) {
     if (triggerProbability !== undefined) {
       this.globalTriggerProbability = triggerProbability;
     }
+    this.random = random;
+    this.clock = clock;
   }
 
   /**
@@ -145,9 +156,16 @@ export class CommodityEventSystem {
     const activeTemplateIds = new Set(this.activeEvents.map((e) => e.templateId));
     const availableTemplates = EVENT_TEMPLATES.filter((t) => !activeTemplateIds.has(t.id));
 
-    if (Math.random() < this.globalTriggerProbability && availableTemplates.length > 0) {
+    const shouldTrigger = this.random
+      ? this.random.nextBoolean(this.globalTriggerProbability)
+      : false;
+
+    if (shouldTrigger && availableTemplates.length > 0) {
       // 템플릿 중 하나 랜덤 선택
-      const selected = availableTemplates[Math.floor(Math.random() * availableTemplates.length)];
+      const selectedIndex = this.random
+        ? this.random.nextInt(0, availableTemplates.length)
+        : 0;
+      const selected = availableTemplates[selectedIndex];
 
       if (selected) {
         const activeEvent: ActiveCommodityEvent = {
@@ -171,7 +189,7 @@ export class CommodityEventSystem {
         const newsItem: CommodityNewsItem = {
           id: `news_${currentTick}_${selected.id}`,
           tick: currentTick,
-          timestamp: Date.now(),
+          timestamp: this.clock ? this.clock.now() : currentTick * 1000,
           category: selected.targetCategories.join(', '),
           title: selected.headline,
           content: selected.description,
@@ -226,7 +244,7 @@ export class CommodityEventSystem {
     const newsItem: CommodityNewsItem = {
       id: `news_manual_${currentTick}_${template.id}`,
       tick: currentTick,
-      timestamp: Date.now(),
+      timestamp: this.clock ? this.clock.now() : currentTick * 1000,
       category: template.targetCategories.join(', '),
       title: template.headline,
       content: template.description,

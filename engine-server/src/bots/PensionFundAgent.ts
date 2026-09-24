@@ -65,7 +65,10 @@ export class PensionFundAgent extends BaseAgent {
       const holdingsQty = this.currentPortfolio.holdings?.[stock.id] || 0;
       const stockVal = holdingsQty * stock.current_price;
       const currentWeight = this.config.capital > 0 ? stockVal / this.config.capital : 0;
-      const targetWeightPerStock = totalStockWeight / Math.max(1, availableStocks.length);
+      const specificTarget = targetAlloc[stock.id] ?? targetAlloc[stock.ticker];
+      const targetWeightPerStock = specificTarget !== undefined
+        ? Number(specificTarget)
+        : totalStockWeight / Math.max(1, availableStocks.length);
       const tolerance = 0.005; // 0.5% 오차
       const tickSize = this.getTickSize(stock.current_price);
 
@@ -75,8 +78,16 @@ export class PensionFundAgent extends BaseAgent {
         const totalSellQty = Math.min(holdingsQty, Math.floor(excessVal / stock.current_price));
         if (totalSellQty > 0) {
           const displaySlice = Math.max(500, Math.floor(totalSellQty * 0.05));
-          const icebergOrder = this.placeIcebergOrder(stock, 'sell', stock.current_price + tickSize, totalSellQty, displaySlice);
-          orders.push(icebergOrder);
+          const icebergOrder = this.placeIcebergOrder(
+            stock,
+            'sell',
+            stock.current_price,
+            totalSellQty,
+            displaySlice,
+            true,
+            `pension_rebal_sell_${this.botId}_${stock.id}`
+          );
+          if (icebergOrder) orders.push(icebergOrder);
         }
       }
       // 내생적 트리거 2: 목표 비중 미달 시 지정가 받침 매수 (Iceberg 무한 리필 받침 매수벽)
@@ -85,8 +96,16 @@ export class PensionFundAgent extends BaseAgent {
         const totalBuyQty = Math.floor(deficitVal / stock.current_price);
         if (totalBuyQty > 0) {
           const displaySlice = Math.max(500, Math.floor(totalBuyQty * 0.05));
-          const icebergOrder = this.placeIcebergOrder(stock, 'buy', stock.current_price - tickSize, totalBuyQty, displaySlice);
-          orders.push(icebergOrder);
+          const icebergOrder = this.placeIcebergOrder(
+            stock,
+            'buy',
+            stock.current_price,
+            totalBuyQty,
+            displaySlice,
+            true,
+            `pension_rebal_buy_${this.botId}_${stock.id}`
+          );
+          if (icebergOrder) orders.push(icebergOrder);
         }
       }
     }
@@ -159,13 +178,18 @@ export class PensionFundAgent extends BaseAgent {
               orders.push({
                 stock_id: stock.id,
                 user_id: null,
+                participantId: this.botId,
+                participantKind: 'DOMESTIC_INSTITUTION',
+                strategyId: 'AC_OPTIMAL_EXECUTION',
+                orderType: 'STRATEGIC_ORDER',
+                parent_order_id: `ac_plan_${this.botId}_${stock.id}_${state.currentTick}`,
                 side: 'buy',
                 price: targetBuyPrice,
                 size: peakSize,
                 hidden_size: hiddenSize,
                 peak_size: peakSize,
                 status: 'open',
-                is_lp: true,
+                is_lp: false,
                 _botId: this.botId // 추적용
               });
             }

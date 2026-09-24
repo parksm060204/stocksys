@@ -1,4 +1,4 @@
-﻿import './loadEnv';
+import './loadEnv';
 import { ExecutionTrader } from './bots/ExecutionTrader';
 import { AdversarialAgent } from './bots/AdversarialAgent';
 import { WallBreakerAgent } from './bots/WallBreakerAgent';
@@ -220,7 +220,7 @@ export class MarketEngine {
   private commercialHedgerAgents: CommercialHedgerAgent[] = [];
 
   private realWorldFetcher: RealWorldFetcher = new RealWorldFetcher();
-  public commodityEngine: CommodityMarketEngine = new CommodityMarketEngine({ totalBots: 30, eventProbability: 0.02 });
+  public commodityEngine!: CommodityMarketEngine;
   public settlementService!: SettlementBatchService;
 
   constructor(dependencies?: MarketEngineDependencies) {
@@ -247,6 +247,13 @@ export class MarketEngine {
 
     // SettlementBatchService는 동일한 repository bundle + simulation clock만 주입받는다.
     this.settlementService = new SettlementBatchService(this.repositories, this.simClock);
+
+    // 원자재 엔진은 MarketEngine과 동일한 simulation context를 공유한다.
+    this.commodityEngine = new CommodityMarketEngine({
+      totalBots: 30,
+      eventProbability: 0.02,
+      simulationContext: this.simulationContext,
+    });
   }
 
   /**
@@ -286,7 +293,9 @@ export class MarketEngine {
     const builtIn: Array<{ id: string; kind: string; cash: number }> = [
       { id: 'PROP_DESK_PREDATOR', kind: 'DOMESTIC_INSTITUTION', cash: 50_000_000_000 },
       { id: 'WALL_BREAKER', kind: 'DOMESTIC_INSTITUTION', cash: 100_000_000_000 },
+      { id: 'bot_as_mm_001', kind: 'LIQUIDITY_PROVIDER', cash: 100_000_000_000 },
       { id: 'AS_MARKET_MAKER', kind: 'LIQUIDITY_PROVIDER', cash: 20_000_000_000 },
+      { id: 'QUANT_STAT_ARB', kind: 'DOMESTIC_INSTITUTION', cash: 100_000_000_000 },
       { id: 'bot_retail_001', kind: 'RETAIL', cash: 5_000_000_000 },
       { id: 'bot_retail_002', kind: 'RETAIL', cash: 5_000_000_000 },
       { id: 'bot_hf_001', kind: 'DOMESTIC_INSTITUTION', cash: 100_000_000_000 },
@@ -377,45 +386,56 @@ export class MarketEngine {
     }
 
     // 💡 100% 가동 보장: 봇 배열이 비어있으면 기본 마스터 봇 플릿을 메모리에 즉시 채움
-    if (this.retailSwarmAgents.length === 0) {
-      this.retailSwarmAgents.push(new RetailSwarmAgent({ id: 'bot_retail_001', name: 'Retail Swarm Alpha', capital: 5000000000 } as any, this.simulationContext));
-      this.retailSwarmAgents.push(new RetailSwarmAgent({ id: 'bot_retail_002', name: 'Retail Swarm Beta', capital: 5000000000 } as any, this.simulationContext));
-    }
-    if (this.hedgeFundAgents.length === 0) {
-      this.hedgeFundAgents.push(new HedgeFundAgent({
-        id: 'bot_hf_001', name: 'Bridgewater Associates', type: 'HEDGE_FUND', capital: 100000000000, portfolioTarget: { equity: 0.6, safeBonds: 0.2, highYield: 0.2 }, currentSentiment: 'NEUTRAL'
-      } as any, this.simulationContext));
-      this.hedgeFundAgents.push(new HedgeFundAgent({
-        id: 'bot_hf_002', name: 'Citadel Quant Fund', type: 'HEDGE_FUND', capital: 100000000000, portfolioTarget: { equity: 0.7, safeBonds: 0.15, highYield: 0.15 }, currentSentiment: 'BULLISH'
-      } as any, this.simulationContext));
-    }
-    if (this.propDeskAgents.length === 0) {
-      this.propDeskAgents.push(new PropDeskAgent({
-        id: 'bot_prop_001', name: 'Jane Street Desk', type: 'PROP_DESK', capital: 100000000000
-      } as any, this.simulationContext));
-      this.propDeskAgents.push(new PropDeskAgent({
-        id: 'bot_prop_002', name: 'Optiver Market Making', type: 'PROP_DESK', capital: 100000000000
-      } as any, this.simulationContext));
-    }
-    if (this.quantAgents.length === 0) {
-      this.quantAgents.push(new QuantAgent({
-        id: 'bot_quant_001', name: 'Aladdin Quant Fund', type: 'QUANT_FUND', capital: 50000000000
-      } as any));
-    }
-    if (this.optionsMMBots.length === 0) {
-      this.optionsMMBots.push(new OptionsMMAgent({
-        id: 'bot_options_mm_001', name: 'Gamma Squeezer MM', type: 'OPTIONS_MM', capital: 10000000000, reactionSpeed: 2, tradingStyle: 'DELTA_NEUTRAL', initialGammaNet: -50
-      } as any));
-    }
-    if (this.ctaBots.length === 0) {
-      this.ctaBots.push(new CTAAgent({
-        id: 'bot_cta_001', name: 'Macro CTA Fund', type: 'CTA_MOMENTUM', capital: 20000000000, reactionSpeed: 1, breakoutThreshold: 0.02, tradingStyle: 'SWEEP_AGGRESSIVE'
-      } as any));
-    }
-    if (this.commercialHedgerAgents.length === 0) {
-      this.commercialHedgerAgents.push(new CommercialHedgerAgent({
-        id: 'bot_hedger_001', name: 'Chevron Commercial Hedger', type: 'COMMERCIAL_HEDGER', capital: 50000000000, targetCommodity: 'WTI_CRUDE', supportLevel: 75, resistanceLevel: 90, tradingStyle: 'LIMIT_HEAVY'
-      } as any));
+    if (configs.length === 0) {
+      const defaultBotConfigs: any[] = [];
+      if (this.retailSwarmAgents.length === 0) {
+        const c1 = { id: 'bot_retail_001', bot_id: 'bot_retail_001', name: 'Retail Swarm Alpha', participant_kind: 'RETAIL', capital: 5000000000, current_cash: 5000000000 };
+        const c2 = { id: 'bot_retail_002', bot_id: 'bot_retail_002', name: 'Retail Swarm Beta', participant_kind: 'RETAIL', capital: 5000000000, current_cash: 5000000000 };
+        this.retailSwarmAgents.push(new RetailSwarmAgent(c1 as any, this.simulationContext));
+        this.retailSwarmAgents.push(new RetailSwarmAgent(c2 as any, this.simulationContext));
+        defaultBotConfigs.push(c1, c2);
+      }
+      if (this.hedgeFundAgents.length === 0) {
+        const c1 = {
+          id: 'bot_hf_001', bot_id: 'bot_hf_001', name: 'Bridgewater Associates', type: 'HEDGE_FUND', participant_kind: 'FOREIGN_INSTITUTION', capital: 100000000000, current_cash: 50000000000, portfolioTarget: { equity: 0.6, safeBonds: 0.2, highYield: 0.2 }, currentSentiment: 'NEUTRAL'
+        };
+        const c2 = {
+          id: 'bot_hf_002', bot_id: 'bot_hf_002', name: 'Citadel Quant Fund', type: 'HEDGE_FUND', participant_kind: 'FOREIGN_INSTITUTION', capital: 100000000000, current_cash: 50000000000, portfolioTarget: { equity: 0.7, safeBonds: 0.15, highYield: 0.15 }, currentSentiment: 'BULLISH'
+        };
+        this.hedgeFundAgents.push(new HedgeFundAgent(c1 as any, this.simulationContext));
+        this.hedgeFundAgents.push(new HedgeFundAgent(c2 as any, this.simulationContext));
+        defaultBotConfigs.push(c1, c2);
+      }
+      if (this.propDeskAgents.length === 0) {
+        const c1 = { id: 'bot_prop_001', bot_id: 'bot_prop_001', name: 'Jane Street Desk', type: 'PROP_DESK', participant_kind: 'FOREIGN_INSTITUTION', capital: 100000000000, current_cash: 50000000000 };
+        const c2 = { id: 'bot_prop_002', bot_id: 'bot_prop_002', name: 'Optiver Market Making', type: 'PROP_DESK', participant_kind: 'FOREIGN_INSTITUTION', capital: 100000000000, current_cash: 50000000000 };
+        this.propDeskAgents.push(new PropDeskAgent(c1 as any, this.simulationContext));
+        this.propDeskAgents.push(new PropDeskAgent(c2 as any, this.simulationContext));
+        defaultBotConfigs.push(c1, c2);
+      }
+      if (this.quantAgents.length === 0) {
+        const c1 = { id: 'bot_quant_001', bot_id: 'bot_quant_001', name: 'Aladdin Quant Fund', type: 'QUANT_FUND', participant_kind: 'DOMESTIC_INSTITUTION', capital: 50000000000, current_cash: 25000000000 };
+        this.quantAgents.push(new QuantAgent(c1 as any));
+        defaultBotConfigs.push(c1);
+      }
+      if (this.optionsMMBots.length === 0) {
+        const c1 = { id: 'bot_options_mm_001', bot_id: 'bot_options_mm_001', name: 'Gamma Squeezer MM', type: 'OPTIONS_MM', participant_kind: 'LIQUIDITY_PROVIDER', capital: 10000000000, current_cash: 5000000000, reactionSpeed: 2, tradingStyle: 'DELTA_NEUTRAL', initialGammaNet: -50 };
+        this.optionsMMBots.push(new OptionsMMAgent(c1 as any));
+        defaultBotConfigs.push(c1);
+      }
+      if (this.ctaBots.length === 0) {
+        const c1 = { id: 'bot_cta_001', bot_id: 'bot_cta_001', name: 'Macro CTA Fund', type: 'CTA_MOMENTUM', participant_kind: 'FOREIGN_INSTITUTION', capital: 20000000000, current_cash: 10000000000, reactionSpeed: 1, breakoutThreshold: 0.02, tradingStyle: 'SWEEP_AGGRESSIVE' };
+        this.ctaBots.push(new CTAAgent(c1 as any));
+        defaultBotConfigs.push(c1);
+      }
+      if (this.commercialHedgerAgents.length === 0) {
+        const c1 = { id: 'bot_hedger_001', bot_id: 'bot_hedger_001', name: 'Chevron Commercial Hedger', type: 'COMMERCIAL_HEDGER', participant_kind: 'DOMESTIC_INSTITUTION', capital: 50000000000, current_cash: 25000000000, targetCommodity: 'WTI_CRUDE', supportLevel: 75, resistanceLevel: 90, tradingStyle: 'LIMIT_HEAVY' };
+        this.commercialHedgerAgents.push(new CommercialHedgerAgent(c1 as any));
+        defaultBotConfigs.push(c1);
+      }
+      if (defaultBotConfigs.length > 0) {
+        await this.repositories.participants.upsertBotConfigs(defaultBotConfigs);
+      }
     }
 
     console.log(`✅ Successfully initialized master bot fleet (${configs.length} DB records, Active Bot Fleet Ready).`);
@@ -574,7 +594,7 @@ export class MarketEngine {
         : await this.fetchMarketState(macroData);
       marketState.orderBook = orderBook;
       
-      let allOrders: any[] = [];
+      const allOrders: any[] = [];
 
       // 1. Update Fundamentals (Merton Jump-Diffusion)
       for (const stock of marketState.stocks) {
@@ -705,83 +725,9 @@ export class MarketEngine {
 
       console.log(`[Tick Debug] Collected ${allOrders.length} raw orders across all active bot fleets (stocks: ${marketState.stocks?.length || 0}).`);
 
+      await this.processBatchOrders(allOrders, marketState, shouldRefreshLp);
+
       if (allOrders.length > 0) {
-        const validatedOrders: any[] = [];
-        const orderRiskDiagnostics: any[] = [];
-        for (const order of allOrders) {
-          const stock = marketState.stocks?.find((s: any) => s.id === order.stock_id);
-          const currentPrice = Number(order.price || stock?.current_price || 1);
-          const adv = stock?.volume ? stock.volume * 50 : 100000;
-
-          // 봇 주문 메타데이터를 단일 표준으로 정규화하고, participantId를 기준으로
-          // 검증된 ParticipantRepository에서 실제 참가자 정보를 조회한다.
-          // (주문 객체에 적힌 participantKind는 신뢰하지 않는다)
-          const participantId = extractParticipantId(order as Record<string, unknown>);
-          const strategyId = extractStrategyId(order as Record<string, unknown>);
-          const requestedOrderType: 'STRATEGIC_ORDER' | 'CHILD_ORDER' | 'LP_QUOTE' =
-            order.orderType === 'STRATEGIC_ORDER'
-              ? 'STRATEGIC_ORDER'
-              : order.orderType === 'LP_QUOTE' || order.is_lp === true
-                ? 'LP_QUOTE'
-                : 'CHILD_ORDER';
-
-          if (!participantId) {
-            // 참가자 정보가 없는 주문은 위험 맥락 없이 통과시키지 않고 진단을 남긴다.
-            orderRiskDiagnostics.push({
-              stockId: order.stock_id,
-              participantId: null,
-              originalSize: Number(order.size ?? 0),
-              safeSize: 0,
-              originalPrice: currentPrice,
-              safePrice: 0,
-              reasonCodes: ['REJECTED_MISSING_PARTICIPANT_ID'],
-            });
-            continue;
-          }
-
-          const verified = await verifyParticipantProfile(this.repositories, participantId, order.stock_id);
-          const assessment = assessStrategicOrder({
-            profile: verified,
-            side: order.side,
-            adv,
-            requestedOrderType,
-          });
-
-          if (!assessment.accepted) {
-            // 일반 주문으로 조용히 낮추지 않고 거부 + reason code 기록
-            orderRiskDiagnostics.push({
-              stockId: order.stock_id,
-              participantId,
-              originalSize: Number(order.size ?? 0),
-              safeSize: 0,
-              originalPrice: currentPrice,
-              safePrice: 0,
-              reasonCodes: [assessment.rejection as string],
-            });
-            continue;
-          }
-
-          const safeOrder = applyLegacyChildOrderSafetyLimits(
-            order,
-            currentPrice,
-            0,
-            assessment.context
-          );
-          if (safeOrder) {
-            // 표준화된 참가자 메타데이터를 실제 장부에 기록한다.
-            safeOrder.participantId = participantId;
-            safeOrder.participantKind = assessment.profile?.participantKind ?? 'UNKNOWN';
-            safeOrder.strategyId = strategyId;
-            validatedOrders.push(safeOrder);
-          }
-        }
-        if (orderRiskDiagnostics.length > 0) {
-          this.lastOrderRiskDiagnostics = orderRiskDiagnostics;
-        }
-        allOrders = validatedOrders;
-
-        await this.processBatchOrders(allOrders, marketState, shouldRefreshLp);
-        
         // 자체 여기(Self-excitation) 발생: 주문량에 비례하여 강도 증가
         this.hawkesIntensity += this.alpha * allOrders.length;
         
@@ -880,15 +826,123 @@ export class MarketEngine {
     return state;
   }
 
+  private async validateSingleOrder(
+    order: any,
+    marketState: any,
+    isFromRepository: boolean,
+    diagnostics: any[]
+  ): Promise<any | null> {
+    if (!order || !order.stock_id) return null;
+
+    const stock = marketState.stocks?.find((s: any) => s.id === order.stock_id);
+    const currentPrice = Number(order.price || stock?.current_price || 1);
+    const adv = stock?.volume ? stock.volume * 50 : 100000;
+
+    const participantId = extractParticipantId(order as Record<string, unknown>) || (order.user_id ? String(order.user_id) : null);
+    const strategyId = extractStrategyId(order as Record<string, unknown>);
+    const requestedOrderType: 'STRATEGIC_ORDER' | 'CHILD_ORDER' | 'LP_QUOTE' =
+      order.orderType === 'STRATEGIC_ORDER'
+        ? 'STRATEGIC_ORDER'
+        : order.orderType === 'LP_QUOTE' || order.is_lp === true
+          ? 'LP_QUOTE'
+          : 'CHILD_ORDER';
+
+    if (!participantId) {
+      diagnostics.push({
+        stockId: order.stock_id,
+        participantId: null,
+        originalSize: Number(order.size ?? 0),
+        safeSize: 0,
+        originalPrice: currentPrice,
+        safePrice: 0,
+        reasonCodes: ['REJECTED_MISSING_PARTICIPANT_ID'],
+      });
+      if (isFromRepository && order.id) {
+        await this.repositories.markets.cancelOrders([order.id]).catch(() => {});
+      }
+      return null;
+    }
+
+    const verified = await verifyParticipantProfile(this.repositories, participantId, order.stock_id);
+    const assessment = assessStrategicOrder({
+      profile: verified,
+      side: order.side,
+      adv,
+      requestedOrderType,
+    });
+
+    if (!assessment.accepted) {
+      diagnostics.push({
+        stockId: order.stock_id,
+        participantId,
+        originalSize: Number(order.size ?? 0),
+        safeSize: 0,
+        originalPrice: currentPrice,
+        safePrice: 0,
+        reasonCodes: [assessment.rejection as string],
+      });
+      if (isFromRepository && order.id) {
+        await this.repositories.markets.cancelOrders([order.id]).catch(() => {});
+      }
+      return null;
+    }
+
+    const safeOrder = applyLegacyChildOrderSafetyLimits(
+      order,
+      currentPrice,
+      0,
+      assessment.context
+    );
+    if (!safeOrder) {
+      if (isFromRepository && order.id) {
+        await this.repositories.markets.cancelOrders([order.id]).catch(() => {});
+      }
+      return null;
+    }
+
+    safeOrder.participantId = participantId;
+    safeOrder.participantKind = assessment.profile?.participantKind ?? 'UNKNOWN';
+    safeOrder.strategyId = strategyId;
+    safeOrder.orderType = requestedOrderType;
+
+    if (isFromRepository && order.id) {
+      await this.repositories.markets.updateOrders([{
+        id: order.id,
+        participantId,
+        participantKind: assessment.profile?.participantKind,
+        strategyId,
+      }]).catch(() => {});
+    }
+
+    return safeOrder;
+  }
+
   private async processBatchOrders(lpOrders: any[], marketState: any, refreshLpOrders: boolean = true) {
-    // 1. 유저의 미체결(Open) 주문들을 가져옵니다.
+    // 1. 저장소의 미체결(Open) 주문들을 가져옵니다.
     const allOpenOrders = await this.repositories.markets.getOpenOrders();
-    const userOrders = allOpenOrders.filter((o: any) => !o.is_lp && o.status === 'open');
+    const activeOpenOrders = allOpenOrders.filter((o: any) => o.status === 'open' || o.status === 'partial');
+
+    const orderRiskDiagnostics: any[] = [];
+    const validatedOrders: any[] = [];
+
+    // 신규 생성된 봇 주문 검증
+    for (const b of lpOrders) {
+      const valid = await this.validateSingleOrder(b, marketState, false, orderRiskDiagnostics);
+      if (valid) validatedOrders.push(valid);
+    }
+
+    // 저장소 미체결 주문 검증
+    for (const u of activeOpenOrders) {
+      const valid = await this.validateSingleOrder(u, marketState, true, orderRiskDiagnostics);
+      if (valid) validatedOrders.push(valid);
+    }
+
+    if (orderRiskDiagnostics.length > 0) {
+      this.lastOrderRiskDiagnostics = orderRiskDiagnostics;
+    }
 
     const orderBookByStock: Record<string, { bids: any[], asks: any[] }> = {};
-    const allCombinedOrders = [...(userOrders || []), ...lpOrders];
-
-    for (const order of allCombinedOrders) {
+    for (const order of validatedOrders) {
       if (!orderBookByStock[order.stock_id]) {
         orderBookByStock[order.stock_id] = { bids: [], asks: [] };
       }
@@ -899,17 +953,30 @@ export class MarketEngine {
       }
     }
 
-    const tradesToInsert: any[] = [];
+    // ── Phase 1 & 2: 주문 매칭 순수 계산 및 staging 객체 기록 ──
+    // 원본 주문과 봇 객체, 시세, 가격 이력은 이 단계에서 절대 수정하지 않는다.
+    const stagedTrades: TradeSettlementInput[] = [];
     const updatedStocks: Record<string, number> = {}; // stock_id -> new price
-    const lpOrdersToInsert: any[] = [];
-    const userOrdersToUpdate: any[] = [];
+    const stagedBotExecutions: {
+      botId: string;
+      assetClass: 'stock' | 'bond' | 'commodity';
+      side: 'buy' | 'sell';
+      tradeSize: number;
+      tradePrice: number;
+      stockId: string;
+    }[] = [];
+    const workingSizes = new Map<any, number>();
+    const workingHidden = new Map<any, number>();
+    const workingCreatedAt = new Map<any, string>();
+    const workingStatus = new Map<any, string>();
 
-    // 3. 종목별 매칭 엔진 로직 (In-memory Matching)
+    const getWorkingSize = (o: any) => workingSizes.has(o) ? workingSizes.get(o)! : o.size;
+    const getWorkingHidden = (o: any) => workingHidden.has(o) ? workingHidden.get(o)! : (o.hidden_size || 0);
+
+    // 3. 종목별 매칭 계산 (순수 계산)
     for (const stockId of Object.keys(orderBookByStock)) {
       const book = orderBookByStock[stockId]!;
 
-      // 매수(Buy)는 가격 내림차순, 시간 오름차순 (먼저 온 주문 우선)
-      // 매도(Sell)는 가격 오름차순, 시간 오름차순
       book.bids.sort((a, b) => {
         if (b.price !== a.price) return b.price - a.price;
         return (a.created_at || '').localeCompare(b.created_at || '');
@@ -921,35 +988,74 @@ export class MarketEngine {
 
       let latestTradePrice = null;
 
-      while (book.bids.length > 0 && book.asks.length > 0) {
-        const highestBid = book.bids[0];
-        const lowestAsk = book.asks[0];
+      const workingBids = [...book.bids];
+      const workingAsks = [...book.asks];
 
-        // 조건: 최우선 매수호가가 최우선 매도호가보다 크거나 같으면 체결(Cross)
+      while (workingBids.length > 0 && workingAsks.length > 0) {
+        const highestBid = workingBids[0];
+        const lowestAsk = workingAsks[0];
+
         if (highestBid.price >= lowestAsk.price) {
-          const tradeSize = Math.min(highestBid.size, lowestAsk.size);
+          const bidSize = getWorkingSize(highestBid);
+          const askSize = getWorkingSize(lowestAsk);
+          const tradeSize = Math.min(bidSize, askSize);
 
-          // Maker-Taker 판별 (더 일찍 생성되어 호가창에 머물던 주문이 Maker)
-          const bidTime = new Date(highestBid.created_at || 0).getTime();
-          const askTime = new Date(lowestAsk.created_at || 0).getTime();
+          if (tradeSize <= 0) {
+            if (bidSize <= 0) workingBids.shift();
+            if (askSize <= 0) workingAsks.shift();
+            continue;
+          }
+
+          const buyerParticipantId = highestBid.participantId || extractParticipantId(highestBid) || (highestBid.user_id ? String(highestBid.user_id) : null);
+          const sellerParticipantId = lowestAsk.participantId || extractParticipantId(lowestAsk) || (lowestAsk.user_id ? String(lowestAsk.user_id) : null);
+
+          // 1) 동일 참가자 자기 체결 방지 (Self-Trade Prevention)
+          if (buyerParticipantId && sellerParticipantId && buyerParticipantId === sellerParticipantId) {
+            orderRiskDiagnostics.push({
+              stockId,
+              participantId: buyerParticipantId,
+              originalSize: tradeSize,
+              safeSize: 0,
+              originalPrice: highestBid.price,
+              safePrice: 0,
+              reasonCodes: ['SELF_TRADE_PREVENTED'],
+            });
+            this.lastOrderRiskDiagnostics = orderRiskDiagnostics;
+            workingBids.shift();
+            continue;
+          }
+
+          // 2) 신원 없는 거래 사전 검증 (fail-closed, 정상 거래 배치를 오염시키지 않음)
+          if (!buyerParticipantId || !sellerParticipantId) {
+            orderRiskDiagnostics.push({
+              stockId,
+              participantId: buyerParticipantId || sellerParticipantId || null,
+              originalSize: tradeSize,
+              safeSize: 0,
+              originalPrice: highestBid.price,
+              safePrice: 0,
+              reasonCodes: ['REJECTED_MISSING_PARTICIPANT_ID'],
+            });
+            if (!buyerParticipantId) workingBids.shift();
+            if (!sellerParticipantId) workingAsks.shift();
+            continue;
+          }
+
+          // Maker-Taker 판별
+          const bidTime = new Date(workingCreatedAt.get(highestBid) || highestBid.created_at || 0).getTime();
+          const askTime = new Date(workingCreatedAt.get(lowestAsk) || lowestAsk.created_at || 0).getTime();
           const isBidMaker = bidTime <= askTime;
 
-          // 체결 가격은 Price-Time Priority에 따라 먼저 대기 중이던 Maker(Resting Order)의 지정가 우선
           const tradePrice = this.alignToTickSize(isBidMaker ? highestBid.price : lowestAsk.price);
           latestTradePrice = tradePrice;
-          
-          // Maker Rebate (-0.1%), Taker Fee (+0.25%)
-          // 값은 "비율"이다. 실제 금액은 정산 repository 경계에서 tradeAmount로부터 계산된다.
+
           const makerRebateRate = -0.001;
           const takerFeeRate = 0.0025;
-
           const buyerFeeRate = isBidMaker ? makerRebateRate : takerFeeRate;
           const sellerFeeRate = isBidMaker ? takerFeeRate : makerRebateRate;
 
-          // 결정론적 trade ID: tick sequence + 종목 + 양측 주문 ID + partial fill index + 가격 + 수량.
-          // (timestamp/UUID 금지 — 동일 체결은 항상 동일 ID를 생성한다)
-          const buyOrderId = String(highestBid.id ?? highestBid._internalOrderId ?? 'lp_buy_resting');
-          const sellOrderId = String(lowestAsk.id ?? lowestAsk._internalOrderId ?? 'lp_sell_resting');
+          const buyOrderId = String(highestBid.id ?? highestBid._internalOrderId ?? `lp_buy_${this.tickCount}_${workingBids.length}`);
+          const sellOrderId = String(lowestAsk.id ?? lowestAsk._internalOrderId ?? `lp_sell_${this.tickCount}_${workingAsks.length}`);
           const deterministicTradeId = buildDeterministicTradeId({
             runId: this.simulationRunId,
             tickSequence: this.tickCount,
@@ -962,17 +1068,18 @@ export class MarketEngine {
           });
           this.partialFillSequence += 1;
 
-          tradesToInsert.push({
+          // 체결 staging
+          stagedTrades.push({
             id: deterministicTradeId,
             stock_id: stockId,
             price: tradePrice,
             size: tradeSize,
-            buyer_id: highestBid.user_id || null,
-            seller_id: lowestAsk.user_id || null,
+            buyer_id: buyerParticipantId,
+            seller_id: sellerParticipantId,
             buy_order_id: buyOrderId,
             sell_order_id: sellOrderId,
-            buyer_is_bot: highestBid.is_lp || false,
-            seller_is_bot: lowestAsk.is_lp || false,
+            buyer_is_bot: highestBid.is_lp || highestBid.participantKind !== 'HUMAN',
+            seller_is_bot: lowestAsk.is_lp || lowestAsk.participantKind !== 'HUMAN',
             fee_rates: {
               buyerFeeRate,
               sellerFeeRate,
@@ -982,10 +1089,7 @@ export class MarketEngine {
             created_at: new Date(this.simClock.now()).toISOString(),
           });
 
-          // ✅ Fix: 체결 후 기관 봇 포트폴리오 실제 업데이트 (Optimistic Update 대체)
-          // LP 봇 주문이 체결됐을 때 해당 봇을 찾아 confirmExecution() 호출
-          // LP 봇 주문은 user_id가 null이므로 botId 메타데이터를 주문 객체에서 확인
-          // Maker/Taker asset class detection
+          // 봇 체결 staging (confirmExecution은 정산 성공 후에만 호출!)
           const getAssetClass = (order: any) => {
             if (order._assetClass) return order._assetClass;
             if (marketState.stocks.some((s: any) => s.id === order.stock_id)) return 'stock';
@@ -996,55 +1100,66 @@ export class MarketEngine {
           const bidAssetClass = getAssetClass(highestBid);
           const askAssetClass = getAssetClass(lowestAsk);
 
-          if (highestBid.is_lp && highestBid._botId) {
-            const bot = this.findAgentById(highestBid._botId);
-            if (bot && typeof bot.confirmExecution === 'function') {
-              bot.confirmExecution(bidAssetClass, 'buy', tradeSize, tradePrice, highestBid.stock_id);
+          const bidBotId = buyerParticipantId || highestBid._botId;
+          if (bidBotId && (highestBid.is_lp || highestBid.orderType === 'STRATEGIC_ORDER' || highestBid.orderType === 'CHILD_ORDER')) {
+            stagedBotExecutions.push({
+              botId: bidBotId,
+              assetClass: bidAssetClass,
+              side: 'buy',
+              tradeSize,
+              tradePrice,
+              stockId: highestBid.stock_id,
+            });
+          }
+
+          const askBotId = sellerParticipantId || lowestAsk._botId;
+          if (askBotId && (lowestAsk.is_lp || lowestAsk.orderType === 'STRATEGIC_ORDER' || lowestAsk.orderType === 'CHILD_ORDER')) {
+            stagedBotExecutions.push({
+              botId: askBotId,
+              assetClass: askAssetClass,
+              side: 'sell',
+              tradeSize,
+              tradePrice,
+              stockId: lowestAsk.stock_id,
+            });
+          }
+
+          // Working size 계산 (staging)
+          const newBidSize = bidSize - tradeSize;
+          const newAskSize = askSize - tradeSize;
+          workingSizes.set(highestBid, newBidSize);
+          workingSizes.set(lowestAsk, newAskSize);
+
+          if (newBidSize === 0) {
+            const hidden = getWorkingHidden(highestBid);
+            if (hidden > 0) {
+              const replenish = Math.min(hidden, highestBid.peak_size || 100);
+              workingSizes.set(highestBid, replenish);
+              workingHidden.set(highestBid, hidden - replenish);
+              workingCreatedAt.set(highestBid, new Date(this.simClock.now()).toISOString());
+              workingStatus.set(highestBid, 'open');
+            } else {
+              workingStatus.set(highestBid, 'filled');
+              workingBids.shift();
             }
+          } else {
+            workingStatus.set(highestBid, 'open');
           }
-          if (lowestAsk.is_lp && lowestAsk._botId) {
-            const bot = this.findAgentById(lowestAsk._botId);
-            if (bot && typeof bot.confirmExecution === 'function') {
-              bot.confirmExecution(askAssetClass, 'sell', tradeSize, tradePrice, lowestAsk.stock_id);
+
+          if (newAskSize === 0) {
+            const hidden = getWorkingHidden(lowestAsk);
+            if (hidden > 0) {
+              const replenish = Math.min(hidden, lowestAsk.peak_size || 100);
+              workingSizes.set(lowestAsk, replenish);
+              workingHidden.set(lowestAsk, hidden - replenish);
+              workingCreatedAt.set(lowestAsk, new Date(this.simClock.now()).toISOString());
+              workingStatus.set(lowestAsk, 'open');
+            } else {
+              workingStatus.set(lowestAsk, 'filled');
+              workingAsks.shift();
             }
-          }
-
-
-          highestBid.size -= tradeSize;
-          lowestAsk.size -= tradeSize;
-
-          // Iceberg Order (빙산 주문) 리필 및 시간 우선순위 초기화 (Loss-in-priority)
-          if (highestBid.size === 0 && highestBid.hidden_size && highestBid.hidden_size > 0) {
-            const replenish = Math.min(highestBid.hidden_size, highestBid.peak_size || 100);
-            highestBid.size = replenish;
-            highestBid.hidden_size -= replenish;
-            highestBid.created_at = new Date(this.simClock.now()).toISOString(); // 우선순위 밀림
-            console.log(`🧊 [Iceberg] Bid replenished by ${replenish}. Remaining hidden: ${highestBid.hidden_size}`);
-          }
-          if (lowestAsk.size === 0 && lowestAsk.hidden_size && lowestAsk.hidden_size > 0) {
-            const replenish = Math.min(lowestAsk.hidden_size, lowestAsk.peak_size || 100);
-            lowestAsk.size = replenish;
-            lowestAsk.hidden_size -= replenish;
-            lowestAsk.created_at = new Date(this.simClock.now()).toISOString(); // 우선순위 밀림
-            console.log(`🧊 [Iceberg] Ask replenished by ${replenish}. Remaining hidden: ${lowestAsk.hidden_size}`);
-          }
-
-          if (highestBid.id && !highestBid._updated) {
-            userOrdersToUpdate.push(highestBid);
-            highestBid._updated = true;
-          }
-          if (lowestAsk.id && !lowestAsk._updated) {
-            userOrdersToUpdate.push(lowestAsk);
-            lowestAsk._updated = true;
-          }
-
-          if (highestBid.size === 0) {
-            book.bids.shift();
-            if (highestBid.id) highestBid.status = 'filled';
-          }
-          if (lowestAsk.size === 0) {
-            book.asks.shift();
-            if (lowestAsk.id) lowestAsk.status = 'filled';
+          } else {
+            workingStatus.set(lowestAsk, 'open');
           }
         } else {
           break;
@@ -1054,8 +1169,118 @@ export class MarketEngine {
       if (latestTradePrice) {
         updatedStocks[stockId] = latestTradePrice;
       }
+    }
 
-      // 4. 매칭 후 남은(미체결) 주문들 분류
+    if (orderRiskDiagnostics.length > 0) {
+      this.lastOrderRiskDiagnostics = [...this.lastOrderRiskDiagnostics, ...orderRiskDiagnostics];
+    }
+
+    // ── Phase 3: DB 일괄 커밋 페이로드 준비 ──
+    const stagedOrderUpdates: { id: string; size: number; status: 'open' | 'partial' | 'filled' | 'cancelled' | 'expired' }[] = [];
+    for (const [order, size] of workingSizes.entries()) {
+      if (order.id) {
+        const status = (workingStatus.get(order) || (size === 0 ? 'filled' : 'open')) as any;
+        stagedOrderUpdates.push({
+          id: order.id,
+          size,
+          status,
+        });
+      }
+    }
+
+    const marketPriceUpdates: { stock_id: string; price: number }[] = [];
+    const priceHistory: { stock_id: string; price: number; recorded_at: string }[] = [];
+
+    for (const [sId, rawPrice] of Object.entries(updatedStocks)) {
+      const stockItem = marketState.stocks?.find((s: any) => s.id === sId);
+      if (stockItem) {
+        const prevClose = Number(stockItem.previous_close || stockItem.previousClose || stockItem.current_price || 1000);
+        let finalPrice = rawPrice;
+        if (stockItem.market === 'domestic') {
+          const upper = this.alignToTickSize(prevClose * 1.30, 'stocks');
+          const lower = this.alignToTickSize(prevClose * 0.70, 'stocks');
+          finalPrice = Math.max(lower, Math.min(upper, this.alignToTickSize(rawPrice, 'stocks')));
+        } else if (stockItem.market === 'overseas' || stockItem.market === 'europe') {
+          const lower = Math.max(0.01, prevClose * 0.50);
+          const upper = prevClose * 2.00;
+          finalPrice = Math.max(lower, Math.min(upper, rawPrice));
+        } else {
+          finalPrice = Math.max(1, this.alignToTickSize(rawPrice, 'stocks'));
+        }
+        marketPriceUpdates.push({ stock_id: sId, price: finalPrice });
+        priceHistory.push({ stock_id: sId, price: finalPrice, recorded_at: new Date(this.simClock.now()).toISOString() });
+      }
+    }
+
+    // ── Phase 4: Authoritative 단일 Unit-of-Work 원자적 커밋 ──
+    // 거래 정산, 주문 상태, 시세, 가격 이력을 하나의 롤백 경계 안에서 먼저 await한다.
+    const settlementResult = await this.repositories.settlement.commitMatchedBatchAtomically({
+      trades: stagedTrades,
+      orderUpdates: stagedOrderUpdates,
+      marketPriceUpdates,
+      priceHistory,
+    });
+
+    if (!settlementResult.success) {
+      this.lastSettlementError = settlementResult.errorCode ?? 'SETTLEMENT_FAILED';
+      console.error(
+        `[MarketEngine] Authoritative settlement REJECTED: ${settlementResult.errorCode} ${settlementResult.error ?? ''}`
+      );
+      // 정산 실패 시 어떤 성공 상태도 남기지 않고 오류를 전파한다.
+      throw new Error(`Settlement rejected: ${settlementResult.errorCode}`);
+    }
+    this.lastSettlementError = null;
+
+    // ── Phase 5: 정산 성공 확인 후에만 메모리 상태 반영 ──
+    // 5.1 주문 잔량 및 상태 메모리 반영
+    for (const [order, size] of workingSizes.entries()) {
+      order.size = size;
+      order.status = workingStatus.get(order) || (size === 0 ? 'filled' : 'open');
+      if (workingHidden.has(order)) order.hidden_size = workingHidden.get(order);
+      if (workingCreatedAt.has(order)) order.created_at = workingCreatedAt.get(order);
+    }
+    for (const stockId of Object.keys(orderBookByStock)) {
+      const book = orderBookByStock[stockId]!;
+      book.bids = book.bids.filter((b: any) => (workingSizes.get(b) ?? b.size) > 0 && (workingStatus.get(b) ?? b.status) !== 'filled');
+      book.asks = book.asks.filter((a: any) => (workingSizes.get(a) ?? a.size) > 0 && (workingStatus.get(a) ?? a.status) !== 'filled');
+    }
+
+    // 5.2 봇 confirmExecution() 반영 (정산 성공 이후에만 호출)
+    for (const exec of stagedBotExecutions) {
+      const bot = this.findAgentById(exec.botId);
+      if (bot && typeof bot.confirmExecution === 'function') {
+        bot.confirmExecution(exec.assetClass, exec.side, exec.tradeSize, exec.tradePrice, exec.stockId);
+      }
+    }
+
+    // 5.3 시세 메모리 반영
+    for (const upd of marketPriceUpdates) {
+      const stockItem = marketState.stocks?.find((s: any) => s.id === upd.stock_id);
+      if (stockItem) {
+        stockItem.current_price = upd.price;
+      }
+    }
+
+    // ── Phase 6: Post-Commit 작업 (Observer 및 외부 Persistence) ──
+    // 6.1 Observer 호출: authoritative 쓰기 성공 후에만 호출하며 실패해도 정산에 영향 없음
+    if (stagedTrades.length > 0) {
+      try {
+        await this.executionObserver?.onSettlementCommitted({
+          simulationTime: this.simClock.now(),
+          settledTradeIds: [...settlementResult.settledTradeIds],
+          settledTradesCount: settlementResult.settledTradesCount,
+          totalAmount: settlementResult.totalAmount,
+          totalFeeAmount: settlementResult.totalFeeAmount,
+        });
+      } catch (obsErr) {
+        console.warn('[MarketEngine] Execution observer post-commit warning:', obsErr);
+      }
+    }
+
+    // 6.2 LP 호가 갱신 (슬라이딩 윈도우)
+    const lpOrdersToInsert: any[] = [];
+    for (const stockId of Object.keys(orderBookByStock)) {
+      const book = orderBookByStock[stockId]!;
       for (const bid of book.bids) {
         if (!bid.id) lpOrdersToInsert.push(bid);
       }
@@ -1064,20 +1289,8 @@ export class MarketEngine {
       }
     }
 
-    if (tradesToInsert.length > 0 || lpOrdersToInsert.length > 0) {
-      console.log(`⚡ [BatchOrders] Matched ${tradesToInsert.length} real trades, ${lpOrdersToInsert.length} active LP orders.`);
-    }
-
-    // 5. DB 일괄 트랜잭션 반영 (Batch Commit)
-    const promises: any[] = [];
-
-    // 5.2 LP 호가 슬라이딩 윈도우 (Sliding Window)
-    //   이전 틱 LP 주문 DELETE → 새 LP 주문 INSERT
-    //   종목당 최대 5 bid + 5 ask = 10개로 엄격 제한 (DB 과부하 방지)
     if (lpOrdersToInsert.length > 0) {
-      const validStockIds = new Set(marketState.stocks.map((s: any) => s.id));
-
-      // 종목별로 그룹화 후 bid 5 + ask 5만 추출
+      const validStockIds = new Set(marketState.stocks?.map((s: any) => s.id) || []);
       const byStock: Record<string, { bids: any[], asks: any[] }> = {};
       for (const o of lpOrdersToInsert) {
         if (!validStockIds.has(o.stock_id)) continue;
@@ -1088,9 +1301,7 @@ export class MarketEngine {
       }
 
       const safeLpOrders: any[] = [];
-
       for (const [_stockId, { bids, asks }] of Object.entries(byStock)) {
-        // 매도는 오름차순 상위 5개, 매수는 매도 1호가보다 낮은 가격 오름차순 상위 5개
         const topAsks = asks.sort((a, b) => a.price - b.price).slice(0, 5);
         const minAskPrice = topAsks.length > 0 ? topAsks[0].price : Infinity;
         const topBids = bids.filter(b => b.price < minAskPrice).sort((a, b) => b.price - a.price).slice(0, 5);
@@ -1098,6 +1309,7 @@ export class MarketEngine {
           const rawLpOrder = {
             stock_id: o.stock_id,
             user_id: null,
+            participantId: o.participantId || extractParticipantId(o) || 'lp_market_maker',
             side: o.side,
             price: o.price,
             size: o.size,
@@ -1109,6 +1321,7 @@ export class MarketEngine {
             participantKind: 'LIQUIDITY_PROVIDER'
           });
           if (safeOrder) {
+            safeOrder.participantId = rawLpOrder.participantId;
             safeLpOrders.push(safeOrder);
           }
         }
@@ -1116,95 +1329,27 @@ export class MarketEngine {
 
       if (safeLpOrders.length > 0) {
         const affectedStockIds = [...new Set(safeLpOrders.map((o: any) => o.stock_id))];
-
-        // DELETE 먼저 (청크 단위 안전 삭제) → 그 다음 500개씩 청크 INSERT
         if (refreshLpOrders) {
           await this.safeDeleteLpOrders(affectedStockIds);
         }
-
         for (let i = 0; i < safeLpOrders.length; i += 500) {
           const chunk = safeLpOrders.slice(i, i + 500);
-          promises.push(this.repositories.markets.insertOrders(chunk));
+          await this.repositories.markets.insertOrders(chunk);
         }
       }
     }
 
-    // 5.3 유저 주문 잔량 Update
-    if (userOrdersToUpdate.length > 0) {
-      promises.push(
-        this.repositories.markets.updateOrders(
-          userOrdersToUpdate.map((u: any) => ({ id: u.id, size: u.size, status: u.status }))
-        )
-      );
+    if (stagedTrades.length > 0 || lpOrdersToInsert.length > 0) {
+      console.log(`⚡ [BatchOrders] Matched ${stagedTrades.length} real trades, ${lpOrdersToInsert.length} active LP orders.`);
     }
 
-    // 5.3.1 ~ 5.3.2 통합 체결 처리: ORDER OF AUTHORITY
-    //   1) 매칭 결과 생성 (위에서 완료)
-    //   2) authoritative settlement 실행  ← 항상 실행, observer로 대체 불가
-    //   3) settlement 성공 확인
-    //   4) 주문 상태·가격 이력 반영
-    //   5) observer에 성공 이벤트 전달
-    if (tradesToInsert.length > 0) {
-      const settlementResult = this.repositories.settlement.settleTradeBatchAtomically(
-        tradesToInsert as TradeSettlementInput[]
-      );
-      promises.push(
-        settlementResult.then((result) => {
-          if (!result.success) {
-            // authoritative settlement 실패를 성공처럼 흘리지 않는다.
-            this.lastSettlementError = result.errorCode ?? 'SETTLEMENT_FAILED';
-            console.error(
-              `[MarketEngine] Authoritative settlement REJECTED: ${result.errorCode} ${result.error ?? ''}`
-            );
-            throw new Error(`Settlement rejected: ${result.errorCode}`);
-          }
-          this.lastSettlementError = null;
-          // 정산 성공 후에만 observer/recorder에 성공 이벤트를 전달한다.
-          return this.executionObserver?.onSettlementCommitted({
-            simulationTime: this.simClock.now(),
-            settledTradeIds: [...result.settledTradeIds],
-            settledTradesCount: result.settledTradesCount,
-            totalAmount: result.totalAmount,
-            totalFeeAmount: result.totalFeeAmount,
-          });
-        })
-      );
-    }
-
-    // 5.4 현재가 Update (자산별 테이블 구분 + KRX 틱/상하한가 정렬) - Batch Optimized
-    const stockUpdates: any[] = [];
-    const historyInserts: any[] = [];
+    // 6.3 채권 / 원자재 시세 반영
     const bondUpdates: any[] = [];
     const commodityCurrentUpdates: any[] = [];
-
     for (const [sId, rawPrice] of Object.entries(updatedStocks)) {
-      const stockItem = marketState.stocks.find((s: any) => s.id === sId);
-      const bondItem = marketState.bonds.find((b: any) => b.id === sId);
-      const commodityItem = marketState.commodities.find((c: any) => c.id === sId);
-
-      if (stockItem) {
-        const prevClose = Number(stockItem.previous_close || stockItem.previousClose || stockItem.current_price || 1000);
-        let finalPrice = rawPrice;
-
-        if (stockItem.market === 'domestic') {
-          // KRX 상/하한가 (±30% 캡)
-          const upper = this.alignToTickSize(prevClose * 1.30, 'stocks');
-          const lower = this.alignToTickSize(prevClose * 0.70, 'stocks');
-          finalPrice = Math.max(lower, Math.min(upper, this.alignToTickSize(rawPrice, 'stocks')));
-        } else if (stockItem.market === 'overseas' || stockItem.market === 'europe') {
-          // 해외 주식: 일간 변동 폭 안전 캡 (prevClose의 50% ~ 200%)
-          const lower = Math.max(0.01, prevClose * 0.50);
-          const upper = prevClose * 2.00;
-          finalPrice = Math.max(lower, Math.min(upper, rawPrice));
-        } else if (stockItem.market === 'bonds') {
-          finalPrice = Math.max(80.00, Math.min(120.00, this.alignToTickSize(rawPrice, 'bonds')));
-        } else {
-          finalPrice = Math.max(1, this.alignToTickSize(rawPrice, 'stocks'));
-        }
-
-        stockUpdates.push({ id: sId, current_price: finalPrice });
-        historyInserts.push({ stock_id: sId, price: finalPrice, volume: stockItem.volume || 0 });
-      } else if (bondItem) {
+      const bondItem = marketState.bonds?.find((b: any) => b.id === sId);
+      const commodityItem = marketState.commodities?.find((c: any) => c.id === sId);
+      if (bondItem) {
         const finalPrice = Math.max(80.00, Math.min(120.00, this.alignToTickSize(rawPrice, 'bonds')));
         bondUpdates.push({ id: sId, current_price: finalPrice });
       } else if (commodityItem) {
@@ -1213,25 +1358,14 @@ export class MarketEngine {
         commodityCurrentUpdates.push({ id: sId, current_price: finalPrice });
       }
     }
-
-    if (stockUpdates.length > 0) {
-      promises.push(this.repositories.markets.upsertStocks(stockUpdates));
-    }
-    if (historyInserts.length > 0) {
-      if (this.customPersistence?.savePriceHistory) {
-        promises.push(this.customPersistence.savePriceHistory(historyInserts));
-      } else {
-        promises.push(this.repositories.markets.savePriceHistory(historyInserts));
-      }
-    }
     if (bondUpdates.length > 0) {
-      promises.push(this.repositories.markets.upsertBonds(bondUpdates));
+      await this.repositories.markets.upsertBonds(bondUpdates);
     }
     if (commodityCurrentUpdates.length > 0) {
-      promises.push(this.repositories.markets.upsertCommodities(commodityCurrentUpdates));
+      await this.repositories.markets.upsertCommodities(commodityCurrentUpdates);
     }
 
-    // 5.4.1 신규 원자재 시장 엔진 틱 가동 및 DB 정기 반영
+    // 6.4 원자재 시장 엔진 틱 가동 및 DB 정기 반영
     this.commodityEngine.nextTick();
     if (this.tickCount % 5 === 0) {
       const commodityUpdates = this.commodityEngine.getAllCommodities().map((c) => ({
@@ -1244,17 +1378,19 @@ export class MarketEngine {
         previous_close: c.previousPrice,
         volume: c.volume,
       }));
-      promises.push(this.repositories.markets.upsertCommodities(commodityUpdates));
+      await this.repositories.markets.upsertCommodities(commodityUpdates);
     }
 
-    // 5.4.2 옵션 만기 정산 및 채권 쿠폰 지급 배치 실행 (50틱 주기)
+    // 6.5 옵션 만기 정산 및 채권 쿠폰 지급 배치 실행 (50틱 주기)
     if (this.tickCount % 50 === 0) {
-      this.settlementService.runDailySettlementBatch().catch((err) => {
+      try {
+        await this.settlementService.runDailySettlementBatch();
+      } catch (err) {
         console.error('[Engine] Settlement Batch Error:', err);
-      });
+      }
     }
 
-    // 5.5 기관 포트폴리오 상태 동기화 (대시보드 용)
+    // 6.6 기관 포트폴리오 상태 동기화 (대시보드 용)
     const allAgentsToSync = [
       ...this.institutionalBots,
       ...this.pensionFundAgents,
@@ -1290,7 +1426,7 @@ export class MarketEngine {
 
           return {
             bot_id: bot.botId,
-            name: bot.agentConfig.name || bot.botId,
+            name: bot.agentConfig?.name || bot.botId,
             total_capital: bot.capital,
             current_cash: bot.currentPortfolio.cash,
             current_stock: bot.currentPortfolio.stock,
@@ -1304,19 +1440,17 @@ export class MarketEngine {
             updated_at: new Date(this.simClock.now()).toISOString()
           };
         });
-        if (this.customPersistence?.upsertPortfolios) {
-          promises.push(this.customPersistence.upsertPortfolios(portfoliosToUpsert));
-        } else {
-          promises.push(this.repositories.participants.upsertPortfolios(portfoliosToUpsert));
+        try {
+          if (this.customPersistence?.upsertPortfolios) {
+            await this.customPersistence.upsertPortfolios(portfoliosToUpsert);
+          } else {
+            await this.repositories.participants.upsertPortfolios(portfoliosToUpsert);
+          }
+        } catch (portErr) {
+          console.warn('[MarketEngine] Portfolio sync warning:', portErr);
         }
         this.lastPortfolioUpsertMs = now;
       }
-    }
-
-    try {
-      await Promise.allSettled(promises);
-    } catch (e) {
-      console.error("[Engine] DB Batch Commit failed:", e);
     }
   }
 

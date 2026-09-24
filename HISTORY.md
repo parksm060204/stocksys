@@ -5076,3 +5076,10 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 - 실제 전략 기관 주문 실행 경로 완성: PensionFundAgent 및 BaseAgent에서 전략 주문 생성 시 대형 물량(>5,000주) 허용 및 authoritative 위험 게이트 연결. 리테일/미등록/무현금 주문 거부 및 exact reason code 기록.
 - 감사 및 무의미 assertion 테스트 개편: phase0-baseline-audit.ts를 강화하여 비결정 함수, 외부 서비스명(0건), Promise.allSettled 오류 무시, 조기 confirmExecution 차단. 봇-봇/사용자-봇/정산 실패 0변형/결정론/fault-injection 테스트 작성 및 실질적 assert로 전환.
 - npm workspaces 및 클린 설치 재현성 확립: 루트 package.json에 workspaces: ['engine-server'] 적용 및 lockfile 동기화.
+
+---
+## 2026-09-25 01:40
+
+**요청 요약:** Git 원격 저장소 푸시 (Push to remote repository).
+**수행 결과:**
+- 검증 완료된 커밋(`9c51fc8`)을 원격 저장소 `origin/main`(`https://github.com/parksm060204/stocksys.git`)으로 성공적으로 push 완료.

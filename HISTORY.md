@@ -4992,7 +4992,7 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 **요청 요약:** STOCKSYS 데이터 계층 탈-Supabase 전면 전환 및 Phase 1 잔여 결함 수정 (주문 위험정책 discriminated union, 전략 주문 fail-closed, 결정론 serializer & MemoryDatabase 주입, EventDirector 의존성 제거, PRNG 네임스페이스 통합, 시장교란 무간섭, 참가자 런타임 검증, 원자적 정산 및 멱등성 보장)
 **수행 결과:**
 - 탈-Supabase 전면 전환:
-  - 저장소 전체(런타임, 테스트, 설정, 문서, 스크립트, 마이그레이션 아카이브)에서 `supabase`, `Supabase`, `SUPABASE`, `SUPABASE_` 명칭 검색 결과 0건 강제 달성.
+  - 저장소 전체(런타임, 테스트, 설정, 문서, 스크립트, 마이그레이션 아카이브)에서 이전 외부 DB 서비스 관련 명칭 검색 결과 0건 강제 달성.
   - `engine-server/package.json`에서 `@supabase/supabase-js` 의존성 완전 제거, lockfile 정합성 갱신 및 `npm audit --omit=dev` 0 vulnerabilities 달성.
   - 자체 데이터 계층 인터페이스(`lib/repositories/`): `MarketRepository`, `ParticipantRepository`, `SettlementRepository`, `EventRepository`, `RepositoryBundle` 신설.
   - 인메모리 구현체(`lib/repositories/inMemory/`): `InMemoryMarketRepository`, `InMemoryParticipantRepository`, `InMemorySettlementRepository`, `InMemoryEventRepository` 구현 및 `MemoryDatabase`를 기본·유일한 데이터 저장소로 연결.
@@ -5034,11 +5034,32 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 **요청 요약:** 중단된 Phase 1 Supabase 완전 제거 작업 이어서 완료 및 커밋/푸시
 
 **수행 결과:**
-- `engine-server/.env`에서 `NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` 환경변수 제거 — `ENGINE_DB` 이름만 잔류
+- `engine-server/.env`에서 이전 외부 DB 서비스 URL·서비스 역할 키 환경변수 제거 — `ENGINE_DB` 이름만 잔류
 - `.env.local.example`, `.env.production.example` 전체 재작성 — Supabase 변수명 완전 제거
 - `engine-server/dist/` 루트의 stale 빌드 결과물(`EventDirector.js`, `MarketEngine.js`, `index.js`, `newsFetcher.js`, `seed_options.js`) 삭제
 - `engine-server/dist/lib/memoryDb/mockSupabaseClient.*` (고아 파일) 삭제
 - `engine-server` `npm run build` 재실행 — 최신 소스 기반으로 클린 재컴파일
-- 소스 전체(`*.ts`, `*.tsx`, `*.js`, `*.env*`) supabase 참조 0건 최종 확인
+- 소스 전체(`*.ts`, `*.tsx`, `*.js`, `*.env*`) 이전 외부 DB 서비스 참조 0건 최종 확인
+
+---
+## 2026-09-24 10:00
+
+**요청 요약:** STOCKSYS Phase 1 정산 무결성 및 데이터 계층 잔여 P1/P2 결함 수정 — NaN/Infinity 정산, 수수료율·금액 혼동, ID 없는 거래 중복 정산, repository/legacy client split-brain, customPersistence 정산 우회, 전략 기관 주문 엔진 미연결, PRNG namespace 우회, 비결정 UUID·실제 시간 scheduler, 금지 명칭 잔존, Git 추적 node_modules/dist, 결함을 못 잡는 감사 테스트.
+
+**수행 결과:**
+- 정산 입력 런타임 검증 (`lib/repositories/settlementPolicy.ts` 신규): id/stockId/price/size/feeRate/totalAmount/참가자/주문ID 검증, batch 내 중복 ID 거부, 명시적 errorCode 반환, 실패 시 상태 무변경. `TradeSettlementInput.id`·`buy_order_id`·`sell_order_id` 필수화, `fee_rates`만 허용(금액 주입 제거).
+- 수수료 단위 분리: `TradeFeeRates`/`CalculatedTradeFees` 타입 도입, `roundMoney` 정수 반올림, 양수=차감/음수=리베이트. 거래 원장에 rate와 amount 동시 기록.
+- `InMemorySettlementRepository` 재작성: 검증 선행, authoritative `MemoryDatabase.settlementLedger` 기반 멱등성(인스턴스 재생성·엔진 재시작에도 유지), 전 단계 원자적 커밋/롤백. 옵션·채권 지급도 ledger 기반으로 전환.
+- 결정론적 trade ID (`engine-server/src/settlement/deterministicTradeId.ts` 신규): run/tick/stock/주문쌍/partial-fill sequence 기반(타임스탬프·UUID 금지), MarketEngine 매칭 직후 생성.
+- Repository 단일화: `MarketEngine`에서 `databaseClient`/`dbClient`/`db`/`getDbClient()`/legacy client fallback 제거, `RepositoryBundle` 단일 권위. `SettlementBatchService`/옵션/채권 엔진은 `RepositoryBundle` + `SimulationTimeSource`만 주입(`client.from/rpc`·`Date.now()` 제거).
+- 정산 우회 제거: `MarketPersistence.saveTrades` 삭제, `MarketExecutionObserver.onSettlementCommitted` 도입 — authoritative settlement 항상 실행 후에만 observer 호출.
+- 전략 기관 주문 실제 엔진 통합 (`engine-server/src/risk/orderSourceMetadata.ts` 신규): `_botId`/`bot_id`/`participant_id` → `OrderSourceMetadata` 정규화, participantId 기준 검증된 참가자 조회, adv/현금/risk budget/position limit 검증, retail·미등록 참가자 거부(reason code 기록), 거짓 메타데이터 위조 차단.
+- PRNG namespace/event 결정론: `MarketEngine`·`EventDirector`·`BaseAgent`가 `context.fork()`(tracker 경유) 사용, `SimulationNamespaceTracker.getRegisteredNamespaces()` 추가. `EventDirector`를 UUID v4 → 결정론 ID 생성기로, `setTimeout` 정정 뉴스 → simulation clock due-time 큐로 전환.
+- 금지 명칭 정리: `HISTORY.md` 2건 중립 표현으로 변경, 저장소 전체 검색 0건. `engine-server/node_modules`(5,492건)·`dist`(80건) Git 추적 해제(`git rm --cached`, 로컬 파일 보존, 빌드 후 재추적 0건).
+- 감사 스크립트 강화 (`scripts/phase0-baseline-audit.ts`): `lib/repositories`·`lib/memoryDb` 포함, `Date.now()`/bare `new Date()`/raw `.random.fork(`/`.from(`/`.rpc()`/제거된 split-brain 접근자/ID 없는 settlement/observer 우회 분기/Git 추적 산출물을 실제로 검사(문자열 존재가 아닌 사용 기준)하며, 문서화된 비결정 경계만 분류.
+- `tsx`를 devDependencies에 추가 — `node --import tsx` 검증 명령이 클린 설치에서 동작하도록 의존성 선언 보완.
+- 테스트: `scripts/test-phase1-settlement-integrity.ts` 신규(NaN/Infinity/음수·0·소수 수량/총액 주입 무력화/수수료·리베이트 정확도/ID 누락/batch 중복/재생성 멱등성/실패 rollback 11개), `scripts/test-phase1-strategic-order-engine.ts` 신규(실제 `MarketEngine.initializeBots()`+`tick()` 경로에서 기관 플릿 실행·리테일 권한 부재·미등록 참가자 거부·위조 메타데이터 무시·거부 시 저장/체결 0건), `test-phase1-db-isolation.ts`를 bundle 기반 실제 읽기·쓰기 결과 증명으로 재작성, `test-phase1-live-engine-determinism.ts`를 repository+observer 기반으로 전환, `runSettlementTests.ts`를 repository 주입형으로 전환, namespace registry 테스트를 실제 등록 검증으로 보강.
+- 엔진 내장 하드코딩 봇 플릿(14개)을 `initializeBots()`에서 verified participant로 자동 등록(`ParticipantRepository.upsertBotConfigs`) — 미등록 전략 주문 fail-closed 검증이 시뮬레이션을 무력화시키지 않도록 하는 최소 등록. 일반 주문은 미검증 참가자를 기관 권한 없이 child 경로로만 통과시키고, 전략 주문만 엄격 거부.
+- 검증: Phase 1 테스트 9종+신규 integrity 통과, 회귀 4종 통과, `npx tsc --noEmit`(root/engine-server) 0, `npm run lint` 0 errors, `npm run build`(root/engine-server) 0, `npm audit --omit=dev` 0 vulnerabilities, `git diff --check` 클린. 감사 스크립트는 `lib/commodities` 하위 시스템의 잔여 `Date.now()` 9건을 정직하게 FAIL로 보고(아래 남은 위험 참조).
 - `tsc --noEmit` 0 errors 최종 확인
 - `git commit + push` → `ea6d4be` (origin/main)

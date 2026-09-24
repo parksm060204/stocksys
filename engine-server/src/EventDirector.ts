@@ -3,13 +3,18 @@ import type { MarketEngine } from './MarketEngine';
 import type { MarketEvent } from './types';
 import { EventBus } from './EventBus';
 import { NewsGenerator, NewsItem } from './services/NewsGenerator';
-import { v4 as uuidv4 } from 'uuid';
 import {
   SimulationContext,
   SimulationRandomSource,
   SIMULATION_NAMESPACES
 } from '../../lib/engine/simulation/runtime';
 import type { EventRepository } from '../../lib/repositories/eventRepository';
+
+/** simulation clock 기준 due-time 작업을 보관하는 큐 항목 */
+interface ScheduledCorrection {
+  readonly dueSimulationTime: number;
+  readonly rumor: NewsItem;
+}
 
 export class EventDirector {
   private engine: MarketEngine;
@@ -19,6 +24,14 @@ export class EventDirector {
   private readonly random: SimulationRandomSource;
   private readonly context: SimulationContext;
   private readonly eventRepository: EventRepository;
+  /**
+   * 정정 뉴스 due-time 큐.
+   * 실제 setTimeout을 사용하지 않고 simulation clock 도달 여부로 처리한다.
+   */
+  private pendingCorrections: ScheduledCorrection[] = [];
+  /** 결정론적 ID 카운터 (namespace별) */
+  private newsIdCounter = 0;
+  private marketEventIdCounter = 0;
 
   constructor(
     engine: MarketEngine,
@@ -39,8 +52,21 @@ export class EventDirector {
     this.eventRepository = resolvedRepo;
 
     this.engine = engine;
-    this.random = this.context.random.fork(SIMULATION_NAMESPACES.EVENT_DIRECTOR.NEWS_SCHEDULE);
+    // tracker가 적용되는 API(context.fork)를 사용해 namespace 충돌을 감지한다.
+    this.random = this.context.fork(SIMULATION_NAMESPACES.EVENT_DIRECTOR.NEWS_SCHEDULE);
     this.newsGenerator = newsGenerator || new NewsGenerator(this.context);
+  }
+
+  /** 결정론적 뉴스 ID (seed + sequence 기반, UUID/timestamp 금지) */
+  private nextNewsId(kind: string): string {
+    this.newsIdCounter += 1;
+    return `news_${this.context.runId}_${kind}_${this.newsIdCounter}`;
+  }
+
+  /** 결정론적 시장 이벤트 ID */
+  private nextMarketEventId(kind: string): string {
+    this.marketEventIdCounter += 1;
+    return `mevt_${this.context.runId}_${kind}_${this.marketEventIdCounter}`;
   }
 
   public getEventRepository(): EventRepository {
@@ -67,6 +93,9 @@ export class EventDirector {
   private async tickMinute() {
     this.minuteCounter++;
 
+    // 0. simulation clock이 도달한 정정 뉴스를 먼저 처리한다 (벽시계 timer 대기 없음)
+    await this.processDueCorrections();
+
     // 1. 매 5분마다 Gemini AI 뉴스 생성 (또는 5% 무작위 확률)
     if (this.minuteCounter % 5 === 0 || this.random.nextBoolean(0.05)) {
       await this.triggerEndogenousNews();
@@ -80,9 +109,9 @@ export class EventDirector {
       const marketState = this.engine ? this.engine.getMarketState() : {};
       const newsItem = await this.newsGenerator.generateNews(marketState);
 
-      // 1. EventRepository에 저장
+      // 1. EventRepository에 저장 (결정론적 ID)
       await this.eventRepository.saveMarketNews({
-        id: newsItem.id || uuidv4(),
+        id: newsItem.id || this.nextNewsId('gen'),
         type: newsItem.type,
         category: (newsItem.category as any) || 'OFFICIAL',
         publisher: newsItem.publisher,
@@ -103,7 +132,7 @@ export class EventDirector {
 
       // 3. 엔진 호가창에 MarketEvent 주입 (기존 호가 임팩트 연동)
       const marketEvent: MarketEvent = {
-        id: uuidv4(),
+        id: this.nextMarketEventId('news'),
         targetSector: newsItem.target_sector || 'ALL',
         impact: newsItem.impact_score > 4 ? 'STRONG_POSITIVE' : (newsItem.impact_score > 0 ? 'POSITIVE' : (newsItem.impact_score < -4 ? 'STRONG_NEGATIVE' : 'NEGATIVE')),
         urgencyMultiplier: Math.min(3.0, 1.0 + Math.abs(newsItem.impact_score) / 5.0),
@@ -123,19 +152,37 @@ export class EventDirector {
     }
   }
 
-  private scheduleCorrection(rumor: NewsItem) {
-    // 시뮬레이션 환경용 4분(240,000ms) 뒤 정정 공시 발령
+  /**
+   * 정정 뉴스 예약: 실제 setTimeout 대신 simulation clock due-time 큐에 넣는다.
+   * dueSimulationTime = 현재 simulation 시각 + 4분
+   */
+  private scheduleCorrection(rumor: NewsItem): void {
     const delayMs = 4 * 60 * 1000;
-    console.log(`🕒 [EventDirector] Scheduled correction for fake rumor [${rumor.title}] in 4 minutes.`);
+    const dueSimulationTime = this.context.clock.now() + delayMs;
+    console.log(
+      `🕒 [EventDirector] Scheduled correction for fake rumor [${rumor.title}] at simulation time ${dueSimulationTime}.`
+    );
+    this.pendingCorrections.push({ dueSimulationTime, rumor });
+  }
 
-    setTimeout(async () => {
+  /**
+   * simulation clock이 도달한 정정 뉴스를 실행한다.
+   * tick()/tickMinute()에서 호출되며, 테스트는 clock만 전진시키면 된다.
+   */
+  public async processDueCorrections(): Promise<number> {
+    const now = this.context.clock.now();
+    const due = this.pendingCorrections.filter((c) => c.dueSimulationTime <= now);
+    if (due.length === 0) return 0;
+
+    this.pendingCorrections = this.pendingCorrections.filter((c) => c.dueSimulationTime > now);
+
+    for (const item of due) {
       try {
-        console.log(`🚨 [EventDirector] Executing Scheduled Correction News for [${rumor.title}]!`);
-        const correctionNews = this.newsGenerator.generateCorrection(rumor);
+        console.log(`🚨 [EventDirector] Executing Scheduled Correction News for [${item.rumor.title}]!`);
+        const correctionNews = this.newsGenerator.generateCorrection(item.rumor);
 
-        // EventRepository에 정정 뉴스 저장
         await this.eventRepository.saveMarketNews({
-          id: correctionNews.id || uuidv4(),
+          id: correctionNews.id || this.nextNewsId('corr'),
           type: correctionNews.type,
           category: (correctionNews.category as any) || 'CORRECTION',
           publisher: correctionNews.publisher,
@@ -149,12 +196,10 @@ export class EventDirector {
           created_at: new Date(this.context.clock.now()).toISOString(),
         });
 
-        // Broadcast Correction Event
         EventBus.publish('news_published', correctionNews);
 
-        // Inject Reversal Market Event
         const reverseMarketEvent: MarketEvent = {
-          id: uuidv4(),
+          id: this.nextMarketEventId('corr'),
           targetSector: correctionNews.target_sector || 'ALL',
           impact: correctionNews.impact_score > 0 ? 'STRONG_POSITIVE' : 'STRONG_NEGATIVE',
           urgencyMultiplier: 3.0,
@@ -164,6 +209,12 @@ export class EventDirector {
       } catch (err: any) {
         console.error("❌ Correction news execution failed:", err.message);
       }
-    }, delayMs);
+    }
+    return due.length;
+  }
+
+  /** 현재 예약된 정정_news 수 (테스트/진단용) */
+  public getPendingCorrectionCount(): number {
+    return this.pendingCorrections.length;
   }
 }

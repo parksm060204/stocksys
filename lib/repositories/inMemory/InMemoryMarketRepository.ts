@@ -3,7 +3,7 @@
  * Concrete in-memory implementation of MarketRepository backed by MemoryDatabase.
  */
 
-import { MemoryDatabase } from '../../memoryDb/memoryStore';
+import { MemoryDatabase, OptionContractRecord } from '../../memoryDb/memoryStore';
 import type { MarketRepository } from '../marketRepository';
 import type {
   MarketSnapshot,
@@ -222,6 +222,25 @@ export class InMemoryMarketRepository implements MarketRepository {
     for (const id of orderIds) {
       this.db.orders.delete(id);
     }
+  }
+
+  /** Option settlement: batch current prices for underlying stocks. */
+  public getUnderlyingPrices(stockIds: readonly string[]): Record<string, number> {
+    const prices: Record<string, number> = {};
+    for (const id of stockIds) {
+      const stock = this.db.stocks.get(id);
+      if (stock && Number.isFinite(stock.current_price)) {
+        prices[id] = stock.current_price;
+      }
+    }
+    return prices;
+  }
+
+  /** Option settlement: fetch option contracts by id. */
+  public getOptionContracts(optionIds: readonly string[]): OptionContractRecord[] {
+    if (optionIds.length === 0) return [];
+    const wanted = new Set(optionIds);
+    return Array.from(this.db.optionsContracts.values()).filter((c) => wanted.has(c.id));
   }
 
   public async trimOldData(

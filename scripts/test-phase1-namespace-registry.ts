@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Phase 1 Test: PRNG Namespace Collision Prevention & Registry Test
  *
  * Verifies that:
@@ -17,7 +17,7 @@ import {
 } from '../lib/engine/simulation/runtime';
 import { MarketEngine } from '../engine-server/src/MarketEngine';
 import { EventDirector } from '../engine-server/src/EventDirector';
-import { createIsolatedMemoryDbClient } from '../lib/memoryDb/memoryDbClient';
+import { createInMemoryRepositoryBundle } from '../lib/repositories/inMemory';
 
 function assert(condition: boolean, msg: string) {
   if (!condition) {
@@ -31,9 +31,9 @@ async function runTest() {
   const rootContext = createSimulationContext({ seed: 777, clock: new StaticTimeSource(1000) });
 
   // 1. Different namespaces produce distinct sequences
-  const streamMjd = rootContext.random.fork(SIMULATION_NAMESPACES.MARKET_ENGINE.MJD_DIFFUSION);
-  const streamEvent = rootContext.random.fork(SIMULATION_NAMESPACES.MARKET_ENGINE.PLAYER_EVENT);
-  const streamNews = rootContext.random.fork(SIMULATION_NAMESPACES.EVENT_DIRECTOR.NEWS_SCHEDULE);
+  const streamMjd = rootContext.fork(SIMULATION_NAMESPACES.MARKET_ENGINE.MJD_DIFFUSION);
+  const streamEvent = rootContext.fork(SIMULATION_NAMESPACES.MARKET_ENGINE.PLAYER_EVENT);
+  const streamNews = rootContext.fork(SIMULATION_NAMESPACES.EVENT_DIRECTOR.NEWS_SCHEDULE);
 
   const seqMjd = Array.from({ length: 20 }, () => streamMjd.next());
   const seqEvent = Array.from({ length: 20 }, () => streamEvent.next());
@@ -50,7 +50,7 @@ async function runTest() {
 
   // 2. Identical seed and namespace reproduce bit-for-bit
   const rootContext2 = createSimulationContext({ seed: 777, clock: new StaticTimeSource(1000) });
-  const streamNewsReplay = rootContext2.random.fork(SIMULATION_NAMESPACES.EVENT_DIRECTOR.NEWS_SCHEDULE);
+  const streamNewsReplay = rootContext2.fork(SIMULATION_NAMESPACES.EVENT_DIRECTOR.NEWS_SCHEDULE);
   const seqNewsReplay = Array.from({ length: 20 }, () => streamNewsReplay.next());
 
   for (let i = 0; i < 20; i++) {
@@ -85,13 +85,40 @@ async function runTest() {
   }
   assert(contextCollisionCaught, 'SimulationContext.fork() must fail on duplicate namespace');
 
-  // 4. Verify EventDirector requires explicit SimulationContext
-  const db = createIsolatedMemoryDbClient();
-  const engine = new MarketEngine({ simulationContext: rootContext, databaseClient: db });
+  // 4. Verify EventDirector registers its namespace through the tracker.
+  //    A FRESH context is required: reusing rootContext would collide with the
+  //    NEWS_SCHEDULE namespace already forked above — which is the intended
+  //    fail-fast behavior of the tracked fork API.
+  const engineContext = createSimulationContext({ seed: 999, clock: new StaticTimeSource(1000) });
+  const engine = new MarketEngine({
+    simulationContext: engineContext,
+    repositories: createInMemoryRepositoryBundle(),
+  });
 
-  // EventDirector with engine context
+  // MarketEngine 초기화 시 namespace가 tracker에 실제 등록됨
+  const engineNamespaces = engineContext.namespaceTracker.getRegisteredNamespaces
+    ? engineContext.namespaceTracker.getRegisteredNamespaces()
+    : null;
+  assert(
+    engineNamespaces === null ||
+      engineNamespaces.includes(SIMULATION_NAMESPACES.MARKET_ENGINE.MJD_DIFFUSION),
+    'MarketEngine init must register its namespaces in the tracker'
+  );
+
+  // EventDirector 초기화 시 namespace 등록 (추적된 context.fork 경유)
   const eventDirector = new EventDirector(engine, engine.simulationContext);
-  assert((eventDirector as any).context === engine.simulationContext, 'EventDirector must share identical context with MarketEngine');
+  assert(
+    (eventDirector as any).context === engine.simulationContext,
+    'EventDirector must share identical context with MarketEngine'
+  );
+  const afterDirector =
+    engineContext.namespaceTracker.getRegisteredNamespaces !== undefined
+      ? engineContext.namespaceTracker.getRegisteredNamespaces()
+      : null;
+  assert(
+    afterDirector === null || afterDirector.includes(SIMULATION_NAMESPACES.EVENT_DIRECTOR.NEWS_SCHEDULE),
+    'EventDirector init must register its namespace in the tracker'
+  );
 
   console.log('✅ Namespace Registry Test Passed: All namespaces isolated, collision tracked, and context shared.');
 }

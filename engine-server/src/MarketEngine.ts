@@ -1,4 +1,4 @@
-import './loadEnv';
+﻿import './loadEnv';
 import { ExecutionTrader } from './bots/ExecutionTrader';
 import { AdversarialAgent } from './bots/AdversarialAgent';
 import { WallBreakerAgent } from './bots/WallBreakerAgent';
@@ -18,14 +18,21 @@ import type { MacroData } from './realWorldFetcher';
 import type { MarketEvent } from './types';
 import { CommodityMarketEngine } from '../../lib/commodities/CommodityMarketEngine';
 import { SettlementBatchService } from './settlement/SettlementBatchService';
+import { buildDeterministicTradeId } from './settlement/deterministicTradeId';
 import * as dotenv from 'dotenv';
 import * as path from 'path';
 import * as os from 'os';
 import { applyLegacyChildOrderSafetyLimits } from './risk/legacyOrderSafety';
-import type { RepositoryBundle } from '../../lib/repositories/repositoryBundle';
+import {
+  extractParticipantId,
+  extractStrategyId,
+  verifyParticipantProfile,
+  assessStrategicOrder
+} from './risk/orderSourceMetadata';
 import { createInMemoryRepositoryBundle } from '../../lib/repositories/inMemory';
+import type { RepositoryBundle } from '../../lib/repositories/repositoryBundle';
+import type { TradeSettlementInput } from '../../lib/repositories/types';
 import { MemoryDatabase } from '../../lib/memoryDb/memoryStore';
-import { createIsolatedMemoryDbClient } from '../../lib/memoryDb/memoryDbClient';
 
 /**
  * 서버 CPU/RAM 사용량을 모니터링하여 고부하 시 봇 가동률 조절을 지원하는 클래스
@@ -87,11 +94,28 @@ export interface MarketDataSource {
 }
 
 export interface MarketPersistence {
-  saveTrades?(trades: any[]): Promise<void>;
   savePriceHistory?(history: any[]): Promise<void>;
   upsertPortfolios?(portfolios: any[]): Promise<void>;
-  getClient?(): any;
   [key: string]: any;
+}
+
+/** authoritative settlement 성공 이벤트 */
+export interface SettlementCommittedEvent {
+  readonly simulationTime: number;
+  readonly settledTradeIds: readonly string[];
+  readonly settledTradesCount: number;
+  readonly totalAmount: number;
+  readonly totalFeeAmount: number;
+}
+
+/**
+ * 정산 결과 수신 전용 observer.
+ * - 현금/보유 수량을 변경하지 않는다.
+ * - authoritative 저장소를 대체하지 않는다 (정산은 항상 repository가 수행한다).
+ * - 동일 거래를 다시 저장하지 않는다 (settledTradeIds는 읽기 전용 전달용).
+ */
+export interface MarketExecutionObserver {
+  onSettlementCommitted(event: SettlementCommittedEvent): Promise<void>;
 }
 
 export interface MarketEngineDependencies {
@@ -99,16 +123,20 @@ export interface MarketEngineDependencies {
   marketDataSource?: MarketDataSource;
   persistence?: MarketPersistence;
   repositories?: RepositoryBundle;
-  databaseClient?: any;
+  /** 정산 결과 수신 전용 observer (authoritative settlement을 대체하지 않는다) */
+  executionObserver?: MarketExecutionObserver;
+  /** 결정론적 trade ID에 포함할 run 식별자 (미지정 시 시드의 결정론적 생성기 사용) */
+  simulationRunId?: string;
 }
 
 export class MarketEngine {
   // ── Dependency Injection & Simulation Context ──
   public readonly simulationContext: SimulationContext;
+  /**
+   * authoritative 데이터 계층은 RepositoryBundle 단일 권위이다.
+   * engine이 별도 legacy client이나 숨은 MemoryDatabase를 만들지 않는다.
+   */
   public readonly repositories: RepositoryBundle;
-  public readonly db: any;
-  private readonly dbClient: any;
-  private readonly simRandom: SimulationRandomSource;
   private readonly simClock: SimulationTimeSource;
   private readonly mjdDiffusionRandom: SimulationRandomSource;
   private readonly mjdJumpRandom: SimulationRandomSource;
@@ -116,6 +144,16 @@ export class MarketEngine {
   private readonly fxRandom: SimulationRandomSource;
   public readonly customPersistence?: MarketPersistence;
   public readonly customDataSource?: MarketDataSource;
+  public readonly executionObserver?: MarketExecutionObserver;
+  /** 마지막 authoritative settlement 실패 코드 (성공 시 null) */
+  private lastSettlementError: string | null = null;
+  /** 마지막 틱의 주문 위험 거부 진단 (reason code 포함) */
+  private lastOrderRiskDiagnostics: any[] = [];
+
+  /** 실제 엔진 경로가 기록한 주문 거부 reason code 목록 */
+  public getLastOrderRiskDiagnostics(): readonly { stockId: string; participantId?: string | null; reasonCodes: string[] }[] {
+    return this.lastOrderRiskDiagnostics;
+  }
 
   private isRunning: boolean = false;
   private tickIntervalMs: number = 1000;
@@ -132,6 +170,10 @@ export class MarketEngine {
 
   // 쿼리 부하 절감용 tick 카운터 / 캐시
   private tickCount: number = 0;
+  /** 결정론적 trade ID에 포함되는 시뮬레이션 run 식별자 */
+  private readonly simulationRunId: string;
+  /** 동일 주문 쌍의 부분 체결을 구분하는 결정론적 카운터 */
+  private partialFillSequence: number = 0;
   private cachedMarketState: any = null;
   private lastMarketStateFetchMs: number = 0;
   private readonly MARKET_STATE_TTL_MS: number = 5000;
@@ -183,44 +225,41 @@ export class MarketEngine {
 
   constructor(dependencies?: MarketEngineDependencies) {
     this.simulationContext = dependencies?.simulationContext || createSimulationContext();
-    this.simRandom = this.simulationContext.random;
     this.simClock = this.simulationContext.clock;
-    this.mjdDiffusionRandom = this.simRandom.fork(SIMULATION_NAMESPACES.MARKET_ENGINE.MJD_DIFFUSION);
-    this.mjdJumpRandom = this.simRandom.fork(SIMULATION_NAMESPACES.MARKET_ENGINE.MJD_JUMP);
-    this.eventRandom = this.simRandom.fork(SIMULATION_NAMESPACES.MARKET_ENGINE.PLAYER_EVENT);
-    this.fxRandom = this.simRandom.fork(SIMULATION_NAMESPACES.MARKET_ENGINE.EXCHANGE_RATE);
+    // 모든 fork는 tracker가 적용되는 context.fork()를 통해 수행한다.
+    // (raw random source 직접 fork는 namespace 충돌을 우회하므로 금지)
+    this.mjdDiffusionRandom = this.simulationContext.fork(SIMULATION_NAMESPACES.MARKET_ENGINE.MJD_DIFFUSION);
+    this.mjdJumpRandom = this.simulationContext.fork(SIMULATION_NAMESPACES.MARKET_ENGINE.MJD_JUMP);
+    this.eventRandom = this.simulationContext.fork(SIMULATION_NAMESPACES.MARKET_ENGINE.PLAYER_EVENT);
+    this.fxRandom = this.simulationContext.fork(SIMULATION_NAMESPACES.MARKET_ENGINE.EXCHANGE_RATE);
     this.customPersistence = dependencies?.persistence;
     this.customDataSource = dependencies?.marketDataSource;
+    this.executionObserver = dependencies?.executionObserver;
     this.lastTickTime = this.simClock.now();
+    // 결정론적 run ID: simulation context의 결정론적 runId를 사용한다 (timestamp/UUID 금지).
+    this.simulationRunId = dependencies?.simulationRunId ?? this.simulationContext.runId;
+    this.partialFillSequence = 0;
 
-    // Priority 1: Injected repository bundle
-    // Priority 2: Injected database client
-    // Priority 3: Persistence client adapter
-    // Priority 4: Default isolated in-memory repository bundle
-    if (dependencies?.repositories) {
-      this.repositories = dependencies.repositories;
-      this.dbClient = (this.repositories as any).dbClient || dependencies.databaseClient || createIsolatedMemoryDbClient((this.repositories as any).memoryDb);
-    } else if (dependencies?.databaseClient) {
-      this.dbClient = dependencies.databaseClient;
-      const memDb = this.dbClient.db || this.dbClient;
-      this.repositories = createInMemoryRepositoryBundle(memDb instanceof MemoryDatabase ? memDb : new MemoryDatabase());
-    } else if (dependencies?.persistence && typeof (dependencies.persistence as any).getClient === 'function') {
-      this.dbClient = (dependencies.persistence as any).getClient();
-      const memDb = this.dbClient?.db || this.dbClient;
-      this.repositories = createInMemoryRepositoryBundle(memDb instanceof MemoryDatabase ? memDb : new MemoryDatabase());
-    } else {
-      const memoryDb = new MemoryDatabase();
-      this.repositories = createInMemoryRepositoryBundle(memoryDb);
-      this.dbClient = createIsolatedMemoryDbClient(memoryDb);
-    }
-    this.db = this.dbClient;
+    // authoritative 데이터 계층은 단일 RepositoryBundle로 통일한다.
+    // 주입된 bundle이 있으면 그대로 사용하고, 없을 때만 기본 in-memory bundle을 생성한다.
+    // engine이 legacy client이나 두 번째 MemoryDatabase를 만드는 경로는 존재하지 않는다.
+    this.repositories = dependencies?.repositories ?? createInMemoryRepositoryBundle();
 
-    // Guaranteed instance DB for SettlementBatchService
-    this.settlementService = new SettlementBatchService(this.dbClient);
+    // SettlementBatchService는 동일한 repository bundle + simulation clock만 주입받는다.
+    this.settlementService = new SettlementBatchService(this.repositories, this.simClock);
   }
 
-  public getDbClient(): any {
-    return this.dbClient;
+  /**
+   * authoritative 데이터 계층 접근자.
+   * legacy client/databaseClient/getDbClient는 제거되었으며 repository만 노출한다.
+   */
+  public getRepositories(): RepositoryBundle {
+    return this.repositories;
+  }
+
+  /** 마지막 authoritative settlement 실패 코드 (성공 시 null) */
+  public getLastSettlementError(): string | null {
+    return this.lastSettlementError;
   }
 
   public injectEvent(event: MarketEvent) {
@@ -237,8 +276,49 @@ export class MarketEngine {
     return this.cachedMarketState || null;
   }
 
+  /**
+   * 엔진에 내장된 하드코딩 봇 플릿을 verified participant로 등록한다.
+   * 이 플릿은 repository bots_config에 존재하지 않으므로, 등록하지 않으면
+   * 참가자 검증 단계에서 전부 미등록 참가자로 거부되어 시뮬레이션이 무력화된다.
+   * (fail-closed 검증을 유지하면서 내장 플릿을 정상 운용시키기 위한 최소 등록)
+   */
+  private async ensureBuiltInParticipantsRegistered(): Promise<void> {
+    const builtIn: Array<{ id: string; kind: string; cash: number }> = [
+      { id: 'PROP_DESK_PREDATOR', kind: 'DOMESTIC_INSTITUTION', cash: 50_000_000_000 },
+      { id: 'WALL_BREAKER', kind: 'DOMESTIC_INSTITUTION', cash: 100_000_000_000 },
+      { id: 'AS_MARKET_MAKER', kind: 'LIQUIDITY_PROVIDER', cash: 20_000_000_000 },
+      { id: 'bot_retail_001', kind: 'RETAIL', cash: 5_000_000_000 },
+      { id: 'bot_retail_002', kind: 'RETAIL', cash: 5_000_000_000 },
+      { id: 'bot_hf_001', kind: 'DOMESTIC_INSTITUTION', cash: 100_000_000_000 },
+      { id: 'bot_hf_002', kind: 'DOMESTIC_INSTITUTION', cash: 100_000_000_000 },
+      { id: 'bot_prop_001', kind: 'DOMESTIC_INSTITUTION', cash: 100_000_000_000 },
+      { id: 'bot_prop_002', kind: 'DOMESTIC_INSTITUTION', cash: 100_000_000_000 },
+      { id: 'bot_quant_001', kind: 'DOMESTIC_INSTITUTION', cash: 50_000_000_000 },
+      { id: 'bot_options_mm_001', kind: 'LIQUIDITY_PROVIDER', cash: 10_000_000_000 },
+      { id: 'bot_cta_001', kind: 'DOMESTIC_INSTITUTION', cash: 20_000_000_000 },
+      { id: 'bot_hedger_001', kind: 'DOMESTIC_INSTITUTION', cash: 50_000_000_000 },
+    ];
+
+    const existing = await this.repositories.participant.getBotConfigs();
+    const known = new Set(existing.map((b: any) => b.bot_id ?? b.id));
+    const toAdd = builtIn.filter((b) => !known.has(b.id));
+    if (toAdd.length === 0) return;
+
+    await this.repositories.participant.upsertBotConfigs(
+      toAdd.map((b) => ({
+        bot_id: b.id,
+        id: b.id,
+        participant_kind: b.kind,
+        strategy_type: 'BUILT_IN',
+        current_cash: b.cash,
+        account_equity: b.cash,
+      }))
+    );
+  }
+
   public async initializeBots() {
     console.log("Initializing Institutional Bots from DB...");
+    await this.ensureBuiltInParticipantsRegistered();
     this.institutionalBots = [];
     this.retailSwarmAgents = [];
     this.hedgeFundAgents = [];
@@ -627,28 +707,76 @@ export class MarketEngine {
 
       if (allOrders.length > 0) {
         const validatedOrders: any[] = [];
+        const orderRiskDiagnostics: any[] = [];
         for (const order of allOrders) {
           const stock = marketState.stocks?.find((s: any) => s.id === order.stock_id);
           const currentPrice = Number(order.price || stock?.current_price || 1);
           const adv = stock?.volume ? stock.volume * 50 : 100000;
 
-          let participantContext: any = undefined;
-          if (order.bot_id || order.participant_id) {
-            const botId = order.bot_id || order.participant_id;
-            const bot = this.findAgentById(botId);
-            const availableCash = bot?.currentPortfolio?.cash ?? 500000000;
-            participantContext = {
-              participantId: botId,
-              orderType: order.orderType || (order.is_strategic ? 'STRATEGIC_ORDER' : 'CHILD_ORDER'),
-              availableCash,
-              adv
-            };
+          // 봇 주문 메타데이터를 단일 표준으로 정규화하고, participantId를 기준으로
+          // 검증된 ParticipantRepository에서 실제 참가자 정보를 조회한다.
+          // (주문 객체에 적힌 participantKind는 신뢰하지 않는다)
+          const participantId = extractParticipantId(order as Record<string, unknown>);
+          const strategyId = extractStrategyId(order as Record<string, unknown>);
+          const requestedOrderType: 'STRATEGIC_ORDER' | 'CHILD_ORDER' | 'LP_QUOTE' =
+            order.orderType === 'STRATEGIC_ORDER'
+              ? 'STRATEGIC_ORDER'
+              : order.orderType === 'LP_QUOTE' || order.is_lp === true
+                ? 'LP_QUOTE'
+                : 'CHILD_ORDER';
+
+          if (!participantId) {
+            // 참가자 정보가 없는 주문은 위험 맥락 없이 통과시키지 않고 진단을 남긴다.
+            orderRiskDiagnostics.push({
+              stockId: order.stock_id,
+              participantId: null,
+              originalSize: Number(order.size ?? 0),
+              safeSize: 0,
+              originalPrice: currentPrice,
+              safePrice: 0,
+              reasonCodes: ['REJECTED_MISSING_PARTICIPANT_ID'],
+            });
+            continue;
           }
 
-          const safeOrder = applyLegacyChildOrderSafetyLimits(order, currentPrice, 0, participantContext);
+          const verified = await verifyParticipantProfile(this.repositories, participantId, order.stock_id);
+          const assessment = assessStrategicOrder({
+            profile: verified,
+            side: order.side,
+            adv,
+            requestedOrderType,
+          });
+
+          if (!assessment.accepted) {
+            // 일반 주문으로 조용히 낮추지 않고 거부 + reason code 기록
+            orderRiskDiagnostics.push({
+              stockId: order.stock_id,
+              participantId,
+              originalSize: Number(order.size ?? 0),
+              safeSize: 0,
+              originalPrice: currentPrice,
+              safePrice: 0,
+              reasonCodes: [assessment.rejection as string],
+            });
+            continue;
+          }
+
+          const safeOrder = applyLegacyChildOrderSafetyLimits(
+            order,
+            currentPrice,
+            0,
+            assessment.context
+          );
           if (safeOrder) {
+            // 표준화된 참가자 메타데이터를 실제 장부에 기록한다.
+            safeOrder.participantId = participantId;
+            safeOrder.participantKind = assessment.profile?.participantKind ?? 'UNKNOWN';
+            safeOrder.strategyId = strategyId;
             validatedOrders.push(safeOrder);
           }
+        }
+        if (orderRiskDiagnostics.length > 0) {
+          this.lastOrderRiskDiagnostics = orderRiskDiagnostics;
         }
         allOrders = validatedOrders;
 
@@ -811,23 +939,47 @@ export class MarketEngine {
           latestTradePrice = tradePrice;
           
           // Maker Rebate (-0.1%), Taker Fee (+0.25%)
-          const makerRebateRate = -0.001; 
+          // 값은 "비율"이다. 실제 금액은 정산 repository 경계에서 tradeAmount로부터 계산된다.
+          const makerRebateRate = -0.001;
           const takerFeeRate = 0.0025;
-          
-          const bidFeeRate = isBidMaker ? makerRebateRate : takerFeeRate;
-          const askFeeRate = isBidMaker ? takerFeeRate : makerRebateRate;
+
+          const buyerFeeRate = isBidMaker ? makerRebateRate : takerFeeRate;
+          const sellerFeeRate = isBidMaker ? takerFeeRate : makerRebateRate;
+
+          // 결정론적 trade ID: tick sequence + 종목 + 양측 주문 ID + partial fill index + 가격 + 수량.
+          // (timestamp/UUID 금지 — 동일 체결은 항상 동일 ID를 생성한다)
+          const buyOrderId = String(highestBid.id ?? highestBid._internalOrderId ?? 'lp_buy_resting');
+          const sellOrderId = String(lowestAsk.id ?? lowestAsk._internalOrderId ?? 'lp_sell_resting');
+          const deterministicTradeId = buildDeterministicTradeId({
+            runId: this.simulationRunId,
+            tickSequence: this.tickCount,
+            stockId,
+            buyOrderId,
+            sellOrderId,
+            partialFillSequence: this.partialFillSequence,
+            price: tradePrice,
+            size: tradeSize,
+          });
+          this.partialFillSequence += 1;
 
           tradesToInsert.push({
+            id: deterministicTradeId,
             stock_id: stockId,
             price: tradePrice,
             size: tradeSize,
             buyer_id: highestBid.user_id || null,
             seller_id: lowestAsk.user_id || null,
+            buy_order_id: buyOrderId,
+            sell_order_id: sellOrderId,
             buyer_is_bot: highestBid.is_lp || false,
             seller_is_bot: lowestAsk.is_lp || false,
-            buyer_fee: bidFeeRate,
-            seller_fee: askFeeRate,
-            created_at: new Date(this.simClock.now()).toISOString()
+            fee_rates: {
+              buyerFeeRate,
+              sellerFeeRate,
+            },
+            sequence: this.tickCount,
+            simulation_time: this.simClock.now(),
+            created_at: new Date(this.simClock.now()).toISOString(),
           });
 
           // ✅ Fix: 체결 후 기관 봇 포트폴리오 실제 업데이트 (Optimistic Update 대체)
@@ -986,14 +1138,37 @@ export class MarketEngine {
       );
     }
 
-    // 5.3.1 ~ 5.3.2 통합 체결 처리: 체결 내역 Insert 및 예수금/보유수량 갱신을 단일 원자적 정산으로 일괄 처리
+    // 5.3.1 ~ 5.3.2 통합 체결 처리: ORDER OF AUTHORITY
+    //   1) 매칭 결과 생성 (위에서 완료)
+    //   2) authoritative settlement 실행  ← 항상 실행, observer로 대체 불가
+    //   3) settlement 성공 확인
+    //   4) 주문 상태·가격 이력 반영
+    //   5) observer에 성공 이벤트 전달
     if (tradesToInsert.length > 0) {
-      // Connect custom persistence for trades if provided
-      if (this.customPersistence?.saveTrades) {
-        promises.push(this.customPersistence.saveTrades(tradesToInsert));
-      } else {
-        promises.push(this.repositories.settlement.settleTradeBatchAtomically(tradesToInsert));
-      }
+      const settlementResult = this.repositories.settlement.settleTradeBatchAtomically(
+        tradesToInsert as TradeSettlementInput[]
+      );
+      promises.push(
+        settlementResult.then((result) => {
+          if (!result.success) {
+            // authoritative settlement 실패를 성공처럼 흘리지 않는다.
+            this.lastSettlementError = result.errorCode ?? 'SETTLEMENT_FAILED';
+            console.error(
+              `[MarketEngine] Authoritative settlement REJECTED: ${result.errorCode} ${result.error ?? ''}`
+            );
+            throw new Error(`Settlement rejected: ${result.errorCode}`);
+          }
+          this.lastSettlementError = null;
+          // 정산 성공 후에만 observer/recorder에 성공 이벤트를 전달한다.
+          return this.executionObserver?.onSettlementCommitted({
+            simulationTime: this.simClock.now(),
+            settledTradeIds: [...result.settledTradeIds],
+            settledTradesCount: result.settledTradesCount,
+            totalAmount: result.totalAmount,
+            totalFeeAmount: result.totalFeeAmount,
+          });
+        })
+      );
     }
 
     // 5.4 현재가 Update (자산별 테이블 구분 + KRX 틱/상하한가 정렬) - Batch Optimized

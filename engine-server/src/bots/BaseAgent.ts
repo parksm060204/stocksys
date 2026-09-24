@@ -37,7 +37,8 @@ export class BaseAgent {
 
     // Context & Seeded Stream Initializer
     this.context = context || createSimulationContext();
-    this.random = this.context.random.fork(this.botId);
+    // tracker가 적용되는 context.fork()를 사용해 봇 ID namespace 충돌을 즉시 감지한다.
+    this.random = this.context.fork(this.botId);
     this.clock = this.context.clock;
     
     const cap = (typeof initialCapital === 'number' && !isNaN(initialCapital))

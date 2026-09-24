@@ -1,1 +1,0 @@
-{"version":3,"file":"StatArbAgent.d.ts","sourceRoot":"","sources":["../../src/bots/StatArbAgent.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,SAAS,EAAE,MAAM,aAAa,CAAC;AAoCxC,qBAAa,YAAa,SAAQ,SAAS;IAGzC,OAAO,CAAC,KAAK,CAGX;IAEF,OAAO,CAAC,OAAO,CAAiD;IAChE,OAAO,CAAC,SAAS,CAAqD;gBAE1D,SAAS,CAAC,EAAE,GAAG;IAKpB,mBAAmB,CAAC,MAAM,EAAE,GAAG,EAAE,GAAG,GAAG,EAAE;CAmGjD"}

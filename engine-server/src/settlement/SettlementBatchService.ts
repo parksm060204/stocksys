@@ -1,82 +1,91 @@
+/**
+ * SettlementBatchService — 옵션/채권 정기 정산 오케스트레이터
+ *
+ * 필수 구조:
+ *  - RepositoryBundle + SimulationTimeSource 만 주입받는다 (client.from / client.rpc 금지)
+ *  - 실제 시각(Date.now/new Date()) 대신 주입된 simulation clock을 사용한다
+ *  - 오류를 catch하고 성공처럼 반환하지 않는다 (rollback 후 오류 전파)
+ *  - 멱등성 상태는 authoritative repository(settlement ledger)에 보관한다
+ */
+
+import type { RepositoryBundle } from '../../../lib/repositories/repositoryBundle';
+import type { SimulationTimeSource } from '../../../lib/engine/simulation/runtime/simulationTimeSource';
+import type { BondRecord, OptionContractRecord, HoldingRecord } from '../../../lib/repositories/types';
 import { OptionSettlementEngine } from './OptionSettlementEngine';
 import { BondCouponEngine } from './BondCouponEngine';
-import { OptionContract, OptionPosition, BondItem, BondPosition } from './types';
+import type { OptionContract, OptionPosition, BondPosition } from './types';
+
+export interface DailySettlementBatchResult {
+  readonly optionSettled: number;
+  readonly optionPayout: number;
+  readonly bondCouponsPaid: number;
+  readonly bondPrincipalRedeemed: number;
+}
 
 export class SettlementBatchService {
   public optionEngine: OptionSettlementEngine;
   public bondEngine: BondCouponEngine;
   private isRunning: boolean = false;
-  private lastRunDate: string = '';
-  public dbClient?: any;
+  private lastRunPeriodKey: string = '';
 
-  constructor(clientOrRepos?: any) {
-    this.dbClient = clientOrRepos;
-    this.optionEngine = new OptionSettlementEngine(this.dbClient);
-    this.bondEngine = new BondCouponEngine(this.dbClient);
+  constructor(
+    private readonly repositories: RepositoryBundle,
+    private readonly clock: SimulationTimeSource
+  ) {
+    this.optionEngine = new OptionSettlementEngine(repositories, clock);
+    this.bondEngine = new BondCouponEngine(repositories, clock);
   }
 
-  public getDbClient(): any {
-    return this.dbClient;
+  public getRepositories(): RepositoryBundle {
+    return this.repositories;
   }
 
   /**
-   * [정기 배치 실행] 매 게임-일 또는 스케줄러 틱에서 호출
+   * simulation clock 기준 기간 키를 계산한다 (예: period_2026-09).
+   * 실제 벽시계 시각을 사용하지 않는다.
    */
-  public async runDailySettlementBatch(): Promise<{
-    optionSettled: number;
-    optionPayout: number;
-    bondCouponsPaid: number;
-    bondPrincipalRedeemed: number;
-  }> {
+  private currentPeriodKey(nowMs: number): string {
+    const iso = new Date(nowMs).toISOString();
+    return `period_${iso.slice(0, 7)}`;
+  }
+
+  /**
+   * [정기 배치 실행] simulation clock 기준 만기 옵션/채권 정산.
+   * 오류는 성공으로 위장하지 않고 전파한다.
+   */
+  public async runDailySettlementBatch(): Promise<DailySettlementBatchResult> {
     if (this.isRunning) {
       return { optionSettled: 0, optionPayout: 0, bondCouponsPaid: 0, bondPrincipalRedeemed: 0 };
     }
 
     this.isRunning = true;
-    const todayStr = new Date().toISOString().split('T')[0] || '';
-    const currentPeriodKey = `period_${todayStr.slice(0, 7)}`; // 'period_2026-08'
-
-    let optionSettled = 0;
-    let optionPayout = 0;
-    let bondCouponsPaid = 0;
-    let bondPrincipalRedeemed = 0;
+    const now = this.clock.now();
 
     try {
-      if (this.dbClient) {
-        // 1. 만기 도래 옵션 계약 및 보유 포지션 조회
-        const { data: optionsData } = await this.dbClient
-          .from('options_contracts')
-          .select('*');
+      const expiredOptions: readonly OptionContractRecord[] =
+        this.repositories.settlement.getExpiredOptionContracts(now);
+      const optionHoldingRecords: readonly HoldingRecord[] =
+        this.repositories.settlement.getPositionsForAssetIds(expiredOptions.map((o) => o.id));
+      // holding 레코드 → 옵션 포지션 DTO 매핑 (quantity > 0은 repository에서 이미 보장)
+      const optionPositions: OptionPosition[] = optionHoldingRecords.map((h) => ({
+        userId: h.user_id,
+        optionId: h.stock_id,
+        quantity: Number(h.quantity || 0),
+        avgPrice: Number(h.avg_price || 0),
+      }));
 
-        const { data: stocksData } = await this.dbClient
-          .from('stocks')
-          .select('id, current_price');
-
-        const underlyingPrices: Record<string, number> = {};
-        (stocksData || []).forEach((s: any) => {
-          underlyingPrices[s.id] = Number(s.current_price || 0);
-        });
-
-        const { data: holdingsData } = await this.dbClient
-          .from('holdings')
-          .select('*')
-          .gt('quantity', 0);
-
-        const optionPositions: OptionPosition[] = (holdingsData || [])
-          .filter((h: any) => (optionsData || []).some((o: any) => o.id === h.stock_id))
-          .map((h: any) => ({
-            userId: h.user_id,
-            optionId: h.stock_id,
-            quantity: Number(h.quantity || 0),
-            avgPrice: Number(h.avg_price || 0),
-          }));
-
-        const contracts: OptionContract[] = (optionsData || []).map((o: any) => ({
+      const stockIds = Array.from(
+        new Set(expiredOptions.map((o) => o.underlying_stock_id).filter((id): id is string => !!id))
+      );
+      const underlyingPrices = this.repositories.market.getUnderlyingPrices(stockIds);
+      const contracts: OptionContract[] = this.repositories.market
+        .getOptionContracts(expiredOptions.map((o) => o.id))
+        .map((o) => ({
           id: o.id,
           underlying_stock_id: o.underlying_stock_id,
           ticker: o.ticker,
-          type: o.type || o.option_type,
-          option_type: o.option_type || o.type,
+          type: o.type,
+          option_type: o.option_type,
           strike_price: Number(o.strike_price || 0),
           current_price: Number(o.current_price || 0),
           expiry_date: o.expiry_date,
@@ -84,74 +93,55 @@ export class SettlementBatchService {
           volume: Number(o.volume || 0),
         }));
 
-        // 옵션 정산 실행
-        const optRes = await this.optionEngine.executeSettlementBatch({
-          contracts,
-          positions: optionPositions,
-          underlyingPrices,
-        });
+      const optRes = await this.optionEngine.executeSettlementBatch({
+        contracts,
+        positions: optionPositions,
+        underlyingPrices,
+        now,
+      });
 
-        optionSettled = optRes.settledCount;
-        optionPayout = optRes.totalPayout;
+      const bonds: readonly BondRecord[] = this.repositories.settlement.getBonds(now);
+      const bondHoldingRecords: readonly HoldingRecord[] =
+        this.repositories.settlement.getPositionsForAssetIds(bonds.map((b) => b.id));
+      const bondPositions: BondPosition[] = bondHoldingRecords.map((h) => ({
+        userId: h.user_id,
+        bondId: h.stock_id,
+        quantity: Number(h.quantity || 0),
+        avgPrice: Number(h.avg_price || 0),
+      }));
 
-        // 2. 채권 쿠폰 및 만기 상환 처리
-        const { data: bondsData } = await this.dbClient
-          .from('bonds')
-          .select('*');
+      const bondRes = await this.bondEngine.executeCouponBatch({
+        bonds,
+        positions: bondPositions,
+        periodKey: this.currentPeriodKey(now),
+        now,
+      });
 
-        const bonds: BondItem[] = (bondsData || []).map((b: any) => ({
-          id: b.id,
-          ticker: b.ticker,
-          name: b.name,
-          bond_type: b.bond_type,
-          maturity: b.maturity,
-          maturity_date: b.maturity_date || undefined,
-          coupon_rate: Number(b.coupon_rate || 0),
-          face_value: Number(b.face_value || 10000),
-          current_price: Number(b.current_price || 100),
-        }));
+      this.lastRunPeriodKey = this.currentPeriodKey(now);
 
-        const bondPositions: BondPosition[] = (holdingsData || [])
-          .filter((h: any) => (bondsData || []).some((b: any) => b.id === h.stock_id))
-          .map((h: any) => ({
-            userId: h.user_id,
-            bondId: h.stock_id,
-            quantity: Number(h.quantity || 0),
-            avgPrice: Number(h.avg_price || 0),
-          }));
+      const result: DailySettlementBatchResult = {
+        optionSettled: optRes.settledCount,
+        optionPayout: optRes.totalPayout,
+        bondCouponsPaid: bondRes.totalCouponPaid,
+        bondPrincipalRedeemed: bondRes.totalPrincipalRedeemed,
+      };
 
-        const bondRes = await this.bondEngine.executeCouponBatch({
-          bonds,
-          positions: bondPositions,
-          currentPeriodKey,
-        });
-
-        bondCouponsPaid = bondRes.totalCouponPaid;
-        bondPrincipalRedeemed = bondRes.totalPrincipalRedeemed;
-
-        if (optionSettled > 0 || bondRes.couponCount > 0 || bondRes.redemptionCount > 0) {
-          console.log(
-            `🏦 [SettlementBatch] 정산 완료: 옵션 ${optionSettled}건(₩${optionPayout.toLocaleString()}), 채권이자 ₩${bondCouponsPaid.toLocaleString()}, 만기상환 ₩${bondPrincipalRedeemed.toLocaleString()}`
-          );
-        }
+      if (result.optionSettled > 0 || bondRes.couponCount > 0 || bondRes.redemptionCount > 0) {
+        console.log(
+          `🏦 [SettlementBatch] 정산 완료: 옵션 ${result.optionSettled}건(₩${result.optionPayout.toLocaleString()}), 채권이자 ₩${result.bondCouponsPaid.toLocaleString()}, 만기상환 ₩${result.bondPrincipalRedeemed.toLocaleString()}`
+        );
       }
-
-      this.lastRunDate = todayStr;
-    } catch (e) {
-      console.error('[SettlementBatchService] Batch Run Error:', e);
+      return result;
+    } catch (err) {
+      // 오류를 성공처럼 반환하지 않는다.
+      console.error('[SettlementBatchService] Batch Run Error:', err);
+      throw err;
     } finally {
       this.isRunning = false;
     }
-
-    return {
-      optionSettled,
-      optionPayout,
-      bondCouponsPaid,
-      bondPrincipalRedeemed,
-    };
   }
 
-  public getLastRunDate(): string {
-    return this.lastRunDate;
+  public getLastRunPeriodKey(): string {
+    return this.lastRunPeriodKey;
   }
 }

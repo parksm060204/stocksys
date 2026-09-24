@@ -94,24 +94,39 @@ export interface OrderUpdate {
   readonly status?: 'open' | 'partial' | 'filled' | 'cancelled' | 'expired';
 }
 
+/**
+ * 수수료 "비율"(rate) — 외부가 계산된 금액을 넘겨주지 못하도록 금액 필드와 타입을 분리한다.
+ * 정책: 양수 rate = 수수료 차감, 음수 rate = 리베이트 지급. 0 = 무료.
+ * maker rebate = -0.001, taker fee = +0.0025
+ */
+export interface TradeFeeRates {
+  readonly buyerFeeRate: number;
+  readonly sellerFeeRate: number;
+}
+
+/** 정산 경계에서 rate로부터 계산된 실제 수수료 "금액". */
+export interface CalculatedTradeFees {
+  readonly buyerFeeAmount: number;
+  readonly sellerFeeAmount: number;
+}
+
 export interface TradeSettlementInput {
-  readonly id?: string;
+  /** 정산 식별자. 선택값이 아닌 필수값이며, 매칭 직후 정산 이전에 결정론적으로 생성된다. */
+  readonly id: string;
   readonly stock_id: string;
   readonly buyer_id?: string | null;
   readonly seller_id?: string | null;
-  readonly buy_order_id?: string;
-  readonly sell_order_id?: string;
+  readonly buy_order_id: string;
+  readonly sell_order_id: string;
   readonly buyer_is_bot: boolean;
   readonly seller_is_bot: boolean;
   readonly price: number;
   readonly size: number;
-  readonly total_amount?: number;
-  readonly buyer_fee?: number;
-  readonly seller_fee?: number;
+  /** 수수료는 비율로만 전달한다. 금액은 정산 경계에서 계산한다. */
+  readonly fee_rates: TradeFeeRates;
   readonly created_at?: string;
   readonly sequence?: number;
   readonly simulation_time?: number;
-  readonly settled?: boolean;
 }
 
 export interface SettlementBatchResult {
@@ -119,8 +134,17 @@ export interface SettlementBatchResult {
   readonly settledTradesCount: number;
   readonly totalVolume: number;
   readonly totalAmount: number;
-  readonly totalFees: number;
+  /**
+   * 순 수수료 금액 합계(양수=비용, 음수=리베이트 순 지급).
+   * 순이익이 아니라 "수수료" 의미로 고정한다.
+   */
+  readonly totalFeeAmount: number;
+  /** 실패 시 명시적 오류 코드 (예: TRADE_ID_MISSING, TRADE_PRICE_NOT_FINITE) */
+  readonly errorCode?: string;
+  /** 실패 시 오류 메시지 */
   readonly error?: string;
+  /** 검증에 실패하여 batch 전체가 거부된 거래 ID 목록 */
+  readonly rejectedTradeIds?: readonly string[];
   readonly rollbackOccurred: boolean;
   readonly settledTradeIds: readonly string[];
   readonly skippedTradeIds?: readonly string[];

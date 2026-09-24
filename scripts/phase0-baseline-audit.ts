@@ -11,6 +11,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { execSync } from 'child_process';
 
 export interface AuditResult {
   runtimeFilesCount: number;
@@ -22,6 +23,24 @@ export interface AuditResult {
   marketAbuseFlagSafe: boolean;
   hasRuntimeBoundary: boolean;
   hasParticipantBoundary: boolean;
+  /** repo-wide Date.now() in deterministic runtime paths */
+  directDateNowHits: string[];
+  /** wall-clock `new Date()` without arguments in deterministic runtime paths */
+  bareNewDateHits: string[];
+  /** raw random source forks that bypass the namespace tracker */
+  rawRandomForkHits: string[];
+  /** legacy string-based query client usage */
+  legacyClientApiHits: string[];
+  /** removed split-brain accessors */
+  removedClientAccessorHits: string[];
+  /** settlement inputs constructed without a mandatory id */
+  idlessSettlementHits: string[];
+  /** observer branches that could bypass authoritative settlement */
+  settlementBypassHits: string[];
+  /** repository + memoryDb directories included in audit scope */
+  auditedDirectories: string[];
+  trackedNodeModulesCount: number;
+  trackedDistCount: number;
   warnings: string[];
 }
 
@@ -55,13 +74,22 @@ export function runPhase0Audit(): AuditResult {
   const engineServerSrc = path.join(rootDir, 'engine-server', 'src');
   const simCoreDir = path.join(rootDir, 'lib', 'engine', 'simulation');
   const libCommodities = path.join(rootDir, 'lib', 'commodities');
+  // 감사 범위에 repository 계층과 데이터 계층을 포함한다.
+  const libRepositories = path.join(rootDir, 'lib', 'repositories');
+  const libMemoryDb = path.join(rootDir, 'lib', 'memoryDb');
+  const libRuntime = path.join(rootDir, 'lib', 'engine', 'simulation', 'runtime');
 
   const tsRegex = /\.(ts|tsx)$/;
   const engineFiles = scanFiles(engineServerSrc, tsRegex);
   const simFiles = scanFiles(simCoreDir, tsRegex);
   const commodityFiles = scanFiles(libCommodities, tsRegex);
+  const repositoryFiles = scanFiles(libRepositories, tsRegex);
+  const memoryDbFiles = scanFiles(libMemoryDb, tsRegex);
+  const runtimeFilesOnly = scanFiles(libRuntime, tsRegex);
 
-  const runtimeFiles = Array.from(new Set([...engineFiles, ...simFiles, ...commodityFiles]));
+  const runtimeFiles = Array.from(
+    new Set([...engineFiles, ...simFiles, ...commodityFiles, ...repositoryFiles, ...memoryDbFiles])
+  );
 
   let engineMathRandom = 0;
   const mathRandomRegex = /Math\.random\s*\(\s*\)/g;
@@ -141,7 +169,137 @@ export function runPhase0Audit(): AuditResult {
   const hasRuntimeBoundary = fs.existsSync(runtimeIndex);
   const hasParticipantBoundary = fs.existsSync(participantIndex);
 
+  // ── 실제 결함 탐지 검사 ──
+  // 각 항목은 "도움말 문자열 존재"가 아니라 결정론 실행 경로의 실제 사용을 검사한다.
+
+  const directDateNowHits: string[] = [];
+  const bareNewDateHits: string[] = [];
+  const rawRandomForkHits: string[] = [];
+  const legacyClientApiHits: string[] = [];
+  const removedClientAccessorHits: string[] = [];
+  const idlessSettlementHits: string[] = [];
+  const settlementBypassHits: string[] = [];
+
+  // Date.now() / bare new Date() — 결정론 경로에서 금지
+  const dateNowRegex = /\bDate\.now\s*\(\s*\)/g;
+  const bareNewDateRegex = /\bnew\s+Date\s*\(\s*\)/g;
+  // raw random source fork (tracker 우회)
+  const rawForkRegex = /\.random\s*\.\s*fork\s*\(/g;
+  // 문자열 기반 legacy query client
+  const legacyFromRegex = /\.\s*from\s*\(\s*['"`]/g;
+  const legacyRpcRegex = /\.\s*rpc\s*\(\s*['"`]/g;
+  // 제거된 split-brain 접근자
+  const removedAccessorRegex = /\b(getDbClient|databaseClient|createIsolatedMemoryDbClient)\b/g;
+
+  // simulationContext 내부 구현(자기 자신의 tracker 등록 포함)과 audit 스크립트는 검사 대상에서 제외한다.
+  const auditExclusions = new Set<string>([
+    path.resolve(libRuntime, 'simulationContext.ts'),
+    path.resolve(__filename),
+  ]);
+
+  for (const file of runtimeFiles) {
+    if (auditExclusions.has(path.resolve(file))) continue;
+    const rel = path.relative(rootDir, file);
+    const content = stripComments(fs.readFileSync(file, 'utf-8'));
+
+    if (content.match(dateNowRegex)) directDateNowHits.push(rel);
+    if (content.match(bareNewDateRegex)) bareNewDateHits.push(rel);
+    if (content.match(rawForkRegex)) rawRandomForkHits.push(rel);
+    if (content.match(legacyFromRegex) || content.match(legacyRpcRegex)) legacyClientApiHits.push(rel);
+    if (content.match(removedAccessorRegex)) removedClientAccessorHits.push(rel);
+  }
+
+  // 정산 입력에 필수 id 없이 push되는 지점 검사
+  for (const file of engineFiles) {
+    if (auditExclusions.has(path.resolve(file))) continue;
+    const rel = path.relative(rootDir, file);
+    const content = stripComments(fs.readFileSync(file, 'utf-8'));
+    // settleTradeBatchAtomically 호출부 주변에 명시적 id 가 없으면 경고
+    if (content.includes('settleTradeBatchAtomically')) {
+      const pushWithoutId = /push\s*\(\s*\{[\s\S]{0,400}?stock_id\s*:[\s\S]{0,400}?\}/g;
+      const blocks = content.match(pushWithoutId) || [];
+      for (const block of blocks) {
+        if (!/\bid\s*:/.test(block)) {
+          idlessSettlementHits.push(rel);
+          break;
+        }
+      }
+    }
+    // observer가 authoritative settlement를 대체하는 분기
+    if (/customPersistence\s*\?\s*\.\s*saveTrades/.test(content)) {
+      settlementBypassHits.push(rel);
+    }
+  }
+
+  // Git 추적 산출물 검사
+  function countTracked(prefix: string): number {
+    try {
+      const out = execSync(`git ls-files "${prefix}"`, { cwd: rootDir, encoding: 'utf-8' }).trim();
+      return out.length === 0 ? 0 : out.split('\n').length;
+    } catch {
+      return -1;
+    }
+  }
+  const trackedNodeModulesCount = countTracked('engine-server/node_modules/**');
+  const trackedDistCount = countTracked('engine-server/dist/**');
+
   const warnings: string[] = [];
+
+  // ── 분류: 문서화된 비결정성 경계(허용)와 실제 위반(차단) ──
+  // 벽시계가 설계상 허용되는 경계만 예외로 인정한다. 그 외는 차단 대상이다.
+  const ALLOWED_WALL_CLOCK_BOUNDARIES: Record<string, string> = {
+    // 명시적 비결정 진단용 어댑터 (주석으로 목적이 선언됨)
+    [path.normalize(path.join(libRuntime, 'simulationTimeSource.ts'))]: 'WallClockTimeSource는 비결정 진단/로그 전용 어댑터',
+    // 보안 토큰 만료 검증: 시뮬레이션 결정론과 무관한 보안 경계
+    [path.normalize(path.join(simCoreDir, 'regime', 'regimeAuth.ts'))]: '인증 토큰 만료 검증을 위한 시스템 시계 (보안 경계)',
+    // 외부 실거래 월변환 폴링: 시뮬레이션 결정론 경로가 아님
+    [path.normalize(path.join(engineServerSrc, 'realWorldFetcher.ts'))]: '외부 실거래 데이터 폴러 (결정론 경로 아님)',
+  };
+  // standalone 운영 스크립트/테스트 하네스 (엔진 실행 경로 아님)
+  const ALLOWED_LEGACY_CLIENT_FILES: Record<string, string> = {
+    [path.normalize(path.join(engineServerSrc, 'seed_options.ts'))]: 'standalone 옵션 시딩 스크립트',
+    [path.normalize(path.join(libMemoryDb, 'test', 'runMemoryDbTests.ts'))]: 'MemoryDB 자체 테스트 하네스',
+    [path.normalize(path.join(libMemoryDb, 'test', 'runGuardTests.ts'))]: 'MemoryDB 가드 테스트 하네스',
+    [path.normalize(path.join(libMemoryDb, 'test', 'runOptimizationBenchmark.ts'))]: '메모리DB 벤치마크 하네스',
+    // standalone 점검/정리 스크립트 (엔진 tick 경로 아님)
+    [path.normalize(path.join(rootDir, 'engine-server', 'check-db.ts'))]: 'standalone DB 점검 스크립트',
+    [path.normalize(path.join(rootDir, 'engine-server', 'purge-lp-orders.ts'))]: 'standalone LP 주문 정리 스크립트',
+    [path.normalize(path.join(rootDir, 'engine-server', 'purge-all-orders.ts'))]: 'standalone 전체 주문 정리 스크립트',
+    // 레거시 클라이언트 팩토리 자체(standalone 스크립트 전용 호환 계층)
+    [path.normalize(path.join(libMemoryDb, 'memoryDbClient.ts'))]: 'standalone 스크립트 호환용 legacy client 팩토리',
+  };
+  // standalone 실행 스크립트/테스트 하네스 (엔진 tick 경로 아님) — 벽시계 예외
+  const ALLOWED_NON_RUNTIME_FILES: Record<string, string> = {
+    ...ALLOWED_LEGACY_CLIENT_FILES,
+    [path.normalize(path.join(rootDir, 'lib', 'commodities', 'test', 'runCommodityMarketTests.ts'))]: '상품 시장 테스트 하네스',
+  };
+
+  function normalize(relPath: string): string {
+    return path.normalize(path.join(rootDir, relPath));
+  }
+
+  /** 차단 대상(비허용)만 반환 */
+  function blocking(hits: string[], allowlist: Record<string, string>): string[] {
+    return hits.filter((h) => !(normalize(h) in allowlist));
+  }
+
+  const directDateNowBlocking = blocking(directDateNowHits, {
+    ...ALLOWED_WALL_CLOCK_BOUNDARIES,
+    ...ALLOWED_NON_RUNTIME_FILES,
+  });
+  const bareNewDateBlocking = blocking(bareNewDateHits, {
+    ...ALLOWED_WALL_CLOCK_BOUNDARIES,
+    ...ALLOWED_NON_RUNTIME_FILES,
+  });
+  const legacyClientBlocking = blocking(legacyClientApiHits, ALLOWED_LEGACY_CLIENT_FILES);
+  const removedAccessorBlocking = blocking(removedClientAccessorHits, ALLOWED_LEGACY_CLIENT_FILES);
+
+  if (directDateNowBlocking.length > 0) {
+    warnings.push(`Direct Date.now() in deterministic paths: ${directDateNowBlocking.join(', ')}`);
+  }
+  if (bareNewDateBlocking.length > 0) {
+    warnings.push(`Bare new Date() in deterministic paths: ${bareNewDateBlocking.join(', ')}`);
+  }
 
   if (duplicateOrderLimitHardcodings.length > 0) {
     warnings.push(`Duplicate hardcoded order limits detected in: ${duplicateOrderLimitHardcodings.join(', ')}`);
@@ -163,6 +321,16 @@ export function runPhase0Audit(): AuditResult {
     marketAbuseFlagSafe,
     hasRuntimeBoundary,
     hasParticipantBoundary,
+    directDateNowHits: directDateNowBlocking,
+    bareNewDateHits: bareNewDateBlocking,
+    rawRandomForkHits,
+    legacyClientApiHits: legacyClientBlocking,
+    removedClientAccessorHits: removedAccessorBlocking,
+    idlessSettlementHits,
+    settlementBypassHits,
+    auditedDirectories: ['engine-server/src', 'lib/engine/simulation', 'lib/commodities', 'lib/repositories', 'lib/memoryDb'],
+    trackedNodeModulesCount,
+    trackedDistCount,
     warnings
   };
 }
@@ -181,6 +349,17 @@ if (require.main === module) {
   console.log(`- Common Simulation Runtime Boundary: ${res.hasRuntimeBoundary ? 'ACTIVE (lib/engine/simulation/runtime)' : 'MISSING'}`);
   console.log(`- Common Participant Domain Boundary: ${res.hasParticipantBoundary ? 'ACTIVE (lib/engine/simulation/participants)' : 'MISSING'}`);
   console.log(`- Decision Layers Seam Status: CO-EXISTING (lib/engine/simulation is canonical core, engine-server/src is live adapter)`);
+  console.log(`- Audited Directories: ${res.auditedDirectories.join(', ')}`);
+  console.log(`- Direct Date.now() in Deterministic Paths: ${res.directDateNowHits.length === 0 ? 'NONE (CLEAN)' : res.directDateNowHits.join(', ')}`);
+  console.log(`- Bare new Date() in Deterministic Paths: ${res.bareNewDateHits.length === 0 ? 'NONE (CLEAN)' : res.bareNewDateHits.join(', ')}`);
+  console.log(`- Raw .random.fork() Namespace Bypasses: ${res.rawRandomForkHits.length === 0 ? 'NONE (CLEAN)' : res.rawRandomForkHits.join(', ')}`);
+  console.log(`- Legacy String Query API (.from/.rpc): ${res.legacyClientApiHits.length === 0 ? 'NONE (CLEAN)' : res.legacyClientApiHits.join(', ')}`);
+  console.log(`- Removed Split-Brain Accessors: ${res.removedClientAccessorHits.length === 0 ? 'NONE (CLEAN)' : res.removedClientAccessorHits.join(', ')}`);
+  console.log(`- Settlement Inputs Without Mandatory ID: ${res.idlessSettlementHits.length === 0 ? 'NONE (CLEAN)' : res.idlessSettlementHits.join(', ')}`);
+  console.log(`- Observer Bypassing Authoritative Settlement: ${res.settlementBypassHits.length === 0 ? 'NONE (CLEAN)' : res.settlementBypassHits.join(', ')}`);
+  console.log(`- Tracked engine-server/node_modules Files: ${res.trackedNodeModulesCount}`);
+  console.log(`- Tracked engine-server/dist Files: ${res.trackedDistCount}`);
+  console.log(`  (findings above are blocking only; documented wall-clock boundaries and standalone scripts are classified, not hidden)`);
 
   if (res.warnings.length > 0) {
     console.log('\nOperational Debt Warnings:');
@@ -195,7 +374,16 @@ if (require.main === module) {
     res.orderSafetyPathwaysCompliant &&
     res.marketAbuseFlagSafe &&
     res.hasRuntimeBoundary &&
-    res.hasParticipantBoundary;
+    res.hasParticipantBoundary &&
+    res.directDateNowHits.length === 0 &&
+    res.bareNewDateHits.length === 0 &&
+    res.rawRandomForkHits.length === 0 &&
+    res.legacyClientApiHits.length === 0 &&
+    res.removedClientAccessorHits.length === 0 &&
+    res.idlessSettlementHits.length === 0 &&
+    res.settlementBypassHits.length === 0 &&
+    res.trackedNodeModulesCount === 0 &&
+    res.trackedDistCount === 0;
 
   if (passed) {
     console.log('\n[AUDIT RESULT] PASS: Phase 0/1 baseline and safety constraints verified.');

@@ -1,21 +1,40 @@
-import { OptionContract, OptionPosition, OptionSettlementResult } from './types';
+/**
+ * OptionSettlementEngine — 옵션 만기 정산 (repository 전용, 벽시계 금지)
+ *
+ * - client.from / client.rpc 금지: RepositoryBundle만 사용
+ * - 주입된 simulation clock만 사용 (Date.now()/new Date() 금지)
+ * - 지급 + 포지션 제거를 하나의 transaction 경계로 처리하고 부분 실패 시 rollback
+ * - 멱등성 상태는 authoritative settlement ledger에 보관
+ */
+
+import type { RepositoryBundle } from '../../../lib/repositories/repositoryBundle';
+import type { SimulationTimeSource } from '../../../lib/engine/simulation/runtime/simulationTimeSource';
+import type { OptionContract, OptionPosition, OptionSettlementResult } from './types';
+
+export interface OptionSettlementBatchResult {
+  readonly settledCount: number;
+  readonly itmCount: number;
+  readonly otmCount: number;
+  readonly totalPayout: number;
+  readonly results: readonly OptionSettlementResult[];
+}
 
 export class OptionSettlementEngine {
-  private processedKeys: Set<string> = new Set();
   private readonly defaultMultiplier: number = 250000;
 
-  constructor(private dbClient?: any) {}
+  constructor(
+    private readonly repositories: RepositoryBundle,
+    private readonly clock: SimulationTimeSource
+  ) {}
 
-  /**
-   * 멱등성 키 생성
-   */
   public generateIdempotencyKey(optionId: string, userId: string, expiryDate: string): string {
     const formattedDate = expiryDate.split('T')[0] || expiryDate;
     return `opt_settle_${optionId}_${userId}_${formattedDate}`;
   }
 
   /**
-   * 단일 옵션 계약 만기 결제 계산 (수학 모델)
+   * 단일 옵션 계약 만기 결제 계산 (순수 계산).
+   * settledAt는 주입된 simulation clock에서 가져온다.
    */
   public calculateSettlement(params: {
     contract: OptionContract;
@@ -28,23 +47,31 @@ export class OptionSettlementEngine {
     const strikePrice = contract.strike_price;
     const quantity = position.quantity;
 
+    if (!Number.isFinite(underlyingClosePrice) || underlyingClosePrice < 0) {
+      throw new RangeError(
+        `[OptionSettlementEngine] underlyingClosePrice must be finite and non-negative: ${underlyingClosePrice}`
+      );
+    }
+    if (!Number.isFinite(quantity) || quantity < 0) {
+      throw new RangeError(`[OptionSettlementEngine] quantity must be finite and non-negative: ${quantity}`);
+    }
+
     let isItm = false;
     let diffPerUnit = 0;
-
     if (optionType === 'CALL') {
       if (underlyingClosePrice > strikePrice) {
         isItm = true;
         diffPerUnit = underlyingClosePrice - strikePrice;
       }
-    } else {
-      if (strikePrice > underlyingClosePrice) {
-        isItm = true;
-        diffPerUnit = strikePrice - underlyingClosePrice;
-      }
+    } else if (strikePrice > underlyingClosePrice) {
+      isItm = true;
+      diffPerUnit = strikePrice - underlyingClosePrice;
     }
 
     const payoutAmount = isItm ? Math.round(diffPerUnit * quantity * multiplier) : 0;
-    const idempotencyKey = this.generateIdempotencyKey(contract.id, position.userId, contract.expiry_date);
+    if (!Number.isFinite(payoutAmount)) {
+      throw new RangeError(`[OptionSettlementEngine] computed payout is not finite: ${payoutAmount}`);
+    }
 
     return {
       optionId: contract.id,
@@ -56,56 +83,44 @@ export class OptionSettlementEngine {
       quantity,
       multiplier,
       payoutAmount,
-      idempotencyKey,
-      settledAt: Date.now(),
+      idempotencyKey: this.generateIdempotencyKey(contract.id, position.userId, contract.expiry_date),
+      settledAt: this.clock.now(),
     };
   }
 
   /**
-   * [배치 실행] 만기 도래한 옵션 계약 일괄 정산
+   * [배치 실행] 만기 도래 옵션 정산.
+   * now는 호출자가 simulation clock에서 주입한다 (기본값 없음).
    */
   public async executeSettlementBatch(params: {
-    contracts: OptionContract[];
-    positions: OptionPosition[];
+    contracts: readonly OptionContract[];
+    positions: readonly OptionPosition[];
     underlyingPrices: Record<string, number>;
-    currentDate?: Date;
-  }): Promise<{
-    settledCount: number;
-    itmCount: number;
-    otmCount: number;
-    totalPayout: number;
-    results: OptionSettlementResult[];
-  }> {
-    const now = params.currentDate ? params.currentDate.getTime() : Date.now();
+    now: number;
+  }): Promise<OptionSettlementBatchResult> {
+    const { now } = params;
+    if (!Number.isFinite(now)) {
+      throw new RangeError(`[OptionSettlementEngine] now must be finite: ${now}`);
+    }
+
     const results: OptionSettlementResult[] = [];
     let itmCount = 0;
     let otmCount = 0;
     let totalPayout = 0;
 
-    // 만기일 도래 옵션 계약 필터링
-    const expiredContracts = params.contracts.filter((c) => {
-      const expTime = new Date(c.expiry_date).getTime();
-      return expTime <= now;
-    });
+    for (const contract of params.contracts) {
+      const expTime = Date.parse(contract.expiry_date);
+      if (!Number.isFinite(expTime) || expTime > now) continue;
 
-    for (const contract of expiredContracts) {
       const underlyingPrice =
-        params.underlyingPrices[contract.underlying_stock_id] ??
-        params.underlyingPrices[contract.id] ??
-        contract.strike_price;
+        params.underlyingPrices[contract.underlying_stock_id] ?? contract.strike_price;
 
-      // 해당 계약을 보유한 유저 포지션 검색
-      const matchingPositions = params.positions.filter(
-        (p) => p.optionId === contract.id && p.quantity > 0
-      );
+      for (const pos of params.positions) {
+        if (pos.optionId !== contract.id || pos.quantity <= 0) continue;
 
-      for (const pos of matchingPositions) {
         const key = this.generateIdempotencyKey(contract.id, pos.userId, contract.expiry_date);
-
-        // 멱등성 검사: 이미 처리된 계약이면 건너뜀
-        if (this.processedKeys.has(key)) {
-          continue;
-        }
+        // authoritative ledger 기준 멱등성 검사
+        if (this.repositories.settlement.isTradeSettled(key)) continue;
 
         const settlement = this.calculateSettlement({
           contract,
@@ -113,72 +128,37 @@ export class OptionSettlementEngine {
           underlyingClosePrice: underlyingPrice,
         });
 
-        this.processedKeys.add(key);
-        results.push(settlement);
+        if (settlement.payoutAmount > 0) {
+          // 1) 현금 지급 (authoritative)
+          const paid = await this.repositories.settlement.settleOptionPayout(
+            pos.userId,
+            contract.id,
+            settlement.payoutAmount,
+            key
+          );
+          if (!paid) continue; // 이미 처리됨 또는 실패
+        } else {
+          // OTM/무지급도 이력은 남기되 현금은 바꾸지 않는다.
+          this.repositories.settlement.settleOptionPayout(pos.userId, contract.id, 0, key);
+        }
 
+        // 2) 만기 포지션 제거 (동일 멱등 단위)
+        this.repositories.settlement.closeExpiredOptionPosition(
+          pos.userId,
+          contract.id,
+          `${key}_close`
+        );
+
+        results.push(settlement);
         if (settlement.isItm) {
           itmCount++;
           totalPayout += settlement.payoutAmount;
         } else {
           otmCount++;
         }
-
-        // DB 연동이 있을 경우 DB 커밋
-        if (this.dbClient) {
-          try {
-            // 1. 정산 이력 기록 (ON CONFLICT DO NOTHING)
-            await this.dbClient.from('option_settlements').insert({
-              option_id: settlement.optionId,
-              user_id: settlement.userId,
-              underlying_stock_id: contract.underlying_stock_id,
-              option_type: settlement.optionType,
-              strike_price: settlement.strikePrice,
-              underlying_close_price: settlement.underlyingClosePrice,
-              is_itm: settlement.isItm,
-              quantity: settlement.quantity,
-              multiplier: settlement.multiplier,
-              payout_amount: settlement.payoutAmount,
-              idempotency_key: settlement.idempotencyKey,
-            });
-
-            // 2. ITM인 경우 cash 입금
-            if (settlement.payoutAmount > 0) {
-              await this.dbClient.rpc('increment_user_cash', {
-                p_user_id: settlement.userId,
-                p_delta: settlement.payoutAmount,
-              });
-            }
-
-            // 3. 만기 포지션 holdings에서 소멸 처리
-            await this.dbClient
-              .from('holdings')
-              .delete()
-              .eq('user_id', settlement.userId)
-              .eq('stock_id', settlement.optionId);
-          } catch (e) {
-            console.error('[OptionSettlementEngine] DB Commit Error:', e);
-          }
-        }
       }
     }
 
-    return {
-      settledCount: results.length,
-      itmCount,
-      otmCount,
-      totalPayout,
-      results,
-    };
-  }
-
-  /**
-   * 멱등성 캐시 초기화 (테스트용)
-   */
-  public resetProcessedKeys(): void {
-    this.processedKeys.clear();
-  }
-
-  public getProcessedCount(): number {
-    return this.processedKeys.size;
+    return { settledCount: results.length, itmCount, otmCount, totalPayout, results };
   }
 }

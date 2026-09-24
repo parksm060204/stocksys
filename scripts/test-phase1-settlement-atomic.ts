@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Phase 1 Settlement Repository Atomic & Idempotency Test
  *
  * Validates:
@@ -90,11 +90,8 @@ async function runSettlementAtomicTests() {
       seller_is_bot: false,
       price: 60_000,
       size: 5,
-      total_amount: 300_000,
-      buyer_fee: 300,
-      seller_fee: 300,
+      fee_rates: { buyerFeeRate: 0.001, sellerFeeRate: 0.001 },
       created_at: '2026-01-01T10:00:00Z',
-      settled: false,
     },
   ];
 
@@ -144,11 +141,8 @@ async function runSettlementAtomicTests() {
       seller_is_bot: false,
       price: 60_000,
       size: 1,
-      total_amount: 60_000,
-      buyer_fee: 60,
-      seller_fee: 60,
+      fee_rates: { buyerFeeRate: 0.001, sellerFeeRate: 0.001 },
       created_at: '2026-01-01T10:05:00Z',
-      settled: false,
     },
     // Trade B: invalid (buyer tries to buy 1,000,000 shares exceeding cash)
     {
@@ -162,11 +156,8 @@ async function runSettlementAtomicTests() {
       seller_is_bot: false,
       price: 60_000,
       size: 1_000_000,
-      total_amount: 60_000_000_000,
-      buyer_fee: 60_000_000,
-      seller_fee: 60_000_000,
+      fee_rates: { buyerFeeRate: 0.001, sellerFeeRate: 0.001 },
       created_at: '2026-01-01T10:05:01Z',
-      settled: false,
     },
   ];
 
@@ -209,11 +200,8 @@ async function runSettlementAtomicTests() {
       seller_is_bot: false,
       price: 60_000,
       size: 10,
-      total_amount: 600_000,
-      buyer_fee: 600,
-      seller_fee: 600,
+      fee_rates: { buyerFeeRate: 0.001, sellerFeeRate: 0.001 },
       created_at: '2026-01-01T10:10:00Z',
-      settled: false,
     },
   ];
 

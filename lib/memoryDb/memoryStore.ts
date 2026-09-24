@@ -1,4 +1,4 @@
-import { COMMODITY_DEFINITIONS } from '../commodities/definitions';
+﻿import { COMMODITY_DEFINITIONS } from '../commodities/definitions';
 
 // ── 고정 UUID 규격 (Production 스키마 완벽 호환) ──
 export const GUEST_USER_ID = '00000000-0000-4000-8000-000000000001';
@@ -205,6 +205,26 @@ export interface DeterministicIdGenerator {
   nextId(prefix?: string): string;
 }
 
+/**
+ * Authoritative settlement ledger entry (성공적으로 커밋된 정산 1건).
+ * fee rate(비율)와 fee amount(금액)를 모두 보관하여 단위 혼동을 제거한다.
+ * 양수 rate = 수수료 차감, 음수 rate = 리베이트 지급.
+ */
+export interface SettlementLedgerEntry {
+  readonly trade_id: string;
+  readonly stock_id: string;
+  readonly price: number;
+  readonly size: number;
+  readonly total_amount: number;
+  readonly buyer_fee_rate: number;
+  readonly seller_fee_rate: number;
+  readonly buyer_fee_amount: number;
+  readonly seller_fee_amount: number;
+  readonly settled_at: string;
+  readonly simulation_time?: number;
+  readonly sequence?: number;
+}
+
 export class SequentialIdGenerator implements DeterministicIdGenerator {
   private counter: number = 0;
   constructor(private readonly baseSeed: number = 0) {}
@@ -241,6 +261,12 @@ export class MemoryDatabase {
   public botsConfig: any[] = [];
   public optionSettlements: any[] = [];
   public bondCouponPayments: any[] = [];
+  /**
+   * Authoritative settlement ledger.
+   * 정산 성공한 trade ID를 데이터 계층이 유일 권위로 보유한다.
+   * repository 인스턴스를 재생성해도 이 원장 덕분에 중복 정산이 차단된다.
+   */
+  public settlementLedger: Map<string, SettlementLedgerEntry> = new Map();
 
   // ── 2. 보조 인덱스 계층 (Secondary Indexes for O(1) Lookups) ──
   public tickerIndex: Map<string, string> = new Map(); // ticker -> stockId
@@ -577,7 +603,7 @@ export class MemoryDatabase {
       gbp_balance: 0,
       is_admin: true,
       unlocked_features: ['custom_dashboard', 'advanced_charts'],
-      created_at: new Date().toISOString(),
+      created_at: this.getIsoTimestamp(),
     };
     this.profiles.set(guestUser.id, guestUser);
     this.addProfileToIndex(guestUser);
@@ -601,7 +627,7 @@ export class MemoryDatabase {
           stock_id: sId,
           quantity: ih.qty,
           avg_price: ih.avgPrice,
-          created_at: new Date().toISOString(),
+          created_at: this.getIsoTimestamp(),
         };
         this.holdings.set(hId, hRec);
         this.addHoldingToIndex(hRec);
@@ -629,7 +655,7 @@ export class MemoryDatabase {
         net_worth: acc.cash,
         rank_tier: 'Diamond',
         is_admin: false,
-        created_at: new Date().toISOString(),
+        created_at: this.getIsoTimestamp(),
       };
       this.profiles.set(acc.id, pRec);
       this.addProfileToIndex(pRec);
@@ -643,7 +669,7 @@ export class MemoryDatabase {
           stock_id: stk.id,
           quantity: acc.holdingPerStock,
           avg_price: stk.current_price,
-          created_at: new Date().toISOString(),
+          created_at: this.getIsoTimestamp(),
         };
         this.holdings.set(hId, hRec);
         this.addHoldingToIndex(hRec);
@@ -748,6 +774,9 @@ export class MemoryDatabase {
     this.adminSettings.clear();
     this.exchangeRates = [];
     this.institutionalPortfolios.clear();
+    this.settlementLedger.clear();
+    this.optionSettlements = [];
+    this.bondCouponPayments = [];
 
     this.seedDefaultData();
     this.rebuildIndexes();

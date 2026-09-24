@@ -1,85 +1,93 @@
-/**
+﻿/**
  * InMemorySettlementRepository
  * Concrete in-memory implementation of SettlementRepository backed by MemoryDatabase.
  *
  * Guarantees:
- * - Full atomic batch settlement with pre-validation
- * - Rollback on any validation or execution failure (all-or-nothing)
- * - Strict non-negative cash and holding balances (cash >= 0, quantity >= 0)
- * - Idempotency tracking (processed trade IDs cannot be re-settled)
+ * - Complete runtime validation of every trade BEFORE any state read/aggregate/write
+ * - All-or-nothing batch: a single invalid trade rejects the whole batch with an explicit
+ *   error code, and mutates nothing (cash, holdings, trades, indexes, ledger)
+ * - Fee rates are converted to fee amounts at this boundary (never trusted as amounts)
+ * - Idempotency is stored in the AUTHORITATIVE MemoryDatabase.settlementLedger, so recreating
+ *   the repository instance still blocks duplicate settlement
+ * - Strict non-negative cash and holding balances
  */
 
-import { MemoryDatabase, TradeRecord, HoldingRecord, ProfileRecord } from '../../memoryDb/memoryStore';
+import { MemoryDatabase, TradeRecord, HoldingRecord, ProfileRecord, SettlementLedgerEntry, OptionContractRecord, BondRecord } from '../../memoryDb/memoryStore';
 import type { SettlementRepository } from '../settlementRepository';
 import type { TradeSettlementInput, SettlementBatchResult } from '../types';
+import { roundMoney, validateTradeSettlementInput, SettlementValidationSuccess } from '../settlementPolicy';
+
+function isNonEmptyId(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0;
+}
+
+function emptyResult(overrides: Partial<SettlementBatchResult> = {}): SettlementBatchResult {
+  return {
+    success: true,
+    settledTradesCount: 0,
+    totalVolume: 0,
+    totalAmount: 0,
+    totalFeeAmount: 0,
+    rollbackOccurred: false,
+    settledTradeIds: [],
+    ...overrides,
+  };
+}
 
 export class InMemorySettlementRepository implements SettlementRepository {
-  private settledTradeIds: Set<string> = new Set();
-  private settledEventKeys: Set<string> = new Set();
-
   constructor(private readonly db: MemoryDatabase) {}
 
+  /** Authoritative ledger 조회 (인스턴스가 재생성되어도 동일하게 동작) */
   public isTradeSettled(tradeId: string): boolean {
-    return this.settledTradeIds.has(tradeId);
+    if (!isNonEmptyId(tradeId)) return false;
+    return this.db.settlementLedger.has(tradeId);
   }
 
   public async settleTradeBatchAtomically(
     trades: readonly TradeSettlementInput[]
   ): Promise<SettlementBatchResult> {
     if (!trades || trades.length === 0) {
-      return {
-        success: true,
-        settledTradesCount: 0,
-        totalVolume: 0,
-        totalAmount: 0,
-        totalFees: 0,
-        rollbackOccurred: false,
-        settledTradeIds: [],
-      };
+      return emptyResult();
     }
 
-    // 1. Idempotency pre-check
-    const pendingTrades: TradeSettlementInput[] = [];
+    // ── Phase 0: 멱등성 사전 분류 ──
+    // 이미 authoritative ledger에 정산된 ID는 어떤 상태도 변경하지 않고 skip한다.
+    // batch 내부 중복(new trade)은 아래 검증 단계에서 거부된다.
     const skippedTradeIds: string[] = [];
-
+    const pendingInputs: TradeSettlementInput[] = [];
     for (const t of trades) {
-      if (t.id && this.settledTradeIds.has(t.id)) {
+      if (isNonEmptyId(t.id) && this.isTradeSettled(t.id)) {
         skippedTradeIds.push(t.id);
       } else {
-        pendingTrades.push(t);
+        pendingInputs.push(t);
       }
     }
 
-    if (pendingTrades.length === 0) {
-      // All trades were already settled idempotently
-      return {
-        success: true,
-        settledTradesCount: 0,
-        totalVolume: 0,
-        totalAmount: 0,
-        totalFees: 0,
-        rollbackOccurred: false,
-        settledTradeIds: [],
-        skippedTradeIds,
-      };
+    if (pendingInputs.length === 0) {
+      return emptyResult({ skippedTradeIds });
     }
 
-    // 2. Take Snapshot of state for Rollback
-    const profileSnapshots = new Map<string, ProfileRecord>();
-    const holdingSnapshots = new Map<string, HoldingRecord | null>();
-    const tradesCountBefore = this.db.trades.length;
+    // ── Phase 1: 완전 검증 (아무 상태도 읽거나 변경하지 않은 순수 단계) ──
+    const seenIds = new Set<string>();
+    const validated: SettlementValidationSuccess[] = [];
 
-    const getProfile = (userId: string): ProfileRecord | null => {
-      const pid = this.db.profileUserIdIndex.get(userId) || userId;
-      return this.db.profiles.get(pid) || null;
-    };
+    for (const raw of pendingInputs) {
+      const result = validateTradeSettlementInput(raw, seenIds, () => false);
+      if (!result.ok) {
+        // batch 전체 거부. 현금/보유/거래/인덱스/원장 어떤 것도 변경하지 않는다.
+        return emptyResult({
+          success: false,
+          errorCode: result.errorCode,
+          error: result.message,
+          rejectedTradeIds: result.tradeId ? [result.tradeId] : [],
+          rollbackOccurred: true,
+        });
+      }
+      seenIds.add(result.tradeId);
+      validated.push(result);
+    }
 
-    const getHolding = (userId: string, stockId: string): HoldingRecord | null => {
-      const hid = `${userId}_${stockId}`;
-      return this.db.holdings.get(hid) || null;
-    };
-
-    // Aggregate required cash and holdings per user
+    // ── Phase 2: 순 합계 산출 (validated 결과만 사용) ──
     const netCashDeltas = new Map<string, number>();
     interface HoldingDelta {
       userId: string;
@@ -90,68 +98,76 @@ export class InMemorySettlementRepository implements SettlementRepository {
 
     let totalVolume = 0;
     let totalAmount = 0;
-    let totalFees = 0;
+    let totalFeeAmount = 0;
 
-    for (const t of pendingTrades) {
-      const tradeAmount = t.total_amount !== undefined ? t.total_amount : t.price * t.size;
-      const buyerFee = t.buyer_fee !== undefined ? t.buyer_fee : Math.round(tradeAmount * 0.00015);
-      const sellerFee = t.seller_fee !== undefined ? t.seller_fee : Math.round(tradeAmount * 0.002);
+    for (let i = 0; i < validated.length; i++) {
+      const v = validated[i];
+      const trade = pendingInputs[i];
+      const buyerId = isNonEmptyId(trade.buyer_id) ? trade.buyer_id : null;
+      const sellerId = isNonEmptyId(trade.seller_id) ? trade.seller_id : null;
 
-      totalVolume += t.size;
-      totalAmount += tradeAmount;
-      totalFees += buyerFee + sellerFee;
+      totalVolume += trade.size;
+      totalAmount += v.tradeAmount;
+      totalFeeAmount += v.fees.buyerFeeAmount + v.fees.sellerFeeAmount;
 
-      // Buyer: pays tradeAmount + buyerFee
-      if (t.buyer_id && !t.buyer_is_bot) {
-        const current = netCashDeltas.get(t.buyer_id) || 0;
-        netCashDeltas.set(t.buyer_id, current - (tradeAmount + buyerFee));
-
-        // Buyer receives shares
-        const key = `${t.buyer_id}::${t.stock_id}`;
-        const existing = netHoldingDeltas.get(key) || { userId: t.buyer_id, stockId: t.stock_id, delta: 0 };
-        existing.delta += t.size;
+      // Buyer: pays tradeAmount + buyerFeeAmount (feeAmount may be negative => rebate credit)
+      if (buyerId !== null && !trade.buyer_is_bot) {
+        netCashDeltas.set(buyerId, (netCashDeltas.get(buyerId) || 0) - (v.tradeAmount + v.fees.buyerFeeAmount));
+        const key = `${buyerId}::${trade.stock_id}`;
+        const existing = netHoldingDeltas.get(key) || { userId: buyerId, stockId: trade.stock_id, delta: 0 };
+        existing.delta += trade.size;
         netHoldingDeltas.set(key, existing);
       }
 
-      // Seller: receives tradeAmount - sellerFee
-      if (t.seller_id && !t.seller_is_bot) {
-        const current = netCashDeltas.get(t.seller_id) || 0;
-        netCashDeltas.set(t.seller_id, current + (tradeAmount - sellerFee));
-
-        // Seller delivers shares
-        const key = `${t.seller_id}::${t.stock_id}`;
-        const existing = netHoldingDeltas.get(key) || { userId: t.seller_id, stockId: t.stock_id, delta: 0 };
-        existing.delta -= t.size;
+      // Seller: receives tradeAmount - sellerFeeAmount
+      if (sellerId !== null && !trade.seller_is_bot) {
+        netCashDeltas.set(sellerId, (netCashDeltas.get(sellerId) || 0) + (v.tradeAmount - v.fees.sellerFeeAmount));
+        const key = `${sellerId}::${trade.stock_id}`;
+        const existing = netHoldingDeltas.get(key) || { userId: sellerId, stockId: trade.stock_id, delta: 0 };
+        existing.delta -= trade.size;
         netHoldingDeltas.set(key, existing);
       }
     }
 
-    // 3. Strict Pre-Validation: Validate all buyer cash balances and seller holding quantities
+    const getProfile = (userId: string): ProfileRecord | null => {
+      const pid = this.db.profileUserIdIndex.get(userId) || userId;
+      return this.db.profiles.get(pid) || null;
+    };
+    const getHolding = (userId: string, stockId: string): HoldingRecord | null => {
+      return this.db.holdings.get(`${userId}_${stockId}`) || null;
+    };
+
+    // ── Phase 3: 잔액/보유 사전 검증 + 스냅샷 ──
+    const profileSnapshots = new Map<string, ProfileRecord>();
+    const holdingSnapshots = new Map<string, HoldingRecord | null>();
+    const tradesCountBefore = this.db.trades.length;
+    const ledgerEntriesBefore = new Map(this.db.settlementLedger);
+
     for (const [userId, cashDelta] of netCashDeltas.entries()) {
       const profile = getProfile(userId);
       if (!profile) {
-        return {
+        return emptyResult({
           success: false,
-          settledTradesCount: 0,
-          totalVolume: 0,
-          totalAmount: 0,
-          totalFees: 0,
-          error: `PRE_VALIDATION_FAILED: Profile not found for buyer user_id ${userId}`,
+          errorCode: 'PRE_VALIDATION_FAILED',
+          error: `PRE_VALIDATION_FAILED: Profile not found for user ${userId}`,
           rollbackOccurred: true,
-          settledTradeIds: [],
-        };
+        });
+      }
+      if (!Number.isFinite(profile.cash) || !Number.isFinite(cashDelta)) {
+        return emptyResult({
+          success: false,
+          errorCode: 'PRE_VALIDATION_FAILED',
+          error: `PRE_VALIDATION_FAILED: Non-finite cash balance for user ${userId}`,
+          rollbackOccurred: true,
+        });
       }
       if (profile.cash + cashDelta < 0) {
-        return {
+        return emptyResult({
           success: false,
-          settledTradesCount: 0,
-          totalVolume: 0,
-          totalAmount: 0,
-          totalFees: 0,
+          errorCode: 'PRE_VALIDATION_FAILED',
           error: `PRE_VALIDATION_FAILED: Insufficient cash for user ${userId}. Required delta: ${cashDelta}, Current cash: ${profile.cash}`,
           rollbackOccurred: true,
-          settledTradeIds: [],
-        };
+        });
       }
       profileSnapshots.set(profile.id, { ...profile });
     }
@@ -159,43 +175,40 @@ export class InMemorySettlementRepository implements SettlementRepository {
     for (const [key, item] of netHoldingDeltas.entries()) {
       const holding = getHolding(item.userId, item.stockId);
       const currentQty = holding ? holding.quantity : 0;
-      if (currentQty + item.delta < 0) {
-        return {
+      if (!Number.isFinite(currentQty) || !Number.isFinite(item.delta) || currentQty + item.delta < 0) {
+        return emptyResult({
           success: false,
-          settledTradesCount: 0,
-          totalVolume: 0,
-          totalAmount: 0,
-          totalFees: 0,
+          errorCode: 'PRE_VALIDATION_FAILED',
           error: `PRE_VALIDATION_FAILED: Insufficient holdings for user ${item.userId} stock ${item.stockId}. Required delta: ${item.delta}, Current qty: ${currentQty}`,
           rollbackOccurred: true,
-          settledTradeIds: [],
-        };
+        });
       }
-      holdingSnapshots.set(`${item.userId}_${item.stockId}`, holding ? { ...holding } : null);
+      holdingSnapshots.set(key, holding ? { ...holding } : null);
     }
 
-    // 4. Execution Boundary: Apply all state changes atomically
+    // ── Phase 4: 원자적 커밋 ──
     const newlySettledIds: string[] = [];
 
     try {
-      // 4a. Update cash
       for (const [userId, cashDelta] of netCashDeltas.entries()) {
         const profile = getProfile(userId)!;
-        profile.cash += cashDelta;
+        profile.cash = roundMoney(profile.cash + cashDelta);
       }
 
-      // 4b. Update holdings
-      for (const t of pendingTrades) {
-        const tradeAmount = t.total_amount !== undefined ? t.total_amount : t.price * t.size;
+      for (let i = 0; i < validated.length; i++) {
+        const v = validated[i];
+        const trade = pendingInputs[i];
+        const buyerId = isNonEmptyId(trade.buyer_id) ? trade.buyer_id : null;
+        const sellerId = isNonEmptyId(trade.seller_id) ? trade.seller_id : null;
 
-        if (t.buyer_id && !t.buyer_is_bot) {
-          const hid = `${t.buyer_id}_${t.stock_id}`;
+        if (buyerId !== null && !trade.buyer_is_bot) {
+          const hid = `${buyerId}_${trade.stock_id}`;
           let h = this.db.holdings.get(hid);
           if (!h) {
             h = {
               id: hid,
-              user_id: t.buyer_id,
-              stock_id: t.stock_id,
+              user_id: buyerId,
+              stock_id: trade.stock_id,
               quantity: 0,
               avg_price: 0,
               created_at: this.db.getIsoTimestamp(),
@@ -204,61 +217,72 @@ export class InMemorySettlementRepository implements SettlementRepository {
             this.db.addHoldingToIndex(h);
           }
           const prevCost = h.quantity * h.avg_price;
-          const newCost = t.size * t.price;
-          const totalQty = h.quantity + t.size;
-          h.avg_price = totalQty > 0 ? (prevCost + newCost) / totalQty : t.price;
+          const newCost = v.tradeAmount;
+          const totalQty = h.quantity + trade.size;
+          h.avg_price = totalQty > 0 ? (prevCost + newCost) / totalQty : trade.price;
           h.quantity = totalQty;
         }
 
-        if (t.seller_id && !t.seller_is_bot) {
-          const hid = `${t.seller_id}_${t.stock_id}`;
+        if (sellerId !== null && !trade.seller_is_bot) {
+          const hid = `${sellerId}_${trade.stock_id}`;
           const h = this.db.holdings.get(hid);
           if (h) {
-            h.quantity -= t.size;
-            if (h.quantity < 0) h.quantity = 0;
+            h.quantity = Math.max(0, h.quantity - trade.size);
           }
         }
 
-        // 4c. Persist Trade Record
-        const tradeId = t.id || this.db.generateId('trade');
         const tradeRecord: TradeRecord = {
-          id: tradeId,
-          stock_id: t.stock_id,
-          buyer_id: t.buyer_id,
-          seller_id: t.seller_id,
-          buyer_is_bot: t.buyer_is_bot,
-          seller_is_bot: t.seller_is_bot,
-          price: t.price,
-          size: t.size,
-          buyer_fee: t.buyer_fee,
-          seller_fee: t.seller_fee,
-          created_at: t.created_at || this.db.getIsoTimestamp(),
-          sequence: t.sequence,
-          simulation_time: t.simulation_time,
+          id: v.tradeId,
+          stock_id: trade.stock_id,
+          buyer_id: buyerId,
+          seller_id: sellerId,
+          buyer_is_bot: trade.buyer_is_bot,
+          seller_is_bot: trade.seller_is_bot,
+          price: trade.price,
+          size: trade.size,
+          buyer_fee: v.fees.buyerFeeAmount,
+          seller_fee: v.fees.sellerFeeAmount,
+          created_at: trade.created_at || this.db.getIsoTimestamp(),
+          sequence: trade.sequence,
+          simulation_time: trade.simulation_time,
         };
-
         this.db.trades.push(tradeRecord);
         this.db.addTradeToIndex(tradeRecord);
-        this.settledTradeIds.add(tradeId);
-        newlySettledIds.push(tradeId);
+
+        const ledgerEntry: SettlementLedgerEntry = {
+          trade_id: v.tradeId,
+          stock_id: trade.stock_id,
+          price: trade.price,
+          size: trade.size,
+          total_amount: v.tradeAmount,
+          buyer_fee_rate: v.feeRates.buyerFeeRate,
+          seller_fee_rate: v.feeRates.sellerFeeRate,
+          buyer_fee_amount: v.fees.buyerFeeAmount,
+          seller_fee_amount: v.fees.sellerFeeAmount,
+          settled_at: this.db.getIsoTimestamp(),
+          simulation_time: trade.simulation_time,
+          sequence: trade.sequence,
+        };
+        this.db.settlementLedger.set(v.tradeId, ledgerEntry);
+        newlySettledIds.push(v.tradeId);
       }
 
-      return {
+      return emptyResult({
         success: true,
-        settledTradesCount: pendingTrades.length,
-        totalVolume,
-        totalAmount,
-        totalFees,
+        settledTradesCount: validated.length,
+        totalVolume: roundMoney(totalVolume),
+        totalAmount: roundMoney(totalAmount),
+        totalFeeAmount: roundMoney(totalFeeAmount),
         rollbackOccurred: false,
-        settledTradeIds: [...skippedTradeIds, ...newlySettledIds],
-      };
-    } catch (err: any) {
-      // 5. Rollback on unexpected failure
+        settledTradeIds: newlySettledIds,
+        skippedTradeIds,
+      });
+    } catch (err) {
+      // ── Phase 5: 완전 롤백 (현금/보유/거래/인덱스/원장) ──
       for (const [pid, snap] of profileSnapshots.entries()) {
         const p = this.db.profiles.get(pid);
         if (p) Object.assign(p, snap);
       }
-
       for (const [hid, snap] of holdingSnapshots.entries()) {
         if (snap === null) {
           this.db.holdings.delete(hid);
@@ -267,26 +291,123 @@ export class InMemorySettlementRepository implements SettlementRepository {
           if (h) Object.assign(h, snap);
         }
       }
-
-      // Revert trades array and index
       this.db.trades = this.db.trades.slice(0, tradesCountBefore);
       this.db.rebuildIndexes();
-
+      for (const [id, entry] of ledgerEntriesBefore.entries()) {
+        if (!this.db.settlementLedger.has(id)) this.db.settlementLedger.set(id, entry);
+      }
       for (const id of newlySettledIds) {
-        this.settledTradeIds.delete(id);
+        this.db.settlementLedger.delete(id);
       }
 
-      return {
+      return emptyResult({
         success: false,
-        settledTradesCount: 0,
-        totalVolume: 0,
-        totalAmount: 0,
-        totalFees: 0,
-        error: `EXECUTION_FAILED: ${err?.message || String(err)}`,
+        errorCode: 'EXECUTION_FAILED',
+        error: `EXECUTION_FAILED: ${err instanceof Error ? err.message : String(err)}`,
         rollbackOccurred: true,
-        settledTradeIds: [],
-      };
+      });
     }
+  }
+
+  /**
+   * 범용 현금 지급 헬퍼 (옵션/채권 정산 공통).
+   * 멱등성 키를 authoritative ledger에 기록하며, 금액이 유한하지 않으면 아무것도 변경하지 않고 false.
+   */
+  private commitCashPayout(
+    idempotencyKey: string,
+    userId: string,
+    amount: number,
+    writeHistory: () => void
+  ): boolean {
+    if (!isNonEmptyId(idempotencyKey)) return false;
+    if (this.db.settlementLedger.has(idempotencyKey)) return false; // Idempotently skipped
+    if (typeof amount !== 'number' || !Number.isFinite(amount) || amount < 0) {
+      // 금액이 유효하지 않으면 원장/현금을 전혀 변경하지 않는다.
+      return false;
+    }
+    const pid = this.db.profileUserIdIndex.get(userId) || userId;
+    const profile = this.db.profiles.get(pid);
+    if (!profile) return false;
+
+    const nextCash = roundMoney(profile.cash + amount);
+    if (!Number.isFinite(nextCash) || nextCash < 0) return false;
+
+    profile.cash = nextCash;
+    writeHistory();
+    // authoritative ledger에 멱등성 기록 (인스턴스 재생성 후에도 중복 차단)
+    this.db.settlementLedger.set(idempotencyKey, {
+      trade_id: idempotencyKey,
+      stock_id: 'NON_TRADE_SETTLEMENT',
+      price: 0,
+      size: 0,
+      total_amount: 0,
+      buyer_fee_rate: 0,
+      seller_fee_rate: 0,
+      buyer_fee_amount: 0,
+      seller_fee_amount: 0,
+      settled_at: this.db.getIsoTimestamp(),
+    });
+    return true;
+  }
+
+  public getExpiredOptionContracts(now: number): readonly OptionContractRecord[] {
+    if (!Number.isFinite(now)) {
+      throw new RangeError(`[InMemorySettlementRepository] getExpiredOptionContracts requires a finite now: ${now}`);
+    }
+    return Array.from(this.db.optionsContracts.values()).filter((contract) => {
+      const expiry = Date.parse(contract.expiry_date);
+      return Number.isFinite(expiry) && expiry <= now;
+    });
+  }
+
+  public getPositionsForAssetIds(assetIds: readonly string[]): readonly HoldingRecord[] {
+    if (assetIds.length === 0) return [];
+    const wanted = new Set(assetIds);
+    return Array.from(this.db.holdings.values()).filter(
+      (h) => wanted.has(h.stock_id) && Number.isFinite(h.quantity) && h.quantity > 0
+    );
+  }
+
+  public getBonds(now: number): readonly BondRecord[] {
+    if (!Number.isFinite(now)) {
+      throw new RangeError(`[InMemorySettlementRepository] getBonds requires a finite now: ${now}`);
+    }
+    return Array.from(this.db.bonds.values());
+  }
+
+  /**
+   * 만기 포지션 제거. 멱등성 키가 ledger에 이미 있으면 아무것도 하지 않고 false.
+   * (지급/상환과 동일 ledger를 공유하므로 지급 성공 + 청산이 하나의 멱등 단위가 된다)
+   */
+  private closePosition(userId: string, stockId: string, closeKey: string): boolean {
+    if (!isNonEmptyId(closeKey)) return false;
+    if (this.db.settlementLedger.has(closeKey)) return false;
+    const hid = `${userId}_${stockId}`;
+    const holding = this.db.holdings.get(hid);
+    if (!holding) return false;
+    this.db.removeHoldingFromIndex(holding);
+    this.db.holdings.delete(hid);
+    this.db.settlementLedger.set(closeKey, {
+      trade_id: closeKey,
+      stock_id: stockId,
+      price: 0,
+      size: 0,
+      total_amount: 0,
+      buyer_fee_rate: 0,
+      seller_fee_rate: 0,
+      buyer_fee_amount: 0,
+      seller_fee_amount: 0,
+      settled_at: this.db.getIsoTimestamp(),
+    });
+    return true;
+  }
+
+  public closeExpiredOptionPosition(userId: string, optionId: string, idempotencyKey: string): boolean {
+    return this.closePosition(userId, optionId, idempotencyKey);
+  }
+
+  public closeMaturedBondPosition(userId: string, bondId: string, idempotencyKey: string): boolean {
+    return this.closePosition(userId, bondId, idempotencyKey);
   }
 
   public async settleOptionPayout(
@@ -295,25 +416,15 @@ export class InMemorySettlementRepository implements SettlementRepository {
     payoutAmount: number,
     idempotencyKey: string
   ): Promise<boolean> {
-    if (this.settledEventKeys.has(idempotencyKey)) {
-      return false; // Idempotently skipped
-    }
-
-    const pid = this.db.profileUserIdIndex.get(userId) || userId;
-    const profile = this.db.profiles.get(pid);
-    if (!profile) return false;
-
-    profile.cash += payoutAmount;
-    this.settledEventKeys.add(idempotencyKey);
-    this.db.optionSettlements.push({
-      id: idempotencyKey,
-      user_id: userId,
-      option_id: optionId,
-      payout_amount: payoutAmount,
-      settled_at: this.db.getIsoTimestamp(),
+    return this.commitCashPayout(idempotencyKey, userId, payoutAmount, () => {
+      this.db.optionSettlements.push({
+        id: idempotencyKey,
+        user_id: userId,
+        option_id: optionId,
+        payout_amount: payoutAmount,
+        settled_at: this.db.getIsoTimestamp(),
+      });
     });
-
-    return true;
   }
 
   public async settleBondCoupon(
@@ -322,25 +433,15 @@ export class InMemorySettlementRepository implements SettlementRepository {
     couponAmount: number,
     idempotencyKey: string
   ): Promise<boolean> {
-    if (this.settledEventKeys.has(idempotencyKey)) {
-      return false;
-    }
-
-    const pid = this.db.profileUserIdIndex.get(userId) || userId;
-    const profile = this.db.profiles.get(pid);
-    if (!profile) return false;
-
-    profile.cash += couponAmount;
-    this.settledEventKeys.add(idempotencyKey);
-    this.db.bondCouponPayments.push({
-      id: idempotencyKey,
-      user_id: userId,
-      bond_id: bondId,
-      coupon_amount: couponAmount,
-      paid_at: this.db.getIsoTimestamp(),
+    return this.commitCashPayout(idempotencyKey, userId, couponAmount, () => {
+      this.db.bondCouponPayments.push({
+        id: idempotencyKey,
+        user_id: userId,
+        bond_id: bondId,
+        coupon_amount: couponAmount,
+        paid_at: this.db.getIsoTimestamp(),
+      });
     });
-
-    return true;
   }
 
   public async settleBondRedemption(
@@ -349,16 +450,15 @@ export class InMemorySettlementRepository implements SettlementRepository {
     principalAmount: number,
     idempotencyKey: string
   ): Promise<boolean> {
-    if (this.settledEventKeys.has(idempotencyKey)) {
-      return false;
-    }
-
-    const pid = this.db.profileUserIdIndex.get(userId) || userId;
-    const profile = this.db.profiles.get(pid);
-    if (!profile) return false;
-
-    profile.cash += principalAmount;
-    this.settledEventKeys.add(idempotencyKey);
-    return true;
+    return this.commitCashPayout(idempotencyKey, userId, principalAmount, () => {
+      this.db.bondCouponPayments.push({
+        id: idempotencyKey,
+        user_id: userId,
+        bond_id: bondId,
+        principal_amount: principalAmount,
+        payment_type: 'MATURITY_REDEMPTION',
+        paid_at: this.db.getIsoTimestamp(),
+      });
+    });
   }
 }

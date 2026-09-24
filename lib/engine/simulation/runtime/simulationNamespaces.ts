@@ -50,6 +50,14 @@ export class SimulationNamespaceTracker {
     return this.activeNamespaces.has(namespace);
   }
 
+  /**
+   * 현재 등록된 namespace 목록 (읽기 전용 복사본).
+   * 운영 코드가 tracker 우회 여부를 감사/검증할 때 사용한다.
+   */
+  public getRegisteredNamespaces(): readonly string[] {
+    return [...this.activeNamespaces];
+  }
+
   public reset(): void {
     this.activeNamespaces.clear();
   }

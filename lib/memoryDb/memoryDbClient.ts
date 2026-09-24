@@ -1,4 +1,4 @@
-import {
+﻿import {
   memoryDb,
   MemoryDatabase,
   StockRecord,
@@ -442,6 +442,14 @@ export class MemoryDbClient {
     this.db = db;
   }
 
+  /**
+   * execution context clock 기반 ISO 타임스탬프.
+   * 벽시계(new Date())를 사용하지 않아 결정론 경로에서 안전하다.
+   */
+  public getIsoTimestamp(): string {
+    return this.db.getIsoTimestamp();
+  }
+
   public from(tableName: string): MemoryQueryBuilder {
     return new MemoryQueryBuilder(tableName, this.db);
   }
@@ -464,7 +472,7 @@ export class MemoryDbClient {
             cash: 100000000 + delta,
             net_worth: 100000000 + delta,
             rank_tier: 'Silver',
-            created_at: new Date().toISOString(),
+            created_at: this.getIsoTimestamp(),
           };
           return newUser;
         }
@@ -606,7 +614,7 @@ export class MemoryDbClient {
               stock_id: t.stock_id,
               quantity: Number(t.size),
               avg_price: Number(t.price),
-              created_at: new Date().toISOString(),
+              created_at: this.getIsoTimestamp(),
             });
           }
         }

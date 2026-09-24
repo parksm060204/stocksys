@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Phase 1 Test: Live MarketEngine Real-Tick Determinism Verification
  *
  * Verifies that:
@@ -15,8 +15,9 @@
  */
 
 import crypto from 'crypto';
-import { MarketEngine, MarketDataSource, MarketPersistence } from '../engine-server/src/MarketEngine';
-import { createIsolatedMemoryDbClient } from '../lib/memoryDb/memoryDbClient';
+import { MarketEngine, MarketDataSource, MarketPersistence, MarketExecutionObserver, SettlementCommittedEvent } from '../engine-server/src/MarketEngine';
+import { createInMemoryRepositoryBundle } from '../lib/repositories/inMemory';
+import type { RepositoryBundle } from '../lib/repositories/repositoryBundle';
 import { MemoryDatabase, SequentialIdGenerator } from '../lib/memoryDb/memoryStore';
 import {
   createSimulationContext,
@@ -78,13 +79,8 @@ class DeterministicMarketDataSource implements MarketDataSource {
 }
 
 class RecordingPersistence implements MarketPersistence {
-  public recordedTrades: any[] = [];
   public recordedPriceHistory: any[] = [];
   public recordedPortfolios: any[] = [];
-
-  public async saveTrades(trades: any[]): Promise<void> {
-    this.recordedTrades.push(...JSON.parse(JSON.stringify(trades)));
-  }
 
   public async savePriceHistory(history: any[]): Promise<void> {
     this.recordedPriceHistory.push(...JSON.parse(JSON.stringify(history)));
@@ -95,18 +91,29 @@ class RecordingPersistence implements MarketPersistence {
   }
 }
 
-async function populateInitialDb(db: any) {
+/**
+ * 정산 결과 수신 전용 observer.
+ * (authoritative settlement을 대체하지 않으며, 커밋된 결과만 기록한다)
+ */
+class RecordingExecutionObserver implements MarketExecutionObserver {
+  public committed: any[] = [];
+
+  public async onSettlementCommitted(event: SettlementCommittedEvent): Promise<void> {
+    this.committed.push(JSON.parse(JSON.stringify(event)));
+  }
+}
+
+async function populateInitialDb(repositories: RepositoryBundle) {
   const fixture = createDeterministicFixtureData();
-  await db.from('stocks').insert(fixture.stocks);
-  await db.from('bonds').insert(fixture.bonds);
-  await db.from('commodities').insert(fixture.commodities);
-  await db.from('admin_settings').insert(fixture.adminSettings);
+  await repositories.market.upsertStocks(fixture.stocks as never);
+  await repositories.market.upsertBonds(fixture.bonds as never);
+  await repositories.market.upsertCommodities(fixture.commodities as never);
 
   // Initial user orders to match against bot orders
-  await db.from('orders').insert([
-    { id: 'USR_ORD_01', stock_id: '0010', side: 'sell', price: 70000, size: 200, status: 'open', is_lp: false, created_at: '2026-09-24T00:00:00.000Z' },
-    { id: 'USR_ORD_02', stock_id: '0010', side: 'buy', price: 69900, size: 100, status: 'open', is_lp: false, created_at: '2026-09-24T00:00:00.000Z' },
-    { id: 'USR_ORD_03', stock_id: '0015', side: 'sell', price: 250000, size: 50, status: 'open', is_lp: false, created_at: '2026-09-24T00:00:00.000Z' }
+  await repositories.market.insertOrders([
+    { id: 'USR_ORD_01', stock_id: '0010', side: 'sell', price: 70000, size: 200, filled: 0, status: 'open', is_lp: false, created_at: '2026-09-24T00:00:00.000Z' } as never,
+    { id: 'USR_ORD_02', stock_id: '0010', side: 'buy', price: 69900, size: 100, filled: 0, status: 'open', is_lp: false, created_at: '2026-09-24T00:00:00.000Z' } as never,
+    { id: 'USR_ORD_03', stock_id: '0015', side: 'sell', price: 250000, size: 50, filled: 0, status: 'open', is_lp: false, created_at: '2026-09-24T00:00:00.000Z' } as never
   ]);
 }
 
@@ -116,8 +123,8 @@ async function runDeterministicSimulation(seed: number, startTime: number, tickC
     clock: timeSource,
     idGenerator: new SequentialIdGenerator(seed)
   });
-  const db = createIsolatedMemoryDbClient(memoryDb);
-  await populateInitialDb(db);
+  const repositories = createInMemoryRepositoryBundle(memoryDb);
+  await populateInitialDb(repositories);
 
   const context = createSimulationContext({
     seed,
@@ -126,12 +133,14 @@ async function runDeterministicSimulation(seed: number, startTime: number, tickC
 
   const dataSource = new DeterministicMarketDataSource();
   const persistence = new RecordingPersistence();
+  const observer = new RecordingExecutionObserver();
 
   const engine = new MarketEngine({
     simulationContext: context,
-    databaseClient: db,
+    repositories,
     marketDataSource: dataSource,
-    persistence
+    persistence,
+    executionObserver: observer
   });
 
   await engine.initializeBots();
@@ -141,16 +150,19 @@ async function runDeterministicSimulation(seed: number, startTime: number, tickC
     await engine.tick();
   }
 
-  // Extract ledger and execution results
-  const { data: finalOrders } = await db.from('orders').select('*');
-  const { data: finalStocks } = await db.from('stocks').select('*');
+  // Extract ledger and execution results from the authoritative repository
+  const finalOrders = await repositories.market.getOpenOrders();
+  const finalStocks = await repositories.market.getStocks();
+  const settledTrades = await repositories.market.getRecentTrades();
 
   return {
-    trades: persistence.recordedTrades,
+    // authoritative settlement ledger 기준 (observer bypass 아님)
+    trades: settledTrades,
+    settlementCommits: observer.committed,
     priceHistory: persistence.recordedPriceHistory,
     portfolios: persistence.recordedPortfolios,
-    orders: finalOrders || [],
-    stocks: finalStocks || [],
+    orders: finalOrders,
+    stocks: finalStocks,
     fundamentals: engine.fundamentals
   };
 }

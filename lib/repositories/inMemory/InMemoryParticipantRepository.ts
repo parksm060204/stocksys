@@ -18,6 +18,19 @@ export class InMemoryParticipantRepository implements ParticipantRepository {
     return [...this.db.botsConfig];
   }
 
+  public async upsertBotConfigs(configs: readonly Record<string, unknown>[]): Promise<void> {
+    for (const cfg of configs) {
+      const id = String(cfg.bot_id ?? cfg.id ?? '');
+      if (!id) continue;
+      const existing = this.db.botsConfig.find((b: any) => (b.bot_id ?? b.id) === id);
+      if (existing) {
+        Object.assign(existing, cfg);
+      } else {
+        this.db.botsConfig.push({ ...cfg, bot_id: id, id });
+      }
+    }
+  }
+
   public async getProfiles(filter?: { maxCash?: number; limit?: number }): Promise<ProfileRecord[]> {
     let list = Array.from(this.db.profiles.values()).map((p) => ({ ...p }));
     if (filter?.maxCash !== undefined) {

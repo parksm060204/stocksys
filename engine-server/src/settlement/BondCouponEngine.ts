@@ -1,15 +1,33 @@
-import { BondItem, BondPosition, BondPaymentResult } from './types';
+/**
+ * BondCouponEngine — 채권 쿠폰/만기 상환 정산 (repository 전용, 벽시계 금지)
+ *
+ * - client.from / client.rpc 금지: RepositoryBundle만 사용
+ * - 주입된 simulation clock만 사용 (Date.now()/new Date() 금지)
+ * - 상환 + 포지션 제거를 하나의 transaction 경계로 처리
+ * - 멱등성 상태는 authoritative settlement ledger에 보관
+ */
+
+import type { RepositoryBundle } from '../../../lib/repositories/repositoryBundle';
+import type { SimulationTimeSource } from '../../../lib/engine/simulation/runtime/simulationTimeSource';
+import type { BondItem, BondPosition, BondPaymentResult } from './types';
+
+export interface BondSettlementBatchResult {
+  readonly couponCount: number;
+  readonly redemptionCount: number;
+  readonly totalCouponPaid: number;
+  readonly totalPrincipalRedeemed: number;
+  readonly results: readonly BondPaymentResult[];
+}
 
 export class BondCouponEngine {
-  private processedKeys: Set<string> = new Set();
   private readonly defaultFaceValue: number = 10000;
-  private readonly defaultPaymentsPerYear: number = 4; // 분기 지급 (연 4회)
+  private readonly defaultPaymentsPerYear: number = 4;
 
-  constructor(private dbClient?: any) {}
+  constructor(
+    private readonly repositories: RepositoryBundle,
+    private readonly clock: SimulationTimeSource
+  ) {}
 
-  /**
-   * 멱등성 키 생성
-   */
   public generateIdempotencyKey(
     bondId: string,
     userId: string,
@@ -19,9 +37,6 @@ export class BondCouponEngine {
     return `bond_${paymentType.toLowerCase()}_${bondId}_${userId}_${periodKey}`;
   }
 
-  /**
-   * 단일 채권 쿠폰 지급액 계산
-   */
   public calculateCouponPayment(params: {
     bond: BondItem;
     position: BondPosition;
@@ -30,13 +45,15 @@ export class BondCouponEngine {
   }): BondPaymentResult {
     const { bond, position, periodKey, paymentsPerYear = this.defaultPaymentsPerYear } = params;
     const faceValue = bond.face_value || this.defaultFaceValue;
-    const couponRateDecimal = bond.coupon_rate / 100; // 3.5% -> 0.035
+    const couponRateDecimal = bond.coupon_rate / 100;
     const quantity = position.quantity;
-
-    // 분기별 쿠폰 이자 = 수량 * 액면가 * (연간쿠폰금리 / 지급횟수)
+    if (!Number.isFinite(quantity) || quantity < 0) {
+      throw new RangeError(`[BondCouponEngine] quantity must be finite and non-negative: ${quantity}`);
+    }
     const paymentAmount = Math.round(quantity * faceValue * (couponRateDecimal / paymentsPerYear));
-    const idempotencyKey = this.generateIdempotencyKey(bond.id, position.userId, periodKey, 'COUPON');
-
+    if (!Number.isFinite(paymentAmount)) {
+      throw new RangeError(`[BondCouponEngine] computed coupon is not finite: ${paymentAmount}`);
+    }
     return {
       bondId: bond.id,
       userId: position.userId,
@@ -45,14 +62,11 @@ export class BondCouponEngine {
       faceValue,
       quantity,
       paymentAmount,
-      idempotencyKey,
-      paymentDate: Date.now(),
+      idempotencyKey: this.generateIdempotencyKey(bond.id, position.userId, periodKey, 'COUPON'),
+      paymentDate: this.clock.now(),
     };
   }
 
-  /**
-   * 만기 도래 채권 원금 상환 계산
-   */
   public calculateMaturityRedemption(params: {
     bond: BondItem;
     position: BondPosition;
@@ -61,11 +75,13 @@ export class BondCouponEngine {
     const { bond, position, periodKey } = params;
     const faceValue = bond.face_value || this.defaultFaceValue;
     const quantity = position.quantity;
-
-    // 만기 원금 상환액 = 수량 * 액면가 (10,000원)
+    if (!Number.isFinite(quantity) || quantity < 0) {
+      throw new RangeError(`[BondCouponEngine] quantity must be finite and non-negative: ${quantity}`);
+    }
     const paymentAmount = Math.round(quantity * faceValue);
-    const idempotencyKey = this.generateIdempotencyKey(bond.id, position.userId, periodKey, 'MATURITY_REDEMPTION');
-
+    if (!Number.isFinite(paymentAmount)) {
+      throw new RangeError(`[BondCouponEngine] computed redemption is not finite: ${paymentAmount}`);
+    }
     return {
       bondId: bond.id,
       userId: position.userId,
@@ -74,27 +90,22 @@ export class BondCouponEngine {
       faceValue,
       quantity,
       paymentAmount,
-      idempotencyKey,
-      paymentDate: Date.now(),
+      idempotencyKey: this.generateIdempotencyKey(bond.id, position.userId, periodKey, 'MATURITY_REDEMPTION'),
+      paymentDate: this.clock.now(),
     };
   }
 
-  /**
-   * [배치 실행] 채권 정기 쿠폰 지급 및 만기 상환 일괄 처리
-   */
   public async executeCouponBatch(params: {
-    bonds: BondItem[];
-    positions: BondPosition[];
-    currentPeriodKey: string; // 예: '2026_Q3', '2026-08'
-    currentDate?: Date;
-  }): Promise<{
-    couponCount: number;
-    redemptionCount: number;
-    totalCouponPaid: number;
-    totalPrincipalRedeemed: number;
-    results: BondPaymentResult[];
-  }> {
-    const now = params.currentDate ? params.currentDate.getTime() : Date.now();
+    bonds: readonly BondItem[];
+    positions: readonly BondPosition[];
+    periodKey: string;
+    now: number;
+  }): Promise<BondSettlementBatchResult> {
+    const { now } = params;
+    if (!Number.isFinite(now)) {
+      throw new RangeError(`[BondCouponEngine] now must be finite: ${now}`);
+    }
+
     const results: BondPaymentResult[] = [];
     let couponCount = 0;
     let redemptionCount = 0;
@@ -102,113 +113,60 @@ export class BondCouponEngine {
     let totalPrincipalRedeemed = 0;
 
     for (const bond of params.bonds) {
-      const isMatured = bond.maturity_date
-        ? new Date(bond.maturity_date).getTime() <= now
-        : false;
+      const isMatured = bond.maturity_date ? Date.parse(bond.maturity_date) <= now : false;
 
-      const matchingPositions = params.positions.filter(
-        (p) => p.bondId === bond.id && p.quantity > 0
-      );
+      for (const pos of params.positions) {
+        if (pos.bondId !== bond.id || pos.quantity <= 0) continue;
 
-      for (const pos of matchingPositions) {
         if (isMatured) {
-          // 1. 만기 도래 채권: 원금 전액 상환 + 포지션 청산
-          const mKey = this.generateIdempotencyKey(bond.id, pos.userId, params.currentPeriodKey, 'MATURITY_REDEMPTION');
-          if (!this.processedKeys.has(mKey)) {
-            const redemption = this.calculateMaturityRedemption({
-              bond,
-              position: pos,
-              periodKey: params.currentPeriodKey,
-            });
+          const mKey = this.generateIdempotencyKey(
+            bond.id,
+            pos.userId,
+            params.periodKey,
+            'MATURITY_REDEMPTION'
+          );
+          if (this.repositories.settlement.isTradeSettled(mKey)) continue;
 
-            this.processedKeys.add(mKey);
-            results.push(redemption);
-            redemptionCount++;
-            totalPrincipalRedeemed += redemption.paymentAmount;
+          const redemption = this.calculateMaturityRedemption({
+            bond,
+            position: pos,
+            periodKey: params.periodKey,
+          });
 
-            if (this.dbClient) {
-              try {
-                await this.dbClient.from('bond_coupon_payments').insert({
-                  bond_id: redemption.bondId,
-                  user_id: redemption.userId,
-                  payment_type: redemption.paymentType,
-                  coupon_rate: redemption.couponRate,
-                  face_value: redemption.faceValue,
-                  quantity: redemption.quantity,
-                  payment_amount: redemption.paymentAmount,
-                  idempotency_key: redemption.idempotencyKey,
-                });
+          const paid = await this.repositories.settlement.settleBondRedemption(
+            pos.userId,
+            bond.id,
+            redemption.paymentAmount,
+            mKey
+          );
+          if (!paid) continue;
 
-                await this.dbClient.rpc('increment_user_cash', {
-                  p_user_id: redemption.userId,
-                  p_delta: redemption.paymentAmount,
-                });
+          this.repositories.settlement.closeMaturedBondPosition(pos.userId, bond.id, `${mKey}_close`);
 
-                await this.dbClient
-                  .from('holdings')
-                  .delete()
-                  .eq('user_id', redemption.userId)
-                  .eq('stock_id', redemption.bondId);
-              } catch (e) {
-                console.error('[BondCouponEngine] Redemption DB Error:', e);
-              }
-            }
-          }
+          results.push(redemption);
+          redemptionCount++;
+          totalPrincipalRedeemed += redemption.paymentAmount;
         } else {
-          // 2. 정기 쿠폰 이자 지급
-          const cKey = this.generateIdempotencyKey(bond.id, pos.userId, params.currentPeriodKey, 'COUPON');
-          if (!this.processedKeys.has(cKey)) {
-            const coupon = this.calculateCouponPayment({
-              bond,
-              position: pos,
-              periodKey: params.currentPeriodKey,
-            });
+          const cKey = this.generateIdempotencyKey(bond.id, pos.userId, params.periodKey, 'COUPON');
+          if (this.repositories.settlement.isTradeSettled(cKey)) continue;
 
-            this.processedKeys.add(cKey);
-            results.push(coupon);
-            couponCount++;
-            totalCouponPaid += coupon.paymentAmount;
+          const coupon = this.calculateCouponPayment({ bond, position: pos, periodKey: params.periodKey });
 
-            if (this.dbClient) {
-              try {
-                await this.dbClient.from('bond_coupon_payments').insert({
-                  bond_id: coupon.bondId,
-                  user_id: coupon.userId,
-                  payment_type: coupon.paymentType,
-                  coupon_rate: coupon.couponRate,
-                  face_value: coupon.faceValue,
-                  quantity: coupon.quantity,
-                  payment_amount: coupon.paymentAmount,
-                  idempotency_key: coupon.idempotencyKey,
-                });
+          const paid = await this.repositories.settlement.settleBondCoupon(
+            pos.userId,
+            bond.id,
+            coupon.paymentAmount,
+            cKey
+          );
+          if (!paid) continue;
 
-                await this.dbClient.rpc('increment_user_cash', {
-                  p_user_id: coupon.userId,
-                  p_delta: coupon.paymentAmount,
-                });
-              } catch (e) {
-                console.error('[BondCouponEngine] Coupon DB Error:', e);
-              }
-            }
-          }
+          results.push(coupon);
+          couponCount++;
+          totalCouponPaid += coupon.paymentAmount;
         }
       }
     }
 
-    return {
-      couponCount,
-      redemptionCount,
-      totalCouponPaid,
-      totalPrincipalRedeemed,
-      results,
-    };
-  }
-
-  public resetProcessedKeys(): void {
-    this.processedKeys.clear();
-  }
-
-  public getProcessedCount(): number {
-    return this.processedKeys.size;
+    return { couponCount, redemptionCount, totalCouponPaid, totalPrincipalRedeemed, results };
   }
 }

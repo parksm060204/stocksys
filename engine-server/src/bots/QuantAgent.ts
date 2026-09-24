@@ -19,7 +19,8 @@ export class QuantAgent extends BaseAgent {
     EventBus.subscribe('NEWS_ALERT', (event: MarketEvent) => {
       this.pendingNews.push({
         event,
-        receivedAt: Date.now()
+        // 주입된 simulation clock 사용 (벽시계 Date.now() 금지)
+        receivedAt: this.clock.now()
       });
       console.log(`[QuantAgent] Received breaking news: ${event.id} (Reliability: ${event.reliability || 0})`);
     });

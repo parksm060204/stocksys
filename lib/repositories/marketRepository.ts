@@ -8,7 +8,8 @@ import type {
   OrderRecord,
   OrderUpdate,
   TradeRecord,
-  StockPriceHistoryRecord
+  StockPriceHistoryRecord,
+  OptionContractRecord
 } from './types';
 
 export interface MarketRepository {
@@ -44,6 +45,11 @@ export interface MarketRepository {
   upsertCommodities(commodities: readonly any[]): Promise<void>;
   getExchangeRates(): Promise<any[]>;
   upsertExchangeRates(rates: readonly any[]): Promise<void>;
+
+  /** Option settlement: batch current prices for underlying stocks. Missing ids are omitted. */
+  getUnderlyingPrices(stockIds: readonly string[]): Record<string, number>;
+  /** Option settlement: fetch option contracts by id. */
+  getOptionContracts(optionIds: readonly string[]): OptionContractRecord[];
 
   trimOldData(
     maxTrades: number,

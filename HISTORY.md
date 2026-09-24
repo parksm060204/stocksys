@@ -5027,3 +5027,18 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
   - `npm run build` Next.js Turbopack 100% 정상 빌드 통과.
   - `engine-server` `npm run build` 100% 정상 컴파일 통과.
   - Phase 1 전체 테스트 8종 및 교차자산/시장국면 기존 회귀 테스트 4종 전수 통과.
+
+---
+## 2026-09-24 22:03
+
+**요청 요약:** 중단된 Phase 1 Supabase 완전 제거 작업 이어서 완료 및 커밋/푸시
+
+**수행 결과:**
+- `engine-server/.env`에서 `NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` 환경변수 제거 — `ENGINE_DB` 이름만 잔류
+- `.env.local.example`, `.env.production.example` 전체 재작성 — Supabase 변수명 완전 제거
+- `engine-server/dist/` 루트의 stale 빌드 결과물(`EventDirector.js`, `MarketEngine.js`, `index.js`, `newsFetcher.js`, `seed_options.js`) 삭제
+- `engine-server/dist/lib/memoryDb/mockSupabaseClient.*` (고아 파일) 삭제
+- `engine-server` `npm run build` 재실행 — 최신 소스 기반으로 클린 재컴파일
+- 소스 전체(`*.ts`, `*.tsx`, `*.js`, `*.env*`) supabase 참조 0건 최종 확인
+- `tsc --noEmit` 0 errors 최종 확인
+- `git commit + push` → `ea6d4be` (origin/main)

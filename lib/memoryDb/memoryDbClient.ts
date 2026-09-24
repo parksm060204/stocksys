@@ -239,8 +239,8 @@ export class MemoryQueryBuilder {
         const insertedItems: any[] = [];
 
         for (const item of items) {
-          const id = item.id || `id_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-          const record = { ...item, id, created_at: item.created_at || new Date().toISOString() };
+          const id = item.id || db.generateId('id');
+          const record = { ...item, id, created_at: item.created_at || db.getIsoTimestamp() };
 
           if (this.tableName === 'stocks') {
             db.stocks.set(id, record as StockRecord);
@@ -626,7 +626,7 @@ export class MemoryDbClient {
           }
         }
 
-        const tradeId = t.id || `trade_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        const tradeId = t.id || db.generateId('trade');
         tradeRecords.push({
           id: tradeId,
           stock_id: t.stock_id,
@@ -638,7 +638,7 @@ export class MemoryDbClient {
           size: Number(t.size),
           buyer_fee: buyerFee,
           seller_fee: sellerFee,
-          created_at: t.created_at || new Date().toISOString(),
+          created_at: t.created_at || db.getIsoTimestamp(),
           simulation_time: t.simulation_time,
         });
       }
@@ -780,7 +780,7 @@ export class MemoryDbClient {
         return { data: null, error: { message: 'stock_id is required' } };
       }
 
-      const fetchStart = Date.now();
+      const fetchStart = db.getNowMs();
       const orderIds = db.orderStockIndex.get(stockId);
       const bidLevelsMap = new Map<number, { size: number; count: number }>();
       const askLevelsMap = new Map<number, { size: number; count: number }>();
@@ -840,7 +840,7 @@ export class MemoryDbClient {
           created_at: t.created_at,
         }));
 
-      const now = Date.now();
+      const now = db.getNowMs();
       return {
         data: {
           stockId,
@@ -905,10 +905,6 @@ export function createMemoryDbClient(db?: MemoryDatabase): MemoryDbClient {
   return new MemoryDbClient(db || memoryDb);
 }
 
-export function createIsolatedMemoryDbClient(): MemoryDbClient {
-  return new MemoryDbClient(new MemoryDatabase());
+export function createIsolatedMemoryDbClient(db?: MemoryDatabase): MemoryDbClient {
+  return new MemoryDbClient(db || new MemoryDatabase());
 }
-
-// 하위 호환용 alias
-export const createMockSupabaseClient = createMemoryDbClient;
-export { MemoryDbClient as MockSupabaseClient };

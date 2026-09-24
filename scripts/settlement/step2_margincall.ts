@@ -9,7 +9,7 @@
 import { HedgeFundAgent } from '../../engine-server/src/bots/HedgeFundAgent';
 import { memoryDb, OrderRecord } from '../../lib/memoryDb/memoryStore';
 
-const POSTGREST = process.env.NEXT_PUBLIC_ENGINE_DB_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || 'http://49.247.136.231:3001';
+const POSTGREST = process.env.NEXT_PUBLIC_ENGINE_DB_URL || 'http://49.247.136.231:3001';
 const TIMEOUT_MS = 2500;
 let isInMemoryMode = process.env.NEXT_PUBLIC_USE_IN_MEMORY === 'true';
 

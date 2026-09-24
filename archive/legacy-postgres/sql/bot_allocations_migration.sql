@@ -1,4 +1,4 @@
--- supabase/bot_allocations_migration.sql
+-- legacy_db/bot_allocations_migration.sql
 -- Run this migration to completely replace bots_config with the new specific allocations.
 
 CREATE TABLE IF NOT EXISTS public.bots_config (
@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS public.institutional_portfolios (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
--- Apply Supabase Policies per AGENTS.md rules
+-- Apply Legacy DB Policies per AGENTS.md rules
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.institutional_portfolios TO anon, authenticated;
 
 -- (Optional) If RLS isn't enabled yet:

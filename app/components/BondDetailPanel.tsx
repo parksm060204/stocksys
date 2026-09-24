@@ -16,14 +16,14 @@ export default function BondDetailPanel({ stock }: { stock: Stock }) {
   const [currentPrice, setCurrentPrice] = useState(stock.currentPrice);
   const [qty, setQty] = useState(10);
   
-  const supabase = createClient();
+  const db = createClient();
 
   // 주기적 가격 폴링 (YTM 동기화)
   useEffect(() => {
     const fetchLatestPrice = async () => {
       try {
         const table = stock.market === 'bonds' ? 'bonds' : 'stocks';
-        const { data } = await supabase.from(table).select('current_price').eq('id', stock.id).maybeSingle();
+        const { data } = await db.from(table).select('current_price').eq('id', stock.id).maybeSingle();
         if (data?.current_price) {
           setCurrentPrice(Number(data.current_price));
         }
@@ -37,7 +37,7 @@ export default function BondDetailPanel({ stock }: { stock: Stock }) {
     return () => {
       clearInterval(interval);
     };
-  }, [stock.id, stock.market, supabase]);
+  }, [stock.id, stock.market, db]);
 
   if (!bm) return null;
 

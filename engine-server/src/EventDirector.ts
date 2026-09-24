@@ -1,37 +1,15 @@
 import './loadEnv';
-import { createClient } from '@supabase/supabase-js';
 import type { MarketEngine } from './MarketEngine';
 import type { MarketEvent } from './types';
 import { EventBus } from './EventBus';
 import { NewsGenerator, NewsItem } from './services/NewsGenerator';
 import { v4 as uuidv4 } from 'uuid';
-import * as dotenv from 'dotenv';
-import * as path from 'path';
 import {
   SimulationContext,
   SimulationRandomSource,
-  createSimulationContext,
   SIMULATION_NAMESPACES
 } from '../../lib/engine/simulation/runtime';
-
-const supabaseUrl = process.env.NEXT_PUBLIC_ENGINE_DB_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
-const supabaseKey =
-  process.env.ENGINE_DB_SERVICE_ROLE_KEY ||
-  process.env.SUPABASE_SERVICE_ROLE_KEY ||
-  process.env.NEXT_PUBLIC_ENGINE_DB_ANON_KEY ||
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-
-if (!supabaseUrl || !supabaseKey) {
-  console.error("❌ [EventDirector] Critical Error: Missing Supabase credentials in environment variables.");
-  throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL (or NEXT_PUBLIC_ENGINE_DB_URL) or ENGINE_DB_SERVICE_ROLE_KEY");
-}
-if (!process.env.ENGINE_DB_SERVICE_ROLE_KEY && !process.env.SUPABASE_SERVICE_ROLE_KEY) {
-  console.warn("⚠️ [EventDirector] Running with ANON key! Server database operations may be blocked by RLS.");
-}
-
-
-const defaultSupabase = createClient(supabaseUrl, supabaseKey);
-
+import type { EventRepository } from '../../lib/repositories/eventRepository';
 
 export class EventDirector {
   private engine: MarketEngine;
@@ -40,21 +18,33 @@ export class EventDirector {
   private newsGenerator: NewsGenerator;
   private readonly random: SimulationRandomSource;
   private readonly context: SimulationContext;
-  private readonly db: any;
+  private readonly eventRepository: EventRepository;
 
-  constructor(engine: MarketEngine, context?: SimulationContext, dbClient?: any) {
-    if (!context) {
-      if (engine && engine.simulationContext) {
-        context = engine.simulationContext;
-      } else {
-        throw new Error("[EventDirector] Explicit SimulationContext is required to maintain determinism. Pass engine.simulationContext.");
-      }
+  constructor(
+    engine: MarketEngine,
+    context?: SimulationContext,
+    eventRepository?: EventRepository,
+    newsGenerator?: NewsGenerator
+  ) {
+    const resolvedContext = context || engine?.simulationContext;
+    if (!resolvedContext) {
+      throw new Error("[EventDirector] Explicit SimulationContext is required. Pass context or ensure engine.simulationContext is defined.");
     }
+    this.context = resolvedContext;
+
+    const resolvedRepo = eventRepository || (engine as any)?.repositories?.event;
+    if (!resolvedRepo) {
+      throw new Error("[EventDirector] Explicit EventRepository is required. Pass eventRepository or ensure engine has repositories configured.");
+    }
+    this.eventRepository = resolvedRepo;
+
     this.engine = engine;
-    this.context = context;
-    this.random = context.random.fork(SIMULATION_NAMESPACES.EVENT_DIRECTOR.NEWS_SCHEDULE);
-    this.newsGenerator = new NewsGenerator(context);
-    this.db = dbClient || (engine as any).getDbClient?.() || defaultSupabase;
+    this.random = this.context.random.fork(SIMULATION_NAMESPACES.EVENT_DIRECTOR.NEWS_SCHEDULE);
+    this.newsGenerator = newsGenerator || new NewsGenerator(this.context);
+  }
+
+  public getEventRepository(): EventRepository {
+    return this.eventRepository;
   }
 
   public start() {
@@ -90,35 +80,21 @@ export class EventDirector {
       const marketState = this.engine ? this.engine.getMarketState() : {};
       const newsItem = await this.newsGenerator.generateNews(marketState);
 
-      // 1. Supabase market_news 테이블에 저장
-      const { data: inserted, error: insertError } = await this.db
-        .from('market_news')
-        .insert({
-          type: newsItem.type,
-          category: newsItem.category,
-          publisher: newsItem.publisher,
-          title: newsItem.title,
-          content: newsItem.content,
-          target_sector: newsItem.target_sector,
-          target_ticker: newsItem.target_ticker,
-          impact_score: newsItem.impact_score,
-          is_fake: newsItem.is_fake
-        })
-        .select()
-        .single();
-
-      if (insertError) {
-        console.warn("⚠️ market_news insert failed (fallback to premium_news):", insertError.message);
-        // Fallback write to premium_news for UI backwards compatibility
-        await this.db.from('premium_news').insert({
-          headline: newsItem.title,
-          content_summary: newsItem.content,
-          is_quoted: newsItem.category === 'RUMOR',
-          is_true: !newsItem.is_fake
-        });
-      } else if (inserted) {
-        newsItem.id = inserted.id;
-      }
+      // 1. EventRepository에 저장
+      await this.eventRepository.saveMarketNews({
+        id: newsItem.id || uuidv4(),
+        type: newsItem.type,
+        category: (newsItem.category as any) || 'OFFICIAL',
+        publisher: newsItem.publisher,
+        title: newsItem.title,
+        content: newsItem.content,
+        target_sector: newsItem.target_sector || null,
+        target_ticker: newsItem.target_ticker || null,
+        impact_score: newsItem.impact_score || 0,
+        is_fake: newsItem.is_fake || false,
+        simulation_time: this.context.clock.now(),
+        created_at: new Date(this.context.clock.now()).toISOString(),
+      });
 
       console.log(`📡 [NewsPublished] [${newsItem.category}] (${newsItem.publisher}) ${newsItem.title} (Impact: ${newsItem.impact_score})`);
 
@@ -157,25 +133,21 @@ export class EventDirector {
         console.log(`🚨 [EventDirector] Executing Scheduled Correction News for [${rumor.title}]!`);
         const correctionNews = this.newsGenerator.generateCorrection(rumor);
 
-        // Supabase INSERT
-        const { data: inserted } = await this.db
-          .from('market_news')
-          .insert({
-            type: correctionNews.type,
-            category: correctionNews.category,
-            publisher: correctionNews.publisher,
-            title: correctionNews.title,
-            content: correctionNews.content,
-            target_sector: correctionNews.target_sector,
-            target_ticker: correctionNews.target_ticker,
-            impact_score: correctionNews.impact_score,
-            is_fake: false,
-            original_rumor_id: rumor.id || null
-          })
-          .select()
-          .single();
-
-        if (inserted) correctionNews.id = inserted.id;
+        // EventRepository에 정정 뉴스 저장
+        await this.eventRepository.saveMarketNews({
+          id: correctionNews.id || uuidv4(),
+          type: correctionNews.type,
+          category: (correctionNews.category as any) || 'CORRECTION',
+          publisher: correctionNews.publisher,
+          title: correctionNews.title,
+          content: correctionNews.content,
+          target_sector: correctionNews.target_sector || null,
+          target_ticker: correctionNews.target_ticker || null,
+          impact_score: correctionNews.impact_score || 0,
+          is_fake: false,
+          simulation_time: this.context.clock.now(),
+          created_at: new Date(this.context.clock.now()).toISOString(),
+        });
 
         // Broadcast Correction Event
         EventBus.publish('news_published', correctionNews);

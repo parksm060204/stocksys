@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { createClient } from '@/lib/db/client';
 
-const supabase = createClient();
+const db = createClient();
 
 interface MacroEvent {
   id: string;
@@ -24,7 +24,7 @@ export default function EcoTerminal() {
 
     // 1. 데이터 로드 및 주기적 폴링
     const fetchEvents = async () => {
-      const { data } = await supabase
+      const { data } = await db
         .from('macro_calendar')
         .select('*')
         .order('trigger_time', { ascending: true });

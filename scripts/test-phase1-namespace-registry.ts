@@ -72,9 +72,22 @@ async function runTest() {
   }
   assert(collisionCaught, 'Tracker must catch duplicate namespace registration');
 
+  // 3b. SimulationContext.fork() directly prevents duplicate forks
+  const ctxWithTracker = createSimulationContext({ seed: 888 });
+  ctxWithTracker.fork(SIMULATION_NAMESPACES.MARKET_ENGINE.MJD_DIFFUSION);
+  let contextCollisionCaught = false;
+  try {
+    ctxWithTracker.fork(SIMULATION_NAMESPACES.MARKET_ENGINE.MJD_DIFFUSION);
+  } catch (err: any) {
+    if (err.message.includes('Duplicate PRNG namespace detected')) {
+      contextCollisionCaught = true;
+    }
+  }
+  assert(contextCollisionCaught, 'SimulationContext.fork() must fail on duplicate namespace');
+
   // 4. Verify EventDirector requires explicit SimulationContext
   const db = createIsolatedMemoryDbClient();
-  const engine = new MarketEngine({ simulationContext: rootContext, supabaseClient: db });
+  const engine = new MarketEngine({ simulationContext: rootContext, databaseClient: db });
 
   // EventDirector with engine context
   const eventDirector = new EventDirector(engine, engine.simulationContext);

@@ -18,12 +18,12 @@ export default function ParticipantFlowWidget({ stockId }: { stockId: string }) 
   ]);
 
   useEffect(() => {
-    const supabase = createClient();
+    const db = createClient();
     let isMounted = true;
 
     const loadInitialData = async () => {
       // 오늘 생성된 체결만 가져오는 로직 (데모를 위해 전체 체결을 가져오되 최적화 필요)
-      const { data } = await supabase.from('trades').select('price, size, buyer_is_bot, seller_is_bot').eq('stock_id', stockId);
+      const { data } = await db.from('trades').select('price, size, buyer_is_bot, seller_is_bot').eq('stock_id', stockId);
       if (data && isMounted) {
         let instNet = 0;
         let retailNet = 0;
@@ -48,7 +48,7 @@ export default function ParticipantFlowWidget({ stockId }: { stockId: string }) 
 
     loadInitialData();
 
-    const channel = supabase
+    const channel = db
       .channel(`flow-${stockId}`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'trades', filter: `stock_id=eq.${stockId}` }, (payload: { new: { price: number; size: number; buyer_is_bot: boolean; seller_is_bot: boolean } }) => {
         const t = payload.new;
@@ -72,7 +72,7 @@ export default function ParticipantFlowWidget({ stockId }: { stockId: string }) 
 
     return () => {
       isMounted = false;
-      supabase.removeChannel(channel);
+      db.removeChannel(channel);
     };
   }, [stockId]);
 

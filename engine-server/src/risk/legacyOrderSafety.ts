@@ -5,9 +5,9 @@
  * - This module is the single authoritative source of truth for order risk and child order limits.
  * - All order pathways (MarketEngine batch, LP orders, bot orders, human orders) must pass through
  *   this canonical policy.
- * - Legacy limits (5,000,000 KRW and 5,000 shares) are applied to child orders by default.
- * - Strategic institutional orders may scale safely under AUM/ADV risk budgets without arbitrary capping,
- *   while maintaining absolute systemic fail-safes (no negative, NaN, Infinity, or overflow).
+ * - Discriminated union return type: Rejected orders provide NO safeOrder object.
+ * - NaN, Infinity, negative sizes, zero/negative prices, and unauthorized strategic attempts
+ *   are strictly rejected fail-closed.
  */
 
 export const LEGACY_CHILD_ORDER_LIMITS = {
@@ -48,17 +48,21 @@ export interface LegacyOrderInput {
   size?: number;
   status?: string;
   is_lp?: boolean;
+  orderType?: string;
   [key: string]: unknown;
 }
 
 export interface OrderRiskContext {
-  readonly participantKind?: 'HUMAN' | 'RETAIL' | 'DOMESTIC_INSTITUTION' | 'FOREIGN_INSTITUTION' | 'LIQUIDITY_PROVIDER';
+  readonly participantKind?: 'HUMAN' | 'RETAIL' | 'DOMESTIC_INSTITUTION' | 'FOREIGN_INSTITUTION' | 'LIQUIDITY_PROVIDER' | 'UNKNOWN';
+  readonly participantIdentity?: string;
   readonly accountEquity?: number;
   readonly availableCash?: number;
   readonly adv?: number;
   readonly lobDepth?: number;
   readonly isEmergencyLiquidation?: boolean;
   readonly riskBudget?: number;
+  readonly positionLimit?: number;
+  readonly currentPosition?: number;
   readonly orderType?: 'CHILD_ORDER' | 'STRATEGIC_ORDER' | 'LP_QUOTE';
   readonly bypassLegacyChildOrderCap?: boolean;
   readonly diagnostics?: OrderRiskDiagnostic[];
@@ -73,41 +77,121 @@ export interface OrderRiskDiagnostic {
   readonly reasonCodes: readonly string[];
 }
 
-export interface OrderSafetyEvaluationResult<T extends LegacyOrderInput> {
-  readonly safeOrder: T;
-  readonly diagnostic: OrderRiskDiagnostic;
-  readonly isAccepted: boolean;
-}
+export type OrderSafetyResult<T extends LegacyOrderInput> =
+  | {
+      readonly accepted: true;
+      readonly isAccepted: true;
+      readonly order: T & { price: number; size: number };
+      readonly safeOrder: T & { price: number; size: number };
+      readonly diagnostics: OrderRiskDiagnostic;
+      readonly diagnostic: OrderRiskDiagnostic;
+    }
+  | {
+      readonly accepted: false;
+      readonly isAccepted: false;
+      readonly order?: never;
+      readonly safeOrder?: never;
+      readonly diagnostics: OrderRiskDiagnostic;
+      readonly diagnostic: OrderRiskDiagnostic;
+    };
 
 /**
  * Authoritative canonical risk gate that evaluates and bounds an order.
+ * Strictly fail-closed: returns discriminated union with NO order when rejected.
  */
 export function evaluateOrderSafety<T extends LegacyOrderInput>(
   order: T,
   currentPrice: number,
   context?: OrderRiskContext
-): OrderSafetyEvaluationResult<T> {
+): OrderSafetyResult<T> {
   const reasonCodes: string[] = [];
   const stockId = String(order.stock_id || 'UNKNOWN');
-  const rawSize = Number(order.size ?? 1);
+  const rawSize = order.size !== undefined ? Number(order.size) : NaN;
   const rawPrice = order.price !== undefined ? Number(order.price) : currentPrice;
 
-  // 1. Absolute Fail-Safe Validations (NaN, Infinity, Negative)
+  // 1. Absolute Fail-Safe Validations (NaN, Infinity, Negative, Zero, Non-Integer)
   if (isNaN(rawPrice) || !isFinite(rawPrice) || rawPrice <= 0) {
     reasonCodes.push('REJECTED_INVALID_PRICE');
   }
   if (isNaN(rawSize) || !isFinite(rawSize) || rawSize <= 0) {
     reasonCodes.push('REJECTED_NON_POSITIVE_QTY');
+  } else if (!Number.isInteger(rawSize)) {
+    reasonCodes.push('REJECTED_FRACTIONAL_QTY');
   }
 
-  const safePrice = Math.max(ABSOLUTE_SYSTEMIC_LIMITS.MIN_TICK_PRICE, alignToLegacyTickSize(rawPrice));
-  if (safePrice !== rawPrice && !reasonCodes.includes('REJECTED_INVALID_PRICE')) {
+  // 2. Check Strategic Order Constraints
+  const isStrategicRequested =
+    context?.orderType === 'STRATEGIC_ORDER' ||
+    context?.bypassLegacyChildOrderCap === true ||
+    order.orderType === 'STRATEGIC_ORDER';
+
+  const isLp =
+    order.is_lp === true ||
+    context?.orderType === 'LP_QUOTE' ||
+    context?.participantKind === 'LIQUIDITY_PROVIDER';
+
+  const isEmergency = context?.isEmergencyLiquidation === true;
+
+  if (isStrategicRequested && !isEmergency && !isLp) {
+    // 2a. Must be an authorized institutional participant
+    const isAuthorizedKind =
+      context?.participantKind === 'DOMESTIC_INSTITUTION' ||
+      context?.participantKind === 'FOREIGN_INSTITUTION';
+
+    if (!isAuthorizedKind) {
+      reasonCodes.push('REJECTED_UNAUTHORIZED_STRATEGIC_PARTICIPANT');
+    }
+
+    // 2b. ADV must be known and > 0
+    if (context?.adv === undefined || context.adv <= 0) {
+      reasonCodes.push('REJECTED_ZERO_OR_UNKNOWN_ADV');
+    }
+
+    // 2c. Cash validation for BUY orders
+    if (order.side === 'buy') {
+      if (context?.availableCash === undefined || context.availableCash <= 0) {
+        reasonCodes.push('REJECTED_ZERO_CASH_BUY');
+      }
+    }
+
+    // 2d. Missing required context cannot quietly fallback
+    if (!context || context.participantKind === undefined) {
+      reasonCodes.push('REJECTED_MISSING_STRATEGIC_CONTEXT');
+    }
+  }
+
+  // If any rejection reason exists, immediately fail-closed without constructing safeOrder
+  if (reasonCodes.some((code) => code.startsWith('REJECTED_'))) {
+    const diagnostic: OrderRiskDiagnostic = Object.freeze({
+      stockId,
+      originalSize: isNaN(rawSize) ? 0 : rawSize,
+      safeSize: 0,
+      originalPrice: isNaN(rawPrice) ? 0 : rawPrice,
+      safePrice: 0,
+      reasonCodes: Object.freeze(reasonCodes),
+    });
+
+    if (context?.diagnostics) {
+      context.diagnostics.push(diagnostic);
+    }
+
+    return {
+      accepted: false,
+      isAccepted: false,
+      diagnostics: diagnostic,
+      diagnostic: diagnostic,
+    };
+  }
+
+  // 3. Price alignment to KRX tick
+  const safePrice = alignToLegacyTickSize(rawPrice);
+  if (safePrice !== rawPrice) {
     reasonCodes.push('ALIGNED_TO_KRX_TICK');
   }
 
-  let safeQty = Math.max(1, Math.floor(Math.abs(rawSize)));
+  let safeQty = rawSize;
 
-  // 2. Absolute Systemic Ceilings
+  // 4. Absolute Systemic Ceilings
   if (safeQty > ABSOLUTE_SYSTEMIC_LIMITS.MAX_ABSOLUTE_QTY) {
     safeQty = ABSOLUTE_SYSTEMIC_LIMITS.MAX_ABSOLUTE_QTY;
     reasonCodes.push('REDUCED_BY_ABSOLUTE_QTY_CEILING');
@@ -118,27 +202,10 @@ export function evaluateOrderSafety<T extends LegacyOrderInput>(
     reasonCodes.push('REDUCED_BY_ABSOLUTE_NOTIONAL_CEILING');
   }
 
-  // 3. Child Order Limits vs Strategic / Institutional Limits
-  const isLp = order.is_lp === true || context?.orderType === 'LP_QUOTE' || context?.participantKind === 'LIQUIDITY_PROVIDER';
-  const isEmergency = context?.isEmergencyLiquidation === true;
-  const isBypassedStrategic = context?.bypassLegacyChildOrderCap === true || context?.orderType === 'STRATEGIC_ORDER';
-
+  // 5. Quantity capping by Order Type
   if (!isEmergency) {
-    if (!isBypassedStrategic) {
-      // Apply Standard Child Order Limits (5M KRW / 5K Shares)
-      if (safePrice > 0) {
-        const notionalCapQty = Math.floor(LEGACY_CHILD_ORDER_LIMITS.MAX_NOTIONAL_PER_ORDER / safePrice);
-        if (safeQty > notionalCapQty) {
-          safeQty = Math.max(1, notionalCapQty);
-          reasonCodes.push('REDUCED_BY_NOTIONAL_CAP');
-        }
-      }
-      if (safeQty > LEGACY_CHILD_ORDER_LIMITS.MAX_QTY_PER_ORDER) {
-        safeQty = LEGACY_CHILD_ORDER_LIMITS.MAX_QTY_PER_ORDER;
-        reasonCodes.push('REDUCED_BY_QTY_CAP');
-      }
-    } else {
-      // Strategic institutional order: bound by ADV participation & available cash
+    if (isStrategicRequested && !isLp) {
+      // Strategic institutional order scaling
       if (context?.adv && context.adv > 0) {
         const maxAdvQty = Math.floor(context.adv * ABSOLUTE_SYSTEMIC_LIMITS.MAX_ADV_PARTICIPATION_RATE);
         if (safeQty > maxAdvQty) {
@@ -153,12 +220,31 @@ export function evaluateOrderSafety<T extends LegacyOrderInput>(
           reasonCodes.push('REDUCED_BY_AVAILABLE_CASH');
         }
       }
+      if (context?.positionLimit !== undefined && context.positionLimit > 0) {
+        const curPos = context.currentPosition || 0;
+        const remainingCapacity = Math.max(0, context.positionLimit - curPos);
+        if (safeQty > remainingCapacity) {
+          safeQty = Math.max(1, remainingCapacity);
+          reasonCodes.push('REDUCED_BY_POSITION_LIMIT');
+        }
+      }
+    } else if (!isLp) {
+      // Normal Child Order Limits (5M KRW / 5K Shares)
+      const notionalCapQty = Math.floor(LEGACY_CHILD_ORDER_LIMITS.MAX_NOTIONAL_PER_ORDER / safePrice);
+      if (safeQty > notionalCapQty) {
+        safeQty = Math.max(1, notionalCapQty);
+        reasonCodes.push('REDUCED_BY_NOTIONAL_CAP');
+      }
+      if (safeQty > LEGACY_CHILD_ORDER_LIMITS.MAX_QTY_PER_ORDER) {
+        safeQty = LEGACY_CHILD_ORDER_LIMITS.MAX_QTY_PER_ORDER;
+        reasonCodes.push('REDUCED_BY_QTY_CAP');
+      }
     }
 
-    // 4. LOB Depth limit (10% of depth)
+    // 6. LOB Depth limit (10% of depth) for child orders
     const effectiveDepth = context?.lobDepth !== undefined && context.lobDepth > 0
       ? context.lobDepth
-      : (isLp || isBypassedStrategic ? 0 : LEGACY_CHILD_ORDER_LIMITS.DEFAULT_LOB_DEPTH);
+      : (isLp || isStrategicRequested ? 0 : LEGACY_CHILD_ORDER_LIMITS.DEFAULT_LOB_DEPTH);
 
     if (effectiveDepth > 0) {
       const depthCapQty = Math.floor(effectiveDepth * LEGACY_CHILD_ORDER_LIMITS.DEPTH_RATIO_CAP);
@@ -178,7 +264,7 @@ export function evaluateOrderSafety<T extends LegacyOrderInput>(
     safeSize: finalSafeSize,
     originalPrice: rawPrice,
     safePrice,
-    reasonCodes: Object.freeze(reasonCodes)
+    reasonCodes: Object.freeze(reasonCodes),
   });
 
   if (context?.diagnostics) {
@@ -188,31 +274,35 @@ export function evaluateOrderSafety<T extends LegacyOrderInput>(
   const safeOrder = {
     ...order,
     price: safePrice,
-    size: finalSafeSize
+    size: finalSafeSize,
   };
 
-  const isAccepted = !reasonCodes.includes('REJECTED_INVALID_PRICE') && !reasonCodes.includes('REJECTED_NON_POSITIVE_QTY');
-
   return {
-    safeOrder,
-    diagnostic,
-    isAccepted
+    accepted: true,
+    isAccepted: true,
+    order: safeOrder,
+    safeOrder: safeOrder,
+    diagnostics: diagnostic,
+    diagnostic: diagnostic,
   };
 }
 
 /**
- * Backwards compatible helper that directly returns the safe child order.
+ * Helper that returns the safe order, or undefined if the order was rejected.
  */
 export function applyLegacyChildOrderSafetyLimits<T extends LegacyOrderInput>(
   order: T,
   currentPrice: number,
   lobDepth: number = LEGACY_CHILD_ORDER_LIMITS.DEFAULT_LOB_DEPTH,
   context?: OrderRiskContext
-): T {
+): (T & { price: number; size: number }) | undefined {
   const mergedContext: OrderRiskContext = {
     lobDepth,
-    ...context
+    ...context,
   };
-  const { safeOrder } = evaluateOrderSafety(order, currentPrice, mergedContext);
-  return safeOrder;
+  const result = evaluateOrderSafety(order, currentPrice, mergedContext);
+  if (!result.accepted) {
+    return undefined;
+  }
+  return result.order;
 }

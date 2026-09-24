@@ -28,7 +28,7 @@ const eslintConfig = defineConfig([
     "vm-db/**",
   ]),
   // 치명적이지 않고, 실무에서 널리 허용되는 rule들을 비활성화 또는 조정.
-  // - no-explicit-any: 주로 bot config / supabase 응답 디코딩에 사용되어 엄격한 타입 정의가 비효율적.
+  // - no-explicit-any: 주로 bot config / DB 응답 디코딩에 사용되어 엄격한 타입 정의가 비효율적.
   // - set-state-in-effect: React 19에서 도입된 rule로, 일반적인 데이터 로딩 패턴을 차단하지 않도록 off.
   // - unused-vars: 매개변수/변수명이 _ 접두사로 시작하면 unused 로 취급하지 않음 (함수 시그니처 호환성 유지용).
   {

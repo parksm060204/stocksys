@@ -5,8 +5,8 @@ async function testNewsVmDb() {
   console.log('📰 [VM-DB NEWS TEST] market_news 테이블 실서버 CRUD 연동 검증');
   console.log('================================================================\n');
 
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL || 'http://49.247.136.231:3001';
-  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlzcyI6InBvc3RncmVzdCIsImV4cCI6OTk5OTk5OTk5OX0.ZVBYePzn3NGxFYWINT5qpYt7FxXjWwXfS2FFw3Oy474';
+  const url = process.env.NEXT_PUBLIC_ENGINE_DB_URL || 'http://49.247.136.231:3001';
+  const key = process.env.NEXT_PUBLIC_ENGINE_DB_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlzcyI6InBvc3RncmVzdCIsImV4cCI6OTk5OTk5OTk5OX0.ZVBYePzn3NGxFYWINT5qpYt7FxXjWwXfS2FFw3Oy474';
 
   console.log(`▶ 대상 vm-db 엔드포인트: ${url}`);
 
@@ -41,9 +41,9 @@ async function testNewsVmDb() {
     }
   }
 
-  // 2. Supabase SDK 기반 인터페이스 정합성 테스트
-  console.log('\n[2] Supabase SDK .from("market_news") 쿼리 구조 검증...');
-  const supabase = createClient(url, key, {
+  // 2. DB Client 기반 인터페이스 정합성 테스트
+  console.log('\n[2] DB Client .from("market_news") 쿼리 구조 검증...');
+  const db = createClient(url, key, {
     auth: { persistSession: false },
     global: {
       fetch: (input: any, init?: any) => {
@@ -57,7 +57,7 @@ async function testNewsVmDb() {
   });
 
   try {
-    const { data, error } = await supabase.from('market_news').select('*').limit(1);
+    const { data, error } = await db.from('market_news').select('*').limit(1);
     if (error) {
       console.log(`  ⚠️ 쿼리 응답 에러: ${error.message}`);
     } else {

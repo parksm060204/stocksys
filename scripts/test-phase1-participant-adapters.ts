@@ -203,6 +203,34 @@ function testFailClosedValidation() {
     /Failed to classify participant kind/,
     'Should throw on unclassifiable participant'
   );
+
+  // 7. Runtime invalid participantKind (arbitrary string cast as ParticipantKind)
+  assert.throws(
+    () => adaptAgentConfigToParticipantAccount({ id: 'bot_bad_kind', participantKind: 'SUPER_INSTITUTION' as any, domicile: 'KR' }),
+    /Invalid participantKind/,
+    'Should throw on invalid participantKind'
+  );
+
+  // 8. Runtime invalid domicile format
+  assert.throws(
+    () => adaptAgentConfigToParticipantAccount({ id: 'bot_bad_dom', participantKind: 'DOMESTIC_INSTITUTION', domicile: '123' }),
+    /domicile must be a valid 2-letter ISO code/,
+    'Should throw on invalid domicile format'
+  );
+
+  // 9. Logical conflict: DOMESTIC_INSTITUTION + US
+  assert.throws(
+    () => adaptAgentConfigToParticipantAccount({ id: 'bot_conflict_1', participantKind: 'DOMESTIC_INSTITUTION', domicile: 'US' }),
+    /Logical conflict: DOMESTIC_INSTITUTION cannot have non-KR domicile/,
+    'Should throw on DOMESTIC_INSTITUTION + US'
+  );
+
+  // 10. Logical conflict: FOREIGN_INSTITUTION + KR
+  assert.throws(
+    () => adaptAgentConfigToParticipantAccount({ id: 'bot_conflict_2', participantKind: 'FOREIGN_INSTITUTION', domicile: 'KR' }),
+    /Logical conflict: FOREIGN_INSTITUTION cannot have domestic domicile "KR"/,
+    'Should throw on FOREIGN_INSTITUTION + KR'
+  );
 }
 
 function runAll() {

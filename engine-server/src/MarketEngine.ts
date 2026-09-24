@@ -1,5 +1,4 @@
 import './loadEnv';
-import { createClient } from '@supabase/supabase-js';
 import { ExecutionTrader } from './bots/ExecutionTrader';
 import { AdversarialAgent } from './bots/AdversarialAgent';
 import { WallBreakerAgent } from './bots/WallBreakerAgent';
@@ -22,35 +21,11 @@ import { SettlementBatchService } from './settlement/SettlementBatchService';
 import * as dotenv from 'dotenv';
 import * as path from 'path';
 import * as os from 'os';
-import { createMemoryDbClient } from '../../lib/memoryDb/memoryDbClient';
-
-
-
 import { applyLegacyChildOrderSafetyLimits } from './risk/legacyOrderSafety';
-
-function createDefaultSupabaseClient(): any {
-  const useInMemory = process.env.NEXT_PUBLIC_USE_IN_MEMORY === 'true';
-  const supabaseUrl = process.env.NEXT_PUBLIC_ENGINE_DB_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
-  const supabaseKey =
-    process.env.ENGINE_DB_SERVICE_ROLE_KEY ||
-    process.env.SUPABASE_SERVICE_ROLE_KEY ||
-    process.env.NEXT_PUBLIC_ENGINE_DB_ANON_KEY ||
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-
-  if (useInMemory) {
-    console.log("🛠️ [MarketEngine] Using IN_MEMORY mock DB...");
-    return createMemoryDbClient();
-  } else {
-    if (!supabaseUrl || !supabaseKey) {
-      console.error("❌ [MarketEngine] Critical Error: Missing Supabase credentials in environment variables.");
-      throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL (or NEXT_PUBLIC_ENGINE_DB_URL) or ENGINE_DB_SERVICE_ROLE_KEY");
-    }
-    if (!process.env.ENGINE_DB_SERVICE_ROLE_KEY && !process.env.SUPABASE_SERVICE_ROLE_KEY) {
-      console.warn("⚠️ [MarketEngine] Running with ANON key! Server database operations may be blocked by RLS.");
-    }
-    return createClient(supabaseUrl, supabaseKey);
-  }
-}
+import type { RepositoryBundle } from '../../lib/repositories/repositoryBundle';
+import { createInMemoryRepositoryBundle } from '../../lib/repositories/inMemory';
+import { MemoryDatabase } from '../../lib/memoryDb/memoryStore';
+import { createIsolatedMemoryDbClient } from '../../lib/memoryDb/memoryDbClient';
 
 /**
  * 서버 CPU/RAM 사용량을 모니터링하여 고부하 시 봇 가동률 조절을 지원하는 클래스
@@ -123,14 +98,16 @@ export interface MarketEngineDependencies {
   simulationContext?: SimulationContext;
   marketDataSource?: MarketDataSource;
   persistence?: MarketPersistence;
-  supabaseClient?: any;
+  repositories?: RepositoryBundle;
+  databaseClient?: any;
 }
 
 export class MarketEngine {
   // ── Dependency Injection & Simulation Context ──
   public readonly simulationContext: SimulationContext;
+  public readonly repositories: RepositoryBundle;
   public readonly db: any;
-  private readonly supabase: any;
+  private readonly dbClient: any;
   private readonly simRandom: SimulationRandomSource;
   private readonly simClock: SimulationTimeSource;
   private readonly mjdDiffusionRandom: SimulationRandomSource;
@@ -216,26 +193,34 @@ export class MarketEngine {
     this.customDataSource = dependencies?.marketDataSource;
     this.lastTickTime = this.simClock.now();
 
-    // Priority 1: Injected supabaseClient
-    // Priority 2: Injected persistence adapter (client or from() interface)
-    // Priority 3: Default environment client
-    if (dependencies?.supabaseClient) {
-      this.supabase = dependencies.supabaseClient;
+    // Priority 1: Injected repository bundle
+    // Priority 2: Injected database client
+    // Priority 3: Persistence client adapter
+    // Priority 4: Default isolated in-memory repository bundle
+    if (dependencies?.repositories) {
+      this.repositories = dependencies.repositories;
+      this.dbClient = (this.repositories as any).dbClient || dependencies.databaseClient || createIsolatedMemoryDbClient((this.repositories as any).memoryDb);
+    } else if (dependencies?.databaseClient) {
+      this.dbClient = dependencies.databaseClient;
+      const memDb = this.dbClient.db || this.dbClient;
+      this.repositories = createInMemoryRepositoryBundle(memDb instanceof MemoryDatabase ? memDb : new MemoryDatabase());
     } else if (dependencies?.persistence && typeof (dependencies.persistence as any).getClient === 'function') {
-      this.supabase = (dependencies.persistence as any).getClient();
-    } else if (dependencies?.persistence && (dependencies.persistence as any).from) {
-      this.supabase = dependencies.persistence;
+      this.dbClient = (dependencies.persistence as any).getClient();
+      const memDb = this.dbClient?.db || this.dbClient;
+      this.repositories = createInMemoryRepositoryBundle(memDb instanceof MemoryDatabase ? memDb : new MemoryDatabase());
     } else {
-      this.supabase = createDefaultSupabaseClient();
+      const memoryDb = new MemoryDatabase();
+      this.repositories = createInMemoryRepositoryBundle(memoryDb);
+      this.dbClient = createIsolatedMemoryDbClient(memoryDb);
     }
-    this.db = this.supabase;
+    this.db = this.dbClient;
 
     // Guaranteed instance DB for SettlementBatchService
-    this.settlementService = new SettlementBatchService(this.supabase);
+    this.settlementService = new SettlementBatchService(this.dbClient);
   }
 
   public getDbClient(): any {
-    return this.supabase;
+    return this.dbClient;
   }
 
   public injectEvent(event: MarketEvent) {
@@ -268,11 +253,9 @@ export class MarketEngine {
 
     let configs: any[] = [];
     try {
-      const { data, error } = await this.supabase.from('bots_config').select('*');
-      if (!error && data && data.length > 0) {
+      const data = await this.repositories.participants.getBotConfigs();
+      if (data && data.length > 0) {
         configs = data;
-      } else {
-        console.warn("Notice: DB bots_config returned empty or error, initializing full in-memory bot fleet:", error ? error.message : "0 rows");
       }
     } catch (e: any) {
       console.warn("Notice: Exception loading bots_config, fallback to in-memory fleet:", e?.message);
@@ -428,29 +411,21 @@ export class MarketEngine {
 
   private async checkManipulations() {
     try {
-      // DB에 active_manipulations 테이블이 있다고 가정 (관리자가 행을 삽입)
-      // 상태가 'PENDING'인 작전을 하나 가져옵니다.
-      const { data, error } = await this.supabase
-        .from('active_manipulations')
-        .select('*')
-        .eq('status', 'PENDING')
-        .limit(1);
-
-      if (!error && data && data.length > 0) {
+      const data = await this.repositories.events.getPendingManipulations();
+      if (data && data.length > 0) {
         const manip = data[0];
-        
-        // 주식 정보를 가져와서 매집량 계산을 위해 marketCap을 넘겨줌
-        const { data: stockData } = await this.supabase.from('stocks').select('market_cap, current_price').eq('id', manip.stock_id).single();
-        
+        const stockData = await this.repositories.markets.getStockById(manip.stock_id);
         if (stockData) {
-          this.adversarialAgent.triggerManipulation(manip.stock_id, stockData.market_cap || 10000000000, stockData.current_price);
-          
-          // 상태를 'ACTIVE'로 변경
-          await this.supabase.from('active_manipulations').update({ status: 'ACTIVE' }).eq('id', manip.id);
+          this.adversarialAgent.triggerManipulation(
+            manip.stock_id,
+            (stockData as any).market_cap || 10000000000,
+            stockData.current_price
+          );
+          await this.repositories.events.updateManipulationStatus(manip.id, 'ACTIVE');
         }
       }
     } catch (_e) {
-      // 테이블이 아직 없거나 오류 발생 시 무시 (Migration 필요)
+      // 테이블이 아직 없거나 오류 발생 시 무시
     }
   }
 
@@ -477,7 +452,7 @@ export class MarketEngine {
       });
 
       // 1. 틱 시작 시점의 모든 미체결 주문(User + LP)을 가져와 orderBook 구성
-      const { data: initialOrders } = await this.supabase.from('orders').select('*').eq('status', 'open');
+      const initialOrders = await this.repositories.markets.getOpenOrders();
       const orderBook: Record<string, { bids: any[], asks: any[] }> = {};
       if (initialOrders) {
         for (const order of initialOrders) {
@@ -651,10 +626,31 @@ export class MarketEngine {
       console.log(`[Tick Debug] Collected ${allOrders.length} raw orders across all active bot fleets (stocks: ${marketState.stocks?.length || 0}).`);
 
       if (allOrders.length > 0) {
-        allOrders = allOrders.map(order => {
-          const p = Number(order.price || 1);
-          return applyLegacyChildOrderSafetyLimits(order, p, 0);
-        });
+        const validatedOrders: any[] = [];
+        for (const order of allOrders) {
+          const stock = marketState.stocks?.find((s: any) => s.id === order.stock_id);
+          const currentPrice = Number(order.price || stock?.current_price || 1);
+          const adv = stock?.volume ? stock.volume * 50 : 100000;
+
+          let participantContext: any = undefined;
+          if (order.bot_id || order.participant_id) {
+            const botId = order.bot_id || order.participant_id;
+            const bot = this.findAgentById(botId);
+            const availableCash = bot?.currentPortfolio?.cash ?? 500000000;
+            participantContext = {
+              participantId: botId,
+              orderType: order.orderType || (order.is_strategic ? 'STRATEGIC_ORDER' : 'CHILD_ORDER'),
+              availableCash,
+              adv
+            };
+          }
+
+          const safeOrder = applyLegacyChildOrderSafetyLimits(order, currentPrice, 0, participantContext);
+          if (safeOrder) {
+            validatedOrders.push(safeOrder);
+          }
+        }
+        allOrders = validatedOrders;
 
         await this.processBatchOrders(allOrders, marketState, shouldRefreshLp);
         
@@ -687,27 +683,22 @@ export class MarketEngine {
    */
   private async trimOldTrades(): Promise<void> {
     try {
-      const { data, error } = await this.supabase.rpc('trim_old_market_data', {
-        p_max_trades: 5000,
-        p_max_history: 3000
-      });
-      if (error) {
-        console.warn('⚠️ [Engine] trim_old_market_data RPC failed or not installed:', error.message);
-      } else if (data && (data.deleted_trades > 0 || data.deleted_history > 0)) {
-        console.log(`🧹 [Engine] Trimmed old market data: ${data.deleted_trades} trades, ${data.deleted_history} price history rows removed.`);
+      const data = await this.repositories.markets.trimOldData(5000, 3000);
+      if (data && (data.tradesTrimmed > 0 || data.historyTrimmed > 0)) {
+        console.log(`🧹 [Engine] Trimmed old market data: ${data.tradesTrimmed} trades, ${data.historyTrimmed} price history rows removed.`);
       }
     } catch (e: any) {
-      console.error('❌ [Engine] Error in trimOldTrades:', e.message);
+      console.error('❌ [Engine] Error in trimOldTrades:', e?.message);
     }
   }
 
   private async triggerRandomEvents() {
     // 1. Get all events
-    const { data: events } = await this.supabase.from('player_events').select('*');
+    const events = await this.repositories.events.getPlayerEvents();
     if (!events || events.length === 0) return;
 
     // 2. Get random users (for demo, just all users who have cash < 100M to simulate stage 1)
-    const { data: users } = await this.supabase.from('profiles').select('id, cash').lt('cash', 100000000).limit(5);
+    const users = await this.repositories.participants.getProfiles({ maxCash: 100000000, limit: 5 });
     if (!users || users.length === 0) return;
 
     // 3. For each user, maybe 10% chance to actually get an event
@@ -716,7 +707,7 @@ export class MarketEngine {
         const randomEvent = events[this.eventRandom.nextInt(0, events.length)];
         
         // Insert active event
-        await this.supabase.from('active_player_events').insert({
+        await this.repositories.events.saveActivePlayerEvent({
           user_id: user.id,
           event_id: randomEvent.id,
           status: 'pending'
@@ -738,28 +729,18 @@ export class MarketEngine {
       };
     }
 
-    const [bonds, stocks, commodities, adminSettings, optionsContracts] = await Promise.all([
-      this.supabase.from('bonds').select('*'),
-      this.supabase.from('stocks').select('*'),
-      this.supabase.from('commodities').select('*'),
-      this.supabase.from('admin_settings').select('base_rate, market_sentiment').limit(1),
-      this.supabase.from('options_contracts').select('*') // WallBreakerAgent 및 OptionsMMAgent용
-    ]);
-
-    const adminRow = adminSettings.data && adminSettings.data.length > 0 ? adminSettings.data[0] : null;
-    const baseRate = macroData ? macroData.us10yYield / 100 : (adminRow ? adminRow.base_rate : 0.025);
-    const sentiment = adminRow ? adminRow.market_sentiment : 'NEUTRAL';
-
-    if (stocks.error) {
-      console.error("❌ [fetchMarketState] Failed to fetch stocks from DB:", stocks.error);
-    }
+    const snapshot = await this.repositories.markets.getMarketSnapshot();
+    const adminBaseRate = macroData
+      ? macroData.us10yYield / 100
+      : (snapshot.adminSettings?.base_rate ?? 0.025);
+    const sentiment = snapshot.adminSettings?.market_sentiment ?? 'NEUTRAL';
 
     const state = {
-      bonds: bonds.data || [],
-      stocks: stocks.data || [],
-      commodities: commodities.data || [],
-      options_contracts: optionsContracts.data || [],
-      adminBaseRate: baseRate,
+      bonds: snapshot.bonds || [],
+      stocks: snapshot.stocks || [],
+      commodities: snapshot.commodities || [],
+      options_contracts: snapshot.options_contracts || [],
+      adminBaseRate,
       sentiment,
       orderBook: {},
       realWorldMacro: macroData,
@@ -773,16 +754,8 @@ export class MarketEngine {
 
   private async processBatchOrders(lpOrders: any[], marketState: any, refreshLpOrders: boolean = true) {
     // 1. 유저의 미체결(Open) 주문들을 가져옵니다.
-    const { data: userOrders, error: userOrdersError } = await this.supabase
-      .from('orders')
-      .select('*')
-      .eq('status', 'open')
-      .eq('is_lp', false);
-
-    if (userOrdersError) {
-      console.error("Failed to fetch user orders:", userOrdersError);
-      return;
-    }
+    const allOpenOrders = await this.repositories.markets.getOpenOrders();
+    const userOrders = allOpenOrders.filter((o: any) => !o.is_lp && o.status === 'open');
 
     const orderBookByStock: Record<string, { bids: any[], asks: any[] }> = {};
     const allCombinedOrders = [...(userOrders || []), ...lpOrders];
@@ -983,7 +956,9 @@ export class MarketEngine {
             orderType: 'LP_QUOTE',
             participantKind: 'LIQUIDITY_PROVIDER'
           });
-          safeLpOrders.push(safeOrder);
+          if (safeOrder) {
+            safeLpOrders.push(safeOrder);
+          }
         }
       }
 
@@ -997,38 +972,29 @@ export class MarketEngine {
 
         for (let i = 0; i < safeLpOrders.length; i += 500) {
           const chunk = safeLpOrders.slice(i, i + 500);
-          promises.push(
-            this.supabase.from('orders').insert(chunk).then((res: any) => {
-              if (res.error) console.error('[Engine] Failed to insert LP orders chunk:', res.error);
-              return res;
-            })
-          );
+          promises.push(this.repositories.markets.insertOrders(chunk));
         }
       }
     }
 
     // 5.3 유저 주문 잔량 Update
-    for (const uOrder of userOrdersToUpdate) {
-      promises.push(this.supabase.from('orders').update({ size: uOrder.size, status: uOrder.status }).eq('id', uOrder.id).then((res: any) => res));
+    if (userOrdersToUpdate.length > 0) {
+      promises.push(
+        this.repositories.markets.updateOrders(
+          userOrdersToUpdate.map((u: any) => ({ id: u.id, size: u.size, status: u.status }))
+        )
+      );
     }
 
-    // 5.3.1 ~ 5.3.2 통합 체결 처리: 체결 내역 Insert 및 예수금/보유수량 갱신을 단일 RPC로 일괄 처리 (Race Condition 방지)
+    // 5.3.1 ~ 5.3.2 통합 체결 처리: 체결 내역 Insert 및 예수금/보유수량 갱신을 단일 원자적 정산으로 일괄 처리
     if (tradesToInsert.length > 0) {
       // Connect custom persistence for trades if provided
       if (this.customPersistence?.saveTrades) {
         promises.push(this.customPersistence.saveTrades(tradesToInsert));
-      }
-      for (let i = 0; i < tradesToInsert.length; i += 200) {
-        const chunk = tradesToInsert.slice(i, i + 200);
-        promises.push(
-          this.supabase.rpc('bulk_settle_trades', { p_trades: chunk }).then((res: any) => {
-            if (res.error) console.error('[Engine] Failed RPC bulk_settle_trades:', res.error);
-            return res;
-          })
-        );
+      } else {
+        promises.push(this.repositories.settlement.settleTradeBatchAtomically(tradesToInsert));
       }
     }
-
 
     // 5.4 현재가 Update (자산별 테이블 구분 + KRX 틱/상하한가 정렬) - Batch Optimized
     const stockUpdates: any[] = [];
@@ -1074,19 +1040,20 @@ export class MarketEngine {
     }
 
     if (stockUpdates.length > 0) {
-      promises.push(this.supabase.from('stocks').upsert(stockUpdates, { onConflict: 'id' }).then((res: any) => res));
+      promises.push(this.repositories.markets.upsertStocks(stockUpdates));
     }
     if (historyInserts.length > 0) {
       if (this.customPersistence?.savePriceHistory) {
         promises.push(this.customPersistence.savePriceHistory(historyInserts));
+      } else {
+        promises.push(this.repositories.markets.savePriceHistory(historyInserts));
       }
-      promises.push(this.supabase.from('stock_price_history').insert(historyInserts).then((res: any) => res));
     }
     if (bondUpdates.length > 0) {
-      promises.push(this.supabase.from('bonds').upsert(bondUpdates, { onConflict: 'id' }).then((res: any) => res));
+      promises.push(this.repositories.markets.upsertBonds(bondUpdates));
     }
     if (commodityCurrentUpdates.length > 0) {
-      promises.push(this.supabase.from('commodities').upsert(commodityCurrentUpdates, { onConflict: 'id' }).then((res: any) => res));
+      promises.push(this.repositories.markets.upsertCommodities(commodityCurrentUpdates));
     }
 
     // 5.4.1 신규 원자재 시장 엔진 틱 가동 및 DB 정기 반영
@@ -1102,12 +1069,7 @@ export class MarketEngine {
         previous_close: c.previousPrice,
         volume: c.volume,
       }));
-      promises.push(
-        this.supabase.from('commodities').upsert(commodityUpdates, { onConflict: 'commodity_id' }).then((res: any) => {
-          if (res.error) console.error('[Engine] Commodity Upsert Error:', res.error);
-          return res;
-        })
-      );
+      promises.push(this.repositories.markets.upsertCommodities(commodityUpdates));
     }
 
     // 5.4.2 옵션 만기 정산 및 채권 쿠폰 지급 배치 실행 (50틱 주기)
@@ -1117,19 +1079,19 @@ export class MarketEngine {
       });
     }
 
-     // 5.5 기관 포트폴리오 상태 동기화 (대시보드 용)
-     const allAgentsToSync = [
-       ...this.institutionalBots,
-       ...this.pensionFundAgents,
-       ...this.hedgeFundAgents,
-       ...this.statArbAgents,
-       ...this.commercialBankAgents,
-       ...this.propDeskAgents,
-       ...this.quantAgents,
-       ...this.commercialHedgerAgents,
-       ...this.optionsMMBots,
-       ...this.ctaBots
-     ];
+    // 5.5 기관 포트폴리오 상태 동기화 (대시보드 용)
+    const allAgentsToSync = [
+      ...this.institutionalBots,
+      ...this.pensionFundAgents,
+      ...this.hedgeFundAgents,
+      ...this.statArbAgents,
+      ...this.commercialBankAgents,
+      ...this.propDeskAgents,
+      ...this.quantAgents,
+      ...this.commercialHedgerAgents,
+      ...this.optionsMMBots,
+      ...this.ctaBots
+    ];
 
     if (allAgentsToSync.length > 0) {
       const now = this.simClock.now();
@@ -1169,8 +1131,9 @@ export class MarketEngine {
         });
         if (this.customPersistence?.upsertPortfolios) {
           promises.push(this.customPersistence.upsertPortfolios(portfoliosToUpsert));
+        } else {
+          promises.push(this.repositories.participants.upsertPortfolios(portfoliosToUpsert));
         }
-        promises.push(this.supabase.from('institutional_portfolios').upsert(portfoliosToUpsert).then((res: any) => res));
         this.lastPortfolioUpsertMs = now;
       }
     }
@@ -1183,35 +1146,17 @@ export class MarketEngine {
   }
 
   /**
-   * 대용량 LP 주문 삭제 시 타임아웃(57014) 방지를 위한 안전 삭제 헬퍼
+   * 대용량 LP 주문 삭제 시 타임아웃 방지를 위한 안전 삭제 헬퍼
    */
   private async safeDeleteLpOrders(stockIds?: string[]) {
     try {
-      if (stockIds && stockIds.length > 0) {
-        const chunkSize = 40;
-        for (let i = 0; i < stockIds.length; i += chunkSize) {
-          const chunk = stockIds.slice(i, i + chunkSize);
-          const { error } = await this.supabase
-            .from('orders')
-            .delete()
-            .eq('is_lp', true)
-            .in('stock_id', chunk);
-          if (error) {
-            console.warn('[Engine] Chunk delete warning:', error.message);
-          }
-        }
-      } else {
-        // 전 종목 LP 주문 청소: 배치로 삭제
-        const { data: lpOrders } = await this.supabase
-          .from('orders')
-          .select('id')
-          .eq('is_lp', true)
-          .limit(1000);
-
-        if (lpOrders && lpOrders.length > 0) {
-          const ids = lpOrders.map((o: any) => o.id);
-          await this.supabase.from('orders').delete().in('id', ids);
-        }
+      const openOrders = await this.repositories.markets.getOpenOrders();
+      const lpOrders = openOrders.filter((o: any) => o.is_lp);
+      const targetIds = stockIds && stockIds.length > 0
+        ? lpOrders.filter((o: any) => stockIds.includes(o.stock_id)).map((o: any) => o.id)
+        : lpOrders.map((o: any) => o.id);
+      if (targetIds.length > 0) {
+        await this.repositories.markets.deleteOrders(targetIds);
       }
     } catch (err) {
       console.warn('[Engine] safeDeleteLpOrders error:', err);
@@ -1248,9 +1193,8 @@ export class MarketEngine {
 
   private async updateExchangeRates() {
     try {
-      const { data: rates, error } = await this.supabase.from('exchange_rates').select('*');
-      if (error || !rates || rates.length === 0) {
-        // 테이블이 존재하지 않거나 데이터가 없을 때 안전하게 반환 (에러 미노출)
+      const rates = await this.repositories.markets.getExchangeRates();
+      if (!rates || rates.length === 0) {
         return;
       }
 
@@ -1278,7 +1222,7 @@ export class MarketEngine {
         });
 
       if (updates.length > 0) {
-        await this.supabase.from('exchange_rates').upsert(updates);
+        await this.repositories.markets.upsertExchangeRates(updates);
       }
     } catch (_err) {
       console.warn('[Engine] exchange_rates table not ready yet or update error skipped');

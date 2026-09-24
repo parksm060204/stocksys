@@ -145,7 +145,7 @@ export default function TickChart({
   const { resolvedTheme } = useTheme();
   const isDark = resolvedTheme !== 'light';
 
-  const supabase = createClient();
+  const db = createClient();
 
   // 1. 로컬스토리지에서 지표 설정 로드
   useEffect(() => {
@@ -496,7 +496,7 @@ export default function TickChart({
     };
     const since = new Date(Date.now() - lookbackMs[timeUnit]).toISOString();
 
-    supabase
+    db
       .from('trades')
       .select('price, created_at')
       .eq('stock_id', stockId)
@@ -591,7 +591,7 @@ export default function TickChart({
       });
 
     // 실시간 체결 구독
-    const channel = supabase
+    const channel = db
       .channel(`candle_${timeUnit}_${stockId}`)
       .on(
         'postgres_changes',
@@ -626,9 +626,9 @@ export default function TickChart({
       .subscribe();
 
     return () => {
-      supabase.removeChannel(channel);
+      db.removeChannel(channel);
     };
-  }, [stockId, timeUnit, supabase, updateAllIndicators]);
+  }, [stockId, timeUnit, db, updateAllIndicators]);
 
   // ── 5. 호가/체결 주가 변화 0ms 실시간 차트 캔들 즉각 동기화 ──
   useEffect(() => {

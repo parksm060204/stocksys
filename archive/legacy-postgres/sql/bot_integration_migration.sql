@@ -1,5 +1,5 @@
--- supabase/bot_integration_migration.sql
--- Run this in the Supabase SQL editor to drop FK constraints and add is_bot columns
+-- legacy_db/bot_integration_migration.sql
+-- Run this in the Legacy DB SQL editor to drop FK constraints and add is_bot columns
 
 -- 1. Drop the foreign key from orders
 ALTER TABLE public.orders DROP CONSTRAINT IF EXISTS orders_user_id_fkey;

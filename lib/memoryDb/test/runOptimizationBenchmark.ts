@@ -12,7 +12,7 @@ async function runOptimizationBenchmarkSuite() {
   let passedTests = 0;
   const totalTests = 4;
 
-  const supabase = createMemoryDbClient();
+  const db = createMemoryDbClient();
 
   // ── [TEST 1] 인덱스 기반 10,000회 조회 벤치마크 ──
   console.log('▶ [TEST 1] 보조 인덱스 기반 10,000회 .eq("ticker", "005930") 조회 벤치마크');
@@ -20,7 +20,7 @@ async function runOptimizationBenchmarkSuite() {
 
   const start = performance.now();
   for (let i = 0; i < queryCount; i++) {
-    await supabase.from('stocks').select('*').eq('ticker', '005930').single();
+    await db.from('stocks').select('*').eq('ticker', '005930').single();
   }
   const elapsed = performance.now() - start;
 
@@ -54,7 +54,7 @@ async function runOptimizationBenchmarkSuite() {
 
   for (let i = 0; i < concurrentOps; i++) {
     promises.push(
-      supabase.rpc('increment_user_cash', {
+      db.rpc('increment_user_cash', {
         p_user_id: 'concurrency_user',
         p_delta: deltaPerOp,
       })

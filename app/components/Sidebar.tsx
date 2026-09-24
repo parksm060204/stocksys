@@ -124,13 +124,13 @@ export default function Sidebar() {
   const [unlockedFeatures, setUnlockedFeatures] = useState<string[]>([]);
   const [isAdmin, setIsAdmin] = useState<boolean>(false);
 
-  const supabase = createClient();
+  const db = createClient();
   const { userId, isLoggedIn } = useAuth();
 
   useEffect(() => {
     const fetchProfile = async () => {
       if (isLoggedIn && userId) {
-        const { data } = await supabase.from('profiles').select('is_admin, unlocked_features').eq('id', userId).single();
+        const { data } = await db.from('profiles').select('is_admin, unlocked_features').eq('id', userId).single();
         if (data) {
           setIsAdmin(data.is_admin || false);
           if (data.unlocked_features) setUnlockedFeatures(data.unlocked_features);
@@ -138,7 +138,7 @@ export default function Sidebar() {
       }
     };
     fetchProfile();
-  }, [supabase, isLoggedIn, userId]);
+  }, [db, isLoggedIn, userId]);
 
   const handleAdminClick = useCallback(() => {
     if (isAdmin) {

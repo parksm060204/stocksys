@@ -59,11 +59,11 @@ export default async function StockDetail({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const supabase = await createClient();
+  const db = await createClient();
 
-  let { data: row } = await supabase.from('stocks').select('*').eq('id', id).maybeSingle();
+  let { data: row } = await db.from('stocks').select('*').eq('id', id).maybeSingle();
   if (!row) {
-    const { data: rowByTicker } = await supabase.from('stocks').select('*').eq('ticker', id).maybeSingle();
+    const { data: rowByTicker } = await db.from('stocks').select('*').eq('ticker', id).maybeSingle();
     row = rowByTicker;
   }
 
@@ -71,9 +71,9 @@ export default async function StockDetail({
 
   // stocks 테이블에 없는 경우 채권(bonds) 테이블에서 조회
   if (!row) {
-    let { data: bondRow } = await supabase.from('bonds').select('*').eq('id', id).maybeSingle();
+    let { data: bondRow } = await db.from('bonds').select('*').eq('id', id).maybeSingle();
     if (!bondRow) {
-      const { data: bondByTicker } = await supabase.from('bonds').select('*').eq('ticker', id).maybeSingle();
+      const { data: bondByTicker } = await db.from('bonds').select('*').eq('ticker', id).maybeSingle();
       bondRow = bondByTicker;
     }
     if (bondRow) {
@@ -140,7 +140,7 @@ export default async function StockDetail({
   // Fetch news related to this stock or its sector
   let relatedNews: any[] = [];
   try {
-    const { data: newsData } = await supabase
+    const { data: newsData } = await db
       .from('market_news')
       .select('*')
       .or(`target_sector.eq.${stock.sector},headline.ilike.%${stock.name}%,summary.ilike.%${stock.name}%`)
@@ -153,7 +153,7 @@ export default async function StockDetail({
 
   // Fetch price history records (정규 stock.id 우선 조회 및 티커 fallback 지원)
   const historyRes = await fetchCanonicalPriceHistory({
-    db: supabase,
+    db: db,
     assetId: stock.id,
     ticker: stock.ticker,
     assetKind: stock.market === 'bonds' ? 'bond' : 'stock',

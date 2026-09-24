@@ -31,14 +31,14 @@ async function verifyEnvAlignment() {
   const rootEnv = parseEnvFile(rootEnvPath);
   const engineEnv = parseEnvFile(engineEnvPath);
 
-  const rootUrl = rootEnv['NEXT_PUBLIC_SUPABASE_URL'] || rootEnv['SUPABASE_URL'];
-  const engineUrl = engineEnv['NEXT_PUBLIC_SUPABASE_URL'] || engineEnv['SUPABASE_URL'];
+  const rootUrl = rootEnv['NEXT_PUBLIC_ENGINE_DB_URL'] || rootEnv['ENGINE_DB_URL'];
+  const engineUrl = engineEnv['NEXT_PUBLIC_ENGINE_DB_URL'] || engineEnv['ENGINE_DB_URL'];
 
-  const rootAnonKey = rootEnv['NEXT_PUBLIC_SUPABASE_ANON_KEY'] || rootEnv['SUPABASE_ANON_KEY'];
-  const engineAnonKey = engineEnv['NEXT_PUBLIC_SUPABASE_ANON_KEY'] || engineEnv['SUPABASE_ANON_KEY'];
+  const rootAnonKey = rootEnv['NEXT_PUBLIC_ENGINE_DB_ANON_KEY'] || rootEnv['ENGINE_DB_ANON_KEY'];
+  const engineAnonKey = engineEnv['NEXT_PUBLIC_ENGINE_DB_ANON_KEY'] || engineEnv['ENGINE_DB_ANON_KEY'];
 
-  const rootServiceKey = rootEnv['SUPABASE_SERVICE_ROLE_KEY'];
-  const engineServiceKey = engineEnv['SUPABASE_SERVICE_ROLE_KEY'];
+  const rootServiceKey = rootEnv['ENGINE_DB_SERVICE_ROLE_KEY'];
+  const engineServiceKey = engineEnv['ENGINE_DB_SERVICE_ROLE_KEY'];
 
   console.log(`▶ Next.js 루트 환경 (.env.local):`);
   console.log(`  - DB URL: ${rootUrl || 'N/A'}`);

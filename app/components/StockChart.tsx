@@ -49,14 +49,14 @@ export default function StockChart({ stock }: { stock: Stock }) {
   const [unit, setUnit] = useState<TimeUnit>("10m");
   const [realTrades, setRealTrades] = useState<Array<{ price: number; volume: number; created_at: string }>>([]);
 
-  const supabase = createClient();
+  const db = createClient();
 
   // 거래소 DB trades 실시간 조회 및 구독 (가상 시뮬레이션 완전 배제)
   useEffect(() => {
     if (!stock?.id) return;
 
     // 1. 실제 체결 데이터 조회
-    supabase
+    db
       .from("trades")
       .select("price, size, created_at")
       .eq("stock_id", stock.id)
@@ -76,7 +76,7 @@ export default function StockChart({ stock }: { stock: Stock }) {
       });
 
     // 2. 봇 및 실투자자 체결 실시간 릴레이션 구독
-    const channel = supabase
+    const channel = db
       .channel(`stock_trades_real_${stock.id}`)
       .on(
         "postgres_changes",
@@ -96,9 +96,9 @@ export default function StockChart({ stock }: { stock: Stock }) {
       .subscribe();
 
     return () => {
-      supabase.removeChannel(channel);
+      db.removeChannel(channel);
     };
-  }, [stock.id, supabase]);
+  }, [stock.id, db]);
 
   // 실제 체결(trades) 데이터만을 기반으로 시간 단위(1m/5m/10m/1h/1d) 캔들 집계
   const candles: Candle[] = useMemo(() => {

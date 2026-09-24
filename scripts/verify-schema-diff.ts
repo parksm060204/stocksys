@@ -19,8 +19,8 @@ function parseAllSqlSchemas(): Map<string, Set<string>> {
   };
 
   addDirSqls(path.resolve(process.cwd(), 'vm-db/sql/init'));
-  addDirSqls(path.resolve(process.cwd(), 'supabase'));
-  addDirSqls(path.resolve(process.cwd(), 'supabase/migrations'));
+  addDirSqls(path.resolve(process.cwd(), 'archive/legacy-postgres/sql'));
+  addDirSqls(path.resolve(process.cwd(), 'archive/legacy-postgres/sql/migrations'));
 
   for (const filePath of sqlFiles) {
     const content = fs.readFileSync(filePath, 'utf-8');

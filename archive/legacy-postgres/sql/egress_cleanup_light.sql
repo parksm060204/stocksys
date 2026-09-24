@@ -83,18 +83,18 @@ WHERE status IN ('COMPLETED', 'CANCELLED')
 -- (UI는 polling fallback으로 동작하거나 별도 경로 필요)
 -- =================================================================
 
-ALTER PUBLICATION supabase_realtime DROP TABLE IF EXISTS public.trades;
+ALTER PUBLICATION database_realtime DROP TABLE IF EXISTS public.trades;
 
 -- (선택) 대신 컬럼을 한정해서 publish 하려면 위 DROP 후 아래 ADD 실행
--- 단 이 옵션은 Postgres 15+ Supabase 에서만 동작
-ALTER PUBLICATION supabase_realtime
+-- 단 이 옵션은 Postgres 15+ Legacy DB 에서만 동작
+ALTER PUBLICATION database_realtime
   ADD TABLE public.trades (
     id, stock_id, price, size, buyer_is_bot, seller_is_bot, created_at
   );
 
 -- institutional_portfolios 도 publish 축소
-ALTER PUBLICATION supabase_realtime DROP TABLE IF EXISTS public.institutional_portfolios;
-ALTER PUBLICATION supabase_realtime
+ALTER PUBLICATION database_realtime DROP TABLE IF EXISTS public.institutional_portfolios;
+ALTER PUBLICATION database_realtime
   ADD TABLE public.institutional_portfolios (
     bot_id, name, total_capital,
     current_cash, current_stock,
@@ -116,5 +116,5 @@ SELECT
 -- Realtime publication의 trades 컬럼
 SELECT schemaname, tablename, attnames
 FROM pg_publication_tables
-WHERE pubname = 'supabase_realtime'
+WHERE pubname = 'database_realtime'
   AND tablename IN ('trades', 'institutional_portfolios');

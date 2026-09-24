@@ -16,7 +16,7 @@ import {
   LEGACY_CHILD_ORDER_LIMITS
 } from '../engine-server/src/risk/legacyOrderSafety';
 
-function assert(condition: boolean, msg: string) {
+function assert(condition: unknown, msg: string): asserts condition {
   if (!condition) {
     throw new Error(`[Order Risk Centralization Test Failure] ${msg}`);
   }
@@ -34,7 +34,7 @@ async function runTest() {
   };
 
   const childResult = evaluateOrderSafety(hugeChildOrder, 100000);
-  assert(childResult.isAccepted, 'Order should be accepted after capping');
+  assert(childResult.isAccepted && childResult.safeOrder, 'Order should be accepted after capping');
   // 5,000,000 / 100,000 = 50 shares
   assert(childResult.safeOrder.size === 50, `Expected 50 shares, received ${childResult.safeOrder.size}`);
   assert(childResult.diagnostic.reasonCodes.includes('REDUCED_BY_NOTIONAL_CAP'), 'Must contain REDUCED_BY_NOTIONAL_CAP');
@@ -47,6 +47,7 @@ async function runTest() {
     size: 10000
   };
   const cheapResult = evaluateOrderSafety(cheapStockOrder, 100);
+  assert(cheapResult.isAccepted && cheapResult.safeOrder, 'Order should be accepted after capping');
   assert(cheapResult.safeOrder.size === 5000, `Expected 5000 shares cap, received ${cheapResult.safeOrder.size}`);
   assert(cheapResult.diagnostic.reasonCodes.includes('REDUCED_BY_QTY_CAP'), 'Must contain REDUCED_BY_QTY_CAP');
 
@@ -67,7 +68,7 @@ async function runTest() {
   };
 
   const strategicResult = evaluateOrderSafety(strategicOrder, 50000, strategicContext);
-  assert(strategicResult.isAccepted, 'Strategic order should be accepted');
+  assert(strategicResult.isAccepted && strategicResult.safeOrder, 'Strategic order should be accepted');
   assert(strategicResult.safeOrder.size === 20000, `Strategic order size should be 20,000, got ${strategicResult.safeOrder.size}`);
   assert(!strategicResult.diagnostic.reasonCodes.includes('REDUCED_BY_NOTIONAL_CAP'), 'Strategic order must NOT be clamped to 5M KRW');
 
@@ -83,6 +84,7 @@ async function runTest() {
     size: 70000
   };
   const advResult = evaluateOrderSafety(oversizedStrategic, 50000, advContext);
+  assert(advResult.isAccepted && advResult.safeOrder, 'Oversized strategic order should be accepted with ADV capping');
   assert(advResult.safeOrder.size === 50000, `Expected 50,000 ADV limit, got ${advResult.safeOrder.size}`);
   assert(advResult.diagnostic.reasonCodes.includes('REDUCED_BY_ADV_LIMIT'), 'Must contain REDUCED_BY_ADV_LIMIT');
 
@@ -115,8 +117,80 @@ async function runTest() {
     size: 10
   };
   const alignedResult = evaluateOrderSafety(unalignedOrder, 50000);
+  assert(alignedResult.isAccepted && alignedResult.safeOrder, 'Unaligned order should be accepted with tick alignment');
   assert(alignedResult.safeOrder.price % 100 === 0, `Expected tick aligned to 100, got ${alignedResult.safeOrder.price}`);
   assert(alignedResult.diagnostic.reasonCodes.includes('ALIGNED_TO_KRX_TICK'), 'Must record ALIGNED_TO_KRX_TICK');
+
+  // 5. Gate Bypass Prevention: applyLegacyChildOrderSafetyLimits MUST return undefined on rejected orders
+  const nanHelperResult = applyLegacyChildOrderSafetyLimits(invalidPriceOrder, 1000);
+  assert(nanHelperResult === undefined, 'Helper must return undefined for NaN price order (never revive to 1 KRW)');
+  assert((nanPriceResult as any).order === undefined, 'Rejected result must not have order');
+  assert((nanPriceResult as any).safeOrder === undefined, 'Rejected result must not have safeOrder');
+
+  const negHelperResult = applyLegacyChildOrderSafetyLimits(negativeQtyOrder, 50000);
+  assert(negHelperResult === undefined, 'Helper must return undefined for negative quantity (never Math.abs)');
+
+  // 6. Zero Quantity / Zero Price Rejection
+  const zeroPriceResult = evaluateOrderSafety({ stock_id: 'S1', side: 'buy', price: 0, size: 10 }, 100);
+  assert(!zeroPriceResult.isAccepted, '0 price must be rejected');
+
+  const zeroQtyResult = evaluateOrderSafety({ stock_id: 'S1', side: 'buy', price: 100, size: 0 }, 100);
+  assert(!zeroQtyResult.isAccepted, '0 quantity must be rejected');
+
+  // 7. Fractional Quantity Rejection
+  const fracQtyResult = evaluateOrderSafety({ stock_id: 'S1', side: 'buy', price: 100, size: 10.5 }, 100);
+  assert(!fracQtyResult.isAccepted, 'Fractional quantity must be rejected');
+  assert(fracQtyResult.diagnostic.reasonCodes.includes('REJECTED_FRACTIONAL_QTY'), 'Must record REJECTED_FRACTIONAL_QTY');
+
+  // 8. Strategic Order Without Context Rejection (Fail-closed)
+  const contextlessStrategic = evaluateOrderSafety(
+    { stock_id: 'S1', side: 'buy', price: 10000, size: 20000, orderType: 'STRATEGIC_ORDER' },
+    10000
+  );
+  assert(!contextlessStrategic.isAccepted, 'Strategic order without context must fail-closed');
+  assert(contextlessStrategic.diagnostic.reasonCodes.includes('REJECTED_MISSING_STRATEGIC_CONTEXT'), 'Must record REJECTED_MISSING_STRATEGIC_CONTEXT');
+
+  // 9. Strategic Buy Order with 0 Cash Rejection
+  const zeroCashStrategic = evaluateOrderSafety(
+    { stock_id: 'S1', side: 'buy', price: 10000, size: 20000 },
+    10000,
+    {
+      orderType: 'STRATEGIC_ORDER',
+      participantKind: 'DOMESTIC_INSTITUTION',
+      adv: 100000,
+      availableCash: 0
+    }
+  );
+  assert(!zeroCashStrategic.isAccepted, 'Strategic buy order with 0 cash must be rejected');
+  assert(zeroCashStrategic.diagnostic.reasonCodes.includes('REJECTED_ZERO_CASH_BUY'), 'Must record REJECTED_ZERO_CASH_BUY');
+
+  // 10. Strategic Order with 0 ADV Rejection
+  const zeroAdvStrategic = evaluateOrderSafety(
+    { stock_id: 'S1', side: 'buy', price: 10000, size: 20000 },
+    10000,
+    {
+      orderType: 'STRATEGIC_ORDER',
+      participantKind: 'DOMESTIC_INSTITUTION',
+      adv: 0,
+      availableCash: 1000000000
+    }
+  );
+  assert(!zeroAdvStrategic.isAccepted, 'Strategic order with 0 ADV must be rejected');
+  assert(zeroAdvStrategic.diagnostic.reasonCodes.includes('REJECTED_ZERO_OR_UNKNOWN_ADV'), 'Must record REJECTED_ZERO_OR_UNKNOWN_ADV');
+
+  // 11. Unauthorized Participant Trying Strategic Order
+  const unauthorizedStrategic = evaluateOrderSafety(
+    { stock_id: 'S1', side: 'buy', price: 10000, size: 20000 },
+    10000,
+    {
+      orderType: 'STRATEGIC_ORDER',
+      participantKind: 'RETAIL',
+      adv: 100000,
+      availableCash: 1000000000
+    }
+  );
+  assert(!unauthorizedStrategic.isAccepted, 'Retail participant attempting strategic order must be rejected');
+  assert(unauthorizedStrategic.diagnostic.reasonCodes.includes('REJECTED_UNAUTHORIZED_STRATEGIC_PARTICIPANT'), 'Must record REJECTED_UNAUTHORIZED_STRATEGIC_PARTICIPANT');
 
   console.log('✅ Order Risk Policy Centralization Test Passed: All limits, exemptions, and fail-safes verified.');
 }

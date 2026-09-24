@@ -24,7 +24,7 @@ interface ActiveEvent {
   status: string;
 }
 
-const supabase = createClient();
+const db = createClient();
 
 export default function RandomEventModal() {
   const [activeEvent, setActiveEvent] = useState<ActiveEvent | null>(null);
@@ -37,7 +37,7 @@ export default function RandomEventModal() {
     const currentUserId: string | null = userId;
 
     const checkPendingEvents = async (uid: string) => {
-      const { data } = await supabase
+      const { data } = await db
         .from('active_player_events')
         .select('*')
         .eq('user_id', uid)
@@ -49,7 +49,7 @@ export default function RandomEventModal() {
       if (data && data.length > 0) {
         const active = data[0];
         setActiveEvent(active);
-        const { data: edata } = await supabase.from('player_events').select('*').eq('id', active.event_id).single();
+        const { data: edata } = await db.from('player_events').select('*').eq('id', active.event_id).single();
         if (mounted && edata) setEventData(edata);
       }
     };
@@ -89,7 +89,7 @@ export default function RandomEventModal() {
       // Note: In a real secure app, this should be an RPC to prevent tampering.
       // For this simulator, we do it directly using client if RLS permits.
       // Wait, RLS on profiles might not allow direct updates of cash by the user if it's protected, but our policy says "Users can update their own profile".
-      const { data: profile } = await supabase.from('profiles').select('cash, acquired_passives').eq('id', uid).single();
+      const { data: profile } = await db.from('profiles').select('cash, acquired_passives').eq('id', uid).single();
       
       if (profile) {
         const newCash = Number(profile.cash) - cost;
@@ -98,11 +98,11 @@ export default function RandomEventModal() {
           passives.push(passive);
         }
 
-        await supabase.from('profiles').update({ cash: newCash, acquired_passives: passives }).eq('id', uid);
+        await db.from('profiles').update({ cash: newCash, acquired_passives: passives }).eq('id', uid);
       }
 
       // Mark event as resolved
-      await supabase.from('active_player_events').update({ status: 'resolved' }).eq('id', activeEvent.id);
+      await db.from('active_player_events').update({ status: 'resolved' }).eq('id', activeEvent.id);
 
       setActiveEvent(null);
       setEventData(null);

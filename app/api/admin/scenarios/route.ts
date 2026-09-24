@@ -35,7 +35,7 @@ export async function POST(req: Request) {
     }
 
     const adminUser = auth.adminUser || 'admin';
-    const supabase = createMemoryDbClient();
+    const db = createMemoryDbClient();
     const body = await req.json();
     const { action } = body;
 
@@ -59,7 +59,7 @@ export async function POST(req: Request) {
       // DB stocks / commodities 목표가 일시 반영 (옵션)
       if (assetType === 'stock') {
         const targetMultiplier = 1 + (Number(targetChangePct) || 50) / 100;
-        await supabase
+        await db
           .from('stocks')
           .update({ target_price: Math.round(initialPrice * targetMultiplier) })
           .eq('id', assetId);
@@ -77,7 +77,7 @@ export async function POST(req: Request) {
       });
 
       // admin_settings 테이블 매크로 심리 레짐 갱신
-      await supabase
+      await db
         .from('admin_settings')
         .update({ market_sentiment: shock.regime })
         .eq('id', 1);

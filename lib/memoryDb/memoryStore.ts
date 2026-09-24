@@ -201,6 +201,25 @@ export interface MarketNewsRecord {
   created_at: string;
 }
 
+export interface DeterministicIdGenerator {
+  nextId(prefix?: string): string;
+}
+
+export class SequentialIdGenerator implements DeterministicIdGenerator {
+  private counter: number = 0;
+  constructor(private readonly baseSeed: number = 0) {}
+
+  public nextId(prefix: string = 'id'): string {
+    this.counter += 1;
+    return `${prefix}_${this.baseSeed}_${this.counter.toString().padStart(6, '0')}`;
+  }
+}
+
+export interface DatabaseExecutionContext {
+  readonly clock: { now(): number };
+  readonly idGenerator: DeterministicIdGenerator;
+}
+
 export class MemoryDatabase {
   // ── 1. 기본 엔티티 스토어 (Primary Maps) ──
   public stocks: Map<string, StockRecord> = new Map();
@@ -241,9 +260,27 @@ export class MemoryDatabase {
   private listeners: Map<string, Set<(payload: any) => void>> = new Map();
   private symbolListeners: Map<string, Set<(payload: any) => void>> = new Map();
 
-  constructor() {
+  private fallbackCounter: number = 0;
+
+  constructor(public readonly executionContext?: DatabaseExecutionContext) {
     this.seedDefaultData();
     this.rebuildIndexes();
+  }
+
+  public getNowMs(): number {
+    return this.executionContext ? this.executionContext.clock.now() : 1774000000000;
+  }
+
+  public getIsoTimestamp(): string {
+    return new Date(this.getNowMs()).toISOString();
+  }
+
+  public generateId(prefix: string = 'id'): string {
+    if (this.executionContext) {
+      return this.executionContext.idGenerator.nextId(prefix);
+    }
+    this.fallbackCounter += 1;
+    return `${prefix}_${this.fallbackCounter.toString().padStart(6, '0')}`;
   }
 
   /**
@@ -419,7 +456,7 @@ export class MemoryDatabase {
       { ticker: 'TQQQ', name: 'ProShares UltraPro QQQ', market: 'etf', current_price: 60.0, previous_close: 60.0, sector: 'Leverage ETF', sector_id: 'index', theme_ids: ['us', 'leverage'], is_core: false, shares_outstanding: 500000000, floating_shares: 500000000, base_liquidity: 0.96, base_spread_bps: 5, base_depth_shares: 3000, institutional_fit: 0.60, macro_exposure: { market_beta: 3.0 } },
     ];
 
-    const now = Date.now();
+    const now = this.getNowMs();
 
     stockList.forEach((s, idx) => {
       // 고정 UUID 사용 (매핑 없으면 결정론적 UUID 생성)
@@ -506,22 +543,22 @@ export class MemoryDatabase {
     bondList.forEach((b) => this.bonds.set(b.id, b));
 
     // ── 옵션 계약 시드 ──
-    const expDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
+    const expDate = new Date(this.getNowMs() + 14 * 24 * 60 * 60 * 1000).toISOString();
     const osId = STOCK_UUID_MAP['0010'] || '00000000-0000-4000-8000-000000000101';
     const optList: OptionContractRecord[] = [
-      { id: 'opt_c_720', underlying_stock_id: osId, ticker: 'IDX-K200-2608-C260.0', asset_class: 'STK', type: 'CALL', option_type: 'CALL', strike_price: 72000, current_price: 2.15, expiry_date: expDate, open_interest: 450, volume: 120, delta: 0.65, gamma: 0.04, theta: -0.15, implied_volatility: 0.22, created_at: new Date().toISOString() },
-      { id: 'opt_p_720', underlying_stock_id: osId, ticker: 'IDX-K200-2608-P260.0', asset_class: 'STK', type: 'PUT', option_type: 'PUT', strike_price: 72000, current_price: 1.85, expiry_date: expDate, open_interest: 380, volume: 95, delta: -0.35, gamma: 0.04, theta: -0.12, implied_volatility: 0.21, created_at: new Date().toISOString() },
+      { id: 'opt_c_720', underlying_stock_id: osId, ticker: 'IDX-K200-2608-C260.0', asset_class: 'STK', type: 'CALL', option_type: 'CALL', strike_price: 72000, current_price: 2.15, expiry_date: expDate, open_interest: 450, volume: 120, delta: 0.65, gamma: 0.04, theta: -0.15, implied_volatility: 0.22, created_at: this.getIsoTimestamp() },
+      { id: 'opt_p_720', underlying_stock_id: osId, ticker: 'IDX-K200-2608-P260.0', asset_class: 'STK', type: 'PUT', option_type: 'PUT', strike_price: 72000, current_price: 1.85, expiry_date: expDate, open_interest: 380, volume: 95, delta: -0.35, gamma: 0.04, theta: -0.12, implied_volatility: 0.21, created_at: this.getIsoTimestamp() },
     ];
     optList.forEach((o) => this.optionsContracts.set(o.id, o));
 
     // ── 환율 시드 ──
     this.exchangeRates = [
-      { currency_code: 'KRW', currency_name: '대한민국 원', rate_to_krw: 1.0, updated_at: new Date().toISOString() },
-      { currency_code: 'USD', currency_name: '미국 달러', rate_to_krw: 1380.0, updated_at: new Date().toISOString() },
-      { currency_code: 'EUR', currency_name: '유로', rate_to_krw: 1500.0, updated_at: new Date().toISOString() },
-      { currency_code: 'JPY', currency_name: '일본 엔', rate_to_krw: 9.2, updated_at: new Date().toISOString() },
-      { currency_code: 'CNY', currency_name: '위안', rate_to_krw: 190.0, updated_at: new Date().toISOString() },
-      { currency_code: 'GBP', currency_name: '영국 파운드', rate_to_krw: 1750.0, updated_at: new Date().toISOString() },
+      { currency_code: 'KRW', currency_name: '대한민국 원', rate_to_krw: 1.0, updated_at: this.getIsoTimestamp() },
+      { currency_code: 'USD', currency_name: '미국 달러', rate_to_krw: 1380.0, updated_at: this.getIsoTimestamp() },
+      { currency_code: 'EUR', currency_name: '유로', rate_to_krw: 1500.0, updated_at: this.getIsoTimestamp() },
+      { currency_code: 'JPY', currency_name: '일본 엔', rate_to_krw: 9.2, updated_at: this.getIsoTimestamp() },
+      { currency_code: 'CNY', currency_name: '위안', rate_to_krw: 190.0, updated_at: this.getIsoTimestamp() },
+      { currency_code: 'GBP', currency_name: '영국 파운드', rate_to_krw: 1750.0, updated_at: this.getIsoTimestamp() },
     ];
 
     // ── 테스트 사용자 (고정 UUID 적용) ──
@@ -715,7 +752,7 @@ export class MemoryDatabase {
     this.seedDefaultData();
     this.rebuildIndexes();
     console.log('🔄 [MemoryDB] Market state successfully reset to initial seed data.');
-    this.publish('market_reset', { timestamp: Date.now() });
+    this.publish('market_reset', { timestamp: this.getNowMs() });
   }
 
   public exportSnapshot(): any {
@@ -733,7 +770,7 @@ export class MemoryDatabase {
       adminSettings: Array.from(this.adminSettings.entries()),
       exchangeRates: [...this.exchangeRates],
       institutionalPortfolios: Array.from(this.institutionalPortfolios.entries()),
-      timestamp: Date.now(),
+      timestamp: this.getNowMs(),
     };
   }
 

@@ -8,12 +8,12 @@
 flowchart LR
     subgraph Production_Architecture ["🌐 프로덕션 환경 (NODE_ENV=production)"]
         ENGINE["engine-server<br/>(PM2 24시간 봇 루프)"] -->|REST API| VMDB[("vm-db (진실원본)<br/>PostgreSQL + PostgREST<br/>:3001")]
-        FRONT["Next.js 프론트엔드<br/>(NextAuth + SSR/CSR)"] -->|Supabase SDK| VMDB
+        FRONT["Next.js 프론트엔드<br/>(NextAuth + SSR/CSR)"] -->|Data Client| VMDB
     end
 ```
 
 - **`engine-server`**: 1.5초 틱 무중단 루프로 50개 기관 봇 매칭, 원자재 선물 가격 갱신, 옵션/채권 만기 정산을 수행하며 모든 결과를 `vm-db`에 즉시 커밋합니다.
-- **`Next.js 프론트엔드`**: `lib/supabase/client.ts` 및 `lib/supabase/server.ts`를 통해 `vm-db`에 직접 연결하여 실시간 체결 내역과 호가창을 유저에게 표시합니다.
+- **`Next.js 프론트엔드`**: `lib/db/client.ts` 및 `lib/db/server.ts`를 통해 데이터 레이어에 직접 연결하여 실시간 체결 내역과 호가창을 유저에게 표시합니다.
 
 ---
 

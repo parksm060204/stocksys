@@ -1,5 +1,5 @@
 /**
- * useAuth — NextAuth 세션을 기존 supabase.auth.getSession() 패턴과 호환되게 래핑
+ * useAuth — NextAuth 세션을 인증 세션 패턴과 호환되게 래핑
  * Local Standalone Mode에서는 구글 로그인 없이도 즉시 테스트할 수 있도록 guest_user 자동 인증 제공
  */
 "use client";

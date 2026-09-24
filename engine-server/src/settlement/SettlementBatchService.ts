@@ -1,4 +1,3 @@
-import { SupabaseClient } from '@supabase/supabase-js';
 import { OptionSettlementEngine } from './OptionSettlementEngine';
 import { BondCouponEngine } from './BondCouponEngine';
 import { OptionContract, OptionPosition, BondItem, BondPosition } from './types';
@@ -8,10 +7,16 @@ export class SettlementBatchService {
   public bondEngine: BondCouponEngine;
   private isRunning: boolean = false;
   private lastRunDate: string = '';
+  public dbClient?: any;
 
-  constructor(private supabase?: SupabaseClient) {
-    this.optionEngine = new OptionSettlementEngine(supabase);
-    this.bondEngine = new BondCouponEngine(supabase);
+  constructor(clientOrRepos?: any) {
+    this.dbClient = clientOrRepos;
+    this.optionEngine = new OptionSettlementEngine(this.dbClient);
+    this.bondEngine = new BondCouponEngine(this.dbClient);
+  }
+
+  public getDbClient(): any {
+    return this.dbClient;
   }
 
   /**
@@ -37,36 +42,36 @@ export class SettlementBatchService {
     let bondPrincipalRedeemed = 0;
 
     try {
-      if (this.supabase) {
+      if (this.dbClient) {
         // 1. 만기 도래 옵션 계약 및 보유 포지션 조회
-        const { data: optionsData } = await this.supabase
+        const { data: optionsData } = await this.dbClient
           .from('options_contracts')
           .select('*');
 
-        const { data: stocksData } = await this.supabase
+        const { data: stocksData } = await this.dbClient
           .from('stocks')
           .select('id, current_price');
 
         const underlyingPrices: Record<string, number> = {};
-        (stocksData || []).forEach((s) => {
+        (stocksData || []).forEach((s: any) => {
           underlyingPrices[s.id] = Number(s.current_price || 0);
         });
 
-        const { data: holdingsData } = await this.supabase
+        const { data: holdingsData } = await this.dbClient
           .from('holdings')
           .select('*')
           .gt('quantity', 0);
 
         const optionPositions: OptionPosition[] = (holdingsData || [])
-          .filter((h) => (optionsData || []).some((o) => o.id === h.stock_id))
-          .map((h) => ({
+          .filter((h: any) => (optionsData || []).some((o: any) => o.id === h.stock_id))
+          .map((h: any) => ({
             userId: h.user_id,
             optionId: h.stock_id,
             quantity: Number(h.quantity || 0),
             avgPrice: Number(h.avg_price || 0),
           }));
 
-        const contracts: OptionContract[] = (optionsData || []).map((o) => ({
+        const contracts: OptionContract[] = (optionsData || []).map((o: any) => ({
           id: o.id,
           underlying_stock_id: o.underlying_stock_id,
           ticker: o.ticker,
@@ -90,11 +95,11 @@ export class SettlementBatchService {
         optionPayout = optRes.totalPayout;
 
         // 2. 채권 쿠폰 및 만기 상환 처리
-        const { data: bondsData } = await this.supabase
+        const { data: bondsData } = await this.dbClient
           .from('bonds')
           .select('*');
 
-        const bonds: BondItem[] = (bondsData || []).map((b) => ({
+        const bonds: BondItem[] = (bondsData || []).map((b: any) => ({
           id: b.id,
           ticker: b.ticker,
           name: b.name,
@@ -107,8 +112,8 @@ export class SettlementBatchService {
         }));
 
         const bondPositions: BondPosition[] = (holdingsData || [])
-          .filter((h) => (bondsData || []).some((b) => b.id === h.stock_id))
-          .map((h) => ({
+          .filter((h: any) => (bondsData || []).some((b: any) => b.id === h.stock_id))
+          .map((h: any) => ({
             userId: h.user_id,
             bondId: h.stock_id,
             quantity: Number(h.quantity || 0),

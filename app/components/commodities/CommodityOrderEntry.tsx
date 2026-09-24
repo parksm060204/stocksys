@@ -25,13 +25,13 @@ export default function CommodityOrderEntry({
 
   const { userId, isLoggedIn } = useAuth();
   const { showToast } = useToast();
-  const supabase = createClient();
+  const db = createClient();
 
   const fetchUserCash = useCallback(async () => {
     if (!isLoggedIn || !userId) return;
-    const { data } = await supabase.from('profiles').select('cash').eq('id', userId).single();
+    const { data } = await db.from('profiles').select('cash').eq('id', userId).single();
     if (data) setUserCash(Number(data.cash || 0));
-  }, [isLoggedIn, userId, supabase]);
+  }, [isLoggedIn, userId, db]);
 
   useEffect(() => {
     fetchUserCash();
@@ -99,7 +99,7 @@ export default function CommodityOrderEntry({
 
       // 2. 증거금 차감 반영
       if (userCash !== null) {
-        await supabase
+        await db
           .from('profiles')
           .update({ cash: Math.max(0, userCash - totalRequiredMarginKrw) })
           .eq('id', userId);

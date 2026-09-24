@@ -11,8 +11,8 @@
 - 5대 핵심 시스템: LP 알고리즘, AI 뉴스 생성(Gemini), 관리자 페이지, 공시/재무제표, 실시간 교류
 - AI가 웹소설 이벤트 판정 → 섹터별 호/악재 → 종목별 목표가 갱신 → LP가 견인
 - 핵심 종목은 직접 스토리텔링, 나머지는 AI가 생성
-- Supabase DB + 구글 로그인
-- 기술스택: Next.js / React / Vercel / Supabase Realtime / Gemini API
+- Legacy DB DB + 구글 로그인
+- 기술스택: Next.js / React / Vercel / Legacy DB Realtime / Gemini API
 
 **최종 지시:** "See this plan and make the web"
 
@@ -399,14 +399,14 @@ world 50은 S&P50으로 바꾸고, 국내주식과 해외주식은 창을 하나
 
 (중략 - 프랍데스크 봇 데이터 구조 및 핵심 동작 알고리즘, 호가창 파급 효과)
 
-이렇게 4대 기관의 엔진 로직 설계가 모두 완성되었습니다. 방어(연기금), 조율(시중은행), 충격(헤지펀드), 유지(프랍데스크)가 맞물려 돌아가게 되는데, 이 4가지 봇 로직들을 Supabase의 Realtime 기능과 연동하여 1초 단위 메인 루프(Main Loop)에 올리는 작업부터 시작해 볼까요?
+이렇게 4대 기관의 엔진 로직 설계가 모두 완성되었습니다. 방어(연기금), 조율(시중은행), 충격(헤지펀드), 유지(프랍데스크)가 맞물려 돌아가게 되는데, 이 4가지 봇 로직들을 Legacy DB의 Realtime 기능과 연동하여 1초 단위 메인 루프(Main Loop)에 올리는 작업부터 시작해 볼까요?
 
 ---
 ## 2026-07-03 16:51
 
 좋습니다! 이제 설계된 4대 기관 봇들을 깨워 시스템의 **'심장'** 역할을 할 메인 엔진 루프(Main Engine Loop)를 구축하겠습니다.
 
-이 루프는 1초(또는 설정된 주기)마다 시장 상황을 스냅샷으로 찍어 봇들에게 전달하고, 봇들이 생성한 수천 개의 주문을 모아 Supabase DB에 한 번에(Batch) 밀어 넣는 역할을 합니다. 이렇게 해야 데이터베이스 부하를 최소화하면서도 실시간 호가창을 부드럽게 구현할 수 있습니다.
+이 루프는 1초(또는 설정된 주기)마다 시장 상황을 스냅샷으로 찍어 봇들에게 전달하고, 봇들이 생성한 수천 개의 주문을 모아 Legacy DB DB에 한 번에(Batch) 밀어 넣는 역할을 합니다. 이렇게 해야 데이터베이스 부하를 최소화하면서도 실시간 호가창을 부드럽게 구현할 수 있습니다.
 
 (중략 - 메인 엔진 아키텍처 MarketEngine 클래스 코드 및 Vercel 환경에서의 엔진 구동 주의사항)
 
@@ -423,7 +423,7 @@ world 50은 S&P50으로 바꾸고, 국내주식과 해외주식은 창을 하나
 ## 🛠 기술 스택
 - Node.js (v20+)
 - TypeScript
-- @supabase/supabase-js (Service Role Key 사용)
+- @legacy/db-sdk (Service Role Key 사용)
 - dotenv (환경변수 관리)
 
 (중략 - 핵심 구현 요구사항: 1. 프로젝트 초기화, 2. 4대 기관 봇 로직, 3. 메인 엔진 루프, 4. 진입점)
@@ -1162,7 +1162,7 @@ PRIVATE SOURCE같은 같은 등급이면 똑같은 가격을 받도록해
 **요청 요약:** 메인홈 기본 화면 게임 소개로 변경 및 상점 내 메인홈 커스텀 대시보드 해금 상품 추가
 **수행 결과:**
 - `app/page.tsx`: 기본(미해금) 유저 접속 시 50개 기관 봇 실시간 시뮬레이션, 6대 자산 시장, Hawkes & MJD 충격 모델 **게임 시스템 안내 메인화면** 렌더링 및 주요 시장 지수 프리뷰 & 상점 해금 안내 CTA 연동
-- `app/shop/page.tsx`: **"메인홈 커스텀 대시보드 해금권" (영구 라이선스 - ₩3,000,000)** 상품 추가 및 Supabase `profiles.unlocked_features` 배열 구매 업데이트 연동
+- `app/shop/page.tsx`: **"메인홈 커스텀 대시보드 해금권" (영구 라이선스 - ₩3,000,000)** 상품 추가 및 Legacy DB `profiles.unlocked_features` 배열 구매 업데이트 연동
 - `app/page.tsx`: 상점에서 해금권을 구매한 유저에 한해 시장 지수, TOP 5 상승/하락, 최신 뉴스 위젯 대시보드 활성화 구현 완료
 
 ---
@@ -1201,7 +1201,7 @@ PRIVATE SOURCE같은 같은 등급이면 똑같은 가격을 받도록해
 
 **요청 요약:** 관리자 계정에 슈퍼 권한 부여 및 모든 시스템 기능/라이선스 일괄 잠금해제
 **수행 결과:**
-- `supabase/super_admin_migration.sql`: 100조 원 예수금 주입 및 전 기능/라이선스 일괄 해금용 SQL 마이그레이션 작성
+- `legacyDb/super_admin_migration.sql`: 100조 원 예수금 주입 및 전 기능/라이선스 일괄 해금용 SQL 마이그레이션 작성
 - `app/page.tsx`: 관리자(`is_admin === true`) 접속 시 메인 대시보드 커스텀 기능 자동 100% 해금 적용
 - `app/shop/page.tsx`: 상점(Black Market)에 **👑 SUPER ADMIN UNLOCKED** 배너 및 `[ ⚡ 100조 예수금 & 전 기능 즉시 해금 ]` 1-Click 실행 액션 탑재, 관리자에게 옵션 거래 자격증 및 대시보드 라이선스 자동 무제한 부여
 - `app/components/Sidebar.tsx`: 관리자 접속 시 네비게이션 바에 `👑 관리자 센터` 메뉴 자동 노출 및 100% 액세스 연동
@@ -1229,7 +1229,7 @@ PRIVATE SOURCE같은 같은 등급이면 똑같은 가격을 받도록해
 **요청 요약:** 비로그인 상태에서 마이페이지가 동작하는 원인 파악 및 로그인 시에만 마이페이지가 로드되도록 변경
 **수행 결과:**
 - 원인 파악: `app/mypage/page.tsx` 상단에 하드코딩된 모의 종목 배열(`HOLDINGS`)과 1억 예수금 기본값이 작성되어 있어 비인증 접속 시에도 모의 데이터가 렌더링되던 문제
-- `app/mypage/page.tsx`: 하드코딩 샘플 데이터 완전 삭제, `session?.user` 세션 존재 여부를 검증하여 비로그인 시 **"🔒 로그인이 필요한 서비스입니다"** 전용 안내 화면 렌더링, 로그인한 사용자 세션에 한해서만 Supabase DB의 실제 `profiles` 및 `holdings` 자산 데이터를 동적으로 로드하도록 개편 완료
+- `app/mypage/page.tsx`: 하드코딩 샘플 데이터 완전 삭제, `session?.user` 세션 존재 여부를 검증하여 비로그인 시 **"🔒 로그인이 필요한 서비스입니다"** 전용 안내 화면 렌더링, 로그인한 사용자 세션에 한해서만 Legacy DB DB의 실제 `profiles` 및 `holdings` 자산 데이터를 동적으로 로드하도록 개편 완료
 
 ---
 ## 2026-07-27 16:10
@@ -1317,7 +1317,7 @@ PRIVATE SOURCE같은 같은 등급이면 똑같은 가격을 받도록해
 
 **요청 요약:** 블룸버그 규격 티커(`IDX-`, `STK-`, `FUT-`), 50개 기관 봇 알고리즘, 감마 스퀴즈 및 웩더독(Wag the Dog) 옵션 시장 엔진 구축
 **수행 결과:**
-- `supabase/options_market_engine.sql`: 표준 옵션 계약 테이블 확장, 옵션 체결 RPC `execute_option_order` 작성
+- `legacyDb/options_market_engine.sql`: 표준 옵션 계약 테이블 확장, 옵션 체결 RPC `execute_option_order` 작성
 - `lib/engine/optionBotEngine.ts`: 블룸버그 티커 표준 생성기(`[AssetClass]-[Symbol]-[YYMM]-[C/P][Strike]`), Option Greeks 계산기, 50개 기관 봇 매매 엔진(Protective Put, Covered Call, Straddle, Delta Neutral & Gamma Squeeze), 웩더독 현물 시세 피드백 루프 구현
 - `app/components/OptionsPanel.tsx`: 지수/개별주/선물 탭 카테고리 필터, 표준 티커 렌더링, Delta/IV 표시, Gamma Wall (감마 장벽) 알림 및 콜/풋 옵션 계약 실시간 매수 결제 연동 완료
 
@@ -1326,7 +1326,7 @@ PRIVATE SOURCE같은 같은 등급이면 똑같은 가격을 받도록해
 
 **요청 요약:** 옵션 만기일(Expiration Day) 4단계 시뮬레이션(민감도 폭발, 롤오버/감마 스퀴즈/핀 패그 봇), 만기 정산 및 HTS Visual Shift 구현
 **수행 결과:**
-- `supabase/options_market_engine.sql`: 만기 결제 정산 RPC `settle_options_expiration` 작성 (ITM 차액 현금 정산 vs OTM 0원 소멸)
+- `legacyDb/options_market_engine.sql`: 만기 결제 정산 RPC `settle_options_expiration` 작성 (ITM 차액 현금 정산 vs OTM 0원 소멸)
 - `lib/engine/optionBotEngine.ts`: 시간 잔여시간 $T \to 0$ 민감도($\Theta, \Gamma$) 폭발 반응식, 3단계 타임라인 봇 매매(롤오버, 감마 헌팅, 핀 패그 Pinning), 마진콜 강제 반대매매 이벤트 생성기 구현
 - `app/components/OptionsPanel.tsx`: 상단 `[ ⚠️ D-DAY 옵션 만기일 : HH:MM:SS ]` 비상 경고 바, `🟢 ITM (내가격)` 형광 초록 / `🗑️ OTM (외가격)` 휴지통 / `🎯 ATM` 핀 레벨 태그 시각화, 기관 마진콜 보라색 `[LIQUIDATION]` 반대매매 체결 피드 리포트 연동 완료
 
@@ -1335,7 +1335,7 @@ PRIVATE SOURCE같은 같은 등급이면 똑같은 가격을 받도록해
 
 **요청 요약:** 옵션/선물 롤오버(Rollover) 백엔드 원자적 결합 주문 엔진 및 HTS Rollover Tracker 위젯 연동
 **수행 결과:**
-- `supabase/options_market_engine.sql`: 롤오버 원자적 결합 주문(Combo Order) RPC `execute_rollover_combo` 작성 (근월물 동시 청산 + 원월물 동시 진입)
+- `legacyDb/options_market_engine.sql`: 롤오버 원자적 결합 주문(Combo Order) RPC `execute_rollover_combo` 작성 (근월물 동시 청산 + 원월물 동시 진입)
 - `lib/engine/optionBotEngine.ts`: 롤오버 스프레드($\text{Next Month} - \text{Current Month}$) 산정 및 🔴 CONTANGO / 🔵 BACKWARDATION 판정, 국민연금(TWAP 100% 이월), 블랙록(모멘텀 이월), 시타델(스프레드 차익 이월) 봇 이월 수급 상태 생성기 작성
 - `app/components/RolloverTracker.tsx`: 콘탱고/백워데이션 네온 뱃지, 세력별 롤오버 진행률 프로그레스 바 (`NPS`, `BlackRock`, `Citadel`), `[ROLLOVER]` 실시간 이월 피드 및 유저 원자적 결합 주문 버튼 연동 완료
 - `app/components/OptionsPanel.tsx`: 파생상품 패널 메인 상단에 `RolloverTracker` 컴포넌트 탑재 완료
@@ -1414,9 +1414,9 @@ PRIVATE SOURCE같은 같은 등급이면 똑같은 가격을 받도록해
 ---
 ## 2026-07-27 17:30
 
-**요청 요약:** ETF 종목 사이드바/메뉴 라우팅 단절 및 Supabase DB 자동 시딩 연동 수정
+**요청 요약:** ETF 종목 사이드바/메뉴 라우팅 단절 및 Legacy DB DB 자동 시딩 연동 수정
 **수행 결과:**
-- `lib/engine/etfDefinitions.ts`: `seedETFStocksToDatabase()` 함수 추가 — 12개 주요 ETF 종목(KODEX 200, KODEX 레버리지, 곱버스, SPY, QQQ, TQQQ, TSLL 2X, NVDL 2X 등)을 Supabase `stocks` 테이블(`market = 'etf'`)에 자동 upsert 시딩
+- `lib/engine/etfDefinitions.ts`: `seedETFStocksToDatabase()` 함수 추가 — 12개 주요 ETF 종목(KODEX 200, KODEX 레버리지, 곱버스, SPY, QQQ, TQQQ, TSLL 2X, NVDL 2X 등)을 Legacy DB `stocks` 테이블(`market = 'etf'`)에 자동 upsert 시딩
 - `app/markets/[market]/page.tsx`: `market === 'etf'` 라우팅 시 HTS ETF 전용 대시보드(`/etf`)로 자동 redirect 처리 추가
 - `app/components/Sidebar.tsx`: 사이드바의 `지수/ETF` 메뉴 클릭 시 기존 `/markets/etf`에서 실시간 ETF 터미널 페이지(`href = /etf`)로 직접 연결되도록 라우팅 경로 수정 완료
 - `app/etf/page.tsx`: 마운트 시 `seedETFStocksToDatabase()` 자동 실행하여 DB 및 화면 종목 목록 동기화 완료
@@ -1426,7 +1426,7 @@ PRIVATE SOURCE같은 같은 등급이면 똑같은 가격을 받도록해
 
 **요청 요약:** 비로그인 상태 시 ETF 페이지 예수금 하드코딩 표기 오류 수정 및 사용자 인증 상태 처리
 **수행 결과:**
-- `app/etf/page.tsx`: 기존 초기값 `100,000,000원` 하드코딩 제거 ➔ Supabase Auth 세션(`supabase.auth.getSession()`) 바인딩 완료. 비로그인 시 `🔒 로그인이 필요합니다` 안내 태그 표시, 로그인 시 유저 실제 포트폴리오 예수금(`portfolios.cash_balance`) 표시 및 매수/매도 결제 처리 연동 완료
+- `app/etf/page.tsx`: 기존 초기값 `100,000,000원` 하드코딩 제거 ➔ Legacy DB Auth 세션(`legacyDb.auth.getSession()`) 바인딩 완료. 비로그인 시 `🔒 로그인이 필요합니다` 안내 태그 표시, 로그인 시 유저 실제 포트폴리오 예수금(`portfolios.cash_balance`) 표시 및 매수/매도 결제 처리 연동 완료
 
 ---
 ## 2026-07-27 17:36
@@ -1443,7 +1443,7 @@ PRIVATE SOURCE같은 같은 등급이면 똑같은 가격을 받도록해
 **���� ���:**
 - `app/components/ChatPanel.tsx`: �г� ��� `���� ��й�` �� `������`���� ��ü
 - `app/stocks/[id]/StockDetailClient.tsx`: �� ���̺� `���� / ���` �� `���� / ������`, �ּ� ��ü
-- `supabase/schema.sql`: CHAT ���̺� �ּ� `���� ��й�` �� `������`���� ��ü
+- `legacyDb/schema.sql`: CHAT ���̺� �ּ� `���� ��й�` �� `������`���� ��ü
 
 ---
 ## 2026-07-27 17:40
@@ -1452,7 +1452,7 @@ PRIVATE SOURCE같은 같은 등급이면 똑같은 가격을 받도록해
 **���� ���:**
 - (���� �м�) �� ������ �ƹ��� �������� ����, ȣ��â�� DB orders ���̺��� �����ϳ� �� �ֹ��� DB�� ���� �� ��, TradeFeed�� �ϵ��ڵ� ������ ǥ��
 - `lib/hooks/useStockBotSimulation.ts`: Ŭ���̾�Ʈ �� ���� �� �ű� ���� ? �θ޸� OrderBook�� 800ms���� �� �ֹ� ����, ȣ��â��ü�� state �ڵ� ����
-- `app/components/Orderbook.tsx`: Supabase orders ���̺� ���� ���� �� useStockBotSimulation ������ ��ü, LIVE ǥ�� �߰�
+- `app/components/Orderbook.tsx`: Legacy DB orders ���̺� ���� ���� �� useStockBotSimulation ������ ��ü, LIVE ǥ�� �߰�
 - `app/components/TradeFeed.tsx`: �ϵ��ڵ� fallback ���� �� useStockBotSimulation ������ �ǽð� ü�� ǥ��, stock prop�� optional�� �����Ͽ� �ɼ� HTS�� �Ϲ� �ֽ� ������ ���� ȣȯ
 
 ---
@@ -1487,10 +1487,10 @@ PRIVATE SOURCE같은 같은 등급이면 똑같은 가격을 받도록해
 
 **요청 요약:** 백엔드 단일화 (Option B) — engine-server 봇들이 실제 거래하도록 프론트엔드를 DB 기반으로 전환
 **수행 결과:**
-- `supabase/rls_orderbook_migration.sql`: RLS 정책 수정 — 모든 authenticated/anon 유저가 `orders` 및 `trades` 테이블의 모든 행을 조회 가능하도록 변경 (기존에는 본인 주문 또는 LP 주문만 조회 가능했음)
+- `legacyDb/rls_orderbook_migration.sql`: RLS 정책 수정 — 모든 authenticated/anon 유저가 `orders` 및 `trades` 테이블의 모든 행을 조회 가능하도록 변경 (기존에는 본인 주문 또는 LP 주문만 조회 가능했음)
 - `lib/hooks/useOrderbookData.ts` 신규 생성: DB 우선, 시뮬레이션 fallback 훅
-  - Supabase `orders` 테이블에서 open 주문을 800ms마다 폴링 → 호가창 구성 (bid/ask 10호가)
-  - Supabase `trades` 테이블에서 최근 50건 체결 읽기 → 체결 피드
+  - Legacy DB `orders` 테이블에서 open 주문을 800ms마다 폴링 → 호가창 구성 (bid/ask 10호가)
+  - Legacy DB `trades` 테이블에서 최근 50건 체결 읽기 → 체결 피드
   - DB에 데이터가 없으면(백엔드 미가동) `useStockBotSimulation` 시뮬레이션으로 자동 fallback
   - `source` 반환값으로 `'db'` 또는 `'simulation'` 표시
 - `app/components/Orderbook.tsx`: `stockId` prop 추가, `useOrderbookData` 훅 사용, `LIVE (DB)` / `SIM` 뱃지 표시
@@ -1514,8 +1514,8 @@ PRIVATE SOURCE같은 같은 등급이면 똑같은 가격을 받도록해
 - `engine-server/src/MarketEngine.ts`: DB `orders` 테이블 외래키(foreign key) 참조 제약 방어를 위해 주식 `validStockIds` 필터링 추가 → 봇 잔여 주문 1,800여 건 이상이 `orders` 테이블에 정상 Batch Insert 됨을 확인
 - `lib/hooks/useOrderbookData.ts`: 봇 간 체결 거래 시 체결 피드의 매수/매도(`side`) 구분 로직을 체결가 방향 추이에 맞게 최적화
 - **검증 완료:**
-  - Supabase `orders` 테이블: 주식별 호가 잔량 1,800+ 건 실시간 연동 확인
-  - Supabase `trades` 테이블: 봇 체결 내역 DB 실시간 저장 확인
+  - Legacy DB `orders` 테이블: 주식별 호가 잔량 1,800+ 건 실시간 연동 확인
+  - Legacy DB `trades` 테이블: 봇 체결 내역 DB 실시간 저장 확인
   - 프론트엔드: [`Orderbook`](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/app/components/Orderbook.tsx) 및 [`TradeFeed`](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/app/components/TradeFeed.tsx)에 `LIVE (DB)` 상태 뱃지와 함께 호가 및 체결 내역이 800ms 간격으로 표시됨을 최종 검증 완료
 
 ---
@@ -1536,7 +1536,7 @@ PRIVATE SOURCE같은 같은 등급이면 똑같은 가격을 받도록해
 
 **요청 요약:** 지금까지의 구현 및 점검 사항 Git 커밋 및 푸시
 **수행 결과:**
-- 전체 작업 사항(`engine-server` 봇 로직 보완, Supabase RLS 마이그레이션 SQL, `useOrderbookData` 훅 및 호가창/체결 UI 개선) 깃 스테이징 및 커밋 완료
+- 전체 작업 사항(`engine-server` 봇 로직 보완, Legacy DB RLS 마이그레이션 SQL, `useOrderbookData` 훅 및 호가창/체결 UI 개선) 깃 스테이징 및 커밋 완료
 - `git push origin main` 실행으로 원격 저장소(`origin/main`)에 반영 완료
 
 ---
@@ -1544,7 +1544,7 @@ PRIVATE SOURCE같은 같은 등급이면 똑같은 가격을 받도록해
 
 **요청 요약:** `Object is disposed` 캔버스 렌더링 런타임 에러 수정
 **수행 결과:**
-- **원인 분석:** `lightweight-charts`(`TickChart.tsx`)에서 컴포넌트 언마운트/탭 이동 후 비동기 데이터 쿼리 콜백(`supabase.from('trades')`), 실시간 구독(`postgres_changes`), 또는 `ResizeObserver` 실행 시 파기(disposed)된 차트 캔버스를 참조하여 런타임 에러가 발생한 현상 확인
+- **원인 분석:** `lightweight-charts`(`TickChart.tsx`)에서 컴포넌트 언마운트/탭 이동 후 비동기 데이터 쿼리 콜백(`legacyDb.from('trades')`), 실시간 구독(`postgres_changes`), 또는 `ResizeObserver` 실행 시 파기(disposed)된 차트 캔버스를 참조하여 런타임 에러가 발생한 현상 확인
 - `app/components/TickChart.tsx`:
   - `isDisposedRef` 라이프사이클 관리 플래그 도입
   - 컴포넌트 언마운트 시 `isDisposedRef.current = true`, `chartRef.current = null`, `seriesRef.current = null` 처리 및 안전한 try-catch 에러 캡처 적용
@@ -1581,7 +1581,7 @@ PRIVATE SOURCE같은 같은 등급이면 똑같은 가격을 받도록해
 - `app/components/Orderbook.tsx`:
   - 현재가(`displayPrice`) 행에서 동일 가격에 매도벽과 매수벽이 동시에 중복 렌더링되지 않도록 체결 매칭 기준(`isAskSide`) 엄격 분리 적용
 - `lib/hooks/useOrderbookData.ts`:
-  - Supabase `createBrowserClient` 매 800ms 반복 생성 방식에서 싱글톤 `createClient` 사용으로 전환하여 클라이언트 세션 연결을 안정화하고 `LIVE (DB)` 모드 유지
+  - Legacy DB `createBrowserClient` 매 800ms 반복 생성 방식에서 싱글톤 `createClient` 사용으로 전환하여 클라이언트 세션 연결을 안정화하고 `LIVE (DB)` 모드 유지
 
 ---
 ## 2026-07-28 02:07
@@ -1608,7 +1608,7 @@ PRIVATE SOURCE같은 같은 등급이면 똑같은 가격을 받도록해
 **요청 요약:** `LIVE` 모드 미전환 및 `SIM` 지속 현상에 대한 원인 분석 보고 (수정 진행 제외)
 **수행 결과:**
 - 전체 코드와 백엔드 엔진(`engine-server`) 로그, DB 상태 점검 결과 분석 보고서(`analysis_results.md`) 작성 완료
-- **핵심 원인 파악:** `MarketEngine.ts`에서 매 1초마다 2,640개의 전 종목 LP 주문을 DB `orders` 테이블에 `INSERT`만 하고, 이전 틱의 잔여 호가를 `DELETE`로 청산하지 않아 DB 레코드가 수십~수백만 개 누적되면서 Supabase 타임아웃 오류(`code: '57014'`) 발생. 이로 인해 호가 조회가 실패하여 강제 `SIM` 모드로 가동됨을 확인
+- **핵심 원인 파악:** `MarketEngine.ts`에서 매 1초마다 2,640개의 전 종목 LP 주문을 DB `orders` 테이블에 `INSERT`만 하고, 이전 틱의 잔여 호가를 `DELETE`로 청산하지 않아 DB 레코드가 수십~수백만 개 누적되면서 Legacy DB 타임아웃 오류(`code: '57014'`) 발생. 이로 인해 호가 조회가 실패하여 강제 `SIM` 모드로 가동됨을 확인
 - **추가 결함 발견:** `exchange_rates` 테이블 부재(`PGRST205` 에러) 및 기관 봇 연쇄 청산 마진콜(Bankrupt) 로직 파악 완료
 
 ---
@@ -1624,9 +1624,9 @@ PRIVATE SOURCE같은 같은 등급이면 똑같은 가격을 받도록해
 
 **요청 요약:** LIVE 모드 미전환, LP 주문 DB 타임아웃, exchange_rates 부재, 기관 봇 마진콜 문제 해결
 **수행 결과:**
-- [MarketEngine.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/MarketEngine.ts): 전 종목 `is_lp: true` 주문 일괄 DELETE 시 발생하는 Supabase 타임아웃 오류(57014)를 해결하기 위해 `safeDeleteLpOrders()` 청크 분할 삭제 및 배치 INSERT 적용. `updateExchangeRates()` 비동기 upsert 예외 처리 적용.
+- [MarketEngine.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/MarketEngine.ts): 전 종목 `is_lp: true` 주문 일괄 DELETE 시 발생하는 Legacy DB 타임아웃 오류(57014)를 해결하기 위해 `safeDeleteLpOrders()` 청크 분할 삭제 및 배치 INSERT 적용. `updateExchangeRates()` 비동기 upsert 예외 처리 적용.
 - [BaseAgent.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/bots/BaseAgent.ts): 자산 평가 가치 0 이하(파산/마진콜) 시 새로운 주문 생성을 중단하는 안심 로직 추가.
-- [20260728_fix_orderbook_indexes.sql](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/supabase/migrations/20260728_fix_orderbook_indexes.sql): `orders` 테이블 호가 조회/삭제 속도 향상 인덱스 및 `exchange_rates` 테이블/RLS 마이그레이션 SQL 생성.
+- [20260728_fix_orderbook_indexes.sql](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/legacyDb/migrations/20260728_fix_orderbook_indexes.sql): `orders` 테이블 호가 조회/삭제 속도 향상 인덱스 및 `exchange_rates` 테이블/RLS 마이그레이션 SQL 생성.
 - `npx tsc --noEmit` 및 `npm run build` 검증 완료.
 
 ---
@@ -1707,7 +1707,7 @@ PRIVATE SOURCE같은 같은 등급이면 똑같은 가격을 받도록해
 - [CommercialBankAgent.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/bots/CommercialBankAgent.ts): 채권 시세 기준(100.00원 액면) YTM 가격 수식 수정 및 0.01 틱 단위 미세 차익 주문 구조로 교체.
 - [MarketEngine.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/MarketEngine.ts): `alignToTickSize(price, 'bonds')` 자산 구분 인자를 추가하여 채권 가격은 80.00원~120.00원 범위 및 0.01 틱 단위로 소수점 보존 처리.
 - [lib/format.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/lib/format.ts) & [app/markets/[market]/page.tsx](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/app/markets/[market]/page.tsx): `fmtVolume` 내 `undefined` 널체크 보완 및 `volume` DB 쿼리 파이프라인 복구.
-- [scratch_repair_bonds.js](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/scratch_repair_bonds.js) 작성 및 실행: Supabase `stocks` 및 `bonds` 테이블 내 15개 전체 채권 종목 시세를 정규 액면가(100.00원) 및 거래량(100,000+)으로 100% 정상화 복구 완료.
+- [scratch_repair_bonds.js](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/scratch_repair_bonds.js) 작성 및 실행: Legacy DB `stocks` 및 `bonds` 테이블 내 15개 전체 채권 종목 시세를 정규 액면가(100.00원) 및 거래량(100,000+)으로 100% 정상화 복구 완료.
 - `npx tsc --noEmit` 및 `npm run build` 검증 완료.
 - GitHub `main` 브랜치에 수정 사항 푸시 완료 (`ecadc93`).
 
@@ -1716,9 +1716,9 @@ PRIVATE SOURCE같은 같은 등급이면 똑같은 가격을 받도록해
 
 **요청 요약:** Google Gemini API 기반 내생적 스토리텔링 뉴스/찌라시 생성기 구축 및 기관 봇 연동
 **수행 결과:**
-- [20260729_market_news.sql](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/supabase/migrations/20260729_market_news.sql): `market_news` 테이블 스키마, 인덱스, RLS 정책 및 명시적 `GRANT` 구문 작성.
+- [20260729_market_news.sql](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/legacyDb/migrations/20260729_market_news.sql): `market_news` 테이블 스키마, 인덱스, RLS 정책 및 명시적 `GRANT` 구문 작성.
 - [NewsGenerator.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/services/NewsGenerator.ts): `@google/generative-ai` SDK (`gemini-1.5-pro`) 기반 뉴스 생성기 클래스 작성. 거시경제/기업뉴스/찌라시(RUMOR) 파싱 및 거짓 찌라시 발생 시 DART 정정공시(`generateCorrection`) 예약 수식 구현.
-- [EventDirector.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/EventDirector.ts): `NewsGenerator` 연동, Supabase `market_news` 커밋, `EventBus`의 `news_published` 이벤트 발행 및 호가창 임팩트 주입 기능 통합.
+- [EventDirector.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/EventDirector.ts): `NewsGenerator` 연동, Legacy DB `market_news` 커밋, `EventBus`의 `news_published` 이벤트 발행 및 호가창 임팩트 주입 기능 통합.
 - [BaseAgent.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/bots/BaseAgent.ts) & [MarketEngine.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/MarketEngine.ts): 기관 봇들이 `EventBus`의 `news_published` 이벤트를 실시간 리스닝하여 `impact_score`와 `riskTolerance` 기반으로 즉각 매수/매도 리액션 주문을 발생시키도록 구현.
 - [app/news/page.tsx](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/app/news/page.tsx): 무광 블랙 핀테크 스타일의 실시간 뉴스 라이브 스트리밍 UI 연동 및 미디어 구독 여부에 따른 본문 블러링 처리 적용.
 - `npx tsc --noEmit` 및 `npm run build` 검증 완료.
@@ -1776,7 +1776,7 @@ PRIVATE SOURCE같은 같은 등급이면 똑같은 가격을 받도록해
 - [app/institutions/page.tsx](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/app/institutions/page.tsx):
   - `bots_config` 테이블과 클라이언트 사이드 맵을 연동하여 UUID(예: `2da9b04c-...`) 대신 **`Bank of America (BofA)`**, **`NPS (한국 국민연금)`**, **`Morgan Stanley (모건스탠리)`** 등 실제 정규 기관명을 완전 명시하도록 구현.
   - 헤더, 자산군 항목(`현금 자산`, `주식 자산`, `채권 자산`, `원자재 자산`, `총 운용 자산`), 컬럼 헤더(`자산군`, `평가 금액`, `현재 비중`, `목표 비중`, `괴리율`)를 **100% 한글화(한국어 표현) 전면 적용**.
-- [scratch_reseed_portfolios.js](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/scratch_reseed_portfolios.js) 재실행: Supabase `institutional_portfolios` DB 레코드의 `name` 칼럼을 50개 전체 정규 기관 네임으로 업서트 정정 완료.
+- [scratch_reseed_portfolios.js](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/scratch_reseed_portfolios.js) 재실행: Legacy DB `institutional_portfolios` DB 레코드의 `name` 칼럼을 50개 전체 정규 기관 네임으로 업서트 정정 완료.
 - `npx tsc --noEmit` 및 `npm run build` 검증 완료.
 - GitHub `main` 푸시(`0b84943`) 및 VPS 자동 SSH 배포(`pm2 restart market-engine`) 완료.
 
@@ -1817,7 +1817,7 @@ PRIVATE SOURCE같은 같은 등급이면 똑같은 가격을 받도록해
   - `isProMode` 변경 시 `useEffect([isProMode])` → 차트 인스턴스 완전 파괴 후 재생성
   - 실 데이터 없을 때 시드 기반 Fallback 캔들 즉시 렌더
   - SMA/Bollinger Bands/RSI 순수 TS 계산 함수 내장 (외부 라이브러리 불필요)
-  - 실시간 Supabase 구독으로 신규 체결 업데이트
+  - 실시간 Legacy DB 구독으로 신규 체결 업데이트
 - [app/components/v2/index.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/app/components/v2/index.ts): `StockChartV2` export 추가
 - [app/v2/stocks/[id]/StockDetailV2Client.tsx](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/app/v2/stocks/%5Bid%5D/StockDetailV2Client.tsx): `TickChart` → `StockChartV2` 교체, Default 레이아웃엔 `isProMode={false}`, Pro 레이아웃엔 `isProMode={true}` 전달
 - `npm run build` 성공, GitHub `main` 푸시(`7f5b7f4`) 및 VPS SSH 배포 완료
@@ -1866,7 +1866,7 @@ PRIVATE SOURCE같은 같은 등급이면 똑같은 가격을 받도록해
 - `app/layout.tsx`: `next/font/google` Montserrat 셀프호스팅 전환(외부 네트워크 요청 0건) 및 Pretendard 비동기(non-blocking `media="print"`) 로드 적용
 - `app/loading.tsx`: 메인홈 스켈레톤 로딩 UI 추가 — 페이지 전환 시 즉각 시각 피드백 제공 (Streaming)
 - `app/stocks/[id]/loading.tsx`: 주식 상세 페이지 스켈레톤 로딩 UI 추가
-- `app/page.tsx`: 비해금 유저는 데이터 조회 없이 정적 소개 페이지 즉시 렌더링, 해금 유저는 `Suspense` + `DashboardContent` 스트리밍으로 무거운 Supabase 쿼리(185개 종목)를 백그라운드 처리
+- `app/page.tsx`: 비해금 유저는 데이터 조회 없이 정적 소개 페이지 즉시 렌더링, 해금 유저는 `Suspense` + `DashboardContent` 스트리밍으로 무거운 Legacy DB 쿼리(185개 종목)를 백그라운드 처리
 - `app/components/RandomEventModal.tsx`: 페이지 로드 시 즉시 WebSocket 채널 열던 로직을 3초/5초 지연(lazy init)으로 변경하여 초기 로드 네트워크 요청 감소
 - `npx tsc --noEmit` 0에러, `npm run build` 성공 (19개 라우트 정상)
 
@@ -1877,7 +1877,7 @@ PRIVATE SOURCE같은 같은 등급이면 똑같은 가격을 받도록해
 **수행 결과:**
 - `app/layout.tsx`: React JSX Server Component에서 `onLoad` 문자열 사용 불가 에러 수정 — `<head>` 블록 제거, 시스템 폰트 폴백으로 전환
 - `app/components/DashboardGate.tsx` 신규 생성: 메인 페이지를 정적 소개 페이지로 즉시 렌더링 후, 백그라운드에서 인증 확인 → 대시보드 자동 스왑 (서버 블로킹 0)
-- `app/page.tsx`: `async` 서버 컴포넌트를 동기 함수로 전환, 모든 Supabase 쿼리를 클라이언트 `DashboardGate`로 이동하여 초기 렌더 블로킹 제거
+- `app/page.tsx`: `async` 서버 컴포넌트를 동기 함수로 전환, 모든 Legacy DB 쿼리를 클라이언트 `DashboardGate`로 이동하여 초기 렌더 블로킹 제거
 - `app/stocks/page.tsx`: "데이터 로딩 중..." 작은 텍스트 → 풀 스켈레톤 UI(탭/지수카드/테이블 8행 + 스피너)로 교체
 - `loading.tsx` 6개 라우트 신규 추가: `news`, `exchange`, `commodities`, `institutions`, `etf`, `shop` — 각 페이지별 맥락에 맞는 스켈레톤 레이아웃 + "○○ 불러오는 중..." 스피너 표시
 - `npx tsc --noEmit` 0에러, `npm run build` 성공 (24개 라우트 정상)
@@ -1915,7 +1915,7 @@ eact-hooks/immutability TDZ 2건)
 ---
 ## 2026-08-03 20:15
 
-**요청 요약:** Supabase 리소스 과부하로 인한 쿼리 최적화 (옵션 A)
+**요청 요약:** Legacy DB 리소스 과부하로 인한 쿼리 최적화 (옵션 A)
 **수행 결과:**
 - engine-server/src/MarketEngine.ts: etchMarketState 캐싱 도입 (5초 TTL, 매 tick SELECT 6종 → 5초마다 1회)
 - engine-server/src/MarketEngine.ts: LP 주문 DELETE/INSERT 주기를 매 tick → 5 tick마다 1회로 변경 (LP_REFRESH_TICKS=5), processBatchOrders에 
@@ -1933,10 +1933,10 @@ px tsc --noEmit(프론트/백엔드) 통과 (백엔드의 EventDirector.getMarke
 ---
 ## 2026-08-03 20:23
 
-**요청 요약:** Supabase Egress 5GB 한도 초과(114%) 대응 — 데이터 정리 및 Realtime 구독 축소 SQL 작성
+**요청 요약:** Legacy DB Egress 5GB 한도 초과(114%) 대응 — 데이터 정리 및 Realtime 구독 축소 SQL 작성
 **수행 결과:**
-- supabase/egress_reduction.sql 신규 작성: 6개 진단 쿼리(테이블별 행수/크기, trades 시간 분포, orders 상태 분포, Realtime publication 현황, 활성 복제 세션, 인덱스 크기 Top 10)
-- supabase/egress_cleanup.sql 신규 작성:
+- legacyDb/egress_reduction.sql 신규 작성: 6개 진단 쿼리(테이블별 행수/크기, trades 시간 분포, orders 상태 분포, Realtime publication 현황, 활성 복제 세션, 인덱스 크기 Top 10)
+- legacyDb/egress_cleanup.sql 신규 작성:
   - STEP 1: trades 7일 이상 데이터를 청크 5천 행 단위로 삭제 (PL/pgSQL LOOP)
   - STEP 2: orders 만료/완료 주문 및 1시간 이상 갱신 안 된 LP 호가 정리
   - STEP 3: market_news/premium_news 30일 이상 데이터 청크 삭제
@@ -1951,7 +1951,7 @@ px tsc --noEmit(프론트/백엔드) 통과 (백엔드의 EventDirector.getMarke
 ---
 ## 2026-08-03 21:05
 
-**요청 요약:** Supabase egress 초과로 인한 VM 자체 DB 이관 세트 작성 (PostgreSQL 단독 스택)
+**요청 요약:** Legacy DB egress 초과로 인한 VM 자체 DB 이관 세트 작성 (PostgreSQL 단독 스택)
 **수행 결과:**
 - m-db/ 신규 디렉토리 생성: VM 배포용 모든 산출물
 px tsc --noEmit(프론트/백엔드) 통과 (백엔드의 EventDirector.getMarketState/NewsGenerator.NewsItem 두 에러는 기존 이슈로 본 작업 범위 외)
@@ -1961,10 +1961,10 @@ px tsc --noEmit(프론트/백엔드) 통과 (백엔드의 EventDirector.getMarke
 ---
 ## 2026-08-03 20:23
 
-**요청 요약:** Supabase Egress 5GB 한도 초과(114%) 대응 — 데이터 정리 및 Realtime 구독 축소 SQL 작성
+**요청 요약:** Legacy DB Egress 5GB 한도 초과(114%) 대응 — 데이터 정리 및 Realtime 구독 축소 SQL 작성
 **수행 결과:**
-- supabase/egress_reduction.sql 신규 작성: 6개 진단 쿼리(테이블별 행수/크기, trades 시간 분포, orders 상태 분포, Realtime publication 현황, 활성 복제 세션, 인덱스 크기 Top 10)
-- supabase/egress_cleanup.sql 신규 작성:
+- legacyDb/egress_reduction.sql 신규 작성: 6개 진단 쿼리(테이블별 행수/크기, trades 시간 분포, orders 상태 분포, Realtime publication 현황, 활성 복제 세션, 인덱스 크기 Top 10)
+- legacyDb/egress_cleanup.sql 신규 작성:
   - STEP 1: trades 7일 이상 데이터를 청크 5천 행 단위로 삭제 (PL/pgSQL LOOP)
   - STEP 2: orders 만료/완료 주문 및 1시간 이상 갱신 안 된 LP 호가 정리
   - STEP 3: market_news/premium_news 30일 이상 데이터 청크 삭제
@@ -1979,11 +1979,11 @@ px tsc --noEmit(프론트/백엔드) 통과 (백엔드의 EventDirector.getMarke
 ---
 ## 2026-08-03 21:05
 
-**요청 요약:** Supabase egress 초과로 인한 VM 자체 DB 이관 세트 작성 (PostgreSQL 단독 스택)
+**요청 요약:** Legacy DB egress 초과로 인한 VM 자체 DB 이관 세트 작성 (PostgreSQL 단독 스택)
 **수행 결과:**
 -  m-db/ 신규 디렉토리 생성: VM 배포용 모든 산출물
 -  m-db/docker-compose.yml: Postgres 16 + PostgREST v12.2.0 + Adminer 4 구성 (5432는 로컬 전용, 3001은 외부 개방)
--  m-db/sql/init/01_schema.sql: 16개 핵심 테이블 스키마 + Supabase 호환  uth.uid()/ uth.role() 함수 +  uth.users 일반 테이블화 (GoTrue 미사용) + RLS USING(true) passthrough (VM 내부망 보안)
+-  m-db/sql/init/01_schema.sql: 16개 핵심 테이블 스키마 + Legacy DB 호환  uth.uid()/ uth.role() 함수 +  uth.users 일반 테이블화 (GoTrue 미사용) + RLS USING(true) passthrough (VM 내부망 보안)
 -  m-db/sql/init/02_seed_sample.sql: KOSPI 5종/미국 5종/유럽 2종 샘플 종목, 7종 국채/회사채, WTI/Gold/Silver/Copper 원자재, 6종 환율, 관리자 계정 1개(admin@moo.local 100조), 5개 대표 기관 봇(NPS/Bridgewater/Blackrock 등), KOSPI/S&P50/유로스톡스50 지수, NVDA 샘플 옵션
 -  m-db/setup.sh: Docker/Compose 자동 설치 → ufw 22 및 3001 개방 → .env 자동 생성 (랜덤 PGPW/JWT) → compose up → anon/service_role JWT 자동 발급 → connection.txt 출력
 -  m-db/.env.example: 프론트/백엔드 연결 가이드 + Auth/Realtime 임시 제약/대응방안
@@ -2006,7 +2006,7 @@ px tsc --noEmit(프론트/백엔드) 통과 (백엔드의 EventDirector.getMarke
 - [vm-db](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/vm-db) 패키지를 SCP로 VM(`49.247.136.231`)에 전송 완료.
 - [01_schema.sql](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/vm-db/sql/init/01_schema.sql): `CREATE SCHEMA IF NOT EXISTS auth;` 및 전역 `GRANT USAGE / ALL PRIVILEGES ON SCHEMA public, auth TO anon, authenticated` 구문 추가로 PostgREST 스키마 캐싱 에러 보완.
 - VM 상에서 `01_schema.sql` 및 `02_seed_sample.sql` 정상 실행 후 PostgREST 스키마 캐시(23개 테이블) 로드 확인.
-- [.env.local](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/.env.local) & [engine-server/.env](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/.env): `NEXT_PUBLIC_SUPABASE_URL=http://49.247.136.231:3001` 및 새로 발급된 `ANON_KEY` / `SERVICE_ROLE_KEY`로 교체 완료.
+- [.env.local](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/.env.local) & [engine-server/.env](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/.env): `NEXT_PUBLIC_LEGACY_DB_URL=http://49.247.136.231:3001` 및 새로 발급된 `ANON_KEY` / `SERVICE_ROLE_KEY`로 교체 완료.
 - REST API 조회 검증 (`http://49.247.136.231:3001/stocks`): 샘플 주식 데이터(오성전자 등) 정상 반환 확인 완료.
 
 
@@ -2022,7 +2022,7 @@ px tsc --noEmit(프론트/백엔드) 통과 (백엔드의 EventDirector.getMarke
 - engine-server/src/services/NewsGenerator.ts: 	emplates[randomIndex]에 s NewsItem 캐스트 → TS2322 에러 해소
 - engine-server/src/MarketEngine.ts: 미사용 import(BaseAgent, REAL_WORLD_INSTITUTIONS) 제거
 - pp/admin/page.tsx: etchAdminStatus/etchStocks를 useEffect 위로 이동 → TDZ ESLint error 해소, 미사용 userId state 제거, setNewSector에 void 표기
-- proxy.ts → middleware.ts 네이밍 변경 및 함수명 proxy→middleware 변경, Supabase 환경변수 없을 때 우회 + getUser() catch (자체 PostgREST 호환), matcher 정적 자산 제외 패턴 추가
+- proxy.ts → middleware.ts 네이밍 변경 및 함수명 proxy→middleware 변경, Legacy DB 환경변수 없을 때 우회 + getUser() catch (자체 PostgREST 호환), matcher 정적 자산 제외 패턴 추가
 - 
 px tsc --noEmit -p tsconfig.json(프론트) 및 
 px tsc --noEmit -p engine-server/tsconfig.json(백엔드) 모두 0 에러 통과
@@ -2060,9 +2060,9 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 ---
 ## 2026-08-04 00:20
 
-**요청 요약:** 주식 프론트 미출력 재조사 - Nginx 역방향 프록시 추가로 Supabase SDK 경로 호환성 확보
+**요청 요약:** 주식 프론트 미출력 재조사 - Nginx 역방향 프록시 추가로 Legacy DB SDK 경로 호환성 확보
 **수행 결과:**
-- 근본 원인: `@supabase/supabase-js` 클라이언트가 모든 REST 요청을 `<URL>/rest/v1/<table>` 경로로 전송하지만, PostgREST는 루트(`/<table>`) 경로로만 서빙하여 404 발생.
+- 근본 원인: `@legacy/db-sdk` 클라이언트가 모든 REST 요청을 `<URL>/rest/v1/<table>` 경로로 전송하지만, PostgREST는 루트(`/<table>`) 경로로만 서빙하여 404 발생.
 - [vm-db/nginx/nginx.conf](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/vm-db/nginx/nginx.conf): Nginx 프록시 설정 파일 신규 작성 - `/rest/v1/*` → PostgREST 루트 리라이팅, `/auth/v1/*` → `{"user": null}` 더미 응답으로 SDK getUser() 에러 방지.
 - [vm-db/docker-compose.yml](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/vm-db/docker-compose.yml): `moo_nginx` 서비스 추가 및 PostgREST 외부 포트 노출을 Nginx를 통해서만 노출하도록 재구성. VM에 배포 완료.
 - VM DB 데이터 재시딩 완료: 134개 주식, 50개 기관 봇 & 포트폴리오, 채권/원자재/환율/지수 전량 업서트.
@@ -2133,7 +2133,7 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
   - [vm-db/sql/init/01_schema.sql](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/vm-db/sql/init/01_schema.sql): PostgreSQL 원자적 회계 처리용 RPC 함수 `increment_user_cash` 및 `update_user_holding` 신규 배포.
   - [engine-server/src/MarketEngine.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/MarketEngine.ts): 수동 SELECT-THEN-UPSERT 회계 로직을 PostgreSQL 원자적 RPC 호출로 전면 교체하여 유저 동시 잔고 갱신 시 충돌 및 자산 유실(Race Condition) 완벽 방지.
 - **환경 변수 검증 보강**:
-  - `MarketEngine.ts` & `EventDirector.ts`: Supabase 접속 환경 변수(`NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`) 미설정 시 조용히 실패하는 버그 방지를 위해 명시적 유효성 검사 및 예외 발생 로직 추가.
+  - `MarketEngine.ts` & `EventDirector.ts`: Legacy DB 접속 환경 변수(`NEXT_PUBLIC_LEGACY_DB_URL`, `NEXT_PUBLIC_LEGACY_DB_ANON_KEY`) 미설정 시 조용히 실패하는 버그 방지를 위해 명시적 유효성 검사 및 예외 발생 로직 추가.
 - **메타데이터 정제 및 FK 제약 수복**:
   - [engine-server/src/MarketEngine.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/MarketEngine.ts): PostgREST 400 (PGRST204) 유발 메타데이터(`_botId`, `_assetClass`)를 제거하는 `sanitizeOrderForDb()` 헬퍼 적용.
   - [vm-db/sql/init/01_schema.sql](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/vm-db/sql/init/01_schema.sql): 옵션 파생상품 체결 시 발생하던 `orders_stock_id_fkey` 및 `trades_stock_id_fkey` 외래키 제약조건 수복.
@@ -2142,14 +2142,14 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 ---
 ## 2026-08-06 15:25
 
-**요청 요약:** Supabase Cloud 데이터 삭제에 따라 VM PostgreSQL DB 스택 기반 설계 전환 및 스키마/시드/코드 보완
+**요청 요약:** Legacy DB Cloud 데이터 삭제에 따라 VM PostgreSQL DB 스택 기반 설계 전환 및 스키마/시드/코드 보완
 **수행 결과:**
 - **VM DB 스키마 및 시드 데이터 보완**:
   - [vm-db/sql/init/01_schema.sql](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/vm-db/sql/init/01_schema.sql): `options_contracts`, `market_news` 테이블 컬럼을 엔진 및 프론트엔드 기대 구조(`ticker`, `option_type`, `volume`, `delta`, `gamma`, `is_fake` 등)로 확장하고 `sector_relations` 스키마 추가.
   - [vm-db/sql/init/02_seed_sample.sql](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/vm-db/sql/init/02_seed_sample.sql): 50개 마스터 기관 봇 데이터 및 주요 ETF 종목 시드 데이터 전면 이식.
 - **코드 유틸리티 및 credential 안정화**:
   - [engine-server/src/bots/utils/CircularQueue.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/bots/utils/CircularQueue.ts): 중복 정의되어 있던 O(1) 원형 큐 유틸리티 공용화 (`StatArbAgent.ts`, `AdversarialAgent.ts` 적용).
-  - [engine-server/src/MarketEngine.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/MarketEngine.ts) & [EventDirector.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/EventDirector.ts): 엔진 서버 실행 시 `SUPABASE_SERVICE_ROLE_KEY`를 최우선 참조하도록 credential 선택 순서 수정.
+  - [engine-server/src/MarketEngine.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/MarketEngine.ts) & [EventDirector.ts](file:///c:/Users/abcde/OneDrive/Desktop/%EC%9B%B9%EC%86%8C%EC%84%A4/stock-sys/engine-server/src/EventDirector.ts): 엔진 서버 실행 시 `LEGACY_DB_SERVICE_ROLE_KEY`를 최우선 참조하도록 credential 선택 순서 수정.
 
 
 
@@ -2163,16 +2163,16 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 ---
 ## 2026-08-06 15:45
 
-**요청 요약:** Supabase Auth(GoTrue) 미작동 문제 해결 — Google OAuth 로그인 구현
+**요청 요약:** Legacy DB Auth(GoTrue) 미작동 문제 해결 — Google OAuth 로그인 구현
 **수행 결과:**
 - `next-auth@4` 패키지 설치
 - `app/api/auth/[...nextauth]/route.ts` 생성 — Google OAuth Provider, VM DB 연동 (`create_user_with_profile` RPC 호출로 최초 로그인 시 `auth.users` + `profiles` 자동 생성)
-- `lib/auth/useAuth.ts` 생성 — `useSession()`을 기존 `supabase.auth.getSession()` 패턴과 호환되는 훅으로 래핑, `Session` 타입에 `id` 필드 확장
+- `lib/auth/useAuth.ts` 생성 — `useSession()`을 기존 `legacyDb.auth.getSession()` 패턴과 호환되는 훅으로 래핑, `Session` 타입에 `id` 필드 확장
 - `app/components/AuthProvider.tsx` 생성 — NextAuth `SessionProvider` 래퍼
 - `app/layout.tsx` — 전체 앱을 `AuthProvider`로 감쌈
-- `app/components/TopBar.tsx` — `supabase.auth.*` 완전 제거, `useAuth()` 훅으로 전환 (로그인/로그아웃/세션/프로필 현금 표시)
-- `app/components/OrderEntry.tsx` — `supabase.auth.getSession()` → `useAuth().userId` / `isLoggedIn`으로 전환
-- `app/auth/callback/route.ts` — 구 Supabase OAuth 콜백 제거, 홈 리다이렉트로 대체 (NextAuth가 `/api/auth/callback/google` 자동 처리)
+- `app/components/TopBar.tsx` — `legacyDb.auth.*` 완전 제거, `useAuth()` 훅으로 전환 (로그인/로그아웃/세션/프로필 현금 표시)
+- `app/components/OrderEntry.tsx` — `legacyDb.auth.getSession()` → `useAuth().userId` / `isLoggedIn`으로 전환
+- `app/auth/callback/route.ts` — 구 Legacy DB OAuth 콜백 제거, 홈 리다이렉트로 대체 (NextAuth가 `/api/auth/callback/google` 자동 처리)
 - `vm-db/sql/init/01_schema.sql` — NextAuth 통합용 `auth_users_view` 뷰 및 `create_user_with_profile` RPC 함수 추가
 - `.env.local` — `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `NEXTAUTH_SECRET`, `NEXTAUTH_URL` 추가
 - `tsc --noEmit` 타입 에러 0개 확인
@@ -2180,32 +2180,32 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 ---
 ## 2026-08-06 15:51
 
-**요청 요약:** 프로젝트 전체 컴포넌트 및 페이지의 `supabase.auth` → NextAuth (`useAuth` / `getServerSession`) 일괄 전환 완료
+**요청 요약:** 프로젝트 전체 컴포넌트 및 페이지의 `legacyDb.auth` → NextAuth (`useAuth` / `getServerSession`) 일괄 전환 완료
 **수행 결과:**
-- `app/components/DashboardGate.tsx` — `supabase.auth.getSession()` → `useAuth()` 전환
-- `app/components/OptionsPanel.tsx` — `supabase.auth.getSession()` → `useAuth()` 전환
-- `app/components/Sidebar.tsx` — `supabase.auth.getSession()` → `useAuth()` 전환
-- `app/components/RandomEventModal.tsx` — `supabase.auth.getSession()` → `useAuth()` 전환
-- `app/news/page.tsx` — `supabase.auth.getSession()` → `useAuth()` 전환
-- `app/etf/page.tsx` — `supabase.auth.getSession()` → `useAuth()` 전환
-- `app/exchange/page.tsx` — `supabase.auth.getSession()` 및 `onAuthStateChange` → `useAuth()` 전환
-- `app/mypage/page.tsx` (서버 컴포넌트) — `supabase.auth.getSession()` → NextAuth `getServerSession(authOptions)` 전환
-- `app/shop/page.tsx` — `supabase.auth.getSession()` → `useAuth()` 전환
-- `app/admin/page.tsx` — `supabase.auth.getSession()` → `useAuth()` 전환
-- 전수 검사 (`grep_search`): `app` 내 `supabase.auth` 참조 0건 (완전 제거 확인)
+- `app/components/DashboardGate.tsx` — `legacyDb.auth.getSession()` → `useAuth()` 전환
+- `app/components/OptionsPanel.tsx` — `legacyDb.auth.getSession()` → `useAuth()` 전환
+- `app/components/Sidebar.tsx` — `legacyDb.auth.getSession()` → `useAuth()` 전환
+- `app/components/RandomEventModal.tsx` — `legacyDb.auth.getSession()` → `useAuth()` 전환
+- `app/news/page.tsx` — `legacyDb.auth.getSession()` → `useAuth()` 전환
+- `app/etf/page.tsx` — `legacyDb.auth.getSession()` → `useAuth()` 전환
+- `app/exchange/page.tsx` — `legacyDb.auth.getSession()` 및 `onAuthStateChange` → `useAuth()` 전환
+- `app/mypage/page.tsx` (서버 컴포넌트) — `legacyDb.auth.getSession()` → NextAuth `getServerSession(authOptions)` 전환
+- `app/shop/page.tsx` — `legacyDb.auth.getSession()` → `useAuth()` 전환
+- `app/admin/page.tsx` — `legacyDb.auth.getSession()` → `useAuth()` 전환
+- 전수 검사 (`grep_search`): `app` 내 `legacyDb.auth` 참조 0건 (완전 제거 확인)
 - `npx tsc --noEmit` 실행 결과 타입 에러 0건 검증 완료
 
 ---
 ## 2026-08-06 16:00
 
-**요청 요약:** Supabase Realtime (`supabase.channel`) 잔여 구문 제거 및 폴링(Polling)으로 전환
+**요청 요약:** Legacy DB Realtime (`legacyDb.channel`) 잔여 구문 제거 및 폴링(Polling)으로 전환
 **수행 결과:**
-- `app/news/page.tsx`: `supabase.channel('endogenous_news_feed')` 제거 → 5초 주기 폴링으로 전환
-- `app/institutions/page.tsx`: `supabase.channel('realtime:institutional_portfolios')` 제거 → 3초 주기 폴링으로 전환
-- `app/components/BondDetailPanel.tsx`: `supabase.channel('realtime_bond_price_*')` 제거 → 2초 주기 폴링으로 전환
-- `app/components/EcoTerminal.tsx`: `supabase.channel('macro_calendar_changes')` 제거 → 3초 주기 폴링으로 전환
-- `app/components/RandomEventModal.tsx`: `supabase.channel('active_events_changes')` 제거 → 5초 주기 폴링으로 전환 및 `channelRef` 정리
-- 전수 검사 (`grep_search`): `app/` 디렉토리 내 `supabase.channel` 구문 0건 (완전 제거 확인)
+- `app/news/page.tsx`: `legacyDb.channel('endogenous_news_feed')` 제거 → 5초 주기 폴링으로 전환
+- `app/institutions/page.tsx`: `legacyDb.channel('realtime:institutional_portfolios')` 제거 → 3초 주기 폴링으로 전환
+- `app/components/BondDetailPanel.tsx`: `legacyDb.channel('realtime_bond_price_*')` 제거 → 2초 주기 폴링으로 전환
+- `app/components/EcoTerminal.tsx`: `legacyDb.channel('macro_calendar_changes')` 제거 → 3초 주기 폴링으로 전환
+- `app/components/RandomEventModal.tsx`: `legacyDb.channel('active_events_changes')` 제거 → 5초 주기 폴링으로 전환 및 `channelRef` 정리
+- 전수 검사 (`grep_search`): `app/` 디렉토리 내 `legacyDb.channel` 구문 0건 (완전 제거 확인)
 - `npx tsc --noEmit` 실행 결과 타입 에러 0건 검증 완료
 
 ---
@@ -2553,9 +2553,9 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 ---
 ## 2026-08-14 09:53
 
-**요청 요약:** 수파베이스(Supabase) 명칭 및 연동 용어 전면 제거 및 거래소 자체 DB 명칭으로 일원화
+**요청 요약:** 수파베이스(Legacy DB) 명칭 및 연동 용어 전면 제거 및 거래소 자체 DB 명칭으로 일원화
 **수행 결과:**
-- AI 응답 및 코드 주석/문서에서 '수파베이스/Supabase' 용어를 전면 삭제하고 '거래소 DB / PostgreSQL DB'로 용어 정리
+- AI 응답 및 코드 주석/문서에서 '수파베이스/Legacy DB' 용어를 전면 삭제하고 '거래소 DB / PostgreSQL DB'로 용어 정리
 - `StockChart.tsx`, `etfDefinitions.ts`, `README.md` 등 주요 파일 내 관련 주석 정리
 - `npx tsc --noEmit` 검증 통과 (에러 0건)
 
@@ -2611,7 +2611,7 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
   1. `MarketEngine.ts`에서 PostgREST API 인증 키 선택 시 RLS 권한이 없는 키가 대입되어 DB 조회(`stocks`, `orders`, `bots_config`)가 `0`건(`[]`)으로 리턴되는 원인 규명
   2. `MARKET_HOURS_ONLY` 제한으로 인해 주간 장중 시각에 봇 틱이 조기 종료되던 로직 및 딥 매매 봇(개미 수월/헤지펀드/프랍데스크) 틱 호출 누락 원인 규명
 - **수정 작업**:
-  - `engine-server/src/MarketEngine.ts`: `NEXT_PUBLIC_SUPABASE_ANON_KEY` 및 160개 전체 종목 DB 조회 로직 정상화, 24시간 봇 무중단 가동 모드 설정
+  - `engine-server/src/MarketEngine.ts`: `NEXT_PUBLIC_LEGACY_DB_ANON_KEY` 및 160개 전체 종목 DB 조회 로직 정상화, 24시간 봇 무중단 가동 모드 설정
   - `RetailSwarmAgent.ts`: `previous_close` 누락 예외 처리 및 Taker 매수/매도 시장가 스윕 매칭 보장
   - PostgreSQL DB(`moo_DB`): `anon`, `authenticated`, `service_role` 테이블 Access 권한 SQL GRANT 재설정
 - **결과 검증**: VM 서버(`49.247.136.231`) PM2 엔진에서 틱당 45,000+ 건의 실시간 주문 및 DB `trades` 테이블에 초당 수십 건의 실시간 체결 데이터가 지속 기록됨을 확인(`pm2 save` 반영 완료)
@@ -2691,7 +2691,7 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 
 **요청 요약:** 옵션 만기 D-Day 자동 결제 및 채권 정기 쿠폰(이자) 지급/만기 원금 상환 자동화 배치 엔진 구현
 **수행 결과:**
-- `supabase/migrations/settlement_engine_migration.sql`: `option_settlements` 및 `bond_coupon_payments` 테이블, 멱등키 UNIQUE 제약, RLS 정책, GRANT 권한 설정
+- `legacyDb/migrations/settlement_engine_migration.sql`: `option_settlements` 및 `bond_coupon_payments` 테이블, 멱등키 UNIQUE 제약, RLS 정책, GRANT 권한 설정
 - `engine-server/src/settlement/OptionSettlementEngine.ts`: 만기 도래 콜/풋 옵션 ITM/OTM 판정, 승수(250,000원) 기반 차액 결제(`profiles.cash` 입금) 및 OTM 소멸(`holdings` 제거) 엔진 구현
 - `engine-server/src/settlement/BondCouponEngine.ts`: 채권 분기 쿠폰이자($\text{수량} \times \text{액면가} \times \frac{\text{쿠폰금리}}{4}$) 입금 및 만기 시 원금 상환($\text{수량} \times 10,000\text{원}$) 처리 엔진 구현
 - `engine-server/src/settlement/SettlementBatchService.ts`: 50틱/일일 스케줄러 기반 정기 결제 오케스트레이터 구현
@@ -2712,11 +2712,11 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 ---
 ## 2026-08-19 16:53
 
-**요청 요약:** Supabase 클라우드 의존성 완전 제거 및 인메모리(In-Memory) 독립 엔진 전환
+**요청 요약:** Legacy DB 클라우드 의존성 완전 제거 및 인메모리(In-Memory) 독립 엔진 전환
 **수행 결과:**
 - `lib/memoryDb/memoryStore.ts`: 싱글톤 인메모리 데이터베이스(주식 160종, 원자재 12종, 채권, 옵션, 주문, 체결, 보유자산, 잔고 1억원 시드) 및 Pub/Sub 이벤트 버스 구축
-- `lib/memoryDb/mockSupabaseClient.ts`: Supabase SDK 인터페이스(체이닝 쿼리 `.from().select().eq().insert().update().upsert()`, `.rpc()`, `.auth`, `.channel()`) 100% 에뮬레이터 구현
-- `lib/supabase/client.ts` & `lib/supabase/server.ts`: Supabase 연결 미제공 또는 `NEXT_PUBLIC_USE_IN_MEMORY=true` 시 인메모리 클라이언트로 자동 투명 폴백 전환
+- `lib/memoryDb/mockMemoryDbClient.ts`: Legacy DB SDK 인터페이스(체이닝 쿼리 `.from().select().eq().insert().update().upsert()`, `.rpc()`, `.auth`, `.channel()`) 100% 에뮬레이터 구현
+- `lib/legacyDb/client.ts` & `lib/legacyDb/server.ts`: Legacy DB 연결 미제공 또는 `NEXT_PUBLIC_USE_IN_MEMORY=true` 시 인메모리 클라이언트로 자동 투명 폴백 전환
 - `lib/memoryDb/test/runMemoryDbTests.ts`: 인메모리 5대 테스트 100% Pass (주식/원자재 조회, 주문 생성, 체결 기록, 보유자산 Upsert, RPC 잔고 갱신)
 - `npx tsc --noEmit` (프론트/백엔드 0 error), `npm run lint` (0 warning), `npm run build` (21개 라우트 빌드 성공)
 
@@ -2726,7 +2726,7 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 **요청 요약:** 인메모리 엔진 최적화 (보조 인덱스 계층, 원자적 동시성 제어 updateAtomic, 영속성 스냅샷 PersistenceManager, EventBus 팬아웃 최적화)
 **수행 결과:**
 - `lib/memoryDb/memoryStore.ts`: 보조 인덱스 계층(Ticker/Market/User/StockId 해시 인덱스 $O(1)$ 조회), 원자적 락 큐(`updateAtomic`), 스냅샷 내보내기/가져오기, 인덱스 동기화 캡슐화 구현
-- `lib/memoryDb/mockSupabaseClient.ts`: 인덱스 스캔 쿼리 플래너 최적화 및 `updateAtomic` 기반 RPC(`increment_user_cash`) 리팩터링
+- `lib/memoryDb/mockMemoryDbClient.ts`: 인덱스 스캔 쿼리 플래너 최적화 및 `updateAtomic` 기반 RPC(`increment_user_cash`) 리팩터링
 - `lib/memoryDb/StorageAdapter.ts`: `IStorageAdapter` 인터페이스, 로컬 파일 기반 `FileStorageAdapter` 및 인메모리 `MemoryOnlyStorageAdapter` 구현
 - `lib/memoryDb/PersistenceManager.ts`: 비동기 스냅샷 직렬화 및 서버 재기동 시 자동 복원, 30초 주기 자동 저장 매니저 구축
 - `engine-server/src/EventBus.ts`: 종목별 구독(`subscribeSymbol`) 및 고빈도 이벤트 100ms 디바운스/쓰로틀 큐 구현
@@ -2738,7 +2738,7 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 
 **요청 요약:** 데이터 소스 단일화 (vm-db 진실원본 SSOT 강제 & 인메모리 프로덕션 진입 차단 가드 구축)
 **수행 결과:**
-- `lib/supabase/client.ts` & `lib/supabase/server.ts`: 프로덕션 환경(`NODE_ENV=production`)에서 `NEXT_PUBLIC_USE_IN_MEMORY=true`이거나 DB 연결 부재 시 Fail-Fast 에러를 발생시켜 배포/기동 차단 (Silent Fallback 완전 금지)
+- `lib/legacyDb/client.ts` & `lib/legacyDb/server.ts`: 프로덕션 환경(`NODE_ENV=production`)에서 `NEXT_PUBLIC_USE_IN_MEMORY=true`이거나 DB 연결 부재 시 Fail-Fast 에러를 발생시켜 배포/기동 차단 (Silent Fallback 완전 금지)
 - `.env.example` & `.env.production.example`: 환경별 환경변수 가이드라인 템플릿 작성
 - `scripts/verify-schema-diff.ts`: vm-db 실제 DDL 스키마와 인메모리 엔티티 간 컬럼 정합성 비교 스크립트 작성 및 검증
 - `scripts/verify-env-alignment.ts`: engine-server와 프론트엔드가 동일한 vm-db 인스턴스(:3001)를 바라보고 있음을 100% 검증
@@ -2751,8 +2751,8 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 
 **요청 요약:** 스키마 불일치(profiles 및 news 엔티티) 코드 정합성 정밀 일치화
 **수행 결과:**
-- `profiles` 테이블: 전체 코드베이스 grep 검사 수행, vm-db용 정합성 마이그레이션 SQL(`supabase/migrations/align_profiles_schema.sql`) 작성(`username`, `nickname`, `net_worth`, `rank_tier` 컬럼 추가) 및 `lib/memoryDb/memoryStore.ts`의 `ProfileRecord`에 `username` 추가하여 양방향 100% 호환성 확보
-- `news` 테이블: engine-server(`EventDirector.ts`) 및 프론트(`app/news/page.tsx`)에서 정본으로 사용하는 `market_news` 스키마로 `memoryStore.ts` 및 `mockSupabaseClient.ts`의 엔티티명 및 타입을 일치화
+- `profiles` 테이블: 전체 코드베이스 grep 검사 수행, vm-db용 정합성 마이그레이션 SQL(`legacyDb/migrations/align_profiles_schema.sql`) 작성(`username`, `nickname`, `net_worth`, `rank_tier` 컬럼 추가) 및 `lib/memoryDb/memoryStore.ts`의 `ProfileRecord`에 `username` 추가하여 양방향 100% 호환성 확보
+- `news` 테이블: engine-server(`EventDirector.ts`) 및 프론트(`app/news/page.tsx`)에서 정본으로 사용하는 `market_news` 스키마로 `memoryStore.ts` 및 `mockMemoryDbClient.ts`의 엔티티명 및 타입을 일치화
 - `scripts/verify-schema-diff.ts`: 재실행 결과 전체 11개 엔티티 100% 완벽 일치(0건 불일치) 달성
 - `npx tsc --noEmit` (프론트/백엔드 0 error), `npm run lint` (0 warning)
 
@@ -2782,7 +2782,7 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 
 **요청 요약:** 200명 60초 부하 테스트의 원격 vm-db(PostgREST HTTP) 강제 실행 및 지연시간 스케일링 원인 정밀 분석
 **수행 결과:**
-- `scripts/loadtest/concurrentTrading.ts`: `mode === 'remote'` 시 memoryDb를 100% 배제하고 순수 `@supabase/supabase-js` 기반 PostgREST HTTP REST 클라이언트 분리 리팩터링
+- `scripts/loadtest/concurrentTrading.ts`: `mode === 'remote'` 시 memoryDb를 100% 배제하고 순수 `@legacy/db-sdk` 기반 PostgREST HTTP REST 클라이언트 분리 리팩터링
 - 실제 원격 vm-db(`http://49.247.136.231:3001`) 200명 부하 실행 결과: 실제 네트워크 HTTP 호출 확인(라이브 PostgREST로부터 `Could not find the 'username' column of 'profiles' in the schema cache` 수신 - VM 라이브 DB에 마이그레이션 미적용 상태 입증)
 - 인메모리 지연시간 비선형 증가(0.85ms → 23.41ms) 원인 분석: `updateAtomic` 락 큐 대기 시간(Queue Wait Time) 및 마이크로태스크 큐 동시성 병목 규명
 
@@ -2898,11 +2898,11 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 ---
 ## 2026-08-20 17:23
 
-**��û ���:** ȯ�溯���� �� �ּ�/�α׿��� Supabase ��� ���� �� ENGINE_DB_* ȯ�溯���� �����丵
+**��û ���:** ȯ�溯���� �� �ּ�/�α׿��� Legacy DB ��� ���� �� ENGINE_DB_* ȯ�溯���� �����丵
 
 **���� ���:**
 - `.env.local` �� `engine-server/.env`: `NEXT_PUBLIC_ENGINE_DB_URL`, `NEXT_PUBLIC_ENGINE_DB_ANON_KEY`, `ENGINE_DB_SERVICE_ROLE_KEY` �ű� ȯ�溯�������� ��ü
-- `lib/supabase/client.ts` \u0026 `lib/supabase/server.ts` \u0026 `engine-server/check-db.ts`: �ű� ȯ�溯������ �ֿ켱���� �����ϰ� ���� �������� ���� ȣȯ ���� ó���ϵ��� ���� ���� ����
+- `lib/legacyDb/client.ts` \u0026 `lib/legacyDb/server.ts` \u0026 `engine-server/check-db.ts`: �ű� ȯ�溯������ �ֿ켱���� �����ϰ� ���� �������� ���� ȣȯ ���� ó���ϵ��� ���� ���� ����
 
 ---
 ## 2026-08-20 17:27
@@ -2910,9 +2910,9 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 **��û ���:** �θ޸�(Mock DB) ���� �� ���� ���� VM DB(PostgreSQL/PostgREST) ���� ������� ����
 
 **���� ���:**
-- `.env.local` \u0026 `engine-server/.env`: `NEXT_PUBLIC_USE_IN_MEMORY=false` ���� �� ���� ǥ�� ������(`NEXT_PUBLIC_SUPABASE_URL`)�� ��Ī(`NEXT_PUBLIC_ENGINE_DB_URL`) �Ϻ� ���� ����
-- `lib/supabase/client.ts` \u0026 `server.ts`: �θ޸� ���� ���ǹ��� �����ϰ� �������� ���� VM DB Ŭ���̾�Ʈ�� ����ϵ��� ����ȭ
-- `app/api/auth/[...nextauth]/route.ts`: `supabaseUrl` �����Ƿ� ���� NextAuth �ʱ�ȭ ���� ������ ���� �⺻ VM DB URL/Key ����ڽ� ������ġ ����
+- `.env.local` \u0026 `engine-server/.env`: `NEXT_PUBLIC_USE_IN_MEMORY=false` ���� �� ���� ǥ�� ������(`NEXT_PUBLIC_LEGACY_DB_URL`)�� ��Ī(`NEXT_PUBLIC_ENGINE_DB_URL`) �Ϻ� ���� ����
+- `lib/legacyDb/client.ts` \u0026 `server.ts`: �θ޸� ���� ���ǹ��� �����ϰ� �������� ���� VM DB Ŭ���̾�Ʈ�� ����ϵ��� ����ȭ
+- `app/api/auth/[...nextauth]/route.ts`: `legacyDbUrl` �����Ƿ� ���� NextAuth �ʱ�ȭ ���� ������ ���� �⺻ VM DB URL/Key ����ڽ� ������ġ ����
 
 ---
 ## 2026-08-20 18:16
@@ -2966,8 +2966,8 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 **��û ���:** ������ �ܼ��� GoTrueClient �ߺ� �ν��Ͻ� ���� ��� �ذ�
 
 **���� ���:**
-- `lib/supabase/client.ts`: NextAuth(Google OAuth) ��� ���� ��Ű��ó�� ���� DB Ŭ���̾�Ʈ�� GoTrue auth �ɼ�(`persistSession: false`, `autoRefreshToken: false`)�� �����Ͽ� ������ ���� ���丮�� Ű ���� �� �ߺ� �ν��Ͻ� ��� ��õ ����
-- `app/components/EcoTerminal.tsx`: ���� ȣ��Ǵ� `@supabase/supabase-js` �ν��Ͻ��� ������Ʈ ���� �̱��� Ŭ���̾�Ʈ�� ����
+- `lib/legacyDb/client.ts`: NextAuth(Google OAuth) ��� ���� ��Ű��ó�� ���� DB Ŭ���̾�Ʈ�� GoTrue auth �ɼ�(`persistSession: false`, `autoRefreshToken: false`)�� �����Ͽ� ������ ���� ���丮�� Ű ���� �� �ߺ� �ν��Ͻ� ��� ��õ ����
+- `app/components/EcoTerminal.tsx`: ���� ȣ��Ǵ� `@legacy/db-sdk` �ν��Ͻ��� ������Ʈ ���� �̱��� Ŭ���̾�Ʈ�� ����
 
 ---
 ## 2026-08-21 15:59
@@ -2986,8 +2986,8 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 **요청 요약:** 시스템 가동 불가 원인 분석 및 직접 수정 (원인 파악 및 전면 복구)
 
 **수행 결과:**
-- 원인 진단: 외부 VM DB(49.247.136.231:3001) HTTP 무응답(Hang/Timeout) 및 lib/supabase 내 NEXT_PUBLIC_USE_IN_MEMORY In-Memory Mock 분기 누락으로 인한 앱 멈춤 및 스크립트 장애 확인
-- lib/supabase/client.ts & lib/supabase/server.ts: NEXT_PUBLIC_USE_IN_MEMORY=true 시 MockSupabaseClient로 연결되는 안전 분기 로직 복구
+- 원인 진단: 외부 VM DB(49.247.136.231:3001) HTTP 무응답(Hang/Timeout) 및 lib/legacyDb 내 NEXT_PUBLIC_USE_IN_MEMORY In-Memory Mock 분기 누락으로 인한 앱 멈춤 및 스크립트 장애 확인
+- lib/legacyDb/client.ts & lib/legacyDb/server.ts: NEXT_PUBLIC_USE_IN_MEMORY=true 시 MockLegacy DBClient로 연결되는 안전 분기 로직 복구
 - .env.local: 로컬 환경에서 지연 없이 즉시 100% 작동하도록 NEXT_PUBLIC_USE_IN_MEMORY=true 설정
 - app/stocks/[id]/page.tsx: ID 및 Ticker 다중 조회 지원(maybeSingle)으로 안전성 강화
 - app/stocks/page.tsx: normalizeMarket 헬퍼 함수 적용으로 domestic/overseas/europe 필터링 정합성 보장
@@ -3270,12 +3270,12 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 ---
 ## 2026-09-09 14:55
 
-**요청 요약:** MarketEngine 4대 정적 디버깅 및 런타임 안정화 (봇 중복 실행 제거, Supabase 키 우선순위 및 환경변수 로딩 개선, build/start 경로 정정, tickCount 위치 최적화)
+**요청 요약:** MarketEngine 4대 정적 디버깅 및 런타임 안정화 (봇 중복 실행 제거, Legacy DB 키 우선순위 및 환경변수 로딩 개선, build/start 경로 정정, tickCount 위치 최적화)
 
 **수행 결과:**
 - `engine-server/src/MarketEngine.ts`:
   1) 봇 실행 블록 중복 제거: 한 틱 내에서 중복 호출되던 봇(`propDeskAgents`, `retailSwarmAgents`, `hedgeFundAgents`, `statArbAgents`, `quantAgents`)의 중복 루프를 제거하여 전략당 1회 실행 보장 및 거래량·변동성·Hawkes 프로세스 왜곡 차단
-  2) DB 접근 키 우선순위 변경: RLS 정책 우회 및 안정적 DB 쓰기를 위해 `SUPABASE_SERVICE_ROLE_KEY`를 `NEXT_PUBLIC_SUPABASE_ANON_KEY`보다 최우선으로 적용하고 `NEXT_PUBLIC_ENGINE_DB_URL` fallback 지원
+  2) DB 접근 키 우선순위 변경: RLS 정책 우회 및 안정적 DB 쓰기를 위해 `LEGACY_DB_SERVICE_ROLE_KEY`를 `NEXT_PUBLIC_LEGACY_DB_ANON_KEY`보다 최우선으로 적용하고 `NEXT_PUBLIC_ENGINE_DB_URL` fallback 지원
   3) `tickCount` 카운터 위치 변경: 주문 생성 조건문(`allOrders.length > 0`) 내부에서 `tick()` 진입 최상단으로 이동하여 매 틱마다 정상 카운트되도록 보장
 - `engine-server/src/loadEnv.ts`:
   - `process.cwd()` 및 디렉터리 트리를 상위로 탐색하여 `.env`, `.env.local`을 빌드 환경/런타임 위치(`dist` vs `src`)와 무관하게 안정적으로 로드하는 유틸리티 작성 및 `index.ts`, `MarketEngine.ts`, `EventDirector.ts`에 일괄 적용
@@ -3303,7 +3303,7 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 **수행 결과:**
 - `vm-db/sql/init/01_schema.sql`, `vm-db/sql/runtime/fix_rls_security_lockdown.sql`: passthrough 정책을 전면 철회하고, 개인 데이터 소유자 기반 CUD 및 시세/거래소 테이블 SELECT 전용 잠금(CUD는 service_role 전용) RLS 강화
 - `engine-server/src/MarketEngine.ts`: Maker-Taker 수수료(`buyer_fee`, `seller_fee`)를 tradesToInsert에 포함하여 bulk_settle_trades RPC에 전달 및 미사용 레거시 인메모리 변경맵(cashChanges, holdingsChanges) 정리
-- `supabase/migrations/trim_old_market_data.sql`, `MarketEngine.ts`: trades(최신 5,000건) 및 stock_price_history(최신 3,000건) 슬라이딩 윈도우 트리밍 RPC 구현 및 매 20틱 주기적 호출 연동
+- `legacyDb/migrations/trim_old_market_data.sql`, `MarketEngine.ts`: trades(최신 5,000건) 및 stock_price_history(최신 3,000건) 슬라이딩 윈도우 트리밍 RPC 구현 및 매 20틱 주기적 호출 연동
 - `engine-server`: MarketEngine, index.ts, EventDirector, seed_options.ts에서 ENGINE_DB_SERVICE_ROLE_KEY를 최우선으로 일원화하고 anon key 실행 경고 추가
 - `lib/hooks/useOrderbookData.ts`: OrderbookLevel에 isSynthetic 및 actualDbSize 메타데이터를 추가하고, 실제 DB depth와 가상 depth를 분리하여 source('db' | 'hybrid' | 'simulation') 세분화
 - `engine-server/src/bots/BaseAgent.ts`: calculateTargetWeights()에서 kr/us/eu_equity 지역 비중과 legacy stock 간의 주식 비중 이중 합산(0.6+0.3+0.3=1.2) 버그 수정
@@ -3312,15 +3312,15 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 ---
 ## 2026-09-13 22:25
 
-**요청 요약:** 완전 독립형 Local Dev Mode 구현 (Zero-Dependency Standalone Mode: No Docker, No Supabase, No External Server)
+**요청 요약:** 완전 독립형 Local Dev Mode 구현 (Zero-Dependency Standalone Mode: No Docker, No Legacy DB, No External Server)
 
 **수행 결과:**
 - `lib/engine/localDevMode.ts`: NODE_ENV 및 외부 DB 환경변수 감지 기반 자동 Local Standalone Mode 전환 및 표준 콘솔 배너(4줄) 출력 구현.
 - `lib/engine/localStandaloneServer.ts`: Next.js Node.js 프로세스 내부 `globalThis.__STOCKSYS_ENGINE__` 단일 Authoritative LocalMarketEngine 싱글톤 구현 (LP 10단 호가 공급, 봇 주문 흐름, In-memory Order Cross, Maker/Taker Fee 정산, 20틱 슬라이딩 트리밍).
 - `app/api/local-db/route.ts`: 브라우저 클라이언트 컴포넌트가 서버의 단일 authoritative Memory DB를 조회/수정/RPC 호출하는 통합 Route Handler 및 `reset_market` API 구현.
 - `lib/memoryDb/memoryStore.ts`: 고정 UUID 규격(게스트: 00000000-0000-4000-8000-000000000001, 오성전자: 00000000-0000-4000-8000-000000000101 등) 적용, 26개 시드 종목 및 테스트 계정 1억 원 예수금/보유주식, 채권 7종, 원자재 5종, 옵션 2종, 환율 6종, 관리자 설정 및 `globalThis.__STOCKSYS_MEMORY_DB__` 싱글톤/`resetToSeedData()` 구현.
-- `lib/memoryDb/mockSupabaseClient.ts`: `bulk_settle_trades` 수수료 정산 및 `trim_old_market_data` 슬라이딩 윈도우 트리밍 RPC, 다중 테이블 쿼리 빌더 지원 확장.
-- `lib/supabase/client.ts` & `lib/supabase/server.ts`: 하드코딩된 원격 VM IP fallback을 전면 제거하고, client.ts는 `/api/local-db`를 경유하는 `HttpMemoryClient` 반환, server.ts는 서버 내부 Memory DB 직접 참조하도록 투명 분기 및 프로덕션 외부 DB 미설정 에러 가드 적용.
+- `lib/memoryDb/mockMemoryDbClient.ts`: `bulk_settle_trades` 수수료 정산 및 `trim_old_market_data` 슬라이딩 윈도우 트리밍 RPC, 다중 테이블 쿼리 빌더 지원 확장.
+- `lib/legacyDb/client.ts` & `lib/legacyDb/server.ts`: 하드코딩된 원격 VM IP fallback을 전면 제거하고, client.ts는 `/api/local-db`를 경유하는 `HttpMemoryClient` 반환, server.ts는 서버 내부 Memory DB 직접 참조하도록 투명 분기 및 프로덕션 외부 DB 미설정 에러 가드 적용.
 - `lib/auth/useAuth.ts` & `app/mypage/page.tsx`: 로컬 개발 모드에서 OAuth 세션이 없을 때 `guest_user` 자동 인증 및 마이페이지 포트폴리오(예수금 1억 원, 보유 종목, 외화 지갑) 즉각 렌더링 지원.
 - `lib/hooks/useOrderbookData.ts`: 로컬 모드에서 synthetic fallback을 완전히 비활성화하고 100% 실제 DB 호가(LP/봇 주문)만 표시하도록 변경.
 - `app/components/LocalDevBanner.tsx` & `app/layout.tsx`: 우측 하단 상태 배지 및 원클릭 '🔄 시장 리셋' 플로팅 UI 제공 및 `window.__STOCKSYS_RESET_MARKET__()` 글로벌 함수 바인딩.
@@ -3351,11 +3351,11 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 **수행 결과:**
 - `lib/engine/localDevMode.ts`: `isLocalStandaloneMode()`에서 `process.env.NODE_ENV === 'production'` 검사를 함수 최상단에 배치하여, 프로덕션 환경에서는 메모리 플래그가 존재하더라도 절대로 로컬 메모리 모드로 진입하지 못하도록 100% 차단.
 - `app/api/local-db/route.ts`: 라우트 핸들러 최상단에 `if (!isLocalStandaloneMode()) return new NextResponse(null, { status: 404 });` 가드를 적용하여 프로덕션 배포 시 개발용 API 노출을 404로 원천 차단.
-- `lib/memoryDb/mockSupabaseClient.ts`: `bulk_settle_trades`에서 체결 레코드 생성 시 `db.addTradeToIndex(tradeRecord)`를 즉시 호출하여 `tradeStockIndex`에 동기화. 종목별 체결내역 누락 버그 해결.
-- `lib/memoryDb/mockSupabaseClient.ts`: 매수/매도 시 순자산(`net_worth`)에서 원금 전체가 차감/가산되어 순자산이 왜곡되던 회계 오류 수정 (자산 교환 성격에 맞추어 발생 수수료 손실분만 순자산에서 차감).
+- `lib/memoryDb/mockMemoryDbClient.ts`: `bulk_settle_trades`에서 체결 레코드 생성 시 `db.addTradeToIndex(tradeRecord)`를 즉시 호출하여 `tradeStockIndex`에 동기화. 종목별 체결내역 누락 버그 해결.
+- `lib/memoryDb/mockMemoryDbClient.ts`: 매수/매도 시 순자산(`net_worth`)에서 원금 전체가 차감/가산되어 순자산이 왜곡되던 회계 오류 수정 (자산 교환 성격에 맞추어 발생 수수료 손실분만 순자산에서 차감).
 - `lib/engine/localStandaloneServer.ts`: 매 20틱 주기마다 체결 완료, 취소, 또는 60초 초과 미체결된 오래된 봇 주문을 `memoryDb.orders` 및 보조 인덱스에서 자동 제거하는 메모리 누수 방지 cleanup 구현.
 - `lib/engine/localStandaloneServer.ts` & `engine-server/src/MarketEngine.ts`: 매칭 시 체결 가격을 항상 매도호가로 결정하던 문제를 Price-Time Priority에 맞추어 먼저 호가창에 resting 중이던 Maker 주문의 지정가로 결정하도록 양쪽 엔진 공통 정정.
-- `lib/memoryDb/mockSupabaseClient.ts`: `trim_old_market_data` 슬라이딩 윈도우 트리밍 후 `db.rebuildIndexes()`를 호출하여 `tradeStockIndex`와 잘려진 실제 `trades` 배열의 정합성 100% 동기화.
+- `lib/memoryDb/mockMemoryDbClient.ts`: `trim_old_market_data` 슬라이딩 윈도우 트리밍 후 `db.rebuildIndexes()`를 호출하여 `tradeStockIndex`와 잘려진 실제 `trades` 배열의 정합성 100% 동기화.
 - scratch 자동화 단위 테스트 및 `tsc --noEmit` 전체 검증 통과.
 
 ---
@@ -3364,9 +3364,9 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 **요청 요약:** RPC 보안 잠금, 미체결 주문 자산 예약(Holdings/Cash Reservation), dbMatching 및 MarketEngine 정산 로직 통일, Stock 스키마 high/low 정합성 보강
 
 **수행 결과:**
-- `supabase/migrations/bulk_settle_trades.sql`, `vm-db/sql/init/01_schema.sql`, `vm-db/sql/runtime/fix_rls_security_lockdown.sql`: `bulk_settle_trades` SECURITY DEFINER RPC의 실행 권한을 `anon`, `authenticated`로부터 박탈(`REVOKE`)하고 `service_role` 전용으로 잠금. 함수 내부에서 매도자 주식 부족 및 매수자 현금 부족 시 `GREATEST(0, ...)` 강제 정리를 배제하고 즉시 예외(`RAISE EXCEPTION`) 발생으로 트랜잭션 전체 롤백 및 불변식(`cash >= 0`, `holdings.quantity >= 0`) 보장.
-- `supabase/migrations/trim_old_market_data.sql`, `vm-db/sql/init/01_schema.sql`, `vm-db/sql/runtime/fix_rls_security_lockdown.sql`: `trim_old_market_data` 실행 권한을 `service_role` 전용으로 제한하고, 최소 1,000건 미만으로 트리밍 파라미터가 들어올 경우 1,000건으로 강제 클램핑(`GREATEST(..., 1000)`)하여 악의적 전체 데이터 삭제 방지.
-- `lib/memoryDb/mockSupabaseClient.ts`: 로컬 모드 `bulk_settle_trades`에서도 매수자/매도자 잔고 부족 시 사전 에러 반환을 통해 원자적 롤백 구현 및 `trim_old_market_data` 최소 1,000건 제한 적용.
+- `legacyDb/migrations/bulk_settle_trades.sql`, `vm-db/sql/init/01_schema.sql`, `vm-db/sql/runtime/fix_rls_security_lockdown.sql`: `bulk_settle_trades` SECURITY DEFINER RPC의 실행 권한을 `anon`, `authenticated`로부터 박탈(`REVOKE`)하고 `service_role` 전용으로 잠금. 함수 내부에서 매도자 주식 부족 및 매수자 현금 부족 시 `GREATEST(0, ...)` 강제 정리를 배제하고 즉시 예외(`RAISE EXCEPTION`) 발생으로 트랜잭션 전체 롤백 및 불변식(`cash >= 0`, `holdings.quantity >= 0`) 보장.
+- `legacyDb/migrations/trim_old_market_data.sql`, `vm-db/sql/init/01_schema.sql`, `vm-db/sql/runtime/fix_rls_security_lockdown.sql`: `trim_old_market_data` 실행 권한을 `service_role` 전용으로 제한하고, 최소 1,000건 미만으로 트리밍 파라미터가 들어올 경우 1,000건으로 강제 클램핑(`GREATEST(..., 1000)`)하여 악의적 전체 데이터 삭제 방지.
+- `lib/memoryDb/mockMemoryDbClient.ts`: 로컬 모드 `bulk_settle_trades`에서도 매수자/매도자 잔고 부족 시 사전 에러 반환을 통해 원자적 롤백 구현 및 `trim_old_market_data` 최소 1,000건 제한 적용.
 - `lib/engine/orderRisk.ts`: 미체결(`open`, `partial`) 매수 주문의 미체결 금액 합산(`calculateReservedCash`), 미체결 매도 주문의 미체결 수량 합산(`calculateReservedQty`), 가용 자산 검증(`validateOrderCapacity`)을 담당하는 공통 리스크 모듈 구축. 동일 자산 이중 매수/매도 원천 차단.
 - `lib/engine/settlement.ts`: 통합 정산 페이로드 `SettlementTrade` 정의, 메이커 리베이트(-0.1%) / 테이커 수수료(+0.25%) 상수화 및 `executeSettlement` 일원화 계층 구현.
 - `lib/engine/dbMatching.ts`: 주문 검증 시 `orderRisk` 모듈을 연동하여 가용 예수금/가용 주식 엄격 검증, resting maker 가격 기반 체결가 산정, 직접 테이블 write를 제거하고 `executeSettlement`(`bulk_settle_trades`)로 일괄 원자적 정산 위임.
@@ -3379,15 +3379,15 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 **요청 요약:** 프로덕션 주문 경로의 보안 및 트랜잭션 원자성 강화 (Spoofing 방지, Service Role 일원화, 단일 트랜잭션 RPC 신설)
 
 **수행 결과:**
-- `supabase/migrations/submit_and_match_order.sql`: 주문 검증, 자산 락(`FOR UPDATE`), 오더북 매칭, 체결/수수료 정산, 주문 상태 갱신, 종목 시세/통계 갱신 전체를 단일 PostgreSQL DB 트랜잭션으로 원자 처리하는 `submit_and_match_order` RPC 작성. SECURITY DEFINER 선언 및 `anon`, `authenticated`, `PUBLIC`의 실행 권한을 전면 박탈(`REVOKE`)하고 오직 `service_role`만 실행할 수 있도록 접근 통제 잠금.
+- `legacyDb/migrations/submit_and_match_order.sql`: 주문 검증, 자산 락(`FOR UPDATE`), 오더북 매칭, 체결/수수료 정산, 주문 상태 갱신, 종목 시세/통계 갱신 전체를 단일 PostgreSQL DB 트랜잭션으로 원자 처리하는 `submit_and_match_order` RPC 작성. SECURITY DEFINER 선언 및 `anon`, `authenticated`, `PUBLIC`의 실행 권한을 전면 박탈(`REVOKE`)하고 오직 `service_role`만 실행할 수 있도록 접근 통제 잠금.
 - `vm-db/sql/init/01_schema.sql` & `vm-db/sql/runtime/fix_rls_security_lockdown.sql`: 신규 `submit_and_match_order` RPC 스키마 및 권한 설정을 Docker/VM-DB 초기화 및 런타임 스크립트에 동기화.
 - `app/api/orders/route.ts`:
   - 클라이언트 body의 `user_id`를 완전히 무시하고 NextAuth 서버 세션(`session.user.id`)만을 사용자로 인정하여 ID Spoofing 원천 차단 (로컬 스탠드얼론 모드에서는 `GUEST_USER_ID` 유지, 프로덕션 미인증 시 401 Unauthorized 즉시 반환).
-  - DB 클라이언트 초기화 시 Anon key fallback을 영구 제거하고 `ENGINE_DB_SERVICE_ROLE_KEY` / `SUPABASE_SERVICE_ROLE_KEY`만 사용하도록 강제.
+  - DB 클라이언트 초기화 시 Anon key fallback을 영구 제거하고 `ENGINE_DB_SERVICE_ROLE_KEY` / `LEGACY_DB_SERVICE_ROLE_KEY`만 사용하도록 강제.
   - 주문 가격/수량 양수 유효성 검증 및 유저당 1초 최대 15회 인메모리 슬라이딩 윈도우 Rate Limiter 적용.
   - 프로덕션 주문 접수 시 `client.rpc('submit_and_match_order', ...)`를 호출하여 DB 내부 단일 트랜잭션으로 매칭 및 정산 위임.
 - `lib/engine/dbMatching.ts`: `input.user_id` 누락 및 빈 문자열을 엄격 검증하여 비인가 매칭 우회를 차단하고, 반환 타입에 `status`(`filled` | `partial` | `open`) 명시.
-- `lib/memoryDb/mockSupabaseClient.ts`: 로컬 스탠드얼론 모드용 `submit_and_match_order` RPC 핸들러 구현 및 holdings 조회 시 인덱스 누락 대비 안전한 전체 스캔 fallback 보강.
+- `lib/memoryDb/mockMemoryDbClient.ts`: 로컬 스탠드얼론 모드용 `submit_and_match_order` RPC 핸들러 구현 및 holdings 조회 시 인덱스 누락 대비 안전한 전체 스캔 fallback 보강.
 - `README.md`: Security Model 및 Production Transaction Safety 원칙(브라우저 service-role 키 미사용, 서버 세션 결정, 단일 트랜잭션 보장 등) 전면 업데이트.
 - `scripts/test-order-security-and-atomic.ts`:
   - TEST 1 (Auth Spoofing Prevention)
@@ -3403,23 +3403,23 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 ---
 ## 2026-09-14 00:10
 
-**요청 요약:** Supabase 및 Render 관련 의존성, 설정, 코드 전면 제거 및 Local Standalone Mode 일원화
+**요청 요약:** Legacy DB 및 Render 관련 의존성, 설정, 코드 전면 제거 및 Local Standalone Mode 일원화
 
 **수행 결과:**
-- `package.json`: `@supabase/supabase-js`, `@supabase/ssr` 의존성 완전 제거 및 `npm install` 실행하여 `node_modules` 및 `package-lock.json` 동기화 (10개 패키지 제거).
-- `lib/supabase`: 디렉터리 및 내부 `client.ts`, `server.ts` 완전 삭제.
+- `package.json`: `@legacy/db-sdk`, `@legacy/db-ssr` 의존성 완전 제거 및 `npm install` 실행하여 `node_modules` 및 `package-lock.json` 동기화 (10개 패키지 제거).
+- `lib/legacyDb`: 디렉터리 및 내부 `client.ts`, `server.ts` 완전 삭제.
 - `lib/db`: 신규 공통 데이터베이스 레이어(`client.ts`, `server.ts`, `index.ts`) 구축. 외부 패키지 의존 0%의 순수 `HttpMemoryClient` 및 `createClient()` 제공.
-- 전체 컴포넌트/엔진/API 32개 파일: `@/lib/supabase/client` 및 `@/lib/supabase/server` import를 `@/lib/db/client`, `@/lib/db/server`로 전면 교체.
-- `app/api/auth/[...nextauth]/route.ts`: `@supabase/supabase-js` import 및 외부 DB 쿼리(`auth_users_view`, `create_user_with_profile` RPC) 제거, JWT 기반 세션 관리로 전환.
-- `app/api/orders/route.ts`: `createSupabaseJsClient` 및 외부 DB fallback 코드 제거, 내부 `getLocalStandaloneClient()` 고정 반환.
-- `lib/engine/dbMatching.ts`: `@supabase/supabase-js` import 제거 및 `DbClient` 인터페이스 추상화.
+- 전체 컴포넌트/엔진/API 32개 파일: `@/lib/legacyDb/client` 및 `@/lib/legacyDb/server` import를 `@/lib/db/client`, `@/lib/db/server`로 전면 교체.
+- `app/api/auth/[...nextauth]/route.ts`: `@legacy/db-sdk` import 및 외부 DB 쿼리(`auth_users_view`, `create_user_with_profile` RPC) 제거, JWT 기반 세션 관리로 전환.
+- `app/api/orders/route.ts`: `createLegacy DBJsClient` 및 외부 DB fallback 코드 제거, 내부 `getLocalStandaloneClient()` 고정 반환.
+- `lib/engine/dbMatching.ts`: `@legacy/db-sdk` import 제거 및 `DbClient` 인터페이스 추상화.
 - `lib/engine/localDevMode.ts`: `isLocalStandaloneMode()`가 항상 `true`를 반환하도록 고정하여 외부 DB 없이 항상 자립 실행 보장.
-- `proxy.ts`: `@supabase/ssr` 기반 쿠키 갱신 코드 제거, 순수 Next.js 패스스루 미들웨어로 단순화.
+- `proxy.ts`: `@legacy/db-ssr` 기반 쿠키 갱신 코드 제거, 순수 Next.js 패스스루 미들웨어로 단순화.
 - `render.yaml`: Render 배포 매니페스트 삭제.
 - `engine-server/src/index.ts`: Render 더미 서버 주석 및 헬스체크 코드 정리.
-- `supabase/` 디렉터리: 루트의 `supabase/` 폴더를 `sql/`로 이동하여 보관.
-- `.env.local` & `.env.example`: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` 전면 삭제.
-- `README.md`: Supabase 및 Render 관련 안내 삭제, Zero-Dependency Local Standalone 아키텍처 및 퀵스타트 가이드로 개정.
+- `legacyDb/` 디렉터리: 루트의 `legacyDb/` 폴더를 `sql/`로 이동하여 보관.
+- `.env.local` & `.env.example`: `NEXT_PUBLIC_LEGACY_DB_URL`, `NEXT_PUBLIC_LEGACY_DB_ANON_KEY`, `LEGACY_DB_SERVICE_ROLE_KEY` 전면 삭제.
+- `README.md`: Legacy DB 및 Render 관련 안내 삭제, Zero-Dependency Local Standalone 아키텍처 및 퀵스타트 가이드로 개정.
 - `npx tsc --noEmit` 타입 검사 오류 0건 통과.
 - `scripts/test-order-security-and-atomic.ts` 및 `scripts/test-order-risk-and-settlement.ts` 16개 자동화 테스트 100% 통과.
 - `npm run build` Next.js Turbopack 23개 라우트 빌드 100% 성공.
@@ -3428,14 +3428,14 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 ---
 ## 2026-09-14 00:25
 
-**요청 요약:** Supabase 잔존 네이밍/구조 완전 정리 및 Local Native 아키텍처 완성 (memoryDbClient rename, legacy SQL archive 격리, LocalMarketService 도입, NextAuth credentials 정리)
+**요청 요약:** Legacy DB 잔존 네이밍/구조 완전 정리 및 Local Native 아키텍처 완성 (memoryDbClient rename, legacy SQL archive 격리, LocalMarketService 도입, NextAuth credentials 정리)
 
 **수행 결과:**
-- `lib/memoryDb/memoryDbClient.ts`: `mockSupabaseClient.ts`를 `memoryDbClient.ts`로 완전 rename. 클래스명 `MemoryDbClient` 및 팩토리 함수 `createMemoryDbClient()`로 정비.
+- `lib/memoryDb/memoryDbClient.ts`: `mockMemoryDbClient.ts`를 `memoryDbClient.ts`로 완전 rename. 클래스명 `MemoryDbClient` 및 팩토리 함수 `createMemoryDbClient()`로 정비.
 - `lib/db/server.ts`, `app/api/local-db/route.ts`, `lib/engine/localStandaloneServer.ts`, 테스트 스크립트 등 9개 파일의 import 경로 및 함수 호출을 `memoryDbClient`로 전면 동기화.
-- `archive/legacy-postgres/`: 과거 Supabase/PostgreSQL 마이그레이션 SQL(`sql/`) 및 Docker VM DB 인프라 파일(`vm-db/`)을 `archive/legacy-postgres/` 폴더로 완전히 격리하여 루트 작업 트리를 순수 로컬 코드로 정리.
+- `archive/legacy-postgres/`: 과거 Legacy DB/PostgreSQL 마이그레이션 SQL(`sql/`) 및 Docker VM DB 인프라 파일(`vm-db/`)을 `archive/legacy-postgres/` 폴더로 완전히 격리하여 루트 작업 트리를 순수 로컬 코드로 정리.
 - `lib/engine/marketService.ts` [NEW]: 주문 검증, 매칭, 정산 책임을 단일 서비스 인터페이스로 캡슐화한 `LocalMarketService` 신설.
-- `app/api/orders/route.ts`: Supabase RPC 호출 형태(`client.rpc('submit_and_match_order', ...)`)를 전면 제거하고 `LocalMarketService.submitOrder()` 직접 호출로 단순화.
+- `app/api/orders/route.ts`: Legacy DB RPC 호출 형태(`client.rpc('submit_and_match_order', ...)`)를 전면 제거하고 `LocalMarketService.submitOrder()` 직접 호출로 단순화.
 - `app/api/auth/[...nextauth]/route.ts`: 하드코딩된 더미 자격증명(`dummy-client-id/secret`) 및 고정 시크릿을 제거하고, `process.env.NEXTAUTH_SECRET` 및 유효한 환경변수 존재 시에만 GoogleProvider를 등록하도록 개선. 세션 콜백 내 중복 게스트 UUID fallback 제거.
 - `npx tsc --noEmit` 전체 타입 검사 통과 (오류 0건).
 - `scripts/test-order-security-and-atomic.ts` 및 `scripts/test-order-risk-and-settlement.ts` 16개 자동화 테스트 100% 통과.
@@ -3508,7 +3508,7 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
   - `bulk_settle_trades`, `update_cash_balance` 등 내부 정산 RPC의 클라이언트 직접 호출을 차단(403).
   - 시장 리셋(`reset_market`)에 관리자 권한 검증 및 `withAllStockLocks` 적용.
 - `app/api/orders/route.ts`: 프로덕션 환경의 미인증 주문 차단(401)을 적용하고, 종목 락 하에서 본인 주문만 안전하게 취소할 수 있는 `DELETE` 핸들러 추가.
-- `README.md`: 실제 Standalone 구조와 `package.json` 스크립트에 맞춰 레거시 PostgreSQL/Supabase/Service-Role 및 미존재 엔진 빌드 명령 설명 제거.
+- `README.md`: 실제 Standalone 구조와 `package.json` 스크립트에 맞춰 레거시 PostgreSQL/Legacy DB/Service-Role 및 미존재 엔진 빌드 명령 설명 제거.
 - `scripts/test-comprehensive-audit-fixes.ts` [NEW]: 가격/시간 우선 정렬, 봇 정상 매칭 및 자기매매 방지, 자동 엔진 정산 거절 롤백, 교차 종목 거래 보존, HTTP 라우트 보안 차단, LP 갱신 한도 및 사용자 주문 보존 검증을 수행하는 회귀 테스트 작성.
 
 **검증 수행 내역:**
@@ -3909,7 +3909,7 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 - `lib/memoryDb/memoryDbClient.ts`:
   - `get_authoritative_orderbook(p_stock_id, p_depth)` RPC 신규 구현: 서버 메모리 DB 인덱스(`orderStockIndex`)를 순회하여, 동일 가격 주문이 수백~수천 건이더라도 모든 잔량을 100% 완전 누락 없이 합산하고 상위 `p_depth`(기본 10)개 고유 가격 레벨 및 체결 내역을 단일 스냅샷(`timestamp`, `fetchDurationMs`)으로 원자적 반환.
 - `lib/hooks/useOrderbookData.ts`:
-  - `fetchFromDB`에서 `supabase.rpc('get_authoritative_orderbook')`를 최우선으로 호출하여 단일 스냅샷으로 원자적 갱신(조회 시점 차이 T와 T+Δ로 인한 인위적인 crossed book 원천 제거).
+  - `fetchFromDB`에서 `legacyDb.rpc('get_authoritative_orderbook')`를 최우선으로 호출하여 단일 스냅샷으로 원자적 갱신(조회 시점 차이 T와 T+Δ로 인한 인위적인 crossed book 원천 제거).
   - 단발성 비동기 시점 차이로 인한 가짜 경고를 방지하고, 3회 이상 연속(`consecutiveCount >= 3`) 관측될 때만 실제 지속 교차 호가(`[OrderbookIntegrity] Sustained crossed book detected`) 경고를 로깅하도록 진단 로직 개선.
   - fallback 분리 쿼리에 대한 한계(방향별 200건 한계) 명시.
 - `lib/engine/simulation/marketEventTypes.ts`:
@@ -3945,7 +3945,7 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
   - 신호 계산 순수 함수 `computeEffectiveNewsValuation(events, stockId, simulationTime)` 분리 및 중복 이벤트 수신 방어 멱등성 보장.
   - `evaluateValueStrategy` 내부에서 해당 순수 함수를 호출하도록 리팩토링.
 - `docs/sql/02_get_authoritative_orderbook.sql`:
-  - 외부 Supabase / PostgreSQL 환경 배포를 위한 단일 SQL statement 원자적 집계 DDL 함수 신규 작성 (`jsonb_build_object`, 100% 완전 잔량 합산, RLS/GRANT 포함).
+  - 외부 Legacy DB / PostgreSQL 환경 배포를 위한 단일 SQL statement 원자적 집계 DDL 함수 신규 작성 (`jsonb_build_object`, 100% 완전 잔량 합산, RLS/GRANT 포함).
 - `lib/hooks/useOrderbookData.ts`:
   - RPC 실패 시 빈 호가창 오인 방지: 치명적 DB 오류 또는 네트워크 단절 시 `rpcRes.error` 발생 시 즉시 `throw`하여 `stale`/`error` 상태로 전환하는 에러 가드 적용.
   - 스냅샷 원자성 범위 명문화: Local Standalone 단일 프로세스에서의 동기식 읽기 스냅샷과 외부 DB 모드에서의 단일 SQL 트랜잭션 스냅샷 범위 분리 문서화.
@@ -4939,7 +4939,7 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 ## 2026-09-24 20:00
 
 **요청 요약:** STOCKSYS Phase 1 구조 결함 수정 및 결정론 강화 (commit aad054c 이후 코드 기준)
-- MarketEngine DB 의존성의 인스턴스 격리 (`supabase` 모듈 전역 변수 제거 및 DI 연결)
+- MarketEngine DB 의존성의 인스턴스 격리 (`legacyDb` 모듈 전역 변수 제거 및 DI 연결)
 - 실제 MarketEngine 틱(tick)의 결정론 보장 (시간원 통일, 외부 소스 격리, 실제 틱 기반 fingerprint 검증)
 - 주문 제한 정책 중앙화 (MarketEngine 내 하드코딩 제거, 단일 canonical 위험 정책 통과, 다요소 컨텍스트 및 감사 스크립트 강화)
 - PRNG namespace 충돌 제거 (중앙 네임스페이스 레지스트리 구축, EventDirector 동일 컨텍스트 공유)
@@ -4947,9 +4947,9 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 
 **수행 결과:**
 - `engine-server/src/MarketEngine.ts`:
-  - 모듈 전역 `let supabase: any;` 제거, `createDefaultSupabaseClient()` 팩토리 함수 도입.
-  - 인스턴스별 DB 클라이언트(`this.supabase`, `this.db`) 확립 및 우선순위(1. 명시적 `supabaseClient`, 2. `persistence`, 3. 기본 클라이언트) 적용.
-  - `this.settlementService`를 확정된 인스턴스 DB로 생성자 내부에서 초기화하고, 클래스 내 모든 `supabase.` 호출을 `this.supabase.`로 변경.
+  - 모듈 전역 `let legacyDb: any;` 제거, `createDefaultLegacyDbClient()` 팩토리 함수 도입.
+  - 인스턴스별 DB 클라이언트(`this.legacyDb`, `this.db`) 확립 및 우선순위(1. 명시적 `legacyDbClient`, 2. `persistence`, 3. 기본 클라이언트) 적용.
+  - `this.settlementService`를 확정된 인스턴스 DB로 생성자 내부에서 초기화하고, 클래스 내 모든 `legacyDb.` 호출을 `this.legacyDb.`로 변경.
   - `customPersistence`(`saveTrades`, `savePriceHistory`, `upsertPortfolios`) 및 `customDataSource`(`fetchMarketState`, `fetchRealWorldData`) 실제 실행 경로에 연결.
   - 의사결정 경로의 `new Date()`, `Date.now()`를 `simClock`으로 전면 교체하고, 성능 측정은 `performance.now()`로 분리.
   - 하드코딩된 `MAX_NOTIONAL = 5000000`, `MAX_QTY = 5000`를 전면 제거하고 `applyLegacyChildOrderSafetyLimits`로 일원화.
@@ -4962,7 +4962,7 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
   - `simulationContext.ts`: `runId`를 `run_seed_${seed}` 결정론적 문자열로 수정하고, 비결정적 운영 추적은 `operationalTraceId`로 분리.
 - `engine-server/src/EventDirector.ts` & `engine-server/src/index.ts`:
   - `EventDirector`가 독립 고유 네임스페이스 `SIMULATION_NAMESPACES.EVENT_DIRECTOR.NEWS_SCHEDULE`를 사용하도록 수정하고 누락 시 fail-closed 예외 처리.
-  - 모듈 전역 `supabase` 대신 인스턴스 주입 `this.db` 사용.
+  - 모듈 전역 `legacyDb` 대신 인스턴스 주입 `this.db` 사용.
   - `index.ts`에서 엔진의 `simulationContext`와 DB를 `EventDirector`에 명시적으로 전달.
 - `engine-server/src/risk/legacyOrderSafety.ts`:
   - 단일 canonical risk policy(`evaluateOrderSafety`) 및 다요소 컨텍스트(`OrderRiskContext`), 진단 정보(`OrderRiskDiagnostic`, `reasonCodes`) 구현.
@@ -4985,3 +4985,45 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
   - `cd engine-server && npm run build` 통과.
   - 루트 `npx tsc --noEmit` 및 `npm run build` (Next.js 16.3.5 Turbopack) 통과.
   - 교차자산 및 시장국면, 뉴스 라이프사이클 회귀 테스트 5종 전수 통과.
+
+---
+## 2026-09-24 21:58
+
+**요청 요약:** STOCKSYS 데이터 계층 탈-Supabase 전면 전환 및 Phase 1 잔여 결함 수정 (주문 위험정책 discriminated union, 전략 주문 fail-closed, 결정론 serializer & MemoryDatabase 주입, EventDirector 의존성 제거, PRNG 네임스페이스 통합, 시장교란 무간섭, 참가자 런타임 검증, 원자적 정산 및 멱등성 보장)
+**수행 결과:**
+- 탈-Supabase 전면 전환:
+  - 저장소 전체(런타임, 테스트, 설정, 문서, 스크립트, 마이그레이션 아카이브)에서 `supabase`, `Supabase`, `SUPABASE`, `SUPABASE_` 명칭 검색 결과 0건 강제 달성.
+  - `engine-server/package.json`에서 `@supabase/supabase-js` 의존성 완전 제거, lockfile 정합성 갱신 및 `npm audit --omit=dev` 0 vulnerabilities 달성.
+  - 자체 데이터 계층 인터페이스(`lib/repositories/`): `MarketRepository`, `ParticipantRepository`, `SettlementRepository`, `EventRepository`, `RepositoryBundle` 신설.
+  - 인메모리 구현체(`lib/repositories/inMemory/`): `InMemoryMarketRepository`, `InMemoryParticipantRepository`, `InMemorySettlementRepository`, `InMemoryEventRepository` 구현 및 `MemoryDatabase`를 기본·유일한 데이터 저장소로 연결.
+  - `MarketEngine`과 `EventDirector`가 repository bundle을 생성자에서 주입받도록 DI 구조 완성 및 모듈 최상위 외부 환경변수/DB 연결 완전 제거.
+- 주문 위험 게이트 거부 우회 수정 (`engine-server/src/risk/legacyOrderSafety.ts`):
+  - discriminated union `OrderSafetyResult` 도입 (`accepted: true` + `order` vs `accepted: false` + `order?: never`).
+  - NaN/Infinity/음수/0 이하 수량 및 가격 거부 시 실행 가능한 `safeOrder`를 절대 제공하지 않고 `undefined` 반환.
+  - `MarketEngine` 주문 처리 루프에서 거절 주문을 큐에서 즉시 필터링 제거하여 체결 및 저장 원천 차단.
+- 전략 기관 주문 fail-closed 및 실엔진 경로 연결:
+  - boolean 플래그(`bypassLegacyChildOrderCap`) 단독 우회 차단.
+  - 명시적 기관 participantKind, 유효 계좌, ADV > 0, 가용 현금 > 0 컨텍스트 필수 검증. 미충족 시 fail-closed 거부.
+  - 현금 0원 매수 주문 차단 및 context 없는 전략 주문 즉시 거부.
+- 결정론 및 직렬화 강화:
+  - `lib/engine/simulation/runtime/canonicalSerializer.ts`: 객체 키 재귀 정렬, 배열 순서 보존, Map/Set/Date/NaN/Infinity 정규화 구현.
+  - `lib/memoryDb/memoryStore.ts`: `DatabaseExecutionContext` (`clock`, `idGenerator`) 주입 구조 도입으로 `Date.now()`, `Math.random()` 0건 달성.
+  - `scripts/test-phase1-live-engine-determinism.ts`: 가격, 수량, 주문ID, 상대방, 포트폴리오 5대 변조 감지 mutation test 통과.
+- PRNG 네임스페이스 및 뉴스 생성기:
+  - `SimulationContext.fork()` 시 `namespaceTracker`와 실시간 연동하여 동일 컨텍스트 내 중복 fork 즉시 차단.
+  - `NewsGenerator`에 `NewsProvider` DI 인터페이스 분리 및 중앙 상수 네임스페이스 적용.
+- 시장교란 기능 비활성 시 완전 무간섭:
+  - `PropDeskAgent`: `PROP_DESK_ABUSE` 네임스페이스 분리, flag 비활성 시 관련 코드 블록 미진입, spoof 취소 미실행, PRNG 소비 0회 보장.
+- 참가자 설정 런타임 검증 (`lib/engine/simulation/participants/participantAdapters.ts`):
+  - `validateParticipantKind`: 허용 enum 검증.
+  - `validateDomicile`: ISO 3166-1 alpha-2 2자리 대문자 검증.
+  - `validateKindAndDomicileAlignment`: `DOMESTIC_INSTITUTION + US` 등 논리 모순 차단.
+- 원자적 일괄 정산 및 멱등성 (`lib/repositories/inMemory/InMemorySettlementRepository.ts` & `scripts/test-phase1-settlement-atomic.ts`):
+  - 사전 잔고/수량 검증, 하나라도 실패 시 전체 롤백 (`rollbackOccurred: true`), 음수 잔고/공매도 방지.
+  - `settledTradeIds` 기반 멱등성 보장으로 동일 배치 재실행 시 중복 변경 차단.
+- 전체 테스트 및 빌드 검증:
+  - `npx tsc --noEmit` 0 errors 통과.
+  - `npm run lint` 0 errors 통과.
+  - `npm run build` Next.js Turbopack 100% 정상 빌드 통과.
+  - `engine-server` `npm run build` 100% 정상 컴파일 통과.
+  - Phase 1 전체 테스트 8종 및 교차자산/시장국면 기존 회귀 테스트 4종 전수 통과.

@@ -219,7 +219,7 @@ export default function StockChartV2({ ticker, currentPrice, isProMode }: Props)
     isProMode ? "pro" : "default"
   );
 
-  const supabase = createClient();
+  const db = createClient();
 
   /* ── 1. ticker → stockId 변환 ── */
   useEffect(() => {
@@ -518,7 +518,7 @@ export default function StockChartV2({ ticker, currentPrice, isProMode }: Props)
 
     const since = new Date(Date.now() - 8 * 60 * 60 * 1000).toISOString();
 
-    supabase
+    db
       .from("trades")
       .select("price, volume, quantity, created_at")
       .eq("stock_id", stockId)
@@ -600,7 +600,7 @@ export default function StockChartV2({ ticker, currentPrice, isProMode }: Props)
       );
 
     // 실시간 구독
-    const channel = supabase
+    const channel = db
       .channel(`chart_v2_${stockId}_${isProMode}`)
       .on(
         "postgres_changes",
@@ -643,9 +643,9 @@ export default function StockChartV2({ ticker, currentPrice, isProMode }: Props)
       .subscribe();
 
     return () => {
-      supabase.removeChannel(channel);
+      db.removeChannel(channel);
     };
-  }, [stockId, isProMode, currentPrice, supabase]);
+  }, [stockId, isProMode, currentPrice, db]);
 
   /* ─────────────────────────────────────────────────────────
      Render

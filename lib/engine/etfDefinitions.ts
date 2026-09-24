@@ -218,7 +218,7 @@ export const ETF_CATALOG: ExtendedETFDefinition[] = [
  */
 export async function seedETFStocksToDatabase() {
   try {
-    const supabase = createClient();
+    const db = createClient();
     const etfRows = ETF_CATALOG.map(e => ({
       ticker: e.etfTicker,
       name: e.name,
@@ -233,7 +233,7 @@ export async function seedETFStocksToDatabase() {
       is_listed: true
     }));
 
-    await supabase.from('stocks').upsert(etfRows, { onConflict: 'ticker' });
+    await db.from('stocks').upsert(etfRows, { onConflict: 'ticker' });
   } catch (err) {
     console.error("Failed to seed ETF stocks:", err);
   }

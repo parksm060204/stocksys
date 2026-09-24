@@ -38,12 +38,12 @@ export default function AdminPage() {
   const [newSector, setNewSector] = useState<string>("반도체");
   const [newPrice, setNewPrice] = useState<string>("50000");
 
-  const supabase = createClient();
+  const db = createClient();
   const { userId, isLoggedIn } = useAuth();
 
   const fetchAdminStatus = useCallback(async () => {
     if (isLoggedIn && userId) {
-      const { data: profile } = await supabase
+      const { data: profile } = await db
         .from("profiles")
         .select("is_admin, unlocked_features")
         .eq("id", userId)
@@ -57,10 +57,10 @@ export default function AdminPage() {
       // 로컬 개발 환경 편의상 기본 관리자 활성화
       setIsAdmin(true);
     }
-  }, [supabase, isLoggedIn, userId]);
+  }, [db, isLoggedIn, userId]);
 
   const fetchStocks = useCallback(async () => {
-    const { data } = await supabase
+    const { data } = await db
       .from("stocks")
       .select("id, ticker, name, market, current_price, target_price")
       .eq("is_listed", true)
@@ -68,7 +68,7 @@ export default function AdminPage() {
     if (data) {
       setStocks(data as StockItem[]);
     }
-  }, [supabase]);
+  }, [db]);
 
   useEffect(() => {
     fetchAdminStatus();
@@ -83,7 +83,7 @@ export default function AdminPage() {
     }
     setLoading(true);
     try {
-      const { error } = await supabase.from("novel_events").insert({
+      const { error } = await db.from("novel_events").insert({
         title: eventTitle,
         raw_text: eventRawText,
         impact_summary: "관리자에 의해 시스템에 강제 적용된 이벤트입니다.",
@@ -115,7 +115,7 @@ export default function AdminPage() {
     setLoading(true);
     try {
       const initPrice = Number(newPrice) || 50000;
-      const { error } = await supabase.from("stocks").insert({
+      const { error } = await db.from("stocks").insert({
         ticker: newTicker.toUpperCase(),
         name: newName,
         market: newMarket,

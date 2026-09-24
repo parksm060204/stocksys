@@ -1,5 +1,5 @@
 -- ====================================================================
--- PostgreSQL / Supabase Migration: get_authoritative_orderbook RPC
+-- PostgreSQL Migration: get_authoritative_orderbook RPC
 -- ====================================================================
 -- 목적:
 -- 1. 단일 SQL CTE 및 STABLE 선언을 통해 단일 읽기 트랜잭션/스냅샷 구간에서

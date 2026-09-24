@@ -38,6 +38,7 @@ function testLegacyChildOrderLimits() {
     100000,
     100000
   );
+  assert(order1, 'order1 must not be undefined');
   assert.strictEqual(order1.size, 50, 'Notional cap of 5,000,000 KRW must limit shares to 50');
   assert.strictEqual(order1.price, 100000);
 
@@ -47,6 +48,7 @@ function testLegacyChildOrderLimits() {
     1000,
     1000000
   );
+  assert(order2, 'order2 must not be undefined');
   assert.strictEqual(order2.size, 5000, 'Max shares cap of 5,000 must limit shares');
 
   // Test 3: LOB Depth Ratio Cap (10% of 200 shares depth = 20 shares)
@@ -55,6 +57,7 @@ function testLegacyChildOrderLimits() {
     10000,
     200
   );
+  assert(order3, 'order3 must not be undefined');
   assert.strictEqual(order3.size, 20, 'LOB Depth cap of 10% must limit shares to 20');
 
   // Test 4: Tick alignment on raw price
@@ -63,6 +66,7 @@ function testLegacyChildOrderLimits() {
     54321,
     50000
   );
+  assert(order4, 'order4 must not be undefined');
   assert.strictEqual(order4.price, 54300, 'Price must be aligned to 100 KRW tick ladder');
 }
 

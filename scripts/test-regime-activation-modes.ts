@@ -802,7 +802,7 @@ async function runAllTests(): Promise<void> {
       ],
     };
 
-    const createMockSupabase = (failOnTable?: string) => ({
+    const createMockQueryDb = (failOnTable?: string) => ({
       from: (tableName: string) => ({
         select: (_cols: string) => ({
           eq: (col: string, val: any) => ({
@@ -820,7 +820,7 @@ async function runAllTests(): Promise<void> {
       }),
     });
 
-    const mockDb = createMockSupabase();
+    const mockDb = createMockQueryDb();
 
     // 시나리오 1: UUID로 주식 상세 접근 (canonical 결과 존재 -> ticker fallback 미호출)
     const res1 = await fetchCanonicalPriceHistory({
@@ -849,7 +849,7 @@ async function runAllTests(): Promise<void> {
     });
     assert(res3.source === 'empty' && res3.data.length === 0, '3.1-C 양쪽 모두 부재 시 정상 빈 결과 반환');
     // 시나리오 4: DB 조회 오류 시 source === 'error' 반환 (정상 empty와 명확히 구분)
-    const failingDb = createMockSupabase('stock_price_history');
+    const failingDb = createMockQueryDb('stock_price_history');
     const res4 = await fetchCanonicalPriceHistory({
       db: failingDb,
       assetId: '00000000-0000-4000-8000-000000000101',

@@ -21,7 +21,7 @@ CREATE INDEX IF NOT EXISTS idx_market_news_target_ticker ON market_news(target_t
 -- Enable Row Level Security (RLS)
 ALTER TABLE market_news ENABLE ROW LEVEL SECURITY;
 
--- Explicit GRANT permissions per Supabase rules
+-- Explicit GRANT permissions per Legacy DB rules
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE market_news TO anon, authenticated;
 
 -- RLS Policies

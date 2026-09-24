@@ -1,6 +1,6 @@
 -- =====================================================================
 -- Egress 절감 정리 스크립트 - 안전한 청크 단위 삭제
--- Supabase Dashboard > SQL Editor 에서 한 섹션씩 실행
+-- Legacy DB Dashboard > SQL Editor 에서 한 섹션씩 실행
 -- =====================================================================
 
 -- =================================================================
@@ -171,10 +171,10 @@ END $$;
 -- =================================================================
 
 -- 5-1) 기존 publication에서 trades 일단 제거
-ALTER PUBLICATION supabase_realtime DROP TABLE IF EXISTS public.trades;
+ALTER PUBLICATION database_realtime DROP TABLE IF EXISTS public.trades;
 
 -- 5-2) 필요한 컬럼만 포함하여 재추가 (Postgres 15+ 의 column list)
-ALTER PUBLICATION supabase_realtime
+ALTER PUBLICATION database_realtime
   ADD TABLE public.trades (
     id,
     stock_id,
@@ -187,9 +187,9 @@ ALTER PUBLICATION supabase_realtime
 
 -- 5-3) institutional_portfolios 도 Realtime publish 중 컬럼 축소 검토
 -- 프론트 institutions/page.tsx에서 사용하는 컬럼만 publish
-ALTER PUBLICATION supabase_realtime DROP TABLE IF EXISTS public.institutional_portfolios;
+ALTER PUBLICATION database_realtime DROP TABLE IF EXISTS public.institutional_portfolios;
 
-ALTER PUBLICATION supabase_realtime
+ALTER PUBLICATION database_realtime
   ADD TABLE public.institutional_portfolios (
     bot_id,
     name,
@@ -231,5 +231,5 @@ LIMIT 15;
 SELECT
   schemaname, tablename, attnames
 FROM pg_publication_tables
-WHERE pubname = 'supabase_realtime'
+WHERE pubname = 'database_realtime'
   AND tablename IN ('trades', 'institutional_portfolios');

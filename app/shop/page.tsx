@@ -40,13 +40,13 @@ export default function ShopPage() {
   const [selectedOutlet, setSelectedOutlet] = useState<Outlet | null>(null);
   const [selectedDays, setSelectedDays] = useState<number>(30);
 
-  const supabase = createClient();
+  const db = createClient();
   const { userId, isLoggedIn } = useAuth();
 
   useEffect(() => {
     const fetchData = async () => {
       if (isLoggedIn && userId) {
-        const { data: profile } = await supabase.from('profiles').select('cash, is_admin, has_options_license, unlocked_features, news_subscriptions').eq('id', userId).single();
+        const { data: profile } = await db.from('profiles').select('cash, is_admin, has_options_license, unlocked_features, news_subscriptions').eq('id', userId).single();
         if (profile) {
           setCash(Number(profile.cash || 0));
           const adminFlag = profile.is_admin || false;
@@ -63,7 +63,7 @@ export default function ShopPage() {
         }
       }
 
-      const { data: outletData } = await supabase
+      const { data: outletData } = await db
         .from('media_outlets')
         .select('*')
         .neq('subscription_fee', 0)
@@ -74,7 +74,7 @@ export default function ShopPage() {
       }
     };
     fetchData();
-  }, [supabase, isLoggedIn, userId]);
+  }, [db, isLoggedIn, userId]);
 
   // Handle News Purchase Execution
   const executeNewsPurchase = async () => {
@@ -97,7 +97,7 @@ export default function ShopPage() {
 
     setLoading(true);
     try {
-      const { data: profile } = await supabase.from('profiles').select('cash, news_subscriptions').eq('id', userId).single();
+      const { data: profile } = await db.from('profiles').select('cash, news_subscriptions').eq('id', userId).single();
       if (!profile || Number(profile.cash || 0) < price) {
         throw new Error("예수금이 부족합니다.");
       }
@@ -108,7 +108,7 @@ export default function ShopPage() {
       const newExpiry = now.toISOString();
       currentSubs[String(selectedOutlet.id)] = newExpiry;
 
-      const { error: profileErr } = await supabase
+      const { error: profileErr } = await db
         .from('profiles')
         .update({
           cash: Number(profile.cash) - price,
@@ -140,12 +140,12 @@ export default function ShopPage() {
 
     setLoading(true);
     try {
-      const { data: profile } = await supabase.from('profiles').select('cash').eq('id', userId).single();
+      const { data: profile } = await db.from('profiles').select('cash').eq('id', userId).single();
       if (!profile || Number(profile.cash || 0) < price) {
         throw new Error("예수금이 부족합니다.");
       }
 
-      const { error: profileErr } = await supabase
+      const { error: profileErr } = await db
         .from('profiles')
         .update({
           cash: Number(profile.cash) - price,
@@ -175,7 +175,7 @@ export default function ShopPage() {
 
     setLoading(true);
     try {
-      const { data: profile } = await supabase.from('profiles').select('cash, unlocked_features').eq('id', userId).single();
+      const { data: profile } = await db.from('profiles').select('cash, unlocked_features').eq('id', userId).single();
       if (!profile || Number(profile.cash || 0) < price) {
         throw new Error("예수금이 부족합니다.");
       }
@@ -185,7 +185,7 @@ export default function ShopPage() {
         currentUnlocked.push("custom_dashboard");
       }
 
-      const { error: profileErr } = await supabase
+      const { error: profileErr } = await db
         .from('profiles')
         .update({ 
           cash: Number(profile.cash) - price,
@@ -214,7 +214,7 @@ export default function ShopPage() {
     
     setLoading(true);
     try {
-      const { data: profile } = await supabase.from('profiles').select('cash, unlocked_features').eq('id', userId).single();
+      const { data: profile } = await db.from('profiles').select('cash, unlocked_features').eq('id', userId).single();
       if (!profile || Number(profile.cash || 0) < price) {
         throw new Error("예수금이 부족합니다.");
       }
@@ -223,7 +223,7 @@ export default function ShopPage() {
         currentUnlocked.push("fee_booster");
       }
 
-      const { error: profileErr } = await supabase
+      const { error: profileErr } = await db
         .from('profiles')
         .update({
           cash: Number(profile.cash) - price,
@@ -252,7 +252,7 @@ export default function ShopPage() {
     
     setLoading(true);
     try {
-      const { data: profile } = await supabase.from('profiles').select('cash, unlocked_features').eq('id', userId).single();
+      const { data: profile } = await db.from('profiles').select('cash, unlocked_features').eq('id', userId).single();
       if (!profile || Number(profile.cash || 0) < price) {
         throw new Error("예수금이 부족합니다.");
       }
@@ -261,7 +261,7 @@ export default function ShopPage() {
         currentUnlocked.push("scanner_item");
       }
 
-      const { error: profileErr } = await supabase
+      const { error: profileErr } = await db
         .from('profiles')
         .update({
           cash: Number(profile.cash) - price,
@@ -290,7 +290,7 @@ export default function ShopPage() {
     
     setLoading(true);
     try {
-      const { data: profile } = await supabase.from('profiles').select('cash, unlocked_features').eq('id', userId).single();
+      const { data: profile } = await db.from('profiles').select('cash, unlocked_features').eq('id', userId).single();
       if (!profile || Number(profile.cash || 0) < price) {
         throw new Error("예수금이 부족합니다.");
       }
@@ -299,7 +299,7 @@ export default function ShopPage() {
         currentUnlocked.push("ai_predictor");
       }
 
-      const { error: profileErr } = await supabase
+      const { error: profileErr } = await db
         .from('profiles')
         .update({
           cash: Number(profile.cash) - price,

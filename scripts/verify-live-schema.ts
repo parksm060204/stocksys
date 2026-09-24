@@ -6,8 +6,8 @@ async function verifyLiveSchema() {
   console.log('🌐 [LIVE SCHEMA CHECK] vm-db PostgREST 라이브 엔드포인트 스키마 확인');
   console.log('================================================================\n');
 
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL || 'http://49.247.136.231:3001';
-  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlzcyI6InBvc3RncmVzdCIsImV4cCI6OTk5OTk5OTk5OX0.ZVBYePzn3NGxFYWINT5qpYt7FxXjWwXfS2FFw3Oy474';
+  const url = process.env.NEXT_PUBLIC_ENGINE_DB_URL || 'http://49.247.136.231:3001';
+  const key = process.env.NEXT_PUBLIC_ENGINE_DB_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlzcyI6InBvc3RncmVzdCIsImV4cCI6OTk5OTk5OTk5OX0.ZVBYePzn3NGxFYWINT5qpYt7FxXjWwXfS2FFw3Oy474';
 
   console.log(`▶ 대상 엔드포인트: ${url}`);
 
@@ -51,7 +51,7 @@ async function verifyLiveSchema() {
     if (err.name === 'AbortError') {
       console.log(`  ⚠️ vm-db (${url}) 연결 타임아웃 (외부 VM 네트워크 대기 상태)`);
       console.log('  💡 참고: 이전 verify-schema-diff.ts는 로컬 DDL 마이그레이션 SQL 파일들을 파싱하여 100% 정합성을 검증했습니다.');
-      console.log('  💡 마이그레이션 파일(supabase/migrations/align_profiles_schema.sql)을 VM 서버 psql에서 실행(apply)하시면 라이브 DB에도 동일하게 반영됩니다.');
+      console.log('  💡 마이그레이션 파일(archive/legacy-postgres/sql/migrations/align_profiles_schema.sql)을 VM 서버 psql에서 실행(apply)하시면 라이브 DB에도 동일하게 반영됩니다.');
     } else {
       console.log(`  ⚠️ 라이브 연결 에러: ${err.message}`);
     }

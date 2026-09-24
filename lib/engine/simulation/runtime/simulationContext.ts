@@ -5,6 +5,7 @@
  * - Deterministic PRNG seed and namespaced stream splitting
  * - Controlled virtual clock
  * - Isolated run identification
+ * - Integrated namespace collision tracking and detection
  */
 
 import { SimulationClock } from '../simClock';
@@ -17,6 +18,7 @@ import {
   ClockTimeSource,
   WallClockTimeSource
 } from './simulationTimeSource';
+import { SimulationNamespaceTracker } from './simulationNamespaces';
 
 export interface SimulationContext {
   readonly seed: number;
@@ -24,6 +26,9 @@ export interface SimulationContext {
   readonly random: SimulationRandomSource;
   readonly runId: string;
   readonly operationalTraceId?: string;
+  readonly namespaceTracker: SimulationNamespaceTracker;
+  fork(namespace: string): SimulationRandomSource;
+  replayFork(namespace: string): SimulationRandomSource;
 }
 
 export interface CreateSimulationContextOptions {
@@ -32,6 +37,7 @@ export interface CreateSimulationContextOptions {
   random?: SimulationRandomSource;
   runId?: string;
   operationalTraceId?: string;
+  namespaceTracker?: SimulationNamespaceTracker;
 }
 
 let traceCounter = 0;
@@ -71,15 +77,27 @@ export function createSimulationContext(
 
   // Operational trace id: separated for logging/diagnostics without polluting determinism
   const resolvedOperationalTraceId =
-    options.operationalTraceId || `trace_${resolvedSeed}_${Date.now()}_${++traceCounter}`;
+    options.operationalTraceId || `trace_${resolvedSeed}_seq_${++traceCounter}`;
 
-  return {
+  const resolvedTracker = options.namespaceTracker || new SimulationNamespaceTracker();
+
+  const context: SimulationContext = {
     seed: resolvedSeed,
     clock: resolvedClock,
     random: resolvedRandom,
     runId: resolvedRunId,
     operationalTraceId: resolvedOperationalTraceId,
+    namespaceTracker: resolvedTracker,
+    fork(namespace: string): SimulationRandomSource {
+      resolvedTracker.register(namespace);
+      return resolvedRandom.fork(namespace);
+    },
+    replayFork(namespace: string): SimulationRandomSource {
+      return resolvedRandom.fork(namespace);
+    }
   };
+
+  return context;
 }
 
 /**
@@ -89,10 +107,22 @@ export function forkSimulationContext(
   parent: SimulationContext,
   namespace: string
 ): SimulationContext {
+  parent.namespaceTracker.register(namespace);
+  const forkedRandom = parent.random.fork(namespace);
+
   return {
     seed: parent.seed,
     clock: parent.clock,
-    random: parent.random.fork(namespace),
+    random: forkedRandom,
     runId: parent.runId,
+    operationalTraceId: parent.operationalTraceId,
+    namespaceTracker: parent.namespaceTracker,
+    fork(ns: string): SimulationRandomSource {
+      parent.namespaceTracker.register(`${namespace}/${ns}`);
+      return forkedRandom.fork(ns);
+    },
+    replayFork(ns: string): SimulationRandomSource {
+      return forkedRandom.fork(ns);
+    }
   };
 }

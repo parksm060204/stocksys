@@ -18,7 +18,7 @@ import { useAuth } from "@/lib/auth/useAuth";
 export default function DashboardGate({ children }: { children: React.ReactNode }) {
   const [mode, setMode] = useState<'intro' | 'loading' | 'dashboard'>('intro');
 
-  const supabase = createClient();
+  const db = createClient();
   const { userId, isLoggedIn } = useAuth();
 
   useEffect(() => {
@@ -27,7 +27,7 @@ export default function DashboardGate({ children }: { children: React.ReactNode 
     (async () => {
       if (!isLoggedIn || !userId || cancelled) return;
 
-      const { data: profile } = await supabase
+      const { data: profile } = await db
         .from('profiles')
         .select('is_admin, unlocked_features')
         .eq('id', userId)
@@ -43,7 +43,7 @@ export default function DashboardGate({ children }: { children: React.ReactNode 
     })();
 
     return () => { cancelled = true; };
-  }, [supabase, isLoggedIn, userId]);
+  }, [db, isLoggedIn, userId]);
 
   if (mode === 'intro') return <>{children}</>;
   if (mode === 'loading') return <DashboardSkeleton />;
@@ -77,14 +77,14 @@ function DashboardContent() {
   const [indicesMap, setIndicesMap] = useState<Record<string, number>>({});
   const [ready, setReady] = useState(false);
 
-  const supabase = createClient();
+  const db = createClient();
 
   useEffect(() => {
     (async () => {
       const [{ data: stocksData }, { data: newsData }, { data: indicesData }] = await Promise.all([
-        supabase.from('stocks').select('id, name, ticker, market, sector, current_price, previous_close'),
-        supabase.from('market_news').select('*').order('created_at', { ascending: false }).limit(5),
-        supabase.from('market_indices').select('code, current_value')
+        db.from('stocks').select('id, name, ticker, market, sector, current_price, previous_close'),
+        db.from('market_news').select('*').order('created_at', { ascending: false }).limit(5),
+        db.from('market_indices').select('code, current_value')
       ]);
 
       const map: Record<string, number> = {};
@@ -101,7 +101,7 @@ function DashboardContent() {
       setNews(newsData || []);
       setReady(true);
     })();
-  }, [supabase]);
+  }, [db]);
 
   if (!ready) return <DashboardSkeleton />;
 

@@ -53,4 +53,4 @@ CREATE POLICY "Anyone can read premium_news" ON public.premium_news FOR SELECT U
 -- Service Role writes via backend
 
 -- Realtime
-ALTER PUBLICATION supabase_realtime ADD TABLE public.premium_news;
+ALTER PUBLICATION database_realtime ADD TABLE public.premium_news;

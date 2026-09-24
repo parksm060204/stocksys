@@ -1,10 +1,16 @@
 import type { PropDeskBot } from "../types";
 import { BaseAgent } from "./BaseAgent";
 import { WelfordRegression, OFISlidingWindow } from "./utils/math";
-import type { SimulationContext } from "../../../lib/engine/simulation/runtime";
+import {
+  SimulationContext,
+  SimulationRandomSource,
+  SIMULATION_NAMESPACES
+} from "../../../lib/engine/simulation/runtime";
+import { isMarketAbuseScenarioEnabled } from "../simulation/featureFlags";
 
 export class PropDeskAgent extends BaseAgent {
   private bot: PropDeskBot;
+  private marketAbuseRandom?: SimulationRandomSource;
   
   // 상태 추적 맵 (Stock ID 기준)
   private regressionState: Record<string, WelfordRegression> = {};
@@ -16,6 +22,9 @@ export class PropDeskAgent extends BaseAgent {
   constructor(bot: PropDeskBot, context?: SimulationContext) {
     super(bot.id, bot.capital, context);
     this.bot = bot;
+    if (context) {
+      this.marketAbuseRandom = context.fork(SIMULATION_NAMESPACES.BOTS.PROP_DESK_ABUSE(bot.id));
+    }
     if ((bot as any).initialHoldings) {
       this.holdings = { ...(bot as any).initialHoldings };
       this.currentPortfolio.holdings = { ...(bot as any).initialHoldings };
@@ -71,21 +80,24 @@ export class PropDeskAgent extends BaseAgent {
       // ==========================================
       // 🧠 HFT Strategy 2: 스푸핑 & 레이어링 (Spoofing & Layering)
       // ==========================================
-      // 이전 틱에 설치했던 허수 스푸핑 주문 즉시 전량 취소
-      this.cancelExpiredSpoofs(currentTime, 1);
+      if (isMarketAbuseScenarioEnabled()) {
+        // 이전 틱에 설치했던 허수 스푸핑 주문 즉시 전량 취소
+        this.cancelExpiredSpoofs(currentTime, 1);
 
-      // 단기 모멘텀 유도를 위한 가짜 대형벽(Spoofing) 설치
-      if (this.random.nextBoolean(0.35)) {
-        const isBullishSpoof = this.random.next() > 0.45;
-        const spoofOrder = this.executeSpoofLayering(
-          stock,
-          isBullishSpoof ? 'buy' : 'sell',
-          2, // 2틱 아래/위에 대형 허수벽 깔기
-          8.0, // 평소의 8배 규모
-          currentTime
-        );
-        if (spoofOrder) {
-          orders.push(spoofOrder);
+        const abuseRand = this.marketAbuseRandom || this.random;
+        // 단기 모멘텀 유도를 위한 가짜 대형벽(Spoofing) 설치
+        if (abuseRand.nextBoolean(0.35)) {
+          const isBullishSpoof = abuseRand.next() > 0.45;
+          const spoofOrder = this.executeSpoofLayering(
+            stock,
+            isBullishSpoof ? 'buy' : 'sell',
+            2, // 2틱 아래/위에 대형 허수벽 깔기
+            8.0, // 평소의 8배 규모
+            currentTime
+          );
+          if (spoofOrder) {
+            orders.push(spoofOrder);
+          }
         }
       }
 

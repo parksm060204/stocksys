@@ -17,7 +17,12 @@
 import crypto from 'crypto';
 import { MarketEngine, MarketDataSource, MarketPersistence } from '../engine-server/src/MarketEngine';
 import { createIsolatedMemoryDbClient } from '../lib/memoryDb/memoryDbClient';
-import { createSimulationContext, StaticTimeSource } from '../lib/engine/simulation/runtime';
+import { MemoryDatabase, SequentialIdGenerator } from '../lib/memoryDb/memoryStore';
+import {
+  createSimulationContext,
+  StaticTimeSource,
+  computeCanonicalHash
+} from '../lib/engine/simulation/runtime';
 
 function assert(condition: boolean, msg: string) {
   if (!condition) {
@@ -26,8 +31,7 @@ function assert(condition: boolean, msg: string) {
 }
 
 function computeHash(data: any): string {
-  const jsonStr = JSON.stringify(data, Object.keys(data).sort());
-  return crypto.createHash('sha256').update(jsonStr).digest('hex');
+  return computeCanonicalHash(data);
 }
 
 function createDeterministicFixtureData() {
@@ -107,10 +111,14 @@ async function populateInitialDb(db: any) {
 }
 
 async function runDeterministicSimulation(seed: number, startTime: number, tickCount: number) {
-  const db = createIsolatedMemoryDbClient();
+  const timeSource = new StaticTimeSource(startTime);
+  const memoryDb = new MemoryDatabase({
+    clock: timeSource,
+    idGenerator: new SequentialIdGenerator(seed)
+  });
+  const db = createIsolatedMemoryDbClient(memoryDb);
   await populateInitialDb(db);
 
-  const timeSource = new StaticTimeSource(startTime);
   const context = createSimulationContext({
     seed,
     clock: timeSource
@@ -121,7 +129,7 @@ async function runDeterministicSimulation(seed: number, startTime: number, tickC
 
   const engine = new MarketEngine({
     simulationContext: context,
-    supabaseClient: db,
+    databaseClient: db,
     marketDataSource: dataSource,
     persistence
   });
@@ -209,6 +217,49 @@ async function runTest() {
   // Assertions: Run 1 and Run 3 must diverge
   assert(fp1.fundamentals !== fp3.fundamentals, 'Different seeds must produce different fundamentals diffusion');
 
+  // 3. Mutation Testing: Verify that mutating any single value in the arrays changes the fingerprint
+  console.log('\n--- Running Canonical Serializer Mutation Tests ---');
+  const baseData = {
+    orders: [
+      { id: 'ORD_1', price: 100, size: 10, side: 'buy' },
+      { id: 'ORD_2', price: 200, size: 20, side: 'sell' }
+    ],
+    trades: [
+      { id: 'TRD_1', buyer_id: 'B1', seller_id: 'S1', price: 100, size: 5 }
+    ],
+    portfolios: [
+      { bot_id: 'BOT_1', cash: 10000, stock: 50 }
+    ]
+  };
+
+  const baseHash = computeHash(baseData);
+
+  // Mutation 1: Order price
+  const mutatedPrice = JSON.parse(JSON.stringify(baseData));
+  mutatedPrice.orders[0].price = 101;
+  assert(computeHash(mutatedPrice) !== baseHash, 'Mutating order price must change hash');
+
+  // Mutation 2: Order size
+  const mutatedSize = JSON.parse(JSON.stringify(baseData));
+  mutatedSize.orders[0].size = 11;
+  assert(computeHash(mutatedSize) !== baseHash, 'Mutating order size must change hash');
+
+  // Mutation 3: Order ID
+  const mutatedOrderId = JSON.parse(JSON.stringify(baseData));
+  mutatedOrderId.orders[0].id = 'ORD_MUTATED';
+  assert(computeHash(mutatedOrderId) !== baseHash, 'Mutating order ID must change hash');
+
+  // Mutation 4: Trade Counterparty
+  const mutatedBuyer = JSON.parse(JSON.stringify(baseData));
+  mutatedBuyer.trades[0].buyer_id = 'B2';
+  assert(computeHash(mutatedBuyer) !== baseHash, 'Mutating trade counterparty must change hash');
+
+  // Mutation 5: Portfolio quantity
+  const mutatedPortfolio = JSON.parse(JSON.stringify(baseData));
+  mutatedPortfolio.portfolios[0].stock = 51;
+  assert(computeHash(mutatedPortfolio) !== baseHash, 'Mutating portfolio quantity must change hash');
+
+  console.log('✅ Canonical Fingerprint Mutation Tests Passed: All mutations detected!');
   console.log('\n✅ Live MarketEngine Real-Tick Determinism Test Passed: Bit-for-bit reproducibility verified across full tick execution.');
 }
 

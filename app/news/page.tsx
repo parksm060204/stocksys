@@ -23,7 +23,7 @@ export default function NewsPage() {
   const [newsList, setNewsList] = useState<CombinedNews[]>([]);
   const [isAdmin, setIsAdmin] = useState<boolean>(false);
 
-  const supabase = createClient();
+  const db = createClient();
   const { userId, isLoggedIn } = useAuth();
 
   useEffect(() => {
@@ -31,7 +31,7 @@ export default function NewsPage() {
 
     const fetchData = async () => {
       if (isLoggedIn && userId) {
-        const { data: profile } = await supabase
+        const { data: profile } = await db
           .from('profiles')
           .select('is_admin, news_subscriptions')
           .eq('id', userId)
@@ -44,8 +44,8 @@ export default function NewsPage() {
 
       // Fetch news in parallel via Promise.all
       const [{ data: mNews }, { data: pNews }] = await Promise.all([
-        supabase.from('market_news').select('*').order('created_at', { ascending: false }).limit(50),
-        supabase.from('premium_news').select('*, media_outlets(*)').order('created_at', { ascending: false }).limit(50),
+        db.from('market_news').select('*').order('created_at', { ascending: false }).limit(50),
+        db.from('premium_news').select('*, media_outlets(*)').order('created_at', { ascending: false }).limit(50),
       ]);
       
       if (cancelled) return;
@@ -101,7 +101,7 @@ export default function NewsPage() {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [supabase, isLoggedIn, userId]);
+  }, [db, isLoggedIn, userId]);
 
   return (
     <div className="mx-auto max-w-5xl px-6 py-6 font-sans space-y-6">

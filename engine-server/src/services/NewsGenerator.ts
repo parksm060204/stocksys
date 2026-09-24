@@ -2,7 +2,7 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 import {
   SimulationContext,
   SimulationRandomSource,
-  createSimulationContext
+  SIMULATION_NAMESPACES
 } from "../../../lib/engine/simulation/runtime";
 
 export interface NewsItem {
@@ -20,34 +20,86 @@ export interface NewsItem {
   original_rumor_id?: string | null;
 }
 
-export class NewsGenerator {
-  private genAI: GoogleGenerativeAI | null = null;
-  private model: any = null;
-  private readonly random: SimulationRandomSource;
+export interface NewsProvider {
+  generate(
+    random: SimulationRandomSource,
+    marketContext?: { stocks?: any[]; sentiment?: any }
+  ): Promise<NewsItem>;
+}
 
-  constructor(context?: SimulationContext) {
-    this.random = context?.random.fork('news_generator') || createSimulationContext().random.fork('news_generator');
-
-    const apiKey = process.env.GEMINI_API_KEY || process.env.NEXT_PUBLIC_GEMINI_API_KEY || '';
-    if (apiKey) {
-      try {
-        this.genAI = new GoogleGenerativeAI(apiKey);
-        // Use gemini-1.5-pro or gemini-2.0-flash
-        this.model = this.genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
-      } catch (e) {
-        console.warn("⚠️ Failed to initialize Gemini API in NewsGenerator:", e);
-      }
-    } else {
-      console.warn("⚠️ GEMINI_API_KEY is not set. NewsGenerator will use high-quality template fallbacks.");
+export class DeterministicTemplateNewsProvider implements NewsProvider {
+  private static readonly TEMPLATES: readonly NewsItem[] = [
+    {
+      type: 'MACRO',
+      category: 'OFFICIAL',
+      publisher: '월스트리트저널',
+      title: '미 연준 금리 인하 기대감 확산',
+      content: '1. 인플레이션 지표 둔화 신호 감지\n2. 주요 국채 금리 하락세 전환\n3. 억눌렸던 기술주 중심으로 강한 반등 시도',
+      target_sector: '테크',
+      target_ticker: 'US10Y',
+      impact_score: 5.5,
+      is_fake: false
+    },
+    {
+      type: 'MICRO',
+      category: 'RUMOR',
+      publisher: '가십 썬',
+      title: '대형 테크 기업 엠앤에이(M&A) 비공식 타진설',
+      content: '1. 글로벌 인수합병 추진 소문 입수\n2. 이사회 비밀 회동 정황 포착\n3. 양사 주가 폭등 기대감 반영',
+      target_sector: '테크',
+      target_ticker: 'NVDA',
+      impact_score: 7.8,
+      is_fake: true
+    },
+    {
+      type: 'MACRO',
+      category: 'OFFICIAL',
+      publisher: '블룸버그 터미널',
+      title: '국제 유가 급등에 따른 인플레이션 우려 재발',
+      content: '1. 중동 정세 불안으로 공급망 우려\n2. 원자재 시장 강세 지속\n3. 채권 시장 수익률 급등세',
+      target_sector: '원자재',
+      target_ticker: 'GC00',
+      impact_score: -6.2,
+      is_fake: false
+    },
+    {
+      type: 'MICRO',
+      category: 'OFFICIAL',
+      publisher: '스트리트 리포트',
+      title: '주요 반도체 기업 신규 데이터센터 납품 확정',
+      content: '1. 차세대 AI 칩 공급 계약 수주 성공\n2. 수주 규모 사상 최대 기록\n3. 영업이익률 대폭 개선 전망',
+      target_sector: '테크',
+      target_ticker: 'NVDA',
+      impact_score: 8.2,
+      is_fake: false
     }
+  ];
+
+  public async generate(
+    random: SimulationRandomSource,
+    _marketContext?: { stocks?: any[]; sentiment?: any }
+  ): Promise<NewsItem> {
+    const idx = random.nextInt(0, DeterministicTemplateNewsProvider.TEMPLATES.length);
+    return { ...DeterministicTemplateNewsProvider.TEMPLATES[idx] };
+  }
+}
+
+export class ExternalGeminiNewsProvider implements NewsProvider {
+  private genAI: GoogleGenerativeAI;
+  private model: any;
+
+  constructor(apiKey: string) {
+    this.genAI = new GoogleGenerativeAI(apiKey);
+    this.model = this.genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
   }
 
-  public async generateNews(marketContext?: { stocks?: any[]; sentiment?: any }): Promise<NewsItem> {
-    if (this.model) {
-      try {
-        const tickers = (marketContext?.stocks || []).map((s: any) => `${s.ticker} (${s.name})`).join(", ");
+  public async generate(
+    random: SimulationRandomSource,
+    marketContext?: { stocks?: any[]; sentiment?: any }
+  ): Promise<NewsItem> {
+    const tickers = (marketContext?.stocks || []).map((s: any) => `${s.ticker} (${s.name})`).join(", ");
 
-        const prompt = `
+    const prompt = `
 당신은 가상 금융 시장의 전문 경제부 기자이자 정보 브로커입니다.
 현재 시장에 거래 중인 종목 목록: [${tickers.slice(0, 300) || "NVDA, US10Y, KRW, GC00, OSEL3Y"}]
 
@@ -76,34 +128,61 @@ export class NewsGenerator {
   "impact_score": 6.5,
   "is_fake": false
 }
-        `;
+    `;
 
-        const result = await this.model.generateContent({
-          contents: [{ role: "user", parts: [{ text: prompt }] }],
-          generationConfig: { responseMimeType: "application/json" }
-        });
+    try {
+      const result = await this.model.generateContent({
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig: { responseMimeType: "application/json" }
+      });
 
-        const text = result.response.text();
-        const cleanedText = text.replace(/```json/g, '').replace(/```/g, '').trim();
-        const json = JSON.parse(cleanedText);
+      const text = result.response.text();
+      const cleanedText = text.replace(/```json/g, '').replace(/```/g, '').trim();
+      const json = JSON.parse(cleanedText);
 
-        return {
-          type: json.type || 'MACRO',
-          category: json.category || 'OFFICIAL',
-          publisher: json.publisher || '블룸버그 터미널',
-          title: json.title || '시장 긴급 변동성 경보',
-          content: json.content || '1. 시장 참가자 관심 급증\n2. 주요 섹터 변동성 유입\n3. 기관 포트폴리오 재편',
-          target_sector: json.target_sector || null,
-          target_ticker: json.target_ticker || null,
-          impact_score: typeof json.impact_score === 'number' ? Math.max(-10, Math.min(10, json.impact_score)) : 0,
-          is_fake: json.category === 'RUMOR' ? Boolean(json.is_fake) : false
-        };
-      } catch (err) {
-        console.error("❌ Gemini API News Generation error, falling back to templates:", err);
+      return {
+        type: json.type || 'MACRO',
+        category: json.category || 'OFFICIAL',
+        publisher: json.publisher || '블룸버그 터미널',
+        title: json.title || '시장 긴급 변동성 경보',
+        content: json.content || '1. 시장 참가자 관심 급증\n2. 주요 섹터 변동성 유입\n3. 기관 포트폴리오 재편',
+        target_sector: json.target_sector || null,
+        target_ticker: json.target_ticker || null,
+        impact_score: typeof json.impact_score === 'number' ? Math.max(-10, Math.min(10, json.impact_score)) : 0,
+        is_fake: json.category === 'RUMOR' ? Boolean(json.is_fake) : false
+      };
+    } catch (err) {
+      console.error("❌ Gemini API News Generation error, falling back to templates:", err);
+      const fallback = new DeterministicTemplateNewsProvider();
+      return fallback.generate(random, marketContext);
+    }
+  }
+}
+
+export class NewsGenerator {
+  private readonly random: SimulationRandomSource;
+  private readonly provider: NewsProvider;
+
+  constructor(context: SimulationContext, provider?: NewsProvider) {
+    if (!context) {
+      throw new Error('[NewsGenerator] SimulationContext must be explicitly provided.');
+    }
+    this.random = context.fork(SIMULATION_NAMESPACES.SERVICES.NEWS_GENERATOR);
+
+    if (provider) {
+      this.provider = provider;
+    } else {
+      const apiKey = process.env.GEMINI_API_KEY || process.env.NEXT_PUBLIC_GEMINI_API_KEY || '';
+      if (apiKey && process.env.NODE_ENV === 'production') {
+        this.provider = new ExternalGeminiNewsProvider(apiKey);
+      } else {
+        this.provider = new DeterministicTemplateNewsProvider();
       }
     }
+  }
 
-    return this.getFallbackTemplate();
+  public async generateNews(marketContext?: { stocks?: any[]; sentiment?: any }): Promise<NewsItem> {
+    return this.provider.generate(this.random, marketContext);
   }
 
   public generateCorrection(originalRumor: NewsItem): NewsItem {
@@ -119,57 +198,5 @@ export class NewsGenerator {
       is_fake: false,
       original_rumor_id: originalRumor.id || null
     };
-  }
-
-  private getFallbackTemplate(): NewsItem {
-    const templates: NewsItem[] = [
-      {
-        type: 'MACRO',
-        category: 'OFFICIAL',
-        publisher: '월스트리트저널',
-        title: '미 연준 금리 인하 기대감 확산',
-        content: '1. 인플레이션 지표 둔화 신호 감지\n2. 주요 국채 금리 하락세 전환\n3. 억눌렸던 기술주 중심으로 강한 반등 시도',
-        target_sector: '테크',
-        target_ticker: 'US10Y',
-        impact_score: 5.5,
-        is_fake: false
-      },
-      {
-        type: 'MICRO',
-        category: 'RUMOR',
-        publisher: '가십 썬',
-        title: '대형 테크 기업 엠앤에이(M&A) 비공식 타진설',
-        content: '1. 글로벌 인수합병 추진 소문 입수\n2. 이사회 비밀 회동 정황 포착\n3. 양사 주가 폭등 기대감 반영',
-        target_sector: '테크',
-        target_ticker: 'NVDA',
-        impact_score: 7.8,
-        is_fake: true
-      },
-      {
-        type: 'MACRO',
-        category: 'OFFICIAL',
-        publisher: '블룸버그 터미널',
-        title: '국제 유가 급등에 따른 인플레이션 우려 재발',
-        content: '1. 중동 정세 불안으로 공급망 우려\n2. 원자재 시장 강세 지속\n3. 채권 시장 수익률 급등세',
-        target_sector: '원자재',
-        target_ticker: 'GC00',
-        impact_score: -6.2,
-        is_fake: false
-      },
-      {
-        type: 'MICRO',
-        category: 'OFFICIAL',
-        publisher: '스트리트 리포트',
-        title: '주요 반도체 기업 신규 데이터센터 납품 확정',
-        content: '1. 차세대 AI 칩 공급 계약 수주 성공\n2. 수주 규모 사상 최대 기록\n3. 영업이익률 대폭 개선 전망',
-        target_sector: '테크',
-        target_ticker: 'NVDA',
-        impact_score: 8.2,
-        is_fake: false
-      }
-    ];
-
-    const randomIndex = this.random.nextInt(0, templates.length);
-    return templates[randomIndex] as NewsItem;
   }
 }

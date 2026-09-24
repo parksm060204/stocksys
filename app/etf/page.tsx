@@ -14,7 +14,7 @@ import { ETFStructureCard } from '@/app/components/ETFStructureCard';
 import { ETFUserUnderlyingHoldings } from '@/app/components/ETFUserUnderlyingHoldings';
 import { useAuth } from '@/lib/auth/useAuth';
 
-const supabase = createClient();
+const db = createClient();
 
 export default function ETFPage() {
   const [selectedTicker, setSelectedTicker] = useState<string>('KODEX200');
@@ -88,7 +88,7 @@ export default function ETFPage() {
   useEffect(() => {
     async function fetchUser() {
       if (isLoggedIn && userId) {
-        const { data: profileData } = await supabase
+        const { data: profileData } = await db
           .from('profiles')
           .select('cash')
           .eq('id', userId)
@@ -96,14 +96,14 @@ export default function ETFPage() {
 
         setUserBalance(Number(profileData?.cash ?? 0));
 
-        const { data: stockData } = await supabase
+        const { data: stockData } = await db
           .from('stocks')
           .select('id')
           .eq('ticker', selectedEtf.etfTicker)
           .single();
 
         if (stockData) {
-          const { data: holdingData } = await supabase
+          const { data: holdingData } = await db
             .from('holdings')
             .select('quantity')
             .eq('user_id', userId)
@@ -172,16 +172,16 @@ export default function ETFPage() {
       setUserBalance(newBal);
       setUserEtfShares(prev => prev + orderQty);
 
-      await supabase.from('profiles').update({ cash: newBal }).eq('id', userId);
+      await db.from('profiles').update({ cash: newBal }).eq('id', userId);
 
-      const { data: stockData } = await supabase
+      const { data: stockData } = await db
         .from('stocks')
         .select('id')
         .eq('ticker', selectedEtf.etfTicker)
         .single();
 
       if (stockData) {
-        const { data: existingHolding } = await supabase
+        const { data: existingHolding } = await db
           .from('holdings')
           .select('id, quantity, avg_price')
           .eq('user_id', userId)
@@ -193,12 +193,12 @@ export default function ETFPage() {
           const oldAvg = Number(existingHolding.avg_price || 0);
           const newQty = oldQty + orderQty;
           const newAvg = (oldQty * oldAvg + totalCost) / newQty;
-          await supabase
+          await db
             .from('holdings')
             .update({ quantity: newQty, avg_price: Math.round(newAvg) })
             .eq('id', existingHolding.id);
         } else {
-          await supabase
+          await db
             .from('holdings')
             .insert({ user_id: userId, stock_id: stockData.id, quantity: orderQty, avg_price: currentMarketPrice });
         }
@@ -215,16 +215,16 @@ export default function ETFPage() {
       setUserBalance(newBal);
       setUserEtfShares(prev => prev - orderQty);
 
-      await supabase.from('profiles').update({ cash: newBal }).eq('id', userId);
+      await db.from('profiles').update({ cash: newBal }).eq('id', userId);
 
-      const { data: stockData } = await supabase
+      const { data: stockData } = await db
         .from('stocks')
         .select('id')
         .eq('ticker', selectedEtf.etfTicker)
         .single();
 
       if (stockData) {
-        const { data: existingHolding } = await supabase
+        const { data: existingHolding } = await db
           .from('holdings')
           .select('id, quantity')
           .eq('user_id', userId)
@@ -234,9 +234,9 @@ export default function ETFPage() {
         if (existingHolding) {
           const rem = existingHolding.quantity - orderQty;
           if (rem <= 0) {
-            await supabase.from('holdings').delete().eq('id', existingHolding.id);
+            await db.from('holdings').delete().eq('id', existingHolding.id);
           } else {
-            await supabase.from('holdings').update({ quantity: rem }).eq('id', existingHolding.id);
+            await db.from('holdings').update({ quantity: rem }).eq('id', existingHolding.id);
           }
         }
       }
@@ -245,7 +245,7 @@ export default function ETFPage() {
     }
   };
 
-  // Auto-seed ETF stocks to Supabase DB on mount
+  // Auto-seed ETF stocks to Memory DB DB on mount
   useEffect(() => {
     seedETFStocksToDatabase();
   }, []);

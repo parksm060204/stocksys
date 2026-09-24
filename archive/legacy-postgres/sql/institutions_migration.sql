@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS institutional_portfolios (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
--- Apply Supabase Policies per AGENTS.md rules
+-- Apply Legacy DB Policies per AGENTS.md rules
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE institutional_portfolios TO anon, authenticated;
 
 ALTER TABLE institutional_portfolios ENABLE ROW LEVEL SECURITY;

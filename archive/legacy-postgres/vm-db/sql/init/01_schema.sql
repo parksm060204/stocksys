@@ -2,7 +2,7 @@
 -- 무명 거래소 — VM 자체 PostgreSQL 초기화 스키마
 -- docker-entrypoint-initdb.d 에서 자동 실행됨 (처음 한 번)
 -- =====================================================================
---  Supabase 호환 포인트:
+--  Legacy DB 호환 포인트:
 --   - auth.uid() 함수 직접 구현 (PostgREST JWT claim 'sub' 읽기)
 --   - auth.users 테이블을 일반 테이블로 생성 (GoTrue 미사용)
 --   - anon / authenticated 역할 직접 생성

@@ -59,6 +59,47 @@ export function assertValidNumber(val: number, name: string, min: number = 0, ma
   return val;
 }
 
+export const VALID_PARTICIPANT_KINDS = new Set<ParticipantKind>([
+  'HUMAN',
+  'RETAIL',
+  'DOMESTIC_INSTITUTION',
+  'FOREIGN_INSTITUTION',
+  'LIQUIDITY_PROVIDER',
+  'UNKNOWN'
+]);
+
+export function isValidParticipantKind(val: unknown): val is ParticipantKind {
+  return typeof val === 'string' && VALID_PARTICIPANT_KINDS.has(val as ParticipantKind);
+}
+
+export function validateParticipantKind(val: unknown): ParticipantKind {
+  if (!isValidParticipantKind(val)) {
+    throw new TypeError(`[ParticipantAdapter] Invalid participantKind: "${String(val)}". Allowed: ${Array.from(VALID_PARTICIPANT_KINDS).join(', ')}`);
+  }
+  return val;
+}
+
+export function validateDomicile(val: unknown): string {
+  if (typeof val !== 'string' || val.trim().length === 0) {
+    throw new TypeError(`[ParticipantAdapter] domicile must be a non-empty string. Received: ${String(val)}`);
+  }
+  const normalized = val.trim().toUpperCase();
+  if (!/^[A-Z]{2}$/.test(normalized) && normalized !== 'GLOBAL') {
+    throw new RangeError(`[ParticipantAdapter] domicile must be a valid 2-letter ISO code or GLOBAL. Received: "${val}"`);
+  }
+  return normalized;
+}
+
+export function validateKindAndDomicileAlignment(kind: ParticipantKind, domicile: string): void {
+  const normDom = domicile.toUpperCase().trim();
+  if (kind === 'DOMESTIC_INSTITUTION' && normDom !== 'KR') {
+    throw new RangeError(`[ParticipantAdapter] Logical conflict: DOMESTIC_INSTITUTION cannot have non-KR domicile "${domicile}".`);
+  }
+  if (kind === 'FOREIGN_INSTITUTION' && normDom === 'KR') {
+    throw new RangeError(`[ParticipantAdapter] Logical conflict: FOREIGN_INSTITUTION cannot have domestic domicile "KR".`);
+  }
+}
+
 export interface ClassifyParticipantOptions {
   explicitKind?: ParticipantKind;
   explicitDomicile?: string;
@@ -241,6 +282,7 @@ export function adaptAgentAccountToParticipantAccount(account: AgentAccount): Re
     : classifyParticipantKind(id, name, account.strategyType);
 
   const domicile = resolveDomicile(kind, undefined, id, name);
+  validateKindAndDomicileAlignment(kind, domicile);
 
   const identity: ParticipantIdentity = Object.freeze({
     participantId: id,
@@ -312,6 +354,13 @@ export function adaptAgentConfigToParticipantAccount(config: ParticipantConfigIn
     urgency = assertValidUnitInterval(config.urgency, 'urgency');
   }
 
+  if (config.participantKind !== undefined) {
+    validateParticipantKind(config.participantKind);
+  }
+  if (config.domicile !== undefined) {
+    validateDomicile(config.domicile);
+  }
+
   const kind = classifyParticipantKind(id, name, rawType, {
     explicitKind: config.participantKind,
     explicitDomicile: config.domicile
@@ -322,6 +371,7 @@ export function adaptAgentConfigToParticipantAccount(config: ParticipantConfigIn
   }
 
   const domicile = resolveDomicile(kind, config.domicile, id, name);
+  validateKindAndDomicileAlignment(kind, domicile);
 
   const identity: ParticipantIdentity = Object.freeze({
     participantId: id,

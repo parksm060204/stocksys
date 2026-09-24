@@ -9,20 +9,20 @@ export default function TopBar() {
   const [now, setNow] = useState<Date | null>(null);
   const [cash, setCash] = useState<number | null>(null);
 
-  const supabase = createClient();
+  const db = createClient();
   const { user, isLoggedIn, signIn, signOut } = useAuth();
 
   useEffect(() => {
     let cancelled = false;
     if (isLoggedIn && user?.id) {
-      supabase.from('profiles').select('cash').eq('id', user.id).single().then(({ data }: { data: { cash: number } | null }) => {
+      db.from('profiles').select('cash').eq('id', user.id).single().then(({ data }: { data: { cash: number } | null }) => {
         if (!cancelled && data) setCash(data.cash);
       });
     } else {
       setCash(null);
     }
     return () => { cancelled = true; };
-  }, [isLoggedIn, user?.id, supabase]);
+  }, [isLoggedIn, user?.id, db]);
 
   useEffect(() => {
     const update = () => setNow(new Date());

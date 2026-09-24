@@ -2,12 +2,12 @@ import { memoryDb } from '../../lib/memoryDb/memoryStore';
 import { createMemoryDbClient } from '../../lib/memoryDb/memoryDbClient';
 
 async function profileScaling(userCount: number) {
-  const supabase = createMemoryDbClient();
+  const db = createMemoryDbClient();
   const userIds = Array.from({ length: userCount }, (_, i) => `prof_user_${i}`);
 
   // 유저 초기화
   for (const uid of userIds) {
-    await supabase.from('profiles').upsert({
+    await db.from('profiles').upsert({
       id: uid,
       user_id: uid,
       username: `User_${uid}`,
@@ -27,8 +27,8 @@ async function profileScaling(userCount: number) {
 
       // RPC 호출 (내부적으로 updateAtomic 락 큐를 탐)
       await Promise.all([
-        supabase.rpc('increment_user_cash', { p_user_id: uid, p_delta: -10000 }),
-        supabase.rpc('increment_user_cash', { p_user_id: partnerUid, p_delta: 10000 }),
+        db.rpc('increment_user_cash', { p_user_id: uid, p_delta: -10000 }),
+        db.rpc('increment_user_cash', { p_user_id: partnerUid, p_delta: 10000 }),
       ]);
 
       const elapsed = performance.now() - start;

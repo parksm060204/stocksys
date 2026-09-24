@@ -1,8 +1,8 @@
 -- =====================================================================
 -- Bonds Table Migration
 -- 채권 전용 테이블 — stocks 테이블과 분리
--- Supabase SQL Editor에서 실행하세요.
--- AGENTS.md Supabase 정책 완벽 적용 (GRANT + RLS + Policy)
+-- Legacy DB SQL Editor에서 실행하세요.
+-- AGENTS.md Legacy DB 정책 완벽 적용 (GRANT + RLS + Policy)
 -- =====================================================================
 
 -- 1) bonds 테이블 생성
@@ -91,10 +91,10 @@ DO $$
 BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_publication_tables
-    WHERE pubname = 'supabase_realtime'
+    WHERE pubname = 'database_realtime'
       AND tablename = 'bonds'
   ) THEN
-    ALTER PUBLICATION supabase_realtime ADD TABLE public.bonds;
+    ALTER PUBLICATION database_realtime ADD TABLE public.bonds;
   END IF;
 END $$;
 

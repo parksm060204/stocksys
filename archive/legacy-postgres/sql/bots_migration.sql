@@ -8,7 +8,7 @@ CREATE TABLE bots_config (
   real_world_target TEXT
 );
 
--- Enable RLS (as per AGENTS.md Supabase policy)
+-- Enable RLS (as per AGENTS.md Legacy DB policy)
 ALTER TABLE bots_config ENABLE ROW LEVEL SECURITY;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE bots_config TO anon, authenticated;
 

@@ -7,7 +7,7 @@ import { InstitutionalSectorPortfolioWidget } from "@/app/components/Institution
 import { MacroRegimeRebalanceWidget } from "@/app/components/MacroRegimeRebalanceWidget";
 import { MacroRegimeType } from "@/lib/engine/macroRegimeEngine";
 
-const supabase = createClient();
+const db = createClient();
 
 interface PortfolioData {
   bot_id: string;
@@ -36,7 +36,7 @@ export default function InstitutionsDashboard() {
 
   useEffect(() => {
     // 1. Fetch real bot names from bots_config table
-    supabase
+    db
       .from("bots_config")
       .select("id, name")
       .then(({ data }: { data: Array<{ id: string; name: string }> | null }) => {
@@ -50,7 +50,7 @@ export default function InstitutionsDashboard() {
       });
 
     const fetchPortfolios = () => {
-      supabase
+      db
         .from("institutional_portfolios")
         .select("*")
         .order("total_capital", { ascending: false })

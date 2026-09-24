@@ -77,7 +77,7 @@ export function __setTestFailureHook(hook: FailureHook | null): void {
  * Direct calls from outside the serialized path are intentionally unsupported.
  */
 export async function submitAndMatchOrder(
-  supabase: DbClient,
+  db: DbClient,
   input: OrderInput
 ): Promise<MatchOrderResult> {
   const { stock_id, user_id, side, price: incomingPrice, size: incomingSize } = input || {};
@@ -97,7 +97,7 @@ export async function submitAndMatchOrder(
     // ── 0. Order Capacity Pre-Validation ──
     // Reads open/partial orders, current cash, current holding — pure reads, no mutation.
     {
-      const { data: userOpenOrders, error: ordersErr } = await supabase
+      const { data: userOpenOrders, error: ordersErr } = await db
         .from('orders')
         .select('id, user_id, stock_id, side, price, size, filled, status')
         .eq('user_id', user_id)
@@ -105,14 +105,14 @@ export async function submitAndMatchOrder(
 
       if (ordersErr) throw ordersErr;
 
-      const { data: profile } = await supabase
+      const { data: profile } = await db
         .from('profiles')
         .select('cash')
         .eq('id', user_id)
         .single();
       const currentCash = Number(profile?.cash || 0);
 
-      const { data: holding } = await supabase
+      const { data: holding } = await db
         .from('holdings')
         .select('quantity')
         .eq('user_id', user_id)
@@ -153,7 +153,7 @@ export async function submitAndMatchOrder(
 
     // [Self-Trade Prevention] .neq('user_id', user_id) at DB query level
     const oppSide = side === 'buy' ? 'sell' : 'buy';
-    let query = supabase
+    let query = db
       .from('orders')
       .select('*')
       .eq('stock_id', stock_id)
@@ -266,7 +266,7 @@ export async function submitAndMatchOrder(
       try {
       // ── 4. Settlement (cumulative validation + asset mutation) ──
       if (tradesToSettle.length > 0) {
-        const settleResult = await executeSettlement(supabase, tradesToSettle);
+        const settleResult = await executeSettlement(db, tradesToSettle);
         for (const tradeId of settleResult.trade_ids) snap.createdTradeIds.add(tradeId);
         if (!settleResult.success) {
           throw new Error(settleResult.error?.message || '체결 정산 트랜잭션 실패');

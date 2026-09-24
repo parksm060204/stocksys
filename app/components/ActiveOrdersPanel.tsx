@@ -43,7 +43,7 @@ export default function ActiveOrdersPanel({
 
   const { userId, isLoggedIn } = useAuth();
   const { showToast } = useToast();
-  const supabase = createClient();
+  const db = createClient();
 
   const fetchOrders = useCallback(async () => {
     if (!isLoggedIn || !userId) {
@@ -54,7 +54,7 @@ export default function ActiveOrdersPanel({
     }
 
     try {
-      let query = supabase
+      let query = db
         .from('orders')
         .select('id, stock_id, side, price, size, filled, status, created_at, stocks(id, ticker, name, market, current_price)')
         .eq('user_id', userId)
@@ -76,7 +76,7 @@ export default function ActiveOrdersPanel({
     } finally {
       setLoading(false);
     }
-  }, [isLoggedIn, userId, filterMode, currentStockId, supabase, onOrderCountChange]);
+  }, [isLoggedIn, userId, filterMode, currentStockId, db, onOrderCountChange]);
 
   useEffect(() => {
     fetchOrders();
@@ -90,7 +90,7 @@ export default function ActiveOrdersPanel({
     setCancellingId(order.id);
 
     try {
-      const { error } = await supabase
+      const { error } = await db
         .from('orders')
         .update({ status: 'cancelled' })
         .eq('id', order.id)
@@ -126,7 +126,7 @@ export default function ActiveOrdersPanel({
     setCancellingId('ALL');
     try {
       const targetIds = orders.map((o) => o.id);
-      const { error } = await supabase
+      const { error } = await db
         .from('orders')
         .update({ status: 'cancelled' })
         .in('id', targetIds)

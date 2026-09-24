@@ -30,12 +30,12 @@ async function runTest() {
 
   const engineA = new MarketEngine({
     simulationContext: contextA,
-    supabaseClient: dbA
+    databaseClient: dbA
   });
 
   const engineB = new MarketEngine({
     simulationContext: contextB,
-    supabaseClient: dbB
+    databaseClient: dbB
   });
 
   // Verify internal reference binding
@@ -44,8 +44,8 @@ async function runTest() {
   assert(engineA.getDbClient() !== engineB.getDbClient(), 'Engine A and B must not share the same DB client');
 
   // Verify SettlementBatchService DB reference
-  assert((engineA.settlementService as any).supabase === dbA, 'Engine A settlement service must use dbA');
-  assert((engineB.settlementService as any).supabase === dbB, 'Engine B settlement service must use dbB');
+  assert(engineA.settlementService.getDbClient() === dbA, 'Engine A settlement service must use dbA');
+  assert(engineB.settlementService.getDbClient() === dbB, 'Engine B settlement service must use dbB');
 
   // 2. Insert records into Engine A's DB and verify Engine B does not see them
   await dbA.from('stocks').insert([
@@ -83,14 +83,14 @@ async function runTest() {
     persistence: persistenceAdapter
   });
 
-  assert(engineWithPersistence.getDbClient() === customAdapterDb, 'Engine must use client from persistence adapter when no explicit supabaseClient is passed');
+  assert(engineWithPersistence.getDbClient() === customAdapterDb, 'Engine must use client from persistence adapter when no explicit client is passed');
 
   // 5. Creation order independence test (swapped order)
   const db1 = createIsolatedMemoryDbClient();
   const db2 = createIsolatedMemoryDbClient();
 
-  const engine2 = new MarketEngine({ simulationContext: contextB, supabaseClient: db2 });
-  const engine1 = new MarketEngine({ simulationContext: contextA, supabaseClient: db1 });
+  const engine2 = new MarketEngine({ simulationContext: contextB, databaseClient: db2 });
+  const engine1 = new MarketEngine({ simulationContext: contextA, databaseClient: db1 });
 
   await db1.from('orders').insert([{ id: 'ORD_1', stock_id: 'S1', side: 'buy', price: 100, size: 10, status: 'open' }]);
   const { data: ordCheck1 } = await engine1.getDbClient().from('orders').select('*').eq('id', 'ORD_1');

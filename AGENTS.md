@@ -25,14 +25,14 @@ This version has breaking changes — APIs, conventions, and file structure may 
 - 단, `.opencode/` 관련 설정 변경, AGENTS.md 자체 수정, 또는 프롬프트 로깅 규칙 자체에 대한 논의는 기록하지 않는다.
 <!-- END:prompt-logging -->
 
-<!-- BEGIN:supabase-policies -->
-# Supabase 정책 (최신)
+<!-- BEGIN:database-policies -->
+# 데이터베이스 정책 (최신)
 
 테이블을 생성하거나 액세스할 때 아래 사항을 항상 적용한다.
 
 ## 1. 명시적인 GRANT
 
-`anon`, `authenticated` 역할이 PostgREST API를 통해 테이블에 접근할 수 있도록 GRANT SQL 문을 반드시 포함한다.
+`anon`, `authenticated` 역할이 API를 통해 테이블에 접근할 수 있도록 GRANT SQL 문을 반드시 포함한다.
 
 ```sql
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE table_name TO anon, authenticated;
@@ -76,7 +76,7 @@ ON table_name FOR DELETE
 TO authenticated
 USING (auth.uid() = user_id);
 ```
-<!-- END:supabase-policies -->
+<!-- END:database-policies -->
 
 <!-- BEGIN:critical-lessons -->
 # 🚨 크리티컬 장애 이력 & 재발 방지 규칙
@@ -118,7 +118,7 @@ USING (auth.uid() = user_id);
 // ✅ 올바른 패턴
 async signIn({ user }) {
   try {
-    const { data } = await supabase.from('profiles').select().eq('id', user.id).maybeSingle();
+    const { data } = await db.from('profiles').select().eq('id', user.id).maybeSingle();
     // ... 처리
     return true;
   } catch (e) {
@@ -130,19 +130,18 @@ async signIn({ user }) {
 
 ---
 
-## ❌ 장애 #3: 환경 변수 `supabaseUrl is required` 크래시
+## ❌ 장애 #3: 환경 변수 `dbUrl is required` 크래시
 
 ### 원인
-- `NEXT_PUBLIC_SUPABASE_URL` 환경변수를 `NEXT_PUBLIC_ENGINE_DB_URL`로 이름을 변경했더니, `@supabase/ssr` 내부 및 NextAuth 코드가 여전히 구 이름(`NEXT_PUBLIC_SUPABASE_URL`)을 참조하여 `supabaseUrl is required` 에러로 앱 전체 크래시.
+- 환경변수 불일치 또는 미설정 시 엔진 및 NextAuth 코드가 DB URL 누락으로 크래시 발생 가능.
 
 ### 재발 방지 규칙 (필수)
-1. **환경변수 이름 변경 시 반드시 구 이름을 별칭(alias)으로 함께 유지**해야 한다. 구 이름을 삭제하는 것은 금지.
-2. `.env.local`에서 신규 이름과 구 이름을 **동시에** 정의한다:
+1. **환경변수는 명확한 표준 이름을 사용**한다.
+2. `.env.local`에서 표준 URL을 정의한다:
    ```env
    NEXT_PUBLIC_ENGINE_DB_URL=http://49.247.136.231:3001
-   NEXT_PUBLIC_SUPABASE_URL=http://49.247.136.231:3001   # 하위 호환 alias — 삭제 금지
    ```
-3. 코드 내에서도 `process.env.NEXT_PUBLIC_ENGINE_DB_URL || process.env.NEXT_PUBLIC_SUPABASE_URL` 형태의 fallback 패턴을 반드시 사용한다.
+3. 코드 내에서도 `process.env.NEXT_PUBLIC_ENGINE_DB_URL || 'http://localhost:3001'` 형태의 안전한 fallback 패턴을 사용한다.
 
 ---
 
@@ -168,6 +167,6 @@ async signIn({ user }) {
 - [ ] 모든 컨테이너에 Docker 로그 rotation 설정이 있는가?
 - [ ] `01_schema.sql`에 `institutional_portfolios` 테이블이 정의되어 있는가?
 - [ ] `MarketEngine.ts`에 `trimOldTrades()` 롤링 트리밍 호출이 매 20틱마다 있는가?
-- [ ] `.env.local`에 `NEXT_PUBLIC_SUPABASE_URL`(구 이름 alias)과 `NEXT_PUBLIC_ENGINE_DB_URL`(신 이름)이 **둘 다** 존재하는가?
+- [ ] `.env.local`에 `NEXT_PUBLIC_ENGINE_DB_URL`이 존재하는가?
 - [ ] NextAuth 콜백이 모두 `try-catch`로 보호되어 있는가?
 <!-- END:critical-lessons -->

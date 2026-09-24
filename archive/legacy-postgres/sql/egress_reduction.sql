@@ -1,6 +1,6 @@
 -- =====================================================================
 -- Egress 절감 진단 쿼리 모음
--- Supabase Dashboard > SQL Editor 에서 먼저 실행하여 현황 파악
+-- Legacy DB Dashboard > SQL Editor 에서 먼저 실행하여 현황 파악
 -- =====================================================================
 
 -- 1. 테이블별 행 수 및 크기 (egress 원인 식별)
@@ -40,7 +40,7 @@ SELECT
   tablename AS table,
   rowsecurity AS rls_enabled
 FROM pg_publication_tables
-WHERE pubname = 'supabase_realtime'
+WHERE pubname = 'database_realtime'
 ORDER BY tablename;
 
 -- 5. Realtime 활성 구독 세션 수 (egress와 정비례)
@@ -55,7 +55,7 @@ SELECT
   flush_lsn,
   replay_lsn
 FROM pg_stat_replication
-WHERE application_name LIKE 'supabase_realtime%';
+WHERE application_name LIKE 'database_realtime%';
 
 -- 6. 인덱스 크기 Top 10 (egress는 아니지만 디스크/쿼리 성능 점검)
 SELECT

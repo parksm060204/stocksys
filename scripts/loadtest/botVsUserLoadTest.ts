@@ -24,7 +24,7 @@ async function runBotVsUserLoadTest() {
   console.log('🤖 vs 👤 [BOT vs USER LOAD TEST] 50+ 봇과 실유저 동시 트래픽 매칭 검증');
   console.log('================================================================\n');
 
-  const supabase = createMemoryDbClient();
+  const db = createMemoryDbClient();
   const sampler = new ResourceSampler();
   sampler.start(500);
 
@@ -52,7 +52,7 @@ async function runBotVsUserLoadTest() {
   for (let i = 1; i <= userCount; i++) {
     const uid = `user_real_${String(i).padStart(3, '0')}`;
     userIds.push(uid);
-    await supabase.from('profiles').upsert({
+    await db.from('profiles').upsert({
       id: uid,
       user_id: uid,
       username: `실유저_${i}`,

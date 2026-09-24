@@ -40,19 +40,19 @@ export default async function MyPage() {
   }
 
   // 2. 로그인 또는 로컬 게스트 상태: 해당 사용자의 실제 DB 프로필 및 보유 자산 조회
-  const supabase = await createClient();
+  const db = await createClient();
 
   const [{ data: profile }, { data: holdingsData }, { data: ratesData }] = await Promise.all([
-    supabase
+    db
       .from("profiles")
       .select("cash, usd_balance, eur_balance, jpy_balance, cny_balance, gbp_balance")
       .eq("id", userId)
       .single(),
-    supabase
+    db
       .from("holdings")
       .select("stock_id, quantity, avg_price, stocks(id, ticker, name, market, current_price)")
       .eq("user_id", userId),
-    supabase.from("exchange_rates").select("*"),
+    db.from("exchange_rates").select("*"),
   ]);
 
   const cash = Number(profile?.cash || 0);

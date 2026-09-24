@@ -27,11 +27,11 @@ export default async function MarketPage({
   const id = market as MarketId;
   const meta = MARKETS.find((m) => m.id === id)!;
   
-  const supabase = await createClient();
+  const db = await createClient();
   let stocksData: any[] = [];
   try {
     if (id === 'bonds') {
-      const { data } = await supabase.from('bonds').select('*');
+      const { data } = await db.from('bonds').select('*');
       stocksData = (data || []).map((row: any) => ({
         id: row.id || row.ticker,
         name: row.name,
@@ -50,7 +50,7 @@ export default async function MarketPage({
         }
       }));
     } else {
-      const { data } = await supabase
+      const { data } = await db
         .from('stocks')
         .select('id, name, ticker, market, sector, current_price, previous_close, volume, market_cap')
         .eq('market', id);

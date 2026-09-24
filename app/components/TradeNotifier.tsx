@@ -19,7 +19,7 @@ export default function TradeNotifier() {
       lastCheckTimeRef.current = new Date(Date.now() - 5000).toISOString();
     }
 
-    const supabase = createClient();
+    const db = createClient();
     let isSubscribed = true;
 
     // 종목 캐시 맵
@@ -27,7 +27,7 @@ export default function TradeNotifier() {
 
     const getStockInfo = async (stockId: string) => {
       if (stockCache.has(stockId)) return stockCache.get(stockId)!;
-      const { data } = await supabase.from('stocks').select('name, ticker, market').eq('id', stockId).single();
+      const { data } = await db.from('stocks').select('name, ticker, market').eq('id', stockId).single();
       const info = data || { name: '주식', ticker: 'STK', market: 'domestic' };
       stockCache.set(stockId, info);
       return info;
@@ -38,7 +38,7 @@ export default function TradeNotifier() {
 
       try {
         // 내가 매수자이거나 매도자인 최근 체결건 조회
-        const { data: myTrades, error } = await supabase
+        const { data: myTrades, error } = await db
           .from('trades')
           .select('id, stock_id, buyer_id, seller_id, price, size, created_at')
           .or(`buyer_id.eq.${userId},seller_id.eq.${userId}`)

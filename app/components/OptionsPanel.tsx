@@ -28,13 +28,13 @@ export default function OptionsPanel({ stockId, ticker = "STOCK" }: OptionsPanel
   // D-Day Expiry Countdown Timer
   const [countdownStr, setCountdownStr] = useState("01:24:05");
 
-  const supabase = createClient();
+  const db = createClient();
   const { userId, isLoggedIn } = useAuth();
 
   useEffect(() => {
     async function fetchData() {
       if (isLoggedIn && userId) {
-        const { data: profile } = await supabase
+        const { data: profile } = await db
           .from('profiles')
           .select('is_admin, has_options_license')
           .eq('id', userId)
@@ -45,7 +45,7 @@ export default function OptionsPanel({ stockId, ticker = "STOCK" }: OptionsPanel
       }
 
       // Fetch stock spot price
-      const { data: stockData } = await supabase
+      const { data: stockData } = await db
         .from('stocks')
         .select('current_price, ticker, name')
         .eq('id', stockId)
@@ -68,7 +68,7 @@ export default function OptionsPanel({ stockId, ticker = "STOCK" }: OptionsPanel
       }
 
       // Fetch options contracts
-      const { data: optionsData } = await supabase
+      const { data: optionsData } = await db
         .from('options_contracts')
         .select('*')
         .eq('underlying_stock_id', stockId)
@@ -90,7 +90,7 @@ export default function OptionsPanel({ stockId, ticker = "STOCK" }: OptionsPanel
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [stockId, ticker, supabase, isLoggedIn, userId]);
+  }, [stockId, ticker, db, isLoggedIn, userId]);
 
   const handleTradeOption = async (option: any) => {
     if (!userId || !hasLicense) {
@@ -107,7 +107,7 @@ export default function OptionsPanel({ stockId, ticker = "STOCK" }: OptionsPanel
     if (!confirm(`[${option.ticker}] ${option.option_type} 옵션 ${qty}계약 매수\n총 결제금액: ₩${totalPrice.toLocaleString()}`)) return;
 
     try {
-      const { error } = await supabase.rpc('execute_option_order', {
+      const { error } = await db.rpc('execute_option_order', {
         p_user_id: userId,
         p_option_id: option.id,
         p_side: 'BUY',
@@ -118,7 +118,7 @@ export default function OptionsPanel({ stockId, ticker = "STOCK" }: OptionsPanel
       if (error) throw error;
       alert(`🎉 [${option.ticker}] ${qty}계약 매수 주문 체결 완료!`);
       
-      const { data: refreshed } = await supabase
+      const { data: refreshed } = await db
         .from('options_contracts')
         .select('*')
         .eq('underlying_stock_id', stockId)
@@ -139,7 +139,7 @@ export default function OptionsPanel({ stockId, ticker = "STOCK" }: OptionsPanel
     if (!confirm(`[롤오버 결합 주문 실행]\n근월물 [${currOpt.ticker}] ${qty}계약 청산 🔄 차월물 [${nextOpt.ticker}] ${qty}계약 원자적 이월 진입`)) return;
 
     try {
-      const { data, error } = await supabase.rpc('execute_rollover_combo', {
+      const { data, error } = await db.rpc('execute_rollover_combo', {
         p_user_id: userId,
         p_curr_option_id: currOpt.id,
         p_next_option_id: nextOpt.id,

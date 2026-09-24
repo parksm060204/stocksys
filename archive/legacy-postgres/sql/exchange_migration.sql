@@ -38,7 +38,7 @@ on conflict (currency_code) do update set
   updated_at = now();
 
 -- Add exchange_rates to realtime publication if needed
-alter publication supabase_realtime add table public.exchange_rates;
+alter publication database_realtime add table public.exchange_rates;
 
 -- 3. Create RPC function for currency exchange transaction
 CREATE OR REPLACE FUNCTION exchange_currency(

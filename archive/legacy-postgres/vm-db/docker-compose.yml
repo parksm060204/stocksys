@@ -35,7 +35,7 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  # PostgREST: Postgres 를 REST API 로 노출 (Supabase SDK 호환)
+  # PostgREST: Postgres 를 REST API 로 노출 (Legacy DB SDK 호환)
   rest:
     image: postgrest/postgrest:v12.2.0
     container_name: moo_rest

@@ -58,11 +58,11 @@ export default function CurrencyExchangePage() {
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [message, setMessage] = useState<{ text: string; type: "success" | "error" } | null>(null);
 
-  const supabase = createClient();
+  const db = createClient();
 
   const fetchRatesAndBalances = useCallback(async (uid: string | null) => {
     // 1. Fetch rates
-    const { data: ratesData } = await supabase.from("exchange_rates").select("*").order("currency_code");
+    const { data: ratesData } = await db.from("exchange_rates").select("*").order("currency_code");
     if (ratesData) {
       setRates((prev) => {
         const mapping: Record<string, number> = {};
@@ -77,7 +77,7 @@ export default function CurrencyExchangePage() {
     if (!uid) return;
 
     // 2. Fetch user balances
-    const { data: profile } = await supabase
+    const { data: profile } = await db
       .from("profiles")
       .select("cash, usd_balance, eur_balance, jpy_balance, cny_balance, gbp_balance")
       .eq("id", uid)
@@ -92,7 +92,7 @@ export default function CurrencyExchangePage() {
         gbp_balance: Number(profile.gbp_balance),
       });
     }
-  }, [supabase]);
+  }, [db]);
 
   useEffect(() => {
     if (isLoggedIn && userId) {
@@ -161,7 +161,7 @@ export default function CurrencyExchangePage() {
     setMessage(null);
 
     try {
-      const { data, error } = await supabase.rpc("exchange_currency", {
+      const { data, error } = await db.rpc("exchange_currency", {
         p_user_id: userId,
         p_from_cur: fromCur,
         p_to_cur: toCur,

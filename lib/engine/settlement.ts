@@ -37,7 +37,7 @@ export function calculateTradeFees(buyerIsMaker: boolean, sellerIsMaker: boolean
 
 /**
  * 체결 거래 내역을 일괄 원자적 정산 RPC(bulk_settle_trades)로 실행
- * @param client SupabaseClient 또는 MockSupabaseClient
+ * @param client DbClient 또는 HttpMemoryClient
  * @param trades 정산 대상 체결 배열
  */
 export async function executeSettlement(

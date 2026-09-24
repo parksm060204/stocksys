@@ -16,22 +16,22 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
   const [userCash, setUserCash] = useState<number | null>(null);
   const [userHoldingQty, setUserHoldingQty] = useState<number | null>(null);
 
-  const supabase = createClient();
+  const db = createClient();
   const { userId, isLoggedIn } = useAuth();
   const { showToast } = useToast();
 
   const refreshUserBalances = useCallback(async (sId: string) => {
     if (!isLoggedIn || !userId) return;
-    const { data: profile } = await supabase.from('profiles').select('cash').eq('id', userId).single();
+    const { data: profile } = await db.from('profiles').select('cash').eq('id', userId).single();
     if (profile) setUserCash(Number(profile.cash || 0));
 
-    const { data: holding } = await supabase.from('holdings').select('quantity').eq('user_id', userId).eq('stock_id', sId).single();
+    const { data: holding } = await db.from('holdings').select('quantity').eq('user_id', userId).eq('stock_id', sId).single();
     setUserHoldingQty(holding ? Number(holding.quantity || 0) : 0);
-  }, [isLoggedIn, userId, supabase]);
+  }, [isLoggedIn, userId, db]);
 
   useEffect(() => {
     const initData = async () => {
-      const { data: stockData } = await supabase.from('stocks').select('id').eq('ticker', stock.ticker).single();
+      const { data: stockData } = await db.from('stocks').select('id').eq('ticker', stock.ticker).single();
       if (stockData) {
         setStockId(stockData.id);
         if (isLoggedIn && userId) {
@@ -40,7 +40,7 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
       }
     };
     initData();
-  }, [stock.ticker, supabase, isLoggedIn, userId, refreshUserBalances]);
+  }, [stock.ticker, db, isLoggedIn, userId, refreshUserBalances]);
 
   const total = (Number(price) || 0) * (Number(qty) || 0);
 
@@ -79,7 +79,7 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
       }
 
       if (side === 'buy') {
-        const { data: profile } = await supabase.from('profiles').select('cash').eq('id', userId).single();
+        const { data: profile } = await db.from('profiles').select('cash').eq('id', userId).single();
         if (!profile || Number(profile.cash || 0) < total) {
           showToast({
             type: 'error',
@@ -89,7 +89,7 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
           return;
         }
       } else {
-        const { data: holding } = await supabase.from('holdings').select('quantity').eq('user_id', userId).eq('stock_id', stockId).single();
+        const { data: holding } = await db.from('holdings').select('quantity').eq('user_id', userId).eq('stock_id', stockId).single();
         if (!holding || Number(holding.quantity || 0) < Number(qty)) {
           showToast({
             type: 'error',

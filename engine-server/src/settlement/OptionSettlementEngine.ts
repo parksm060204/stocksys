@@ -1,11 +1,10 @@
-import { SupabaseClient } from '@supabase/supabase-js';
 import { OptionContract, OptionPosition, OptionSettlementResult } from './types';
 
 export class OptionSettlementEngine {
   private processedKeys: Set<string> = new Set();
   private readonly defaultMultiplier: number = 250000;
 
-  constructor(private supabase?: SupabaseClient) {}
+  constructor(private dbClient?: any) {}
 
   /**
    * 멱등성 키 생성
@@ -125,10 +124,10 @@ export class OptionSettlementEngine {
         }
 
         // DB 연동이 있을 경우 DB 커밋
-        if (this.supabase) {
+        if (this.dbClient) {
           try {
             // 1. 정산 이력 기록 (ON CONFLICT DO NOTHING)
-            await this.supabase.from('option_settlements').insert({
+            await this.dbClient.from('option_settlements').insert({
               option_id: settlement.optionId,
               user_id: settlement.userId,
               underlying_stock_id: contract.underlying_stock_id,
@@ -144,14 +143,14 @@ export class OptionSettlementEngine {
 
             // 2. ITM인 경우 cash 입금
             if (settlement.payoutAmount > 0) {
-              await this.supabase.rpc('increment_user_cash', {
+              await this.dbClient.rpc('increment_user_cash', {
                 p_user_id: settlement.userId,
                 p_delta: settlement.payoutAmount,
               });
             }
 
             // 3. 만기 포지션 holdings에서 소멸 처리
-            await this.supabase
+            await this.dbClient
               .from('holdings')
               .delete()
               .eq('user_id', settlement.userId)

@@ -1,4 +1,4 @@
--- supabase/etf_migration.sql
+-- legacy_db/etf_migration.sql
 -- 한국, 미국, 글로벌 주요 국가 ETF 종목 추가 마이그레이션
 
 INSERT INTO public.stocks (ticker, name, market, sector, description, current_price, previous_close, open_price, volume, market_cap, is_listed)

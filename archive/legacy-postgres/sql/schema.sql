@@ -1,6 +1,6 @@
 -- =====================================================================
 -- 무명: Virtual Stock Trading System — Schema
--- Run in Supabase SQL editor. Follows AGENTS.md Supabase policies.
+-- Run in Legacy DB SQL editor. Follows AGENTS.md Legacy DB policies.
 -- =====================================================================
 
 -- 1) PROFILES (extends auth.users) -----------------------------------
@@ -224,10 +224,10 @@ create or replace trigger on_auth_user_created
 -- =====================================================================
 -- Realtime: enable for hot tables
 -- =====================================================================
-alter publication supabase_realtime add table public.orders;
-alter publication supabase_realtime add table public.trades;
-alter publication supabase_realtime add table public.chat_messages;
-alter publication supabase_realtime add table public.stocks;
+alter publication database_realtime add table public.orders;
+alter publication database_realtime add table public.trades;
+alter publication database_realtime add table public.chat_messages;
+alter publication database_realtime add table public.stocks;
 
 -- 11) OPTIONS CONTRACTS (옵션) -------------------------------------------
 create table if not exists public.options_contracts (
@@ -251,4 +251,4 @@ create policy "Admins can insert options contracts" on public.options_contracts 
 create policy "Admins can update options contracts" on public.options_contracts for update to authenticated using (true) with check (true);
 create policy "Admins can delete options contracts" on public.options_contracts for delete to authenticated using (true);
 
-alter publication supabase_realtime add table public.options_contracts;
+alter publication database_realtime add table public.options_contracts;

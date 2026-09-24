@@ -53,9 +53,9 @@ export default async function StockDetailV2Page({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const supabase = await createClient();
+  const db = await createClient();
 
-  const { data: row } = await supabase
+  const { data: row } = await db
     .from("stocks")
     .select("*")
     .eq("id", id)
@@ -96,7 +96,7 @@ export default async function StockDetailV2Page({
     : `₩${fmtCap(stock.currentPrice * stock.volume)}`;
 
   // 관련 뉴스
-  const { data: newsData } = await supabase
+  const { data: newsData } = await db
     .from("market_news")
     .select("*")
     .or(

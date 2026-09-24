@@ -79,7 +79,7 @@ function StocksContent() {
   const [allStocks, setAllStocks] = useState<Stock[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const supabase = createClient();
+  const db = createClient();
 
   useEffect(() => {
     let isMounted = true;
@@ -87,7 +87,7 @@ function StocksContent() {
     async function fetchStocks() {
       try {
         // 3초 타임아웃 안전 가드 (DB 지연 시 무한 스켈레톤 방지)
-        const fetchPromise = supabase
+        const fetchPromise = db
           .from('stocks')
           .select('id, name, ticker, market, sector, current_price, previous_close');
         
@@ -124,7 +124,7 @@ function StocksContent() {
       isMounted = false;
       clearInterval(interval);
     };
-  }, [supabase]);
+  }, [db]);
 
   useEffect(() => {
     const tabParam = searchParams.get("tab") as RegionTab;

@@ -1,7 +1,7 @@
 -- =====================================================================
 -- Commodities Table Migration
 -- 원자재 선물 테이블 (WTI, Gold 등)
--- Supabase SQL Editor에서 실행하세요.
+-- Legacy DB SQL Editor에서 실행하세요.
 -- =====================================================================
 
 -- 1) commodities 테이블 생성
@@ -59,10 +59,10 @@ DO $$
 BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_publication_tables
-    WHERE pubname = 'supabase_realtime'
+    WHERE pubname = 'database_realtime'
       AND tablename = 'commodities'
   ) THEN
-    ALTER PUBLICATION supabase_realtime ADD TABLE public.commodities;
+    ALTER PUBLICATION database_realtime ADD TABLE public.commodities;
   END IF;
 END $$;
 

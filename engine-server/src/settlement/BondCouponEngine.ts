@@ -1,4 +1,3 @@
-import { SupabaseClient } from '@supabase/supabase-js';
 import { BondItem, BondPosition, BondPaymentResult } from './types';
 
 export class BondCouponEngine {
@@ -6,7 +5,7 @@ export class BondCouponEngine {
   private readonly defaultFaceValue: number = 10000;
   private readonly defaultPaymentsPerYear: number = 4; // 분기 지급 (연 4회)
 
-  constructor(private supabase?: SupabaseClient) {}
+  constructor(private dbClient?: any) {}
 
   /**
    * 멱등성 키 생성
@@ -127,9 +126,9 @@ export class BondCouponEngine {
             redemptionCount++;
             totalPrincipalRedeemed += redemption.paymentAmount;
 
-            if (this.supabase) {
+            if (this.dbClient) {
               try {
-                await this.supabase.from('bond_coupon_payments').insert({
+                await this.dbClient.from('bond_coupon_payments').insert({
                   bond_id: redemption.bondId,
                   user_id: redemption.userId,
                   payment_type: redemption.paymentType,
@@ -140,12 +139,12 @@ export class BondCouponEngine {
                   idempotency_key: redemption.idempotencyKey,
                 });
 
-                await this.supabase.rpc('increment_user_cash', {
+                await this.dbClient.rpc('increment_user_cash', {
                   p_user_id: redemption.userId,
                   p_delta: redemption.paymentAmount,
                 });
 
-                await this.supabase
+                await this.dbClient
                   .from('holdings')
                   .delete()
                   .eq('user_id', redemption.userId)
@@ -170,9 +169,9 @@ export class BondCouponEngine {
             couponCount++;
             totalCouponPaid += coupon.paymentAmount;
 
-            if (this.supabase) {
+            if (this.dbClient) {
               try {
-                await this.supabase.from('bond_coupon_payments').insert({
+                await this.dbClient.from('bond_coupon_payments').insert({
                   bond_id: coupon.bondId,
                   user_id: coupon.userId,
                   payment_type: coupon.paymentType,
@@ -183,7 +182,7 @@ export class BondCouponEngine {
                   idempotency_key: coupon.idempotencyKey,
                 });
 
-                await this.supabase.rpc('increment_user_cash', {
+                await this.dbClient.rpc('increment_user_cash', {
                   p_user_id: coupon.userId,
                   p_delta: coupon.paymentAmount,
                 });

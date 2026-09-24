@@ -1,6 +1,6 @@
 import * as crypto from 'crypto';
 import { createMemoryDbClient } from '../../lib/memoryDb/memoryDbClient';
-const createSupabaseClient: any = (..._args: any[]) => createMemoryDbClient();
+const createDbClient: any = (..._args: any[]) => createMemoryDbClient();
 import { memoryDb, OrderRecord, TradeRecord } from '../../lib/memoryDb/memoryStore';
 import { ResourceSampler } from './ResourceSampler';
 
@@ -54,13 +54,13 @@ async function runConcurrentTradingLoadTest() {
   console.log(`▶ 부하 설정: 동시접속 유저 ${options.users}명 | 실행시간 ${options.duration}초 | 타겟 종목: ${options.targetTicker}`);
   console.log(`▶ 자동 정리(cleanup): ${options.cleanup ? '활성화 (테스트 후 데이터 자동 롤백)' : '비활성화 (데이터 보존)'}\n`);
 
-  const rawUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'http://49.247.136.231:3001';
-  const rawKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlzcyI6InBvc3RncmVzdCIsImV4cCI6OTk5OTk5OTk5OX0.ZVBYePzn3NGxFYWINT5qpYt7FxXjWwXfS2FFw3Oy474';
+  const rawUrl = process.env.NEXT_PUBLIC_ENGINE_DB_URL || 'http://49.247.136.231:3001';
+  const rawKey = process.env.NEXT_PUBLIC_ENGINE_DB_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlzcyI6InBvc3RncmVzdCIsImV4cCI6OTk5OTk5OTk5OX0.ZVBYePzn3NGxFYWINT5qpYt7FxXjWwXfS2FFw3Oy474';
 
-  let supabase: any;
+  let db: any;
   if (options.mode === 'remote') {
     console.log(`🌐 [REMOTE] 실제 원격 엔드포인트 (${rawUrl})로 HTTP REST 요청을 100% 강제합니다.`);
-    supabase = createSupabaseClient(rawUrl, rawKey, {
+    db = createDbClient(rawUrl, rawKey, {
       auth: { persistSession: false },
       global: {
         fetch: (input: any, init?: any) => {
@@ -75,7 +75,7 @@ async function runConcurrentTradingLoadTest() {
       },
     });
   } else {
-    supabase = createMemoryDbClient();
+    db = createMemoryDbClient();
   }
 
   const sampler = new ResourceSampler();
@@ -98,7 +98,7 @@ async function runConcurrentTradingLoadTest() {
 
   if (options.mode === 'remote') {
     try {
-      const { data: stockData } = await supabase.from('stocks').select('*').limit(1).single();
+      const { data: stockData } = await db.from('stocks').select('*').limit(1).single();
       if (stockData) {
         targetStockId = stockData.id;
         basePrice = Number(stockData.current_price) || 18150;
@@ -158,7 +158,7 @@ async function runConcurrentTradingLoadTest() {
       const start = performance.now();
       try {
         // 1. 주문 생성
-        const { error: orderErr } = await supabase.from('orders').insert(orderRecord);
+        const { error: orderErr } = await db.from('orders').insert(orderRecord);
         if (orderErr) throw orderErr;
 
         testOrders.push(orderRecord);
@@ -210,7 +210,7 @@ async function runConcurrentTradingLoadTest() {
     if (roundTrades.length > 0) {
       const batchStart = performance.now();
       try {
-        await supabase.rpc('bulk_settle_trades', { p_trades: roundTrades });
+        await db.rpc('bulk_settle_trades', { p_trades: roundTrades });
       } catch (e: any) {
         console.warn('  ⚠️ 배치 정산 실패:', e.message);
       }
@@ -232,7 +232,7 @@ async function runConcurrentTradingLoadTest() {
 
   if (options.mode === 'remote') {
     try {
-      const { data: remoteProfiles } = await supabase.from('profiles').select('id, cash').in('id', userIds);
+      const { data: remoteProfiles } = await db.from('profiles').select('id, cash').in('id', userIds);
       if (remoteProfiles && Array.isArray(remoteProfiles)) {
         for (const prof of remoteProfiles) {
           const cash = Number(prof.cash) || 0;
@@ -273,7 +273,7 @@ async function runConcurrentTradingLoadTest() {
     console.log('\n[4단계] --cleanup 옵션에 따라 임시 테스트 주문 데이터 정리 중...');
     if (options.mode === 'remote') {
       try {
-        await supabase.from('orders').delete().in('id', testOrders.map((o) => o.id));
+        await db.from('orders').delete().in('id', testOrders.map((o) => o.id));
         console.log(`  ✅ 원격 DB ${testOrders.length}개 주문 데이터 롤백 완료`);
       } catch (e: any) {
         console.warn('  ⚠️ 원격 데이터 정리 중 오류:', e.message);

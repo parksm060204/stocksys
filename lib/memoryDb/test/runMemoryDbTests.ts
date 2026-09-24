@@ -9,16 +9,16 @@ async function runMemoryDbTestSuite() {
   let passedTests = 0;
   const totalTests = 5;
 
-  const supabase = createMemoryDbClient();
+  const db = createMemoryDbClient();
 
   // ── [TEST 1] 주식 및 원자재 마스터 데이터 조회 검증 ──
   console.log('▶ [TEST 1] 주식 & 원자재 마스터 목록 조회 (.select)');
-  const { data: stocks, error: stockErr } = await supabase
+  const { data: stocks, error: stockErr } = await db
     .from('stocks')
     .select('*')
     .order('current_price', { ascending: false });
 
-  const { data: commodities, error: commErr } = await supabase
+  const { data: commodities, error: commErr } = await db
     .from('commodities')
     .select('*');
 
@@ -34,7 +34,7 @@ async function runMemoryDbTestSuite() {
 
   // ── [TEST 2] 단일 종목 필터링 및 single() 검증 ──
   console.log('\n▶ [TEST 2] 삼성전자(005930) 단일 조회 (.eq & .single)');
-  const { data: samsung, error: samErr } = await supabase
+  const { data: samsung, error: samErr } = await db
     .from('stocks')
     .select('*')
     .eq('ticker', '005930')
@@ -51,7 +51,7 @@ async function runMemoryDbTestSuite() {
 
   // ── [TEST 3] 사용자 주문 생성 (.insert) 및 체결 (.trades) 검증 ──
   console.log('\n▶ [TEST 3] 사용자 매수 주문 생성 및 체결 기록');
-  const { data: newOrder, error: orderErr } = await supabase
+  const { data: newOrder, error: orderErr } = await db
     .from('orders')
     .insert({
       stock_id: 'stock_005930',
@@ -64,7 +64,7 @@ async function runMemoryDbTestSuite() {
       is_lp: false,
     });
 
-  const { data: newTrade, error: tradeErr } = await supabase
+  const { data: newTrade, error: tradeErr } = await db
     .from('trades')
     .insert({
       stock_id: 'stock_005930',
@@ -87,14 +87,14 @@ async function runMemoryDbTestSuite() {
 
   // ── [TEST 4] 보유 자산 Upsert & 조회 검증 ──
   console.log('\n▶ [TEST 4] 보유 자산 (.holdings) Upsert 및 조회');
-  await supabase.from('holdings').upsert({
+  await db.from('holdings').upsert({
     user_id: 'guest_user',
     stock_id: 'stock_005930',
     quantity: 10,
     avg_price: 74200,
   });
 
-  const { data: myHoldings } = await supabase
+  const { data: myHoldings } = await db
     .from('holdings')
     .select('*')
     .eq('user_id', 'guest_user');
@@ -114,7 +114,7 @@ async function runMemoryDbTestSuite() {
   console.log(`  - 초기 잔고: ₩${initialCash.toLocaleString()}`);
 
   const delta = -742000; // 매수 대금 차감
-  const { data: updatedCash } = await supabase.rpc('increment_user_cash', {
+  const { data: updatedCash } = await db.rpc('increment_user_cash', {
     p_user_id: 'guest_user',
     p_delta: delta,
   });

@@ -26,6 +26,7 @@ export const SIMULATION_NAMESPACES = {
     PENSION_FUND: (id: string) => `bot:pension_fund:${id}`,
     HEDGE_FUND: (id: string) => `bot:hedge_fund:${id}`,
     PROP_DESK: (id: string) => `bot:prop_desk:${id}`,
+    PROP_DESK_ABUSE: (id: string) => `bot:prop_desk:${id}:market_abuse`,
     RETAIL_SWARM: (id: string) => `bot:retail_swarm:${id}`,
     QUANT: (id: string) => `bot:quant:${id}`,
     STAT_ARB: (id: string) => `bot:stat_arb:${id}`,

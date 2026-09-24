@@ -9,10 +9,10 @@ export default function PriceHeroV2({ stock }: { stock: Stock }) {
   const [price, setPrice] = useState(stock.currentPrice);
   const [flash, setFlash] = useState<"up" | "down" | null>(null);
   const prevRef = useRef(stock.currentPrice);
-  const supabase = createClient();
+  const db = createClient();
 
   useEffect(() => {
-    const ch = supabase
+    const ch = db
       .channel(`price_hero_v2_${stock.id}`)
       .on(
         "postgres_changes",
@@ -28,8 +28,8 @@ export default function PriceHeroV2({ stock }: { stock: Stock }) {
         }
       )
       .subscribe();
-    return () => { supabase.removeChannel(ch); };
-  }, [stock.id, supabase]);
+    return () => { db.removeChannel(ch); };
+  }, [stock.id, db]);
 
   const { percent, amount, dir } = change(price, stock.previousClose);
   const priceColor = dir === "up" ? "text-bid" : dir === "down" ? "text-ask" : "text-tx";

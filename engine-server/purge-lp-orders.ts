@@ -1,17 +1,9 @@
-import { createClient } from '@supabase/supabase-js';
-import * as dotenv from 'dotenv';
-dotenv.config();
+import { createIsolatedMemoryDbClient } from '../lib/memoryDb/memoryDbClient';
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
+async function purge(dbClient = createIsolatedMemoryDbClient()) {
+  console.log('🧹 Purging all stale LP orders from orders table in memory store...');
 
-async function purge() {
-  console.log('🧹 Purging all stale LP orders from orders table...');
-
-  // 현재 LP 주문 총 수 확인
-  const { count: beforeCount } = await supabase
+  const { count: beforeCount } = await dbClient
     .from('orders')
     .select('*', { count: 'exact', head: true })
     .eq('is_lp', true);
@@ -19,9 +11,8 @@ async function purge() {
 
   let total = 0;
 
-  // 배치로 LP 주문 삭제 (500개씩)
   while (true) {
-    const { data: batch, error: fetchErr } = await supabase
+    const { data: batch, error: fetchErr } = await dbClient
       .from('orders')
       .select('id')
       .eq('is_lp', true)
@@ -32,7 +23,7 @@ async function purge() {
 
     const ids = batch.map((r: any) => r.id);
 
-    const { error: delErr } = await supabase
+    const { error: delErr } = await dbClient
       .from('orders')
       .delete()
       .in('id', ids);
@@ -45,8 +36,7 @@ async function purge() {
     if (ids.length < 500) break;
   }
 
-  // 남은 카운트 확인
-  const { count: afterCount } = await supabase
+  const { count: afterCount } = await dbClient
     .from('orders')
     .select('*', { count: 'exact', head: true });
 
@@ -54,4 +44,8 @@ async function purge() {
   console.log(`📊 Remaining total orders in DB: ${afterCount}`);
 }
 
-purge();
+if (require.main === module) {
+  purge().catch(console.error);
+}
+
+export { purge };

@@ -5,14 +5,14 @@ import { createClient } from "@/lib/db/client";
 import StockTable from "@/app/components/StockTable";
 import type { Stock } from "@/lib/types";
 
-const supabase = createClient();
+const db = createClient();
 
 export default function V2StocksPage() {
   const [stocks, setStocks] = useState<Stock[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    supabase
+    db
       .from("stocks")
       .select("*")
       .order("market_cap", { ascending: false })

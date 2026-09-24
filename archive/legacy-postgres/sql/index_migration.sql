@@ -1,5 +1,5 @@
--- supabase/index_migration.sql
--- Run this in the Supabase SQL editor to create the market_indices table
+-- legacy_db/index_migration.sql
+-- Run this in the Legacy DB SQL editor to create the market_indices table
 
 create table if not exists public.market_indices (
   id uuid primary key default gen_random_uuid(),

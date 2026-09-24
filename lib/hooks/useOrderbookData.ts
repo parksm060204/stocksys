@@ -164,11 +164,11 @@ export function useOrderbookData(
   // ─── DB 폴링 및 권위 있는 호가 집계 ────────────────────────────────────
   const fetchFromDB = useCallback(async (targetStockId: string, generation: number) => {
     if (!targetStockId || targetStockId === '__none__') return;
-    const supabase = clientRef.current || createClient();
+    const db = clientRef.current || createClient();
 
     try {
       // 1. 단일 스냅샷 기반의 서버 권위 호가 집계 RPC 호출 (100% 완전 잔량 합산 및 매수/매도 시점 일치 보장)
-      const rpcRes = await supabase.rpc('get_authoritative_orderbook', {
+      const rpcRes = await db.rpc('get_authoritative_orderbook', {
         p_stock_id: targetStockId,
         p_depth: 10,
       });
@@ -252,7 +252,7 @@ export function useOrderbookData(
       // 주의: Local Standalone 단일 프로세스에서는 동기식 집계를 통해 동일 읽기 구간의 스냅샷을 보장합니다.
       // 외부 DB 모드에서는 docs/sql/02_get_authoritative_orderbook.sql 단일 SQL statement 또는 읽기 트랜잭션이 필수입니다.
       const fetchAsks = () =>
-        supabase
+        db
           .from('orders')
           .select('id,stock_id,side,price,size,filled,status,is_lp')
           .eq('stock_id', targetStockId)
@@ -262,7 +262,7 @@ export function useOrderbookData(
           .limit(200);
 
       const fetchBids = () =>
-        supabase
+        db
           .from('orders')
           .select('id,stock_id,side,price,size,filled,status,is_lp')
           .eq('stock_id', targetStockId)
@@ -272,7 +272,7 @@ export function useOrderbookData(
           .limit(200);
 
       const fetchTrades = () =>
-        supabase
+        db
           .from('trades')
           .select('id,stock_id,price,size,buyer_is_bot,seller_is_bot,created_at')
           .eq('stock_id', targetStockId)

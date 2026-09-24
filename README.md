@@ -44,7 +44,7 @@ STOCKSYS는 자동으로 **Local Standalone Mode**를 시작합니다.
 추가로 설치할 필요가 없습니다.
 
 - Docker 불필요
-- Supabase 불필요
+- 외부 DB 인프라 불필요 (인메모리 자체 데이터 계층)
 - PostgreSQL 불필요
 - PostgREST 불필요
 - 별도 MarketEngine 서버 불필요
@@ -311,7 +311,7 @@ STOCKSYS는 외부 DB나 호스팅 서버 없이 Next.js 단일 프로세스 내
 ### 핵심 보안 및 트랜잭션 원칙:
 
 1. **외부 DB 및 서드파티 호스팅 의존성 0% (Local Standalone)**:
-   - Supabase, PostgreSQL, Render, Docker 등의 외부 인프라 없이 완전히 독립 구동됩니다.
+   - 외부 인프라 없이 완전히 독립 구동됩니다.
    - Next.js 프로세스 내부의 Authoritative In-Memory DB와 임베디드 마켓 엔진으로 전 과정이 처리됩니다.
    - `npm install && npm run dev`만으로 프론트엔드와 시장 시뮬레이션이 즉시 실행됩니다.
 
@@ -513,8 +513,8 @@ STOCKSYS는 현물 주식 외에도 원자재 선물(Commodity Futures)과 옵�
    - DB 컨테이너 기동 시 `-c max_wal_size=1GB -c min_wal_size=80MB`를 필수로 적용하며, 모든 서비스 컨테이너에 Docker log rotation(`max-size: 10m, max-file: 3`)을 설정합니다.
 4. **인증(NextAuth) 및 DB 장애 격리**:
    - NextAuth 콜백 내부의 DB 조회는 전수 `try-catch`로 감싸고 `.maybeSingle()`을 사용하여 DB 지연이나 일시 다운 상황에서도 500 HTML 파싱 에러(`CLIENT_FETCH_ERROR`)가 발생하지 않도록 격리합니다.
-5. **환경변수 하위 호환 Alias 유지**:
-   - `NEXT_PUBLIC_ENGINE_DB_URL`과 `NEXT_PUBLIC_SUPABASE_URL`을 상호 폴백으로 동시에 유지하여 의존성 라이브러리의 누락 크래시를 방지합니다.
+5. **환경변수 표준화**:
+   - `NEXT_PUBLIC_ENGINE_DB_URL`을 표준 환경변수로 사용하여 누락 크래시를 방지합니다.
 
 ---
 

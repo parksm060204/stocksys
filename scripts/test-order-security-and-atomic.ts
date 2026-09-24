@@ -93,22 +93,18 @@ async function runSecurityAndSafetyTests() {
   // ----------------------------------------------------
   console.log('\n[TEST 3] Service Role Key Fallback Prevention Test');
   const originalEngineKey = process.env.ENGINE_DB_SERVICE_ROLE_KEY;
-  const originalSupabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
   try {
     delete process.env.ENGINE_DB_SERVICE_ROLE_KEY;
-    delete process.env.SUPABASE_SERVICE_ROLE_KEY;
 
     // 키가 없을 때 anon key로 fallback하지 않고 에러를 throw하는지 확인
     let threwError = false;
     try {
       const url = 'http://localhost:3001';
-      const serviceKey =
-        process.env.ENGINE_DB_SERVICE_ROLE_KEY ||
-        process.env.SUPABASE_SERVICE_ROLE_KEY;
+      const serviceKey = process.env.ENGINE_DB_SERVICE_ROLE_KEY;
 
       if (!url || !serviceKey) {
-        throw new Error('❌ Missing ENGINE_DB_SERVICE_ROLE_KEY or SUPABASE_SERVICE_ROLE_KEY');
+        throw new Error('❌ Missing ENGINE_DB_SERVICE_ROLE_KEY');
       }
     } catch (e: any) {
       threwError = true;
@@ -117,7 +113,6 @@ async function runSecurityAndSafetyTests() {
     assert(threwError === true, 'Must strictly fail when service role key is missing (no anon fallback)');
   } finally {
     if (originalEngineKey) process.env.ENGINE_DB_SERVICE_ROLE_KEY = originalEngineKey;
-    if (originalSupabaseKey) process.env.SUPABASE_SERVICE_ROLE_KEY = originalSupabaseKey;
   }
 
   // ----------------------------------------------------

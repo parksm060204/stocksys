@@ -103,7 +103,7 @@ echo "  완료."
 
 echo ""
 echo "================================================================"
-echo " 6. anon / service_role JWT 발급 (Supabase URL 호환)"
+echo " 6. anon / service_role JWT 발급 (Legacy DB URL 호환)"
 echo "================================================================"
 
 # PostgREST v12 의 anon JWT 형식 (role=anon)
@@ -132,9 +132,9 @@ cat > "$PROJECT_DIR/connection.txt" <<EOF
   SERVICE KEY : $SERVICE_JWT
 
 프론트엔드 / 엔진 .env.local 교체:
-  NEXT_PUBLIC_SUPABASE_URL=http://$(curl -s ifconfig.me):3001
-  NEXT_PUBLIC_SUPABASE_ANON_KEY=$ANON_JWT
-  SUPABASE_SERVICE_ROLE_KEY=$SERVICE_JWT
+  NEXT_PUBLIC_ENGINE_DB_URL=http://$(curl -s ifconfig.me):3001
+  NEXT_PUBLIC_ENGINE_DB_ANON_KEY=$ANON_JWT
+  ENGINE_DB_SERVICE_ROLE_KEY=$SERVICE_JWT
 
 SSH 터널로 Adminer 접근:
   ssh -L 8080:127.0.0.1:8080 user@VM_IP
@@ -155,4 +155,4 @@ cat "$PROJECT_DIR/connection.txt"
 
 echo ""
 echo "설치 완료. connection.txt 파일에 모든 접속 정보가 저장됨."
-echo "이제 로컬 PC 의 프론트/엔진 .env.local 의 SUPABASE_* 환경변수를 위 값으로 교체 후 재배포."
+echo "이제 로컬 PC 의 프론트/엔진 .env.local 의 ENGINE_DB_* 환경변수를 위 값으로 교체 후 재배포."

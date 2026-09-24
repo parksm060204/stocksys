@@ -50,4 +50,4 @@ CREATE POLICY "Service role can insert active events" ON public.active_player_ev
 CREATE POLICY "Anon can insert active events" ON public.active_player_events FOR INSERT TO anon WITH CHECK (true);
 
 -- Realtime
-ALTER PUBLICATION supabase_realtime ADD TABLE public.active_player_events;
+ALTER PUBLICATION database_realtime ADD TABLE public.active_player_events;

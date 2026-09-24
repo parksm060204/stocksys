@@ -2,7 +2,7 @@
  * Local Standalone Mode 감지 및 콘솔 배너 출력 헬퍼
  *
  * STOCKSYS는 완전 독립형 Local Standalone Mode로 구동됩니다.
- * 외부 DB, Supabase, Render 없이 인메모리 DB 및 Next.js 내부 마켓 엔진으로 모든 기능이 동작합니다.
+ * 외부 DB 및 서드파티 서비스 없이 인메모리 DB 및 Next.js 내부 마켓 엔진으로 모든 기능이 동작합니다.
  */
 
 let hasPrintedBanner = false;

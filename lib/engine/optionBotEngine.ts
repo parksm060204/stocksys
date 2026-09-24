@@ -118,9 +118,9 @@ export function calculateGreeksWithExpiry(
  * Handles Rollover Spread, Contango/Backwardation, Institution Progress Bars & Live Rollover Feeds
  */
 export async function runOptionBotTradingEngine(stockId: string, underlyingSymbol: string, currentSpotPrice: number) {
-  const supabase = createClient();
+  const db = createClient();
 
-  const { data: existingOptions } = await supabase
+  const { data: existingOptions } = await db
     .from('options_contracts')
     .select('*')
     .eq('underlying_stock_id', stockId);
@@ -181,7 +181,7 @@ export async function runOptionBotTradingEngine(stockId: string, underlyingSymbo
       }
     }
 
-    const { data: insertedData } = await supabase
+    const { data: insertedData } = await db
       .from('options_contracts')
       .insert(newContractsToInsert)
       .select('*');
@@ -307,7 +307,7 @@ export async function runOptionBotTradingEngine(stockId: string, underlyingSymbo
       });
     }
 
-    await supabase
+    await db
       .from('options_contracts')
       .update({
         open_interest: newOI,
@@ -403,10 +403,10 @@ export async function runOptionBotTradingEngine(stockId: string, underlyingSymbo
 
   // ─── [5. 현물 가격 피드백 루프 (Spot Price Feedback Loop Update)] ─────────────
   if (targetPriceDelta !== 0) {
-    const { data: stock } = await supabase.from('stocks').select('current_price, target_price').eq('id', stockId).single();
+    const { data: stock } = await db.from('stocks').select('current_price, target_price').eq('id', stockId).single();
     if (stock) {
       const newSpot = Math.max(100, Math.round(stock.current_price + targetPriceDelta));
-      await supabase
+      await db
         .from('stocks')
         .update({
           current_price: newSpot,
@@ -432,8 +432,8 @@ export async function runOptionBotTradingEngine(stockId: string, underlyingSymbo
  * Option Expiration Cash Settlement & Zero-out Processor
  */
 export async function processOptionExpiration(stockId: string, finalSpotPrice: number) {
-  const supabase = createClient();
-  const { data, error } = await supabase.rpc('settle_options_expiration', {
+  const db = createClient();
+  const { data, error } = await db.rpc('settle_options_expiration', {
     p_stock_id: stockId,
     p_final_spot_price: finalSpotPrice
   });

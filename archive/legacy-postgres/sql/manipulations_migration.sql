@@ -1,4 +1,4 @@
--- Supabase Migration: active_manipulations table
+-- Legacy DB Migration: active_manipulations table
 
 CREATE TABLE IF NOT EXISTS public.active_manipulations (
   id uuid NOT NULL DEFAULT uuid_generate_v4(),

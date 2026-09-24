@@ -34,7 +34,7 @@ async function runGuardTestSuite() {
   try {
     (process.env as any).NODE_ENV = 'production';
     process.env.NEXT_PUBLIC_USE_IN_MEMORY = 'false';
-    delete process.env.NEXT_PUBLIC_SUPABASE_URL;
+    delete process.env.NEXT_PUBLIC_ENGINE_DB_URL;
 
     createClient();
     console.error('  결과: ❌ FAIL (프로덕션에서 조용히 Mock으로 폴백됨)');

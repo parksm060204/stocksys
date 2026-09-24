@@ -1,5 +1,13 @@
 import type { AgentConfig, AgentPortfolio, AgentWeights, MarketSentiment, MarketEvent } from '../types';
 import { EventBus } from '../EventBus';
+import { applyLegacyChildOrderSafetyLimits, getLegacyTickSize, alignToLegacyTickSize } from '../risk/legacyOrderSafety';
+import { isMarketAbuseScenarioEnabled } from '../simulation/featureFlags';
+import {
+  SimulationContext,
+  SimulationRandomSource,
+  SimulationTimeSource,
+  createSimulationContext
+} from '../../../lib/engine/simulation/runtime';
 
 export class BaseAgent {
   public botId: string;
@@ -8,12 +16,17 @@ export class BaseAgent {
   public currentPortfolio: AgentPortfolio;
   public pendingNewsOrders: any[] = [];
 
+  // ── Simulation Context (Deterministic PRNG & Virtual Clock) ──
+  public readonly context: SimulationContext;
+  public readonly random: SimulationRandomSource;
+  public readonly clock: SimulationTimeSource;
+
   // ── HFT Microstructure 상태 추적 ──
   public icebergReserves: Map<string, { side: 'buy' | 'sell'; price: number; remainingQty: number; sliceQty: number }> = new Map();
   public activeSpoofOrders: Array<{ orderId: string; stockId: string; side: 'buy' | 'sell'; price: number; tickCreated: number }> = [];
   public ordersToCancel: string[] = [];
 
-  constructor(configOrId: any, initialCapital?: number) {
+  constructor(configOrId: any, initialCapital?: number, context?: SimulationContext) {
     if (typeof configOrId === 'string') {
       this.botId = configOrId;
       this.agentConfig = {} as AgentConfig;
@@ -21,6 +34,11 @@ export class BaseAgent {
       this.botId = configOrId?.id || 'unknown_bot';
       this.agentConfig = configOrId || {};
     }
+
+    // Context & Seeded Stream Initializer
+    this.context = context || createSimulationContext();
+    this.random = this.context.random.fork(this.botId);
+    this.clock = this.context.clock;
     
     const cap = (typeof initialCapital === 'number' && !isNaN(initialCapital))
       ? initialCapital
@@ -77,7 +95,7 @@ export class BaseAgent {
       targetSector: news.target_sector,
       side,
       impact: effectiveImpact,
-      timestamp: Date.now()
+      timestamp: this.clock.now()
     });
   }
 
@@ -299,19 +317,11 @@ export class BaseAgent {
   }
 
   protected getTickSize(price: number): number {
-    if (price < 2000) return 1;
-    if (price < 5000) return 5;
-    if (price < 20000) return 10;
-    if (price < 50000) return 50;
-    if (price < 200000) return 100;
-    if (price < 500000) return 500;
-    return 1000;
+    return getLegacyTickSize(price);
   }
 
   public alignToTickSize(price: number): number {
-    if (price <= 0) return 1;
-    const tick = this.getTickSize(price);
-    return Math.round(price / tick) * tick;
+    return alignToLegacyTickSize(price);
   }
 
   /**
@@ -319,34 +329,10 @@ export class BaseAgent {
    * 1. Hard Limit: 1회 주문 최대 금액 5,000,000 KRW, 수량 5,000주 제한
    * 2. 호가창 깊이(LOB Depth) 대비 최대 10% 비율 제한
    * 3. 틱 단위 가격 정렬 (KRX Tick Alignment)
+   * -> Canonical module `legacyOrderSafety.ts`로 중앙화됨
    */
   public applyInstitutionalRiskControls(order: any, currentPrice: number, lobDepth: number = 50000): any {
-    const MAX_NOTIONAL_PER_ORDER = 5000000; // 1회 최대 500만 원
-    const MAX_QTY_PER_ORDER = 5000;         // 1회 최대 5,000주
-    const DEPTH_RATIO_CAP = 0.10;           // 호가창 깊이의 최대 10%
-
-    let safeQty = Math.abs(order.size || 1);
-
-    if (currentPrice > 0) {
-      const notionalCapQty = Math.floor(MAX_NOTIONAL_PER_ORDER / currentPrice);
-      safeQty = Math.min(safeQty, Math.max(1, notionalCapQty));
-    }
-
-    safeQty = Math.min(safeQty, MAX_QTY_PER_ORDER);
-
-    if (lobDepth > 0) {
-      const depthCapQty = Math.floor(lobDepth * DEPTH_RATIO_CAP);
-      safeQty = Math.min(safeQty, Math.max(1, depthCapQty));
-    }
-
-    const rawPrice = order.price || currentPrice;
-    const alignedPrice = this.alignToTickSize(rawPrice);
-
-    return {
-      ...order,
-      price: alignedPrice,
-      size: Math.max(1, Math.floor(safeQty))
-    };
+    return applyLegacyChildOrderSafetyLimits(order, currentPrice, lobDepth);
   }
 
   protected executeSmartOrder(
@@ -402,8 +388,8 @@ export class BaseAgent {
       return orders;
     }
 
-    // 2. 가격 차이 판단 -> Spoofing (허수 주문)
-    if (urgency < 0.3 && priceDiffRatio > 0.01 && finalTargetQty > 1000) {
+    // 2. 가격 차이 판단 -> Spoofing (허수 주문) - 시장조작 격리 플래그 검사 (정상 상태에서는 비활성화)
+    if (isMarketAbuseScenarioEnabled() && urgency < 0.3 && priceDiffRatio > 0.01 && finalTargetQty > 1000) {
       const spoofSide = side === 'buy' ? 'sell' : 'buy';
       const tickOffset = 3 + (Math.abs(Math.floor(finalTargetQty)) % 3);
       const spoofPrice = side === 'buy'
@@ -516,7 +502,10 @@ export class BaseAgent {
     offsetTicks: number = 2,
     multiplier: number = 8.0,
     currentTick: number = 0
-  ): any {
+  ): any | null {
+    if (!isMarketAbuseScenarioEnabled()) {
+      return null;
+    }
     const tickSize = this.getTickSize(stock.current_price);
     const spoofPrice = side === 'buy'
       ? this.alignToTickSize(stock.current_price - offsetTicks * tickSize)
@@ -524,7 +513,7 @@ export class BaseAgent {
 
     const baseQty = Math.max(500, Math.floor((this.capital * 0.03) / stock.current_price));
     const spoofQty = Math.floor(baseQty * multiplier);
-    const orderId = `spoof_${this.botId}_${stock.id}_${Date.now()}`;
+    const orderId = `spoof_${this.botId}_${stock.id}_${this.clock.now()}`;
 
     const spoofOrder = this.applyInstitutionalRiskControls({
       id: orderId,

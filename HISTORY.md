@@ -4903,3 +4903,34 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
   - `npx tsx scripts/test-news-lifecycle-and-causal-flow.ts` (100% 통과).
   - `npx tsx scripts/test-stage2-review-fixes-v2.ts` (100% 통과).
   - `git diff --check` (클린).
+
+---
+## 2026-09-24 18:36
+
+**요청 요약:** STOCKSYS 시뮬레이션 엔진 Phase 1 체질 개선 리팩터링 및 Phase 0 기준선/안전장치 보존
+- Seeded Simulation Context 도입 및 라이브 엔진 비결정성(Math.random 36건) 전면 제거
+- 공통 참여자 도메인 경계(`lib/engine/simulation/participants/`) 및 양방향 어댑터 구축
+- `engine-server` 독립 타입/컴파일 경계 복구 (`cd engine-server && npm run build` 통과)
+- Phase 0 기준선 감사 도구 갱신 및 전체 무회귀 검증
+
+**수행 결과:**
+- `lib/engine/simulation/runtime/`:
+  - `SimulationContext`, `SimulationTimeSource`, `SimulationRandomSource` 인터페이스 및 구현체 개발.
+  - 기존 `SimPrng`를 재사용하고, FNV-1a 해시 기반 `fork(namespace)`를 구현하여 봇/서브시스템 간 난수 스트림 상호간섭을 100% 차단.
+- `engine-server/src/`:
+  - `engine-server` 전역의 `Math.random()` 호출 36건을 완전히 제거하고 `SimulationContext` 명시적 주입 체계로 전환 (`MarketEngine` 13건, `RetailSwarmAgent` 16건, `PropDeskAgent` 2건, `HedgeFundAgent` 1건, `PensionFundAgent` 1건, `CommercialBankAgent` 1건, `EventDirector` 1건, `NewsGenerator` 1건).
+  - 시뮬레이션 내 의사결정, 주문 ID, cooldown 시간 축을 `context.clock` 시뮬레이션 시간으로 일원화하고, 벽시계(`WallClock`)와 명확히 분리.
+  - `MarketEngine`에 `MarketEngineDependencies`, `MarketDataSource`, `MarketPersistence` 인터페이스를 도입하여 모듈식 DI 구조로 개선.
+- `lib/engine/simulation/participants/`:
+  - `ParticipantKind`, `ParticipantIdentity`, `InformationProfile`, `DecisionProfile`, `ParticipantAccount` 공통 도메인 인터페이스 정의.
+  - `InstitutionalProfile`, `RetailSwarmProfile` 등 세부 타입 및 기존 `AgentAccount`, `AgentConfig`를 순수 변환하는 무변이(immutable) fail-closed 어댑터 구현.
+- `engine-server/tsconfig.json` & 독립 빌드 복구:
+  - `strict: true`를 엄격히 보존하면서, 루트/공유 모듈과의 타입 설정 정합성을 위해 불필요한 `exactOptionalPropertyTypes` 제거 및 `@/*` 경로 별칭 설정.
+  - `cd engine-server && npm run build` (tsc) 통과 (Exit Code 0).
+- Phase 0 기준선 안전장치 및 감사 도구 갱신:
+  - `engine-server/src/risk/legacyOrderSafety.ts`에 500만원/5,000주 제한, LOB 10%, KRX 틱 크기 정렬 중앙화.
+  - `engine-server/src/simulation/featureFlags.ts`에 `ENABLE_MARKET_ABUSE_SCENARIOS=true` fail-closed 가드 구현.
+  - `scripts/phase0-baseline-audit.ts`를 갱신하여 83개 파일 전수 감사(Math.random 0건, 안전장치 및 런타임/참여자 경계 유효 확인).
+- 테스트 스위트 추가 및 전수 통과:
+  - `scripts/test-phase1-suite.ts` (`test-phase1-simulation-context.ts`, `test-phase1-live-engine-determinism.ts`, `test-phase1-participant-adapters.ts`, `test-phase1-market-abuse-safety.ts`) 신규 작성 및 전수 통과.
+  - 루트 및 독립 엔진 빌드(`npm run build`, `cd engine-server && npm run build`), 타입체크(`npx tsc --noEmit`), 린트(`npm run lint`), 전체 회귀 테스트(교차자산 15종, 시장국면 33종, 뉴스 인과 라이프사이클) 100% 통과.

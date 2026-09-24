@@ -1,4 +1,9 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import {
+  SimulationContext,
+  SimulationRandomSource,
+  createSimulationContext
+} from "../../../lib/engine/simulation/runtime";
 
 export interface NewsItem {
   id?: string;
@@ -18,8 +23,11 @@ export interface NewsItem {
 export class NewsGenerator {
   private genAI: GoogleGenerativeAI | null = null;
   private model: any = null;
+  private readonly random: SimulationRandomSource;
 
-  constructor() {
+  constructor(context?: SimulationContext) {
+    this.random = context?.random.fork('news_generator') || createSimulationContext().random.fork('news_generator');
+
     const apiKey = process.env.GEMINI_API_KEY || process.env.NEXT_PUBLIC_GEMINI_API_KEY || '';
     if (apiKey) {
       try {
@@ -161,7 +169,7 @@ export class NewsGenerator {
       }
     ];
 
-    const randomIndex = Math.floor(Math.random() * templates.length);
+    const randomIndex = this.random.nextInt(0, templates.length);
     return templates[randomIndex] as NewsItem;
   }
 }

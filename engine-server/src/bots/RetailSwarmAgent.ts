@@ -1,13 +1,14 @@
 import type { RetailSwarmBot } from "../types";
 import { BaseAgent } from "./BaseAgent";
+import type { SimulationContext } from "../../../lib/engine/simulation/runtime";
 
 export class RetailSwarmAgent extends BaseAgent {
   private bot: RetailSwarmBot;
 
   private holdings: Record<string, number> = {};
 
-  constructor(bot: RetailSwarmBot) {
-    super(bot.id, bot.capital);
+  constructor(bot: RetailSwarmBot, context?: SimulationContext) {
+    super(bot.id, bot.capital, context);
     this.bot = bot;
     if ((bot as any).initialHoldings) {
       this.holdings = { ...(bot as any).initialHoldings };
@@ -75,7 +76,7 @@ export class RetailSwarmAgent extends BaseAgent {
       // Noise -> Chartist (코어 트렌드를 쫓아감)
       const p_N_to_C = a + lambda * (state.chartists / state.total);
       for (let i = 0; i < state.noise; i++) {
-        if (Math.random() < p_N_to_C) { newN--; newC++; }
+        if (this.random.nextBoolean(p_N_to_C)) { newN--; newC++; }
       }
 
       // Chartist -> Fundamentalist (괴리율이 클 때 가치 투자로 전환)
@@ -83,13 +84,13 @@ export class RetailSwarmAgent extends BaseAgent {
       const deviation = Math.abs((stock.current_price - fundamentalValue) / fundamentalValue);
       const p_C_to_F = a + (deviation * 5); // 괴리율이 클수록 가치투자자로 전향할 확률 급등
       for (let i = 0; i < state.chartists; i++) {
-        if (Math.random() < p_C_to_F) { newC--; newF++; }
+        if (this.random.nextBoolean(p_C_to_F)) { newC--; newF++; }
       }
 
       // Fundamentalist -> Chartist (코어의 압도적인 모멘텀에 굴복)
       const p_F_to_C = a + lambda * (Math.abs(coreTrend) * 10);
       for (let i = 0; i < state.fundamentalists; i++) {
-        if (Math.random() < p_F_to_C) { newF--; newC++; }
+        if (this.random.nextBoolean(p_F_to_C)) { newF--; newC++; }
       }
 
       // 강제 쏠림 보정 (외부 충격 또는 미세 틱 모멘텀 발생 시)
@@ -112,17 +113,17 @@ export class RetailSwarmAgent extends BaseAgent {
       }
 
       // 3. 실제 주문 생성 로직
-      let activeAnts = Math.floor(Math.random() * 10) + 5; 
+      let activeAnts = this.random.nextInt(5, 15);
       let isSqueeze = false;
       
       if (lambda > 0.5 || Math.abs(dayReturn) > 0.01) { // 쏠림 발생 시
-        activeAnts = Math.floor(Math.random() * 20) + 10;
+        activeAnts = this.random.nextInt(10, 30);
       }
 
       // 숏 스퀴즈 / 감마 스퀴즈 징후 포착 시 (가격 15% 이상 급등)
       if (dayReturn > 0.15) {
         isSqueeze = true;
-        activeAnts = Math.floor(Math.random() * 50) + 50; // 개미 떼 출몰 (50~100명)
+        activeAnts = this.random.nextInt(50, 100); // 개미 떼 출몰 (50~100명)
         console.log(`🚀 [Retail FOMO] GME-style squeeze detected on ${stock.name}! Swarm size: ${activeAnts}`);
       }
 
@@ -130,21 +131,21 @@ export class RetailSwarmAgent extends BaseAgent {
       activeAnts = Math.min(activeAnts, 30);
 
       for (let i = 0; i < activeAnts; i++) {
-        const rand = Math.random() * 100;
+        const rand = this.random.next() * 100;
         let antType = 'NOISE';
         if (rand < state.fundamentalists) antType = 'FUNDAMENTALIST';
         else if (rand < state.fundamentalists + state.chartists) antType = 'CHARTIST';
 
-        let tinyQty = Math.floor(Math.random() * 5) + 1;
-        let side = Math.random() < 0.5 ? 'buy' : 'sell';
+        let tinyQty = this.random.nextInt(1, 6);
+        let side = this.random.nextBoolean(0.5) ? 'buy' : 'sell';
         let executionPrice = stock.current_price;
 
         if (isSqueeze) {
           // 스퀴즈 상황: 무지성 시장가 추격 매수 (Squeeze FOMO Sweep)
           antType = 'CHARTIST';
           side = 'buy';
-          tinyQty = Math.floor(Math.random() * 50) + 10; // 매수 규모 10배 폭발
-          executionPrice = stock.current_price + tickSize * Math.floor(Math.random() * 10); // 저 멀리 위까지 싹쓸이
+          tinyQty = this.random.nextInt(10, 60); // 매수 규모 10배 폭발
+          executionPrice = stock.current_price + tickSize * this.random.nextInt(0, 10); // 저 멀리 위까지 싹쓸이
         } else if (antType === 'FUNDAMENTALIST') {
           // 가치 투자자: 본질 가치보다 싸면 매수 테이킹, 비싸면 매도 테이킹
           side = stock.current_price < fundamentalValue ? 'buy' : 'sell';
@@ -153,21 +154,21 @@ export class RetailSwarmAgent extends BaseAgent {
           // 추세 추종자: 오르면 더 사고, 내리면 패닉 셀
           if (coreTrend > 0 || fomoOverride) {
             side = 'buy';
-            executionPrice = stock.current_price + tickSize * Math.max(1, Math.floor(Math.random() * 3));
+            executionPrice = stock.current_price + tickSize * Math.max(1, this.random.nextInt(0, 3));
           } else if (coreTrend < 0 || panicOverride) {
             side = 'sell';
-            executionPrice = Math.max(tickSize, stock.current_price - tickSize * Math.max(1, Math.floor(Math.random() * 3)));
+            executionPrice = Math.max(tickSize, stock.current_price - tickSize * Math.max(1, this.random.nextInt(0, 3)));
           } else {
             // 박스권 체결 유도
-            side = Math.random() < 0.5 ? 'buy' : 'sell';
+            side = this.random.nextBoolean(0.5) ? 'buy' : 'sell';
             executionPrice = side === 'buy' ? stock.current_price + tickSize : Math.max(tickSize, stock.current_price - tickSize);
           }
         } else {
           // 노이즈 트레이더: 40% 확률로 시장가/테이커 체결, 60% 확률로 지정가 배치
-          if (Math.random() < 0.40) {
+          if (this.random.nextBoolean(0.40)) {
             executionPrice = side === 'buy' ? stock.current_price + tickSize : Math.max(tickSize, stock.current_price - tickSize);
           } else {
-            executionPrice = stock.current_price + (side === 'buy' ? -tickSize : tickSize) * Math.floor(Math.random() * 3);
+            executionPrice = stock.current_price + (side === 'buy' ? -tickSize : tickSize) * this.random.nextInt(0, 3);
           }
         }
 

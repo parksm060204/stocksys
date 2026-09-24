@@ -1,5 +1,6 @@
 import type { HedgeFundBot, MarketSentiment } from "../types";
 import { BaseAgent } from "./BaseAgent";
+import type { SimulationContext } from "../../../lib/engine/simulation/runtime";
 
 export class HedgeFundAgent extends BaseAgent {
   private bot: HedgeFundBot;
@@ -17,8 +18,8 @@ export class HedgeFundAgent extends BaseAgent {
     holdings: {}
   };
 
-  constructor(bot: HedgeFundBot) {
-    super(bot.id, bot.capital);
+  constructor(bot: HedgeFundBot, context?: SimulationContext) {
+    super(bot.id, bot.capital, context);
     this.bot = bot;
     
     // 초기 자본금 및 보유 주식 세팅
@@ -224,7 +225,7 @@ export class HedgeFundAgent extends BaseAgent {
         if (stock.current_price > fundamentalValue * 1.3) {
           const qtyToShort = Math.floor(moneyToDeploy / stock.current_price);
           
-          if (qtyToShort > 0 && Math.random() < 0.2) { // 20% 확률로 트리거 (전 종목에 무차별 공매도 방지)
+          if (qtyToShort > 0 && this.random.nextBoolean(0.2)) { // 20% 확률로 트리거 (전 종목에 무차별 공매도 방지)
             console.log(`[Active Short] ${this.bot.name} is shorting ${stock.name}! (Price: ${stock.current_price}, Funda: ${Math.round(fundamentalValue)})`);
             
             const tickSize = this.getTickSize(stock.current_price);

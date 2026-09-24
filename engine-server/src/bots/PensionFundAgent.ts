@@ -1,12 +1,13 @@
 import type { PensionFundBot } from "../types";
 import { BaseAgent } from "./BaseAgent";
+import type { SimulationContext } from "../../../lib/engine/simulation/runtime";
 
 export class PensionFundAgent extends BaseAgent {
   public readonly config: PensionFundBot;
   private executionState: Record<string, { remainingQty: number, targetTicks: number, currentTick: number, kappa: number, totalQty: number }> = {};
 
-  constructor(bot: PensionFundBot) {
-    super(bot.id, bot.capital);
+  constructor(bot: PensionFundBot, context?: SimulationContext) {
+    super(bot.id, bot.capital, context);
     this.config = bot;
     if ((bot as any).initialHoldings) {
       this.currentPortfolio.holdings = { ...(bot as any).initialHoldings };
@@ -38,7 +39,7 @@ export class PensionFundAgent extends BaseAgent {
       const adjustedBuyPrice = Math.floor(targetBuyPrice / 10) * 10;
 
       if (currentPrice <= adjustedBuyPrice + 50) {
-        const orderVolume = Math.floor((this.config.capital * (Math.random() * 0.01 + 0.01)) / currentPrice);
+        const orderVolume = Math.floor((this.config.capital * (this.random.next() * 0.01 + 0.01)) / currentPrice);
         orders.push({
           stock_id: bond.id,
           user_id: null,

@@ -96,7 +96,44 @@ class SystemResourceMonitor {
   }
 }
 
+import {
+  SimulationContext,
+  SimulationRandomSource,
+  SimulationTimeSource,
+  createSimulationContext
+} from '../../lib/engine/simulation/runtime';
+
+export interface MarketDataSource {
+  fetchMarketState(macroData?: any): Promise<any>;
+  fetchRealWorldData?(): Promise<any>;
+}
+
+export interface MarketPersistence {
+  saveTrades?(trades: any[]): Promise<void>;
+  savePriceHistory?(history: any[]): Promise<void>;
+  upsertPortfolios?(portfolios: any[]): Promise<void>;
+  [key: string]: any;
+}
+
+export interface MarketEngineDependencies {
+  simulationContext?: SimulationContext;
+  marketDataSource?: MarketDataSource;
+  persistence?: MarketPersistence;
+  supabaseClient?: any;
+}
+
 export class MarketEngine {
+  // ── Dependency Injection & Simulation Context ──
+  public readonly simulationContext: SimulationContext;
+  private readonly simRandom: SimulationRandomSource;
+  private readonly simClock: SimulationTimeSource;
+  private readonly mjdDiffusionRandom: SimulationRandomSource;
+  private readonly mjdJumpRandom: SimulationRandomSource;
+  private readonly eventRandom: SimulationRandomSource;
+  private readonly fxRandom: SimulationRandomSource;
+  public readonly customPersistence?: MarketPersistence;
+  public readonly customDataSource?: MarketDataSource;
+
   private isRunning: boolean = false;
   private tickIntervalMs: number = 1000;
   private tickTimer: NodeJS.Timeout | null = null;
@@ -134,7 +171,7 @@ export class MarketEngine {
   private readonly mu: number = 0.5; // 베이스라인 강도 (약 2초 간격)
   private readonly alpha: number = 0.05; // 주문 1건당 증가하는 강도
   private readonly beta: number = 0.1; // 지수적 감쇠 계수
-  private lastTickTime: number = Date.now();
+  private lastTickTime: number;
 
   private activeEvents: MarketEvent[] = [];
 
@@ -161,7 +198,22 @@ export class MarketEngine {
   public commodityEngine: CommodityMarketEngine = new CommodityMarketEngine({ totalBots: 30, eventProbability: 0.02 });
   public settlementService: SettlementBatchService = new SettlementBatchService(supabase);
 
-  constructor() {}
+  constructor(dependencies?: MarketEngineDependencies) {
+    this.simulationContext = dependencies?.simulationContext || createSimulationContext();
+    this.simRandom = this.simulationContext.random;
+    this.simClock = this.simulationContext.clock;
+    this.mjdDiffusionRandom = this.simRandom.fork('mjd_diffusion');
+    this.mjdJumpRandom = this.simRandom.fork('mjd_jump');
+    this.eventRandom = this.simRandom.fork('event_director');
+    this.fxRandom = this.simRandom.fork('exchange_rate');
+    this.customPersistence = dependencies?.persistence;
+    this.customDataSource = dependencies?.marketDataSource;
+    this.lastTickTime = this.simClock.now();
+
+    if (dependencies?.supabaseClient) {
+      supabase = dependencies.supabaseClient;
+    }
+  }
 
   public injectEvent(event: MarketEvent) {
     this.activeEvents.push(event);
@@ -213,22 +265,22 @@ export class MarketEngine {
        };
 
        if (config.bot_type === 'PENSION_FUND') {
-          this.pensionFundAgents.push(new PensionFundAgent(botConfig as any));
+          this.pensionFundAgents.push(new PensionFundAgent(botConfig as any, this.simulationContext));
        } else if (config.bot_type === 'HEDGE_FUND') {
            const hedgeConfig = {
              ...botConfig,
              portfolioTarget: (botConfig as any).portfolioTarget || { equity: 0.5, safeBonds: 0.3, highYield: 0.2 },
              currentSentiment: (botConfig as any).currentSentiment || 'NEUTRAL'
            };
-           this.hedgeFundAgents.push(new HedgeFundAgent(hedgeConfig as any));
+           this.hedgeFundAgents.push(new HedgeFundAgent(hedgeConfig as any, this.simulationContext));
        } else if (config.bot_type === 'RETAIL_SWARM') {
-          this.retailSwarmAgents.push(new RetailSwarmAgent(botConfig as any));
+          this.retailSwarmAgents.push(new RetailSwarmAgent(botConfig as any, this.simulationContext));
        } else if (config.bot_type === 'STAT_ARB' || config.bot_type === 'STATISTICAL_ARBITRAGE') {
           this.statArbAgents.push(new StatArbAgent(botConfig as any));
        } else if (config.bot_type === 'COMMERCIAL_BANK') {
-          this.commercialBankAgents.push(new CommercialBankAgent(botConfig as any));
+          this.commercialBankAgents.push(new CommercialBankAgent(botConfig as any, this.simulationContext));
        } else if (config.bot_type === 'PROP_DESK') {
-          this.propDeskAgents.push(new PropDeskAgent(botConfig as any));
+          this.propDeskAgents.push(new PropDeskAgent(botConfig as any, this.simulationContext));
        } else if (config.bot_type === 'QUANT_FUND') {
           this.quantAgents.push(new QuantAgent(botConfig as any));
        } else if (config.bot_type === 'COMMERCIAL_HEDGER') {
@@ -240,24 +292,24 @@ export class MarketEngine {
 
     // 💡 100% 가동 보장: 봇 배열이 비어있으면 기본 마스터 봇 플릿을 메모리에 즉시 채움
     if (this.retailSwarmAgents.length === 0) {
-      this.retailSwarmAgents.push(new RetailSwarmAgent({ id: 'bot_retail_001', name: 'Retail Swarm Alpha', capital: 5000000000 } as any));
-      this.retailSwarmAgents.push(new RetailSwarmAgent({ id: 'bot_retail_002', name: 'Retail Swarm Beta', capital: 5000000000 } as any));
+      this.retailSwarmAgents.push(new RetailSwarmAgent({ id: 'bot_retail_001', name: 'Retail Swarm Alpha', capital: 5000000000 } as any, this.simulationContext));
+      this.retailSwarmAgents.push(new RetailSwarmAgent({ id: 'bot_retail_002', name: 'Retail Swarm Beta', capital: 5000000000 } as any, this.simulationContext));
     }
     if (this.hedgeFundAgents.length === 0) {
       this.hedgeFundAgents.push(new HedgeFundAgent({
         id: 'bot_hf_001', name: 'Bridgewater Associates', type: 'HEDGE_FUND', capital: 100000000000, portfolioTarget: { equity: 0.6, safeBonds: 0.2, highYield: 0.2 }, currentSentiment: 'NEUTRAL'
-      } as any));
+      } as any, this.simulationContext));
       this.hedgeFundAgents.push(new HedgeFundAgent({
         id: 'bot_hf_002', name: 'Citadel Quant Fund', type: 'HEDGE_FUND', capital: 100000000000, portfolioTarget: { equity: 0.7, safeBonds: 0.15, highYield: 0.15 }, currentSentiment: 'BULLISH'
-      } as any));
+      } as any, this.simulationContext));
     }
     if (this.propDeskAgents.length === 0) {
       this.propDeskAgents.push(new PropDeskAgent({
         id: 'bot_prop_001', name: 'Jane Street Desk', type: 'PROP_DESK', capital: 100000000000
-      } as any));
+      } as any, this.simulationContext));
       this.propDeskAgents.push(new PropDeskAgent({
         id: 'bot_prop_002', name: 'Optiver Market Making', type: 'PROP_DESK', capital: 100000000000
-      } as any));
+      } as any, this.simulationContext));
     }
     if (this.quantAgents.length === 0) {
       this.quantAgents.push(new QuantAgent({
@@ -301,7 +353,7 @@ export class MarketEngine {
     await this.initializeBots();
     this.isRunning = true;
     console.log("🚀 Market Engine Started (Dynamic Tick via Hawkes Process)...");
-    this.lastTickTime = Date.now();
+    this.lastTickTime = this.simClock.now();
     this.scheduleNextTick(2000);
     
     // 10초마다 active_manipulations 테이블 폴링
@@ -325,8 +377,8 @@ export class MarketEngine {
       await this.tick();
       const executionTime = Date.now() - startTime;
       
-      const now = Date.now();
-      const dt = (now - this.lastTickTime) / 1000; // 초 단위 경과 시간
+      const now = this.simClock.now();
+      const dt = Math.max(0.001, (now - this.lastTickTime) / 1000); // 초 단위 경과 시간
       this.lastTickTime = now;
 
       // Hawkes 감쇠(Decay) 적용
@@ -447,14 +499,14 @@ export class MarketEngine {
         if (!this.fundamentals[stock.id]) this.fundamentals[stock.id] = stock.current_price;
         const F = this.fundamentals[stock.id]!;
         
-        // 브라운 운동 (Brownian Motion)
-        const dW = (Math.random() + Math.random() + Math.random() + Math.random() - 2) * 1.732; // 근사 정규분포
+        // 브라운 운동 (Brownian Motion) - 공통 normal(0, 1) 적용
+        const dW = this.mjdDiffusionRandom.normal(0, 1);
         const diffusion = this.mjd_sigma * dW;
         
         // 푸아송 점프 (Poisson Jump)
         let jump = 0;
-        if (Math.random() < this.mjd_lambda) {
-          const jumpZ = (Math.random() + Math.random() + Math.random() + Math.random() - 2) * 1.732;
+        if (this.mjdJumpRandom.nextBoolean(this.mjd_lambda)) {
+          const jumpZ = this.mjdJumpRandom.normal(0, 1);
           const J = Math.exp(this.mjd_jump_mu + this.mjd_jump_sigma * jumpZ);
           jump = J - 1;
           
@@ -602,7 +654,7 @@ export class MarketEngine {
       }
 
       // Random Event Trigger (about 1% chance per tick)
-      if (Math.random() < 0.01) {
+      if (this.eventRandom.nextBoolean(0.01)) {
         await this.triggerRandomEvents();
       }
 
@@ -645,8 +697,8 @@ export class MarketEngine {
 
     // 3. For each user, maybe 10% chance to actually get an event
     for (const user of users) {
-      if (Math.random() < 0.1) {
-        const randomEvent = events[Math.floor(Math.random() * events.length)];
+      if (this.eventRandom.nextBoolean(0.1)) {
+        const randomEvent = events[this.eventRandom.nextInt(0, events.length)];
         
         // Insert active event
         await supabase.from('active_player_events').insert({
@@ -1194,7 +1246,7 @@ export class MarketEngine {
         .filter((rate: any) => rate.currency_code !== 'KRW')
         .map((rate: any) => {
           const limits = currencyLimits[rate.currency_code] || { min: 1, max: 10000 };
-          const changePct = 1 + (Math.random() - 0.5) * 0.002;
+          const changePct = 1 + (this.fxRandom.next() - 0.5) * 0.002;
           let newRate = Number(rate.rate_to_krw) * changePct;
           newRate = Math.max(limits.min, Math.min(limits.max, newRate));
           return {

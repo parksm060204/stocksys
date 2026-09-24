@@ -1,6 +1,7 @@
 import type { PropDeskBot } from "../types";
 import { BaseAgent } from "./BaseAgent";
 import { WelfordRegression, OFISlidingWindow } from "./utils/math";
+import type { SimulationContext } from "../../../lib/engine/simulation/runtime";
 
 export class PropDeskAgent extends BaseAgent {
   private bot: PropDeskBot;
@@ -12,8 +13,8 @@ export class PropDeskAgent extends BaseAgent {
   private prevPriceState: Record<string, number> = {};
   private holdings: Record<string, number> = {};
 
-  constructor(bot: PropDeskBot) {
-    super(bot.id, bot.capital);
+  constructor(bot: PropDeskBot, context?: SimulationContext) {
+    super(bot.id, bot.capital, context);
     this.bot = bot;
     if ((bot as any).initialHoldings) {
       this.holdings = { ...(bot as any).initialHoldings };
@@ -24,7 +25,7 @@ export class PropDeskAgent extends BaseAgent {
   public executeMarketMaking(currentMarket: any, orderBook: any, _myHoldings: any) {
     const orders: any[] = [];
     const availableStocks = currentMarket.stocks || [];
-    const currentTime = Date.now();
+    const currentTime = this.clock.now();
 
     for (const stock of availableStocks) {
       const stockId = stock.id;
@@ -74,8 +75,8 @@ export class PropDeskAgent extends BaseAgent {
       this.cancelExpiredSpoofs(currentTime, 1);
 
       // 단기 모멘텀 유도를 위한 가짜 대형벽(Spoofing) 설치
-      if (Math.random() < 0.35) {
-        const isBullishSpoof = Math.random() > 0.45;
+      if (this.random.nextBoolean(0.35)) {
+        const isBullishSpoof = this.random.next() > 0.45;
         const spoofOrder = this.executeSpoofLayering(
           stock,
           isBullishSpoof ? 'buy' : 'sell',
@@ -83,7 +84,9 @@ export class PropDeskAgent extends BaseAgent {
           8.0, // 평소의 8배 규모
           currentTime
         );
-        orders.push(spoofOrder);
+        if (spoofOrder) {
+          orders.push(spoofOrder);
+        }
       }
 
       // ==========================================

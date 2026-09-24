@@ -7,6 +7,11 @@ import { NewsGenerator, NewsItem } from './services/NewsGenerator';
 import { v4 as uuidv4 } from 'uuid';
 import * as dotenv from 'dotenv';
 import * as path from 'path';
+import {
+  SimulationContext,
+  SimulationRandomSource,
+  createSimulationContext
+} from '../../lib/engine/simulation/runtime';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_ENGINE_DB_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
 const supabaseKey =
@@ -32,10 +37,12 @@ export class EventDirector {
   private isRunning: boolean = false;
   private timer: NodeJS.Timeout | null = null;
   private newsGenerator: NewsGenerator;
+  private readonly random: SimulationRandomSource;
 
-  constructor(engine: MarketEngine) {
+  constructor(engine: MarketEngine, context?: SimulationContext) {
     this.engine = engine;
-    this.newsGenerator = new NewsGenerator();
+    this.random = context?.random.fork('event_director') || createSimulationContext().random.fork('event_director');
+    this.newsGenerator = new NewsGenerator(context);
   }
 
   public start() {
@@ -59,7 +66,7 @@ export class EventDirector {
     this.minuteCounter++;
 
     // 1. 매 5분마다 Gemini AI 뉴스 생성 (또는 5% 무작위 확률)
-    if (this.minuteCounter % 5 === 0 || Math.random() < 0.05) {
+    if (this.minuteCounter % 5 === 0 || this.random.nextBoolean(0.05)) {
       await this.triggerEndogenousNews();
     }
   }

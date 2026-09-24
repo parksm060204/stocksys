@@ -7,6 +7,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "audit:phase0": "npx tsx scripts/phase0-baseline-audit.ts",
+    "test:phase0": "npx tsx scripts/test-phase0-baseline.ts",
+    "test:phase1": "npx tsx scripts/test-phase1-suite.ts",
     "test:settlement": "npx tsx scripts/settlement/run_settlement_verification.ts"
   },
   "dependencies": {

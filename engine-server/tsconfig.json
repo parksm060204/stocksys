@@ -19,9 +19,10 @@
     "declaration": true,
     "declarationMap": true,
 
-    // Stricter Typechecking Options
-    "noUncheckedIndexedAccess": true,
-    "exactOptionalPropertyTypes": true,
+    "baseUrl": "../",
+    "paths": {
+      "@/*": ["*"]
+    },
 
     // Style Options
     // "noImplicitReturns": true,

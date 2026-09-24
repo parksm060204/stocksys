@@ -1,11 +1,12 @@
 import type { CommercialBankBot } from "../types";
 import { BaseAgent } from "./BaseAgent";
+import type { SimulationContext } from "../../../lib/engine/simulation/runtime";
 
 export class CommercialBankAgent extends BaseAgent {
   private bot: CommercialBankBot;
 
-  constructor(bot: CommercialBankBot) {
-    super(bot.id, bot.capital);
+  constructor(bot: CommercialBankBot, context?: SimulationContext) {
+    super(bot.id, bot.capital, context);
     this.bot = bot;
   }
 
@@ -17,7 +18,7 @@ export class CommercialBankAgent extends BaseAgent {
 
   public executeArbitrage(currentMarket: any, adminBaseRate: number) {
     const orders: any[] = [];
-    const now = Date.now();
+    const now = this.clock.now();
 
     if (this.bot.lastSweepTime && this.bot.cooldownMs) {
       if (now - this.bot.lastSweepTime < this.bot.cooldownMs) {
@@ -64,7 +65,7 @@ export class CommercialBankAgent extends BaseAgent {
 
     if (sweepOccurred) {
       this.bot.lastSweepTime = now;
-      if (!this.bot.cooldownMs) this.bot.cooldownMs = 3000 + Math.random() * 2000;
+      if (!this.bot.cooldownMs) this.bot.cooldownMs = 3000 + this.random.next() * 2000;
     }
 
     return orders;

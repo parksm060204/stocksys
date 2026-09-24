@@ -270,18 +270,18 @@ export class MemoryDatabase {
 
   // ── 인덱스 동기화 헬퍼 메서드 ──
   public addStockToIndex(s: StockRecord): void {
-    this.tickerIndex.set(s.ticker.toUpperCase(), s.id);
+    if (s.ticker) this.tickerIndex.set(s.ticker.toUpperCase(), s.id);
     if (!this.marketIndex.has(s.market)) this.marketIndex.set(s.market, new Set());
     this.marketIndex.get(s.market)!.add(s.id);
   }
 
   public removeStockFromIndex(s: StockRecord): void {
-    this.tickerIndex.delete(s.ticker.toUpperCase());
+    if (s.ticker) this.tickerIndex.delete(s.ticker.toUpperCase());
     this.marketIndex.get(s.market)?.delete(s.id);
   }
 
   public addCommodityToIndex(c: CommodityRecord): void {
-    this.commodityTickerIndex.set(c.ticker.toUpperCase(), c.id);
+    if (c?.ticker) this.commodityTickerIndex.set(c.ticker.toUpperCase(), c.id);
     if (!this.commodityCategoryIndex.has(c.category)) this.commodityCategoryIndex.set(c.category, new Set());
     this.commodityCategoryIndex.get(c.category)!.add(c.id);
   }

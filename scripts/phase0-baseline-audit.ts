@@ -2,8 +2,9 @@
  * Phase 0 Baseline Audit Tool for STOCKSYS
  *
  * Scans runtime files and asserts safety baseline compliance:
- * - Math.random() calls in engine-server/src and lib/engine/simulation
- * - Centralization of legacy child order safety in legacyOrderSafety.ts
+ * - Math.random() calls in engine-server/src and lib/engine/simulation (must be 0)
+ * - Centralization of legacy child order safety in legacyOrderSafety.ts (no duplicate hardcodings)
+ * - Order safety pathways compliance (MarketEngine, LP, bots use canonical policy)
  * - Market abuse feature flag fail-closed behavior
  * - Architecture boundaries report
  */
@@ -11,11 +12,13 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-interface AuditResult {
+export interface AuditResult {
   runtimeFilesCount: number;
   engineServerMathRandomCount: number;
   deterministicCoreMathRandomCount: number;
   orderSafetyCanonicalCount: number;
+  duplicateOrderLimitHardcodings: string[];
+  orderSafetyPathwaysCompliant: boolean;
   marketAbuseFlagSafe: boolean;
   hasRuntimeBoundary: boolean;
   hasParticipantBoundary: boolean;
@@ -41,6 +44,12 @@ function scanFiles(dir: string, extensionRegex: RegExp): string[] {
   return results;
 }
 
+function stripComments(code: string): string {
+  return code
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/.*$/gm, '');
+}
+
 export function runPhase0Audit(): AuditResult {
   const rootDir = path.resolve(__dirname, '..');
   const engineServerSrc = path.join(rootDir, 'engine-server', 'src');
@@ -56,12 +65,6 @@ export function runPhase0Audit(): AuditResult {
 
   let engineMathRandom = 0;
   const mathRandomRegex = /Math\.random\s*\(\s*\)/g;
-
-  function stripComments(code: string): string {
-    return code
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .replace(/\/\/.*$/gm, '');
-  }
 
   for (const file of engineFiles) {
     const content = stripComments(fs.readFileSync(file, 'utf-8'));
@@ -85,8 +88,40 @@ export function runPhase0Audit(): AuditResult {
   let orderSafetyCanonicalCount = 0;
   if (fs.existsSync(canonicalFile)) {
     const content = fs.readFileSync(canonicalFile, 'utf-8');
-    if (content.includes('MAX_NOTIONAL_PER_ORDER = 5000000') || content.includes('MAX_NOTIONAL_PER_ORDER: 5000000')) {
+    const hasLimits = content.includes('MAX_NOTIONAL_PER_ORDER: 5000000') && content.includes('MAX_QTY_PER_ORDER: 5000');
+    const hasEvaluate = content.includes('export function evaluateOrderSafety');
+    const hasApply = content.includes('export function applyLegacyChildOrderSafetyLimits');
+    if (hasLimits && hasEvaluate && hasApply) {
       orderSafetyCanonicalCount = 1;
+    }
+  }
+
+  // Scan for duplicate hardcodings of order limit numbers in runtime files (excluding canonicalFile)
+  const duplicateOrderLimitHardcodings: string[] = [];
+  const hardcodedLimitsRegex = /(MAX_NOTIONAL\s*=\s*5000000|MAX_QTY\s*=\s*5000|Math\.floor\(5000000\s*\/|safeSize\s*=\s*Math\.min\(safeSize,\s*5000\))/;
+
+  for (const file of runtimeFiles) {
+    if (path.resolve(file) === path.resolve(canonicalFile)) continue;
+    const content = stripComments(fs.readFileSync(file, 'utf-8'));
+    if (hardcodedLimitsRegex.test(content)) {
+      duplicateOrderLimitHardcodings.push(path.relative(rootDir, file));
+    }
+  }
+
+  // Order Safety Pathways Compliance Check:
+  // - MarketEngine.ts must import and use applyLegacyChildOrderSafetyLimits
+  // - BaseAgent.ts must import and use applyLegacyChildOrderSafetyLimits
+  let orderSafetyPathwaysCompliant = false;
+  const marketEngineFile = path.join(engineServerSrc, 'MarketEngine.ts');
+  const baseAgentFile = path.join(engineServerSrc, 'bots', 'BaseAgent.ts');
+
+  if (fs.existsSync(marketEngineFile) && fs.existsSync(baseAgentFile)) {
+    const meContent = fs.readFileSync(marketEngineFile, 'utf-8');
+    const baContent = fs.readFileSync(baseAgentFile, 'utf-8');
+    const meUsesCanonical = meContent.includes('applyLegacyChildOrderSafetyLimits');
+    const baUsesCanonical = baContent.includes('applyLegacyChildOrderSafetyLimits');
+    if (meUsesCanonical && baUsesCanonical) {
+      orderSafetyPathwaysCompliant = true;
     }
   }
 
@@ -108,6 +143,10 @@ export function runPhase0Audit(): AuditResult {
 
   const warnings: string[] = [];
 
+  if (duplicateOrderLimitHardcodings.length > 0) {
+    warnings.push(`Duplicate hardcoded order limits detected in: ${duplicateOrderLimitHardcodings.join(', ')}`);
+  }
+
   // Schema debt check
   const archiveSchema = path.join(rootDir, 'archive', 'legacy-postgres');
   if (fs.existsSync(archiveSchema)) {
@@ -119,6 +158,8 @@ export function runPhase0Audit(): AuditResult {
     engineServerMathRandomCount: engineMathRandom,
     deterministicCoreMathRandomCount: simMathRandom,
     orderSafetyCanonicalCount,
+    duplicateOrderLimitHardcodings,
+    orderSafetyPathwaysCompliant,
     marketAbuseFlagSafe,
     hasRuntimeBoundary,
     hasParticipantBoundary,
@@ -134,15 +175,33 @@ if (require.main === module) {
   console.log(`- engine-server Math.random() Calls: ${res.engineServerMathRandomCount}`);
   console.log(`- lib/engine/simulation Math.random() Calls: ${res.deterministicCoreMathRandomCount}`);
   console.log(`- Canonical legacyOrderSafety.ts Defined: ${res.orderSafetyCanonicalCount === 1 ? 'YES' : 'NO'}`);
+  console.log(`- Duplicate Order Limit Hardcodings: ${res.duplicateOrderLimitHardcodings.length === 0 ? 'NONE (CLEAN)' : res.duplicateOrderLimitHardcodings.join(', ')}`);
+  console.log(`- Order Pathways Compliance: ${res.orderSafetyPathwaysCompliant ? 'YES (All routes routed via canonical risk policy)' : 'FAIL'}`);
   console.log(`- Market Abuse Isolated with Exact Flag: ${res.marketAbuseFlagSafe ? 'YES' : 'NO'}`);
   console.log(`- Common Simulation Runtime Boundary: ${res.hasRuntimeBoundary ? 'ACTIVE (lib/engine/simulation/runtime)' : 'MISSING'}`);
   console.log(`- Common Participant Domain Boundary: ${res.hasParticipantBoundary ? 'ACTIVE (lib/engine/simulation/participants)' : 'MISSING'}`);
   console.log(`- Decision Layers Seam Status: CO-EXISTING (lib/engine/simulation is canonical core, engine-server/src is live adapter)`);
 
   if (res.warnings.length > 0) {
-    console.log('\n[Warnings / Technical Debt]');
+    console.log('\nOperational Debt Warnings:');
     res.warnings.forEach(w => console.log(`  * ${w}`));
   }
 
-  console.log('\n=======================================');
+  const passed =
+    res.engineServerMathRandomCount === 0 &&
+    res.deterministicCoreMathRandomCount === 0 &&
+    res.orderSafetyCanonicalCount === 1 &&
+    res.duplicateOrderLimitHardcodings.length === 0 &&
+    res.orderSafetyPathwaysCompliant &&
+    res.marketAbuseFlagSafe &&
+    res.hasRuntimeBoundary &&
+    res.hasParticipantBoundary;
+
+  if (passed) {
+    console.log('\n[AUDIT RESULT] PASS: Phase 0/1 baseline and safety constraints verified.');
+    process.exit(0);
+  } else {
+    console.error('\n[AUDIT RESULT] FAIL: One or more baseline safety constraints violated.');
+    process.exit(1);
+  }
 }

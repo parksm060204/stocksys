@@ -23,6 +23,7 @@ export interface SimulationContext {
   readonly clock: SimulationTimeSource;
   readonly random: SimulationRandomSource;
   readonly runId: string;
+  readonly operationalTraceId?: string;
 }
 
 export interface CreateSimulationContextOptions {
@@ -30,7 +31,10 @@ export interface CreateSimulationContextOptions {
   clock?: SimulationTimeSource | SimulationClock;
   random?: SimulationRandomSource;
   runId?: string;
+  operationalTraceId?: string;
 }
+
+let traceCounter = 0;
 
 export function createSimulationContext(
   options: CreateSimulationContextOptions = {}
@@ -61,14 +65,20 @@ export function createSimulationContext(
   const resolvedRandom =
     options.random || new DefaultSimulationRandomSource(resolvedSeed, 'root');
 
+  // Deterministic runId: depends purely on seed and options
   const resolvedRunId =
-    options.runId || `run_${resolvedSeed}_${Date.now()}`;
+    options.runId || `run_seed_${resolvedSeed}`;
+
+  // Operational trace id: separated for logging/diagnostics without polluting determinism
+  const resolvedOperationalTraceId =
+    options.operationalTraceId || `trace_${resolvedSeed}_${Date.now()}_${++traceCounter}`;
 
   return {
     seed: resolvedSeed,
     clock: resolvedClock,
     random: resolvedRandom,
     runId: resolvedRunId,
+    operationalTraceId: resolvedOperationalTraceId,
   };
 }
 

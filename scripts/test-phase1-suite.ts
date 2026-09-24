@@ -6,9 +6,12 @@ import { execSync } from 'child_process';
 import * as path from 'path';
 
 const tests = [
-  'test-phase1-simulation-context.ts',
+  'test-phase1-db-isolation.ts',
   'test-phase1-live-engine-determinism.ts',
+  'test-phase1-order-risk-centralization.ts',
+  'test-phase1-namespace-registry.ts',
   'test-phase1-participant-adapters.ts',
+  'test-phase1-simulation-context.ts',
   'test-phase1-market-abuse-safety.ts'
 ];
 

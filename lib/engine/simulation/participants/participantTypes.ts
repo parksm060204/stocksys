@@ -11,7 +11,8 @@ export type ParticipantKind =
   | 'RETAIL'
   | 'DOMESTIC_INSTITUTION'
   | 'FOREIGN_INSTITUTION'
-  | 'LIQUIDITY_PROVIDER';
+  | 'LIQUIDITY_PROVIDER'
+  | 'UNKNOWN';
 
 export interface ParticipantIdentity {
   participantId: string;

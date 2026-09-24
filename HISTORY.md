@@ -4934,3 +4934,54 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 - 테스트 스위트 추가 및 전수 통과:
   - `scripts/test-phase1-suite.ts` (`test-phase1-simulation-context.ts`, `test-phase1-live-engine-determinism.ts`, `test-phase1-participant-adapters.ts`, `test-phase1-market-abuse-safety.ts`) 신규 작성 및 전수 통과.
   - 루트 및 독립 엔진 빌드(`npm run build`, `cd engine-server && npm run build`), 타입체크(`npx tsc --noEmit`), 린트(`npm run lint`), 전체 회귀 테스트(교차자산 15종, 시장국면 33종, 뉴스 인과 라이프사이클) 100% 통과.
+
+---
+## 2026-09-24 20:00
+
+**요청 요약:** STOCKSYS Phase 1 구조 결함 수정 및 결정론 강화 (commit aad054c 이후 코드 기준)
+- MarketEngine DB 의존성의 인스턴스 격리 (`supabase` 모듈 전역 변수 제거 및 DI 연결)
+- 실제 MarketEngine 틱(tick)의 결정론 보장 (시간원 통일, 외부 소스 격리, 실제 틱 기반 fingerprint 검증)
+- 주문 제한 정책 중앙화 (MarketEngine 내 하드코딩 제거, 단일 canonical 위험 정책 통과, 다요소 컨텍스트 및 감사 스크립트 강화)
+- PRNG namespace 충돌 제거 (중앙 네임스페이스 레지스트리 구축, EventDirector 동일 컨텍스트 공유)
+- 참가자 도메인 검증 및 분류 수정 (`riskTolerance`/`urgency` 0..1 엄격 검증 fail-closed, 국내 헤지펀드 및 미국/EU 기관 올바른 분류)
+
+**수행 결과:**
+- `engine-server/src/MarketEngine.ts`:
+  - 모듈 전역 `let supabase: any;` 제거, `createDefaultSupabaseClient()` 팩토리 함수 도입.
+  - 인스턴스별 DB 클라이언트(`this.supabase`, `this.db`) 확립 및 우선순위(1. 명시적 `supabaseClient`, 2. `persistence`, 3. 기본 클라이언트) 적용.
+  - `this.settlementService`를 확정된 인스턴스 DB로 생성자 내부에서 초기화하고, 클래스 내 모든 `supabase.` 호출을 `this.supabase.`로 변경.
+  - `customPersistence`(`saveTrades`, `savePriceHistory`, `upsertPortfolios`) 및 `customDataSource`(`fetchMarketState`, `fetchRealWorldData`) 실제 실행 경로에 연결.
+  - 의사결정 경로의 `new Date()`, `Date.now()`를 `simClock`으로 전면 교체하고, 성능 측정은 `performance.now()`로 분리.
+  - 하드코딩된 `MAX_NOTIONAL = 5000000`, `MAX_QTY = 5000`를 전면 제거하고 `applyLegacyChildOrderSafetyLimits`로 일원화.
+  - `public async tick()`으로 개방하여 테스트에서 실제 틱 호출 가능화.
+- `lib/memoryDb/memoryDbClient.ts` & `memoryStore.ts`:
+  - `MemoryDbClient`에 인스턴스별 `MemoryDatabase` 주입 지원(`createIsolatedMemoryDbClient()`) 추가하여 엔진 인스턴스 간 완벽 격리 달성.
+  - `MemoryQueryBuilder.insert`에 `stocks`, `bonds`, `commodities` 테이블 저장 지원 추가 및 `addCommodityToIndex`/`removeCommodityFromIndex` 안전 가드 적용.
+- `lib/engine/simulation/runtime/`:
+  - `simulationNamespaces.ts` 신규 생성: 중앙 네임스페이스 레지스트리(`SIMULATION_NAMESPACES`) 및 중복 감지 `SimulationNamespaceTracker` 구현.
+  - `simulationContext.ts`: `runId`를 `run_seed_${seed}` 결정론적 문자열로 수정하고, 비결정적 운영 추적은 `operationalTraceId`로 분리.
+- `engine-server/src/EventDirector.ts` & `engine-server/src/index.ts`:
+  - `EventDirector`가 독립 고유 네임스페이스 `SIMULATION_NAMESPACES.EVENT_DIRECTOR.NEWS_SCHEDULE`를 사용하도록 수정하고 누락 시 fail-closed 예외 처리.
+  - 모듈 전역 `supabase` 대신 인스턴스 주입 `this.db` 사용.
+  - `index.ts`에서 엔진의 `simulationContext`와 DB를 `EventDirector`에 명시적으로 전달.
+- `engine-server/src/risk/legacyOrderSafety.ts`:
+  - 단일 canonical risk policy(`evaluateOrderSafety`) 및 다요소 컨텍스트(`OrderRiskContext`), 진단 정보(`OrderRiskDiagnostic`, `reasonCodes`) 구현.
+  - 참가자 유형, 자산/AUM, 가용현금, ADV, 포지션 한도 등을 포괄하며, 전략적 기관 주문(`bypassLegacyChildOrderCap`) 시 ADV/가용현금 기반 스케일링, 음수/NaN/Infinity 절대 안전장치 유지.
+- `lib/engine/simulation/participants/participantAdapters.ts` & `participantTypes.ts`:
+  - `ParticipantKind`에 `'UNKNOWN'` 추가.
+  - `assertValidUnitInterval`로 `riskTolerance`, `urgency`를 `[0, 1]` 범위 엄격 검증 (범위 초과 시 자동 보정 없이 `RangeError` fail-closed).
+  - 명시적 `participantKind`, `domicile` 우선권 적용, 영문명 및 '헤지펀드' 문자열 휴리스틱 정교화 (국내 헤지펀드 `DOMESTIC_INSTITUTION`, 미국 기관 `US` domicile 유지).
+  - `[key: string]: any`를 `unknown`으로 엄격화.
+- `scripts/phase0-baseline-audit.ts`:
+  - 런타임 코드 내 중복 주문 제한 하드코딩 탐지 및 canonical 경계 준수(`MarketEngine`, `BaseAgent`) 검사 추가.
+- 검증 및 테스트 스위트:
+  - `test-phase1-db-isolation.ts`: 두 엔진 A, B 격리 및 DB 오염 방지 검증 통과.
+  - `test-phase1-live-engine-determinism.ts`: 실제 5틱 실행 시 Run 1과 Run 2의 trades/price/fundamentals 해시 100% 비트 일치 및 Seed 변경 시 분기 검증 통과.
+  - `test-phase1-order-risk-centralization.ts`: canonical 위험 정책 한도, 면제, 안전장치 검증 통과.
+  - `test-phase1-namespace-registry.ts`: 고유 네임스페이스 독립성, 충돌 추적 검증 통과.
+  - `test-phase1-participant-adapters.ts`: 참가자 도메인 변환 및 검증 통과.
+  - `npm run test:phase1` (7개 스위트 전원 통과).
+  - `npm run audit:phase0` 통과 (0 Math.random, 0 duplicate limits).
+  - `cd engine-server && npm run build` 통과.
+  - 루트 `npx tsc --noEmit` 및 `npm run build` (Next.js 16.3.5 Turbopack) 통과.
+  - 교차자산 및 시장국면, 뉴스 라이프사이클 회귀 테스트 5종 전수 통과.

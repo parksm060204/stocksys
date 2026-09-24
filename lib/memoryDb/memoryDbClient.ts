@@ -1,5 +1,6 @@
 import {
   memoryDb,
+  MemoryDatabase,
   StockRecord,
   CommodityRecord,
   HoldingRecord,
@@ -19,6 +20,7 @@ type FilterOp = {
 
 export class MemoryQueryBuilder {
   private tableName: string;
+  private db: MemoryDatabase;
   private filters: FilterOp[] = [];
   private orderSpecs: { col: string; ascending: boolean }[] = [];
   private orderCol?: string;
@@ -30,8 +32,9 @@ export class MemoryQueryBuilder {
   private payloadData: any = null;
   private upsertOptions: { onConflict?: string } | undefined;
 
-  constructor(tableName: string) {
+  constructor(tableName: string, db: MemoryDatabase = memoryDb) {
     this.tableName = tableName;
+    this.db = db;
   }
 
   public select(_fields: string = '*'): this {
@@ -127,7 +130,7 @@ export class MemoryQueryBuilder {
   public async execute(): Promise<{ data: any; error: any }> {
     try {
       let targetList: any[] = [];
-      const db = memoryDb;
+      const db = this.db;
 
       // ── 1. 인덱스 기반 고속 스캔 ──
       const eqTicker = this.filters.find((f) => f.col === 'ticker' && f.op === 'eq')?.val;
@@ -239,7 +242,15 @@ export class MemoryQueryBuilder {
           const id = item.id || `id_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
           const record = { ...item, id, created_at: item.created_at || new Date().toISOString() };
 
-          if (this.tableName === 'orders') {
+          if (this.tableName === 'stocks') {
+            db.stocks.set(id, record as StockRecord);
+            db.addStockToIndex(record as StockRecord);
+          } else if (this.tableName === 'bonds') {
+            db.bonds.set(id, record as any);
+          } else if (this.tableName === 'commodities') {
+            db.commodities.set(id, record as CommodityRecord);
+            db.addCommodityToIndex(record as CommodityRecord);
+          } else if (this.tableName === 'orders') {
             db.orders.set(id, record as OrderRecord);
             db.addOrderToIndex(record as OrderRecord);
           } else if (this.tableName === 'trades') {
@@ -425,12 +436,18 @@ export class MemoryQueryBuilder {
 }
 
 export class MemoryDbClient {
+  private db: MemoryDatabase;
+
+  constructor(db: MemoryDatabase = memoryDb) {
+    this.db = db;
+  }
+
   public from(tableName: string): MemoryQueryBuilder {
-    return new MemoryQueryBuilder(tableName);
+    return new MemoryQueryBuilder(tableName, this.db);
   }
 
   public async rpc(fnName: string, params?: any): Promise<{ data: any; error: any }> {
-    const db = memoryDb;
+    const db = this.db;
 
     if (fnName === 'update_cash_balance') {
       const userId = params?.p_user_id || params?.user_id || GUEST_USER_ID;
@@ -843,7 +860,7 @@ export class MemoryDbClient {
   public get auth(): any {
     return {
       getUser: async () => {
-        const user = memoryDb.profiles.get(GUEST_USER_ID);
+        const user = this.db.profiles.get(GUEST_USER_ID);
         return {
           data: {
             user: user
@@ -872,7 +889,7 @@ export class MemoryDbClient {
   public channel(channelName: string): any {
     return {
       on: (_event: string, _filter: any, callback: (payload: any) => void) => {
-        memoryDb.subscribe(channelName, callback);
+        this.db.subscribe(channelName, callback);
         return {
           subscribe: () => ({ unsubscribe: () => {} }),
         };
@@ -884,8 +901,12 @@ export class MemoryDbClient {
   public removeChannel(_channel: any): void {}
 }
 
-export function createMemoryDbClient(): MemoryDbClient {
-  return new MemoryDbClient();
+export function createMemoryDbClient(db?: MemoryDatabase): MemoryDbClient {
+  return new MemoryDbClient(db || memoryDb);
+}
+
+export function createIsolatedMemoryDbClient(): MemoryDbClient {
+  return new MemoryDbClient(new MemoryDatabase());
 }
 
 // 하위 호환용 alias

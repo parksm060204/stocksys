@@ -25,7 +25,7 @@ async function main() {
   console.log("Initializing Market Engine and Event Director...");
 
   const engine = new MarketEngine();
-  const eventDirector = new EventDirector(engine);
+  const eventDirector = new EventDirector(engine, engine.simulationContext);
 
   engine.start();
   eventDirector.start();

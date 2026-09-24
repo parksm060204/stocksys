@@ -10,7 +10,8 @@ import * as path from 'path';
 import {
   SimulationContext,
   SimulationRandomSource,
-  createSimulationContext
+  createSimulationContext,
+  SIMULATION_NAMESPACES
 } from '../../lib/engine/simulation/runtime';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_ENGINE_DB_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
@@ -29,7 +30,7 @@ if (!process.env.ENGINE_DB_SERVICE_ROLE_KEY && !process.env.SUPABASE_SERVICE_ROL
 }
 
 
-const supabase = createClient(supabaseUrl, supabaseKey);
+const defaultSupabase = createClient(supabaseUrl, supabaseKey);
 
 
 export class EventDirector {
@@ -38,11 +39,22 @@ export class EventDirector {
   private timer: NodeJS.Timeout | null = null;
   private newsGenerator: NewsGenerator;
   private readonly random: SimulationRandomSource;
+  private readonly context: SimulationContext;
+  private readonly db: any;
 
-  constructor(engine: MarketEngine, context?: SimulationContext) {
+  constructor(engine: MarketEngine, context?: SimulationContext, dbClient?: any) {
+    if (!context) {
+      if (engine && engine.simulationContext) {
+        context = engine.simulationContext;
+      } else {
+        throw new Error("[EventDirector] Explicit SimulationContext is required to maintain determinism. Pass engine.simulationContext.");
+      }
+    }
     this.engine = engine;
-    this.random = context?.random.fork('event_director') || createSimulationContext().random.fork('event_director');
+    this.context = context;
+    this.random = context.random.fork(SIMULATION_NAMESPACES.EVENT_DIRECTOR.NEWS_SCHEDULE);
     this.newsGenerator = new NewsGenerator(context);
+    this.db = dbClient || (engine as any).getDbClient?.() || defaultSupabase;
   }
 
   public start() {
@@ -79,7 +91,7 @@ export class EventDirector {
       const newsItem = await this.newsGenerator.generateNews(marketState);
 
       // 1. Supabase market_news 테이블에 저장
-      const { data: inserted, error: insertError } = await supabase
+      const { data: inserted, error: insertError } = await this.db
         .from('market_news')
         .insert({
           type: newsItem.type,
@@ -98,7 +110,7 @@ export class EventDirector {
       if (insertError) {
         console.warn("⚠️ market_news insert failed (fallback to premium_news):", insertError.message);
         // Fallback write to premium_news for UI backwards compatibility
-        await supabase.from('premium_news').insert({
+        await this.db.from('premium_news').insert({
           headline: newsItem.title,
           content_summary: newsItem.content,
           is_quoted: newsItem.category === 'RUMOR',
@@ -146,7 +158,7 @@ export class EventDirector {
         const correctionNews = this.newsGenerator.generateCorrection(rumor);
 
         // Supabase INSERT
-        const { data: inserted } = await supabase
+        const { data: inserted } = await this.db
           .from('market_news')
           .insert({
             type: correctionNews.type,

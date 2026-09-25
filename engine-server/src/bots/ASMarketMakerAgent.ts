@@ -24,7 +24,8 @@ export class ASMarketMakerAgent extends BaseAgent {
       const q = (this.inventory[stock.id] || 0) / baseQty;
       
       // 변동성 동적 추정 (최근 수익률 절대값 기반)
-      const dayReturn = Math.abs((stock.current_price - stock.previous_close) / stock.previous_close);
+      const prevClose = Number(stock.previous_close ?? stock.previousClose ?? stock.current_price ?? 10000);
+      const dayReturn = prevClose > 0 ? Math.abs((stock.current_price - prevClose) / prevClose) : 0;
       const dynamicSigma2 = Math.min(5000, Math.max(10, dayReturn * 100000));
 
       let currentGamma = this.gamma;

@@ -153,13 +153,48 @@ export interface SettlementBatchResult {
   readonly skippedTradeIds?: readonly string[];
 }
 
+export interface CanonicalOrderQuantities {
+  readonly originalQuantity: number;
+  readonly filledQuantity: number;
+  readonly remainingQuantity: number;
+}
+
+export function normalizeOrderQuantities(order: {
+  size: number;
+  filled?: number;
+  originalQuantity?: number;
+  filledQuantity?: number;
+  remainingQuantity?: number;
+}): CanonicalOrderQuantities {
+  const original = Math.round(Number(order.originalQuantity ?? order.size ?? 0));
+  const filled = Math.round(Number(order.filledQuantity ?? order.filled ?? 0));
+  if (!Number.isFinite(original) || original <= 0) {
+    throw new RangeError(`originalQuantity must be a positive integer, got ${original}`);
+  }
+  if (!Number.isFinite(filled) || filled < 0) {
+    throw new RangeError(`filledQuantity must be a non-negative integer, got ${filled}`);
+  }
+  const remaining = Math.max(0, original - filled);
+  return {
+    originalQuantity: original,
+    filledQuantity: filled,
+    remainingQuantity: remaining,
+  };
+}
+
 export interface MatchedBatchCommitInput {
   readonly trades: readonly TradeSettlementInput[];
+  /** Insert-only new orders. If any ID already exists in repository, batch rejects with ORDER_ALREADY_EXISTS. */
   readonly newOrders?: readonly OrderRecord[];
+  /** Dedicated LP quote upserts, separate from general orders. */
+  readonly lpQuoteUpserts?: readonly OrderRecord[];
   readonly orderUpdates?: readonly {
     readonly id: string;
-    readonly size: number;
-    readonly status: 'open' | 'partial' | 'filled' | 'cancelled' | 'expired';
+    readonly size?: number;
+    readonly remainingQuantity?: number;
+    readonly filledQuantity?: number;
+    readonly status?: 'open' | 'partial' | 'filled' | 'cancelled' | 'expired';
+    readonly expectedVersion?: number;
   }[];
   readonly marketPriceUpdates?: readonly {
     readonly stock_id: string;
@@ -181,7 +216,10 @@ export interface MatchedBatchCommitInput {
 export interface OptionExpirySettlementParams {
   readonly userId: string;
   readonly optionId: string;
-  readonly payoutAmount: number;
+  readonly underlyingClosePrice?: number;
+  readonly expectedQuantity?: number;
+  readonly now?: number;
+  readonly payoutAmount?: number;
   readonly idempotencyKey: string;
   readonly faultInjection?: 'FAIL_AT_CLOSE' | 'FAIL_AT_LEDGER';
 }
@@ -189,7 +227,9 @@ export interface OptionExpirySettlementParams {
 export interface BondMaturitySettlementParams {
   readonly userId: string;
   readonly bondId: string;
-  readonly principalAmount: number;
+  readonly now?: number;
+  readonly expectedQuantity?: number;
+  readonly principalAmount?: number;
   readonly couponAmount?: number;
   readonly idempotencyKey: string;
   readonly faultInjection?: 'FAIL_AT_CLOSE' | 'FAIL_AT_LEDGER';

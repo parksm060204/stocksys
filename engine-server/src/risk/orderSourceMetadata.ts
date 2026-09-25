@@ -54,7 +54,7 @@ export function extractParticipantId(order: Record<string, unknown>): string | n
 }
 
 export function extractStrategyId(order: Record<string, unknown>): string {
-  const candidates = [order._strategyId, order.strategy_id, order.agentId];
+  const candidates = [order.strategyId, order._strategyId, order.strategy_id, order.agentId];
   for (const candidate of candidates) {
     if (typeof candidate === 'string' && candidate.length > 0) return candidate;
   }

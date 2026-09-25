@@ -71,6 +71,25 @@ function setupEnvironment() {
     avgPrice: 1500,
   };
 
+  db.optionsContracts.set(contract.id, {
+    id: contract.id,
+    underlying_stock_id: contract.underlying_stock_id,
+    ticker: 'OPT_KRX',
+    asset_class: 'option',
+    type: 'CALL',
+    option_type: 'CALL',
+    strike_price: contract.strike_price,
+    current_price: contract.current_price,
+    expiry_date: contract.expiry_date,
+    open_interest: contract.open_interest,
+    volume: contract.volume,
+    delta: 0.5,
+    gamma: 0.01,
+    theta: -0.01,
+    implied_volatility: 0.2,
+    created_at: '2026-01-01T00:00:00.000Z',
+  });
+
   return { db, engine, contract, position, clock };
 }
 

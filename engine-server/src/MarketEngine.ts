@@ -19,6 +19,7 @@ import type { MarketEvent } from './types';
 import { CommodityMarketEngine } from '../../lib/commodities/CommodityMarketEngine';
 import { SettlementBatchService } from './settlement/SettlementBatchService';
 import { buildDeterministicTradeId } from './settlement/deterministicTradeId';
+import { buildDeterministicOrderId } from './settlement/deterministicOrderId';
 import * as dotenv from 'dotenv';
 import * as path from 'path';
 import * as os from 'os';
@@ -578,6 +579,20 @@ export class MarketEngine {
   }
 
   public async tick(): Promise<TickResult> {
+    const runtimeSnapshot = {
+      tickCount: this.tickCount,
+      partialFillSequence: this.partialFillSequence,
+      lpQuoteGeneration: this.lpQuoteGeneration,
+      hawkesIntensity: this.hawkesIntensity,
+      fundamentals: { ...this.fundamentals },
+      activeEvents: this.activeEvents.map(e => ({ ...e })),
+      randomSnapshot: (this.simulationContext.random as any)?.snapshot ? (this.simulationContext.random as any).snapshot() : null,
+      mjdDiffusionSnapshot: (this.mjdDiffusionRandom as any)?.snapshot ? (this.mjdDiffusionRandom as any).snapshot() : null,
+      mjdJumpSnapshot: (this.mjdJumpRandom as any)?.snapshot ? (this.mjdJumpRandom as any).snapshot() : null,
+      eventRandomSnapshot: (this.eventRandom as any)?.snapshot ? (this.eventRandom as any).snapshot() : null,
+      fxRandomSnapshot: (this.fxRandom as any)?.snapshot ? (this.fxRandom as any).snapshot() : null,
+    };
+
     try {
       this.tickCount++;
 
@@ -623,8 +638,8 @@ export class MarketEngine {
         }
       }
 
-      // 쿼리 부하 절감: 5틱마다 한 번만 LP 주문 갱신 (delete-before-settlement 제거)
-      const shouldRefreshLp = (this.tickCount % this.LP_REFRESH_TICKS) === 0;
+      // 쿼리 부하 절감: 첫 틱 및 5틱마다 한 번만 LP 주문 갱신 (delete-before-settlement 제거)
+      const shouldRefreshLp = this.tickCount === 1 || (this.tickCount % this.LP_REFRESH_TICKS) === 0;
       if ((this.simClock.now() - this.lastExchangeRateUpdateMs) >= this.EXCHANGE_RATE_TTL_MS) {
         await this.updateExchangeRates();
         this.lastExchangeRateUpdateMs = this.simClock.now();
@@ -797,6 +812,30 @@ export class MarketEngine {
         tickCount: this.tickCount,
       };
     } catch (error: any) {
+      // Deterministic rollback of all engine runtime state
+      this.tickCount = runtimeSnapshot.tickCount;
+      this.partialFillSequence = runtimeSnapshot.partialFillSequence;
+      this.lpQuoteGeneration = runtimeSnapshot.lpQuoteGeneration;
+      this.hawkesIntensity = runtimeSnapshot.hawkesIntensity;
+      this.fundamentals = runtimeSnapshot.fundamentals;
+      this.activeEvents = runtimeSnapshot.activeEvents;
+      if (runtimeSnapshot.randomSnapshot && (this.simulationContext.random as any)?.restore) {
+        (this.simulationContext.random as any).restore(runtimeSnapshot.randomSnapshot);
+      }
+      if (runtimeSnapshot.mjdDiffusionSnapshot && (this.mjdDiffusionRandom as any)?.restore) {
+        (this.mjdDiffusionRandom as any).restore(runtimeSnapshot.mjdDiffusionSnapshot);
+      }
+      if (runtimeSnapshot.mjdJumpSnapshot && (this.mjdJumpRandom as any)?.restore) {
+        (this.mjdJumpRandom as any).restore(runtimeSnapshot.mjdJumpSnapshot);
+      }
+      if (runtimeSnapshot.eventRandomSnapshot && (this.eventRandom as any)?.restore) {
+        (this.eventRandom as any).restore(runtimeSnapshot.eventRandomSnapshot);
+      }
+      if (runtimeSnapshot.fxRandomSnapshot && (this.fxRandom as any)?.restore) {
+        (this.fxRandom as any).restore(runtimeSnapshot.fxRandomSnapshot);
+      }
+      this.cachedMarketState = null;
+
       console.error("Engine Tick Error:", error);
       const errorCode = this.lastSettlementError || (error?.code ?? 'TICK_EXECUTION_ERROR');
       return {
@@ -914,13 +953,24 @@ export class MarketEngine {
         safePrice: 0,
         reasonCodes: ['REJECTED_MISSING_PARTICIPANT_ID'],
       });
-      if (isFromRepository && order.id) {
-        await this.repositories.markets.cancelOrders([order.id]).catch(() => {});
-      }
       return null;
     }
 
     const verified = await verifyParticipantProfile(this.repositories, participantId, order.stock_id);
+
+    if (order.is_lp && (!verified || verified.participantKind !== 'LIQUIDITY_PROVIDER')) {
+      diagnostics.push({
+        stockId: order.stock_id,
+        participantId,
+        originalSize: Number(order.size ?? 0),
+        safeSize: 0,
+        originalPrice: currentPrice,
+        safePrice: 0,
+        reasonCodes: ['REJECTED_UNAUTHORIZED_LP'],
+      });
+      return null;
+    }
+
     const assessment = assessStrategicOrder({
       profile: verified,
       side: order.side,
@@ -938,9 +988,6 @@ export class MarketEngine {
         safePrice: 0,
         reasonCodes: [assessment.rejection as string],
       });
-      if (isFromRepository && order.id) {
-        await this.repositories.markets.cancelOrders([order.id]).catch(() => {});
-      }
       return null;
     }
 
@@ -951,9 +998,6 @@ export class MarketEngine {
       assessment.context
     );
     if (!safeOrder) {
-      if (isFromRepository && order.id) {
-        await this.repositories.markets.cancelOrders([order.id]).catch(() => {});
-      }
       return null;
     }
 
@@ -961,6 +1005,7 @@ export class MarketEngine {
     safeOrder.participantKind = assessment.profile?.participantKind ?? 'UNKNOWN';
     safeOrder.strategyId = strategyId;
     safeOrder.orderType = requestedOrderType;
+    safeOrder.is_lp = Boolean(order.is_lp && (safeOrder.participantKind === 'LIQUIDITY_PROVIDER' || safeOrder.participantKind === 'MARKET_MAKER'));
 
     if (isFromRepository && order.id) {
       await this.repositories.markets.updateOrders([{
@@ -987,6 +1032,7 @@ export class MarketEngine {
 
     // 신규 생성된 봇 주문 검증
     for (const b of lpOrders) {
+      if (!b) continue;
       (b as any)._fromRepo = false;
       const valid = await this.validateSingleOrder(b, marketState, false, orderRiskDiagnostics);
       if (valid) {
@@ -997,6 +1043,7 @@ export class MarketEngine {
 
     // 저장소 미체결 주문 검증
     for (const u of activeOpenOrders) {
+      if (!u) continue;
       const valid = await this.validateSingleOrder(u, marketState, true, orderRiskDiagnostics);
       if (valid) {
         (valid as any)._fromRepo = true;
@@ -1037,8 +1084,18 @@ export class MarketEngine {
     const workingHidden = new Map<any, number>();
     const workingCreatedAt = new Map<any, string>();
     const workingStatus = new Map<any, string>();
+    let perTickOrderSequence = 0;
 
-    const getWorkingSize = (o: any) => workingSizes.has(o) ? workingSizes.get(o)! : o.size;
+    const getWorkingSize = (o: any) => {
+      if (workingSizes.has(o)) return workingSizes.get(o)!;
+      if (typeof o.remainingQuantity === 'number') return o.remainingQuantity;
+      if (typeof o.remaining === 'number') return o.remaining;
+      if (typeof o.size === 'number') {
+        const filled = typeof o.filledQuantity === 'number' ? o.filledQuantity : (typeof o.filled === 'number' ? o.filled : 0);
+        return Math.max(0, o.size - filled);
+      }
+      return 0;
+    };
     const getWorkingHidden = (o: any) => workingHidden.has(o) ? workingHidden.get(o)! : (o.hidden_size || 0);
 
     // 3. 종목별 매칭 계산 (순수 계산)
@@ -1123,52 +1180,88 @@ export class MarketEngine {
           const sellerFeeRate = isBidMaker ? takerFeeRate : makerRebateRate;
 
           const buyOrderId = String(
-            highestBid.id ?? (highestBid.id = `ord_${this.simulationRunId}_t${this.tickCount}_b${workingBids.length}`)
+            highestBid.id ?? (highestBid.id = buildDeterministicOrderId({
+              simulationRunId: this.simulationRunId,
+              tickSequence: this.tickCount,
+              stockId,
+              participantId: buyerParticipantId || 'unknown_buyer',
+              side: 'buy',
+              perTickOrderSequence: ++perTickOrderSequence,
+              strategyId: highestBid.strategyId,
+            }))
           );
           const sellOrderId = String(
-            lowestAsk.id ?? (lowestAsk.id = `ord_${this.simulationRunId}_t${this.tickCount}_s${workingAsks.length}`)
+            lowestAsk.id ?? (lowestAsk.id = buildDeterministicOrderId({
+              simulationRunId: this.simulationRunId,
+              tickSequence: this.tickCount,
+              stockId,
+              participantId: sellerParticipantId || 'unknown_seller',
+              side: 'sell',
+              perTickOrderSequence: ++perTickOrderSequence,
+              strategyId: lowestAsk.strategyId,
+            }))
           );
 
-          if (!highestBid._fromRepo && !newOrdersToCommitMap.has(buyOrderId)) {
-            newOrdersToCommitMap.set(buyOrderId, {
-              id: buyOrderId,
-              stock_id: stockId,
-              user_id: highestBid.user_id ?? (buyerParticipantId || null),
-              participantId: buyerParticipantId,
-              participantKind: highestBid.participantKind,
-              strategyId: highestBid.strategyId,
-              order_type: highestBid.orderType || highestBid.order_type || 'LIMIT',
-              side: 'buy',
-              price: highestBid.price,
-              size: highestBid.size,
-              filled: 0,
-              remaining: highestBid.size,
-              status: 'open',
-              is_lp: highestBid.is_lp ?? false,
-              created_at: highestBid.created_at || new Date(this.simClock.now()).toISOString(),
-              version: 1,
-            });
+          if (!highestBid._fromRepo) {
+            if (newOrdersToCommitMap.has(buyOrderId)) {
+              const existing = newOrdersToCommitMap.get(buyOrderId)!;
+              if (existing.stock_id !== stockId || existing.side !== 'buy' || existing.price !== highestBid.price) {
+                throw new Error(`BATCH_ORDER_ID_COLLISION: Duplicate order ID with conflicting data: ${buyOrderId}`);
+              }
+            } else {
+              newOrdersToCommitMap.set(buyOrderId, {
+                id: buyOrderId,
+                stock_id: stockId,
+                user_id: highestBid.user_id ?? (buyerParticipantId || null),
+                participantId: buyerParticipantId,
+                participantKind: highestBid.participantKind,
+                strategyId: highestBid.strategyId,
+                order_type: highestBid.orderType || highestBid.order_type || 'LIMIT',
+                side: 'buy',
+                price: highestBid.price,
+                size: highestBid.size,
+                originalQuantity: highestBid.originalQuantity ?? highestBid.size,
+                filledQuantity: highestBid.filledQuantity ?? 0,
+                remainingQuantity: highestBid.remainingQuantity ?? highestBid.size,
+                filled: 0,
+                remaining: highestBid.size,
+                status: 'open',
+                is_lp: highestBid.is_lp ?? false,
+                created_at: highestBid.created_at || new Date(this.simClock.now()).toISOString(),
+                version: 1,
+              });
+            }
           }
 
-          if (!lowestAsk._fromRepo && !newOrdersToCommitMap.has(sellOrderId)) {
-            newOrdersToCommitMap.set(sellOrderId, {
-              id: sellOrderId,
-              stock_id: stockId,
-              user_id: lowestAsk.user_id ?? (sellerParticipantId || null),
-              participantId: sellerParticipantId,
-              participantKind: lowestAsk.participantKind,
-              strategyId: lowestAsk.strategyId,
-              order_type: lowestAsk.orderType || lowestAsk.order_type || 'LIMIT',
-              side: 'sell',
-              price: lowestAsk.price,
-              size: lowestAsk.size,
-              filled: 0,
-              remaining: lowestAsk.size,
-              status: 'open',
-              is_lp: lowestAsk.is_lp ?? false,
-              created_at: lowestAsk.created_at || new Date(this.simClock.now()).toISOString(),
-              version: 1,
-            });
+          if (!lowestAsk._fromRepo) {
+            if (newOrdersToCommitMap.has(sellOrderId)) {
+              const existing = newOrdersToCommitMap.get(sellOrderId)!;
+              if (existing.stock_id !== stockId || existing.side !== 'sell' || existing.price !== lowestAsk.price) {
+                throw new Error(`BATCH_ORDER_ID_COLLISION: Duplicate order ID with conflicting data: ${sellOrderId}`);
+              }
+            } else {
+              newOrdersToCommitMap.set(sellOrderId, {
+                id: sellOrderId,
+                stock_id: stockId,
+                user_id: lowestAsk.user_id ?? (sellerParticipantId || null),
+                participantId: sellerParticipantId,
+                participantKind: lowestAsk.participantKind,
+                strategyId: lowestAsk.strategyId,
+                order_type: lowestAsk.orderType || lowestAsk.order_type || 'LIMIT',
+                side: 'sell',
+                price: lowestAsk.price,
+                size: lowestAsk.size,
+                originalQuantity: lowestAsk.originalQuantity ?? lowestAsk.size,
+                filledQuantity: lowestAsk.filledQuantity ?? 0,
+                remainingQuantity: lowestAsk.remainingQuantity ?? lowestAsk.size,
+                filled: 0,
+                remaining: lowestAsk.size,
+                status: 'open',
+                is_lp: lowestAsk.is_lp ?? false,
+                created_at: lowestAsk.created_at || new Date(this.simClock.now()).toISOString(),
+                version: 1,
+              });
+            }
           }
 
           const deterministicTradeId = buildDeterministicTradeId({
@@ -1258,7 +1351,7 @@ export class MarketEngine {
               workingBids.shift();
             }
           } else {
-            workingStatus.set(highestBid, 'open');
+            workingStatus.set(highestBid, 'partial');
           }
 
           if (newAskSize === 0) {
@@ -1274,7 +1367,7 @@ export class MarketEngine {
               workingAsks.shift();
             }
           } else {
-            workingStatus.set(lowestAsk, 'open');
+            workingStatus.set(lowestAsk, 'partial');
           }
         } else {
           break;
@@ -1291,14 +1384,23 @@ export class MarketEngine {
     }
 
     // ── Phase 3: DB 일괄 커밋 페이로드 준비 ──
-    const stagedOrderUpdates: { id: string; size: number; status: 'open' | 'partial' | 'filled' | 'cancelled' | 'expired' }[] = [];
+    const stagedOrderUpdates: { id: string; size: number; status: 'open' | 'partial' | 'filled' | 'cancelled' | 'expired'; remainingQuantity?: number }[] = [];
     for (const [order, size] of workingSizes.entries()) {
       if (order.id) {
-        const status = (workingStatus.get(order) || (size === 0 ? 'filled' : 'open')) as any;
+        const origQty = order.originalQuantity ?? order.size;
+        let status: 'open' | 'partial' | 'filled' | 'cancelled' | 'expired';
+        if (size === 0) {
+          status = 'filled';
+        } else if (size < origQty) {
+          status = 'partial';
+        } else {
+          status = (workingStatus.get(order) || 'open') as any;
+        }
         stagedOrderUpdates.push({
           id: order.id,
           size,
           status,
+          remainingQuantity: size,
         });
       }
     }
@@ -1350,8 +1452,13 @@ export class MarketEngine {
     // ── Phase 5: 정산 성공 확인 후에만 메모리 상태 반영 ──
     // 5.1 주문 잔량 및 상태 메모리 반영
     for (const [order, size] of workingSizes.entries()) {
+      const origQty = order.originalQuantity ?? order.size;
       order.size = size;
-      order.status = workingStatus.get(order) || (size === 0 ? 'filled' : 'open');
+      order.remainingQuantity = size;
+      order.remaining = size;
+      order.filledQuantity = origQty - size;
+      order.filled = origQty - size;
+      order.status = size === 0 ? 'filled' : (size < origQty ? 'partial' : 'open');
       if (workingHidden.has(order)) order.hidden_size = workingHidden.get(order);
       if (workingCreatedAt.has(order)) order.created_at = workingCreatedAt.get(order);
     }
@@ -1419,15 +1526,71 @@ export class MarketEngine {
       }
     }
 
-    // 6.2 LP 호가 갱신 (슬라이딩 윈도우 upsert, delete-before-insert 제거)
-    const lpOrdersToInsert: any[] = [];
+    const isTrueLpOrder = (o: any) =>
+      Boolean(o.is_lp && (o.participantKind === 'LIQUIDITY_PROVIDER' || o.participantKind === 'MARKET_MAKER' || o.orderType === 'LP_QUOTE' || o.orderRole === 'LP_QUOTE'));
+
+    // 미체결 일반 전략 주문은 원래 참여자/전략/메타데이터를 유지한 채 저장소에 저장
+    const strategicOrdersToPersist: any[] = [];
     for (const stockId of Object.keys(orderBookByStock)) {
       const book = orderBookByStock[stockId]!;
       for (const bid of book.bids) {
-        if (!bid._fromRepo) lpOrdersToInsert.push(bid);
+        if (!bid._fromRepo && !isTrueLpOrder(bid) && !newOrdersToCommitMap.has(bid.id)) {
+          strategicOrdersToPersist.push(bid);
+        }
       }
       for (const ask of book.asks) {
-        if (!ask._fromRepo) lpOrdersToInsert.push(ask);
+        if (!ask._fromRepo && !isTrueLpOrder(ask) && !newOrdersToCommitMap.has(ask.id)) {
+          strategicOrdersToPersist.push(ask);
+        }
+      }
+    }
+
+    if (strategicOrdersToPersist.length > 0) {
+      const ordersToSave = strategicOrdersToPersist.map(o => ({
+        id: o.id || buildDeterministicOrderId({
+          simulationRunId: this.simulationRunId,
+          tickSequence: this.tickCount,
+          stockId: o.stock_id,
+          participantId: o.participantId || extractParticipantId(o) || 'unknown',
+          side: o.side,
+          perTickOrderSequence: ++perTickOrderSequence,
+          strategyId: o.strategyId,
+        }),
+        stock_id: o.stock_id,
+        user_id: o.user_id ?? o.participantId ?? null,
+        participantId: o.participantId || extractParticipantId(o) || null,
+        participantKind: o.participantKind,
+        strategyId: o.strategyId,
+        order_type: o.orderType || o.order_type || 'LIMIT',
+        side: o.side,
+        price: o.price,
+        size: o.size,
+        originalQuantity: o.originalQuantity ?? o.size,
+        filledQuantity: o.filledQuantity ?? 0,
+        remainingQuantity: o.remainingQuantity ?? o.size,
+        filled: 0,
+        remaining: o.size,
+        status: o.status || 'open',
+        is_lp: false,
+        created_at: o.created_at || new Date(this.simClock.now()).toISOString(),
+        version: o.version ?? 1,
+      }));
+      await this.repositories.markets.insertOrders(ordersToSave).catch((err) => {
+        console.warn('[MarketEngine] Failed to save strategic orders:', err);
+      });
+    }
+
+    // 6.2 LP 호가 갱신: 오직 실제 LP 주문만 대상으로 처리
+    const lpOrdersToInsert: any[] = [];
+    if (refreshLpOrders) {
+      for (const stockId of Object.keys(orderBookByStock)) {
+        const book = orderBookByStock[stockId]!;
+        for (const bid of book.bids) {
+          if (!bid._fromRepo && isTrueLpOrder(bid)) lpOrdersToInsert.push(bid);
+        }
+        for (const ask of book.asks) {
+          if (!ask._fromRepo && isTrueLpOrder(ask)) lpOrdersToInsert.push(ask);
+        }
       }
     }
 
@@ -1442,7 +1605,20 @@ export class MarketEngine {
         else entry.asks.push(o);
       }
 
-      this.lpQuoteGeneration++;
+      // Snapshot previous LP orders for rollback if needed
+      const previousLpOrdersSnapshot = new Map<string, any>();
+      for (const stockId of Object.keys(byStock)) {
+        for (let slot = 0; slot < 5; slot++) {
+          const buyId = `lp_${stockId}_buy_slot${slot}`;
+          const sellId = `lp_${stockId}_sell_slot${slot}`;
+          const buyOrd = (this.repositories as any).db?.orders?.get(buyId);
+          if (buyOrd) previousLpOrdersSnapshot.set(buyId, { ...buyOrd });
+          const sellOrd = (this.repositories as any).db?.orders?.get(sellId);
+          if (sellOrd) previousLpOrdersSnapshot.set(sellId, { ...sellOrd });
+        }
+      }
+
+      const nextGeneration = this.lpQuoteGeneration + 1;
       const safeLpOrders: any[] = [];
       const unusedSlotUpdates: any[] = [];
 
@@ -1460,7 +1636,7 @@ export class MarketEngine {
               user_id: null,
               participantId: o.participantId || extractParticipantId(o) || 'lp_market_maker',
               participantKind: 'LIQUIDITY_PROVIDER' as const,
-              version: this.lpQuoteGeneration,
+              version: nextGeneration,
               side: 'buy' as const,
               price: o.price,
               size: o.size,
@@ -1476,7 +1652,7 @@ export class MarketEngine {
               safeOrder.participantId = rawLpOrder.participantId;
               safeOrder.participantKind = 'LIQUIDITY_PROVIDER';
               safeOrder.is_lp = true;
-              safeOrder.version = this.lpQuoteGeneration;
+              safeOrder.version = nextGeneration;
               safeLpOrders.push(safeOrder);
             }
           } else {
@@ -1496,7 +1672,7 @@ export class MarketEngine {
               user_id: null,
               participantId: o.participantId || extractParticipantId(o) || 'lp_market_maker',
               participantKind: 'LIQUIDITY_PROVIDER' as const,
-              version: this.lpQuoteGeneration,
+              version: nextGeneration,
               side: 'sell' as const,
               price: o.price,
               size: o.size,
@@ -1512,7 +1688,7 @@ export class MarketEngine {
               safeOrder.participantId = rawLpOrder.participantId;
               safeOrder.participantKind = 'LIQUIDITY_PROVIDER';
               safeOrder.is_lp = true;
-              safeOrder.version = this.lpQuoteGeneration;
+              safeOrder.version = nextGeneration;
               safeLpOrders.push(safeOrder);
             }
           } else {
@@ -1524,14 +1700,34 @@ export class MarketEngine {
         }
       }
 
-      if (safeLpOrders.length > 0) {
-        for (let i = 0; i < safeLpOrders.length; i += 500) {
-          const chunk = safeLpOrders.slice(i, i + 500);
-          await this.repositories.markets.insertOrders(chunk);
+      try {
+        if (safeLpOrders.length > 0) {
+          for (let i = 0; i < safeLpOrders.length; i += 500) {
+            const chunk = safeLpOrders.slice(i, i + 500);
+            await this.repositories.markets.insertOrders(chunk);
+          }
         }
-      }
-      if (unusedSlotUpdates.length > 0) {
-        await this.repositories.markets.updateOrders(unusedSlotUpdates).catch(() => {});
+        if (unusedSlotUpdates.length > 0) {
+          await this.repositories.markets.updateOrders(unusedSlotUpdates);
+        }
+        this.lpQuoteGeneration = nextGeneration;
+      } catch (lpErr: any) {
+        console.warn('[MarketEngine] LP quote refresh failed, rolling back LP orderbook:', lpErr?.message);
+        const db = (this.repositories as any).db;
+        if (db) {
+          for (const [id, snap] of previousLpOrdersSnapshot.entries()) {
+            db.orders.set(id, { ...snap });
+          }
+          for (const ord of safeLpOrders) {
+            if (!previousLpOrdersSnapshot.has(ord.id)) {
+              const cur = db.orders.get(ord.id);
+              if (cur && cur.version === nextGeneration) {
+                db.orders.delete(ord.id);
+                db.removeOrderFromIndex?.(cur);
+              }
+            }
+          }
+        }
       }
     }
 

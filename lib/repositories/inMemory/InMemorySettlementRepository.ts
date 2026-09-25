@@ -100,10 +100,69 @@ export class InMemorySettlementRepository implements SettlementRepository {
     const trades = batch.trades || [];
     const idGenSnapshot = (this.db as any).snapshotIdGenerator?.() ?? null;
 
+    // ── Pre-check: newOrders must be insert-only, no duplicates in batch or DB ──
+    if (batch.newOrders && batch.newOrders.length > 0) {
+      const seenBatchOrderIds = new Set<string>();
+      for (const ord of batch.newOrders) {
+        if (!isNonEmptyId(ord.id)) {
+          return emptyResult({
+            success: false,
+            errorCode: 'ORDER_ID_MISSING',
+            error: 'New order has empty id',
+            rollbackOccurred: false,
+          });
+        }
+        if (seenBatchOrderIds.has(ord.id) || this.db.orders.has(ord.id)) {
+          return emptyResult({
+            success: false,
+            errorCode: 'ORDER_ALREADY_EXISTS',
+            error: `ORDER_ALREADY_EXISTS: Order ${ord.id} already exists or is duplicated in batch`,
+            rollbackOccurred: false,
+          });
+        }
+        seenBatchOrderIds.add(ord.id);
+        const origQty = Math.round(Number(ord.originalQuantity ?? ord.size ?? 0));
+        const filledQty = Math.round(Number(ord.filledQuantity ?? ord.filled ?? 0));
+        const remainingQty = Math.round(Number(ord.remainingQuantity ?? (origQty - filledQty)));
+        if (!Number.isFinite(origQty) || origQty <= 0) {
+          return emptyResult({
+            success: false,
+            errorCode: 'INVALID_ORDER_QUANTITY',
+            error: `INVALID_ORDER_QUANTITY: Order ${ord.id} originalQuantity must be positive integer: ${origQty}`,
+            rollbackOccurred: false,
+          });
+        }
+        if (!Number.isFinite(filledQty) || filledQty < 0 || !Number.isFinite(remainingQty) || remainingQty < 0 || (filledQty + remainingQty !== origQty)) {
+          return emptyResult({
+            success: false,
+            errorCode: 'INVALID_ORDER_QUANTITY',
+            error: `INVALID_ORDER_QUANTITY: Order ${ord.id} quantity mismatch: orig=${origQty}, filled=${filledQty}, remaining=${remainingQty}`,
+            rollbackOccurred: false,
+          });
+        }
+      }
+    }
+
+    // ── Pre-check: lpQuoteUpserts must be authorized LP quotes ──
+    if (batch.lpQuoteUpserts && batch.lpQuoteUpserts.length > 0) {
+      for (const lpOrd of batch.lpQuoteUpserts) {
+        const isLp = Boolean(lpOrd.is_lp || (lpOrd as any).participantKind === 'LIQUIDITY_PROVIDER' || (lpOrd as any).orderRole === 'LP_QUOTE');
+        if (!isLp) {
+          return emptyResult({
+            success: false,
+            errorCode: 'REJECTED_UNAUTHORIZED_LP',
+            error: `Order ${lpOrd.id} is not an authorized LP quote`,
+            rollbackOccurred: false,
+          });
+        }
+      }
+    }
+
     // 거래가 없는 경우: 주문/시세/가격이력만 있는 배치 처리
     if (trades.length === 0) {
       if (
         (!batch.newOrders || batch.newOrders.length === 0) &&
+        (!batch.lpQuoteUpserts || batch.lpQuoteUpserts.length === 0) &&
         (!batch.orderUpdates || batch.orderUpdates.length === 0) &&
         (!batch.marketPriceUpdates || batch.marketPriceUpdates.length === 0) &&
         (!batch.priceHistory || batch.priceHistory.length === 0)
@@ -120,13 +179,37 @@ export class InMemorySettlementRepository implements SettlementRepository {
       try {
         if (batch.newOrders) {
           for (const ord of batch.newOrders) {
+            newlyInsertedOrderIds.add(ord.id);
+            const origQty = Math.round(Number(ord.originalQuantity ?? ord.size));
+            const filledQty = Math.round(Number(ord.filledQuantity ?? ord.filled ?? 0));
+            const remainingQty = Math.round(Number(ord.remainingQuantity ?? (origQty - filledQty)));
+            const normalizedOrd: OrderRecord = {
+              ...ord,
+              originalQuantity: origQty,
+              filledQuantity: filledQty,
+              remainingQuantity: remainingQty,
+              size: remainingQty,
+              filled: filledQty,
+              status: remainingQty === 0 ? 'filled' : (filledQty > 0 ? 'partial' : 'open'),
+              version: ord.version ?? 1,
+            };
+            this.db.orders.set(ord.id, normalizedOrd);
+            this.db.addOrderToIndex(normalizedOrd);
+          }
+        }
+        if (batch.lpQuoteUpserts) {
+          for (const ord of batch.lpQuoteUpserts) {
             if (!this.db.orders.has(ord.id)) {
               newlyInsertedOrderIds.add(ord.id);
             } else if (!ordersSnapshot.has(ord.id)) {
               ordersSnapshot.set(ord.id, { ...this.db.orders.get(ord.id)! });
             }
-            this.db.orders.set(ord.id, { ...ord });
-            this.db.addOrderToIndex(ord);
+            const normalizedOrd: OrderRecord = {
+              ...ord,
+              version: (ord.version ?? 1) + 1,
+            };
+            this.db.orders.set(ord.id, normalizedOrd);
+            this.db.addOrderToIndex(normalizedOrd);
           }
         }
         if (batch.orderUpdates) {
@@ -136,8 +219,21 @@ export class InMemorySettlementRepository implements SettlementRepository {
               if (!ordersSnapshot.has(upd.id)) {
                 ordersSnapshot.set(upd.id, { ...ord });
               }
-              ord.size = upd.size;
-              ord.status = upd.status;
+              if (upd.expectedVersion !== undefined && (ord.version || 1) !== upd.expectedVersion) {
+                throw new Error(`ORDER_CAS_MISMATCH: Version mismatch for ${upd.id}`);
+              }
+              if (upd.size !== undefined) {
+                ord.size = upd.size;
+                ord.remainingQuantity = upd.size;
+              }
+              if (upd.status) {
+                if (ord.status === 'filled' && (upd.status === 'open' || upd.status === 'partial')) {
+                  // Do not reopen filled orders
+                } else {
+                  ord.status = upd.status;
+                }
+              }
+              ord.version = (ord.version || 1) + 1;
             }
           }
         }
@@ -222,16 +318,42 @@ export class InMemorySettlementRepository implements SettlementRepository {
     // ── Phase 1.5: 신규 주문 staging 및 참조 주문의 권위 상태·잔량 검증 (과체결/중복정산 차단) ──
     const newlyInsertedOrderIds = new Set<string>();
     const originalOrdersBeforeBatch = new Map<string, OrderRecord>();
+    const newlyCreatedProfileIds = new Set<string>();
 
     if (batch.newOrders && batch.newOrders.length > 0) {
       for (const ord of batch.newOrders) {
+        newlyInsertedOrderIds.add(ord.id);
+        const origQty = Math.round(Number(ord.originalQuantity ?? ord.size));
+        const filledQty = Math.round(Number(ord.filledQuantity ?? ord.filled ?? 0));
+        const remainingQty = Math.round(Number(ord.remainingQuantity ?? (origQty - filledQty)));
+        const normalizedOrd: OrderRecord = {
+          ...ord,
+          originalQuantity: origQty,
+          filledQuantity: filledQty,
+          remainingQuantity: remainingQty,
+          size: remainingQty,
+          filled: filledQty,
+          status: remainingQty === 0 ? 'filled' : (filledQty > 0 ? 'partial' : 'open'),
+          version: ord.version ?? 1,
+        };
+        this.db.orders.set(ord.id, normalizedOrd);
+        this.db.addOrderToIndex(normalizedOrd);
+      }
+    }
+
+    if (batch.lpQuoteUpserts && batch.lpQuoteUpserts.length > 0) {
+      for (const ord of batch.lpQuoteUpserts) {
         if (!this.db.orders.has(ord.id)) {
           newlyInsertedOrderIds.add(ord.id);
         } else if (!originalOrdersBeforeBatch.has(ord.id)) {
           originalOrdersBeforeBatch.set(ord.id, { ...this.db.orders.get(ord.id)! });
         }
-        this.db.orders.set(ord.id, { ...ord });
-        this.db.addOrderToIndex(ord);
+        const normalizedOrd: OrderRecord = {
+          ...ord,
+          version: (ord.version ?? 1) + 1,
+        };
+        this.db.orders.set(ord.id, normalizedOrd);
+        this.db.addOrderToIndex(normalizedOrd);
       }
     }
 
@@ -244,7 +366,13 @@ export class InMemorySettlementRepository implements SettlementRepository {
       for (const [id, snap] of originalOrdersBeforeBatch.entries()) {
         this.db.orders.set(id, snap);
       }
-      this.db.rebuildIndexes();
+      for (const id of newlyCreatedProfileIds) {
+        this.db.profiles.delete(id);
+        this.db.profileUserIdIndex.delete(id);
+      }
+      if (newlyInsertedOrderIds.size > 0 || originalOrdersBeforeBatch.size > 0) {
+        this.db.rebuildIndexes();
+      }
       (this.db as any).restoreIdGenerator?.(idGenSnapshot);
       return emptyResult({
         success: false,
@@ -350,8 +478,9 @@ export class InMemorySettlementRepository implements SettlementRepository {
 
     for (const [orderId, allocated] of allocatedPerOrder.entries()) {
       const ord = this.db.orders.get(orderId)!;
-      const filled = ord.filled || 0;
-      const remaining = Math.max(0, ord.size - filled);
+      const original = ord.originalQuantity ?? ord.size;
+      const filled = ord.filledQuantity ?? ord.filled ?? 0;
+      const remaining = Math.max(0, original - filled);
       if (allocated > remaining) {
         return failBatch({
           errorCode: 'ORDER_OVERFILL',
@@ -370,17 +499,25 @@ export class InMemorySettlementRepository implements SettlementRepository {
             error: `ORDER_CAS_MISMATCH: Order ${cas.id} not found`,
           });
         }
-        const remaining = Math.max(0, ord.size - (ord.filled || 0));
+        const original = ord.originalQuantity ?? ord.size;
+        const filled = ord.filledQuantity ?? ord.filled ?? 0;
+        const remaining = Math.max(0, original - filled);
         if (cas.expectedRemaining !== undefined && cas.expectedRemaining !== remaining) {
           return failBatch({
             errorCode: 'ORDER_CAS_MISMATCH',
             error: `ORDER_CAS_MISMATCH: Order ${cas.id} remaining ${remaining} !== expected ${cas.expectedRemaining}`,
           });
         }
-        if (cas.expectedFilled !== undefined && cas.expectedFilled !== (ord.filled || 0)) {
+        if (cas.expectedFilled !== undefined && cas.expectedFilled !== filled) {
           return failBatch({
             errorCode: 'ORDER_CAS_MISMATCH',
-            error: `ORDER_CAS_MISMATCH: Order ${cas.id} filled ${ord.filled || 0} !== expected ${cas.expectedFilled}`,
+            error: `ORDER_CAS_MISMATCH: Order ${cas.id} filled ${filled} !== expected ${cas.expectedFilled}`,
+          });
+        }
+        if (cas.expectedVersion !== undefined && cas.expectedVersion !== (ord.version || 1)) {
+          return failBatch({
+            errorCode: 'ORDER_CAS_MISMATCH',
+            error: `ORDER_CAS_MISMATCH: Order ${cas.id} version ${ord.version || 1} !== expected ${cas.expectedVersion}`,
           });
         }
       }
@@ -432,33 +569,44 @@ export class InMemorySettlementRepository implements SettlementRepository {
       }
     }
 
-    const getProfile = (userId: string): ProfileRecord | null => {
+    interface AuthoritativeAccountView {
+      id: string;
+      cash: number;
+      netWorth: number;
+      isInstitution: boolean;
+      needsProfileCreation: boolean;
+      institutionName?: string;
+    }
+    const getAccountView = (userId: string): AuthoritativeAccountView | null => {
       const pid = this.db.profileUserIdIndex.get(userId) || userId;
-      let p = this.db.profiles.get(pid);
-      if (!p) {
-        const port = this.db.institutionalPortfolios.get(userId);
-        if (port) {
-          p = {
-            id: userId,
-            user_id: userId,
-            username: port.name || userId,
-            nickname: port.name || userId,
-            cash: port.current_cash,
-            net_worth: port.total_capital ?? port.current_cash,
-            rank_tier: 'INSTITUTION',
-            created_at: this.db.getIsoTimestamp(),
-          };
-          this.db.profiles.set(userId, p);
-          this.db.profileUserIdIndex.set(userId, userId);
-        }
+      const p = this.db.profiles.get(pid);
+      if (p) {
+        return {
+          id: p.id,
+          cash: p.cash,
+          netWorth: p.net_worth,
+          isInstitution: p.rank_tier === 'INSTITUTION',
+          needsProfileCreation: false,
+        };
       }
-      return p || null;
+      const port = this.db.institutionalPortfolios.get(userId);
+      if (port) {
+        return {
+          id: userId,
+          cash: port.current_cash,
+          netWorth: port.total_capital ?? port.current_cash,
+          isInstitution: true,
+          needsProfileCreation: true,
+          institutionName: port.name || userId,
+        };
+      }
+      return null;
     };
     const getHolding = (userId: string, stockId: string): HoldingRecord | null => {
       return this.db.holdings.get(`${userId}_${stockId}`) || null;
     };
 
-    // ── Phase 3: 잔액/보유 사전 검증 + 전체 스냅샷 (단일 롤백 경계) ──
+    // ── Phase 3: 잔액/보유 사전 검증 + 전체 스냅샷 (단일 롤백 경계, 순수 read-only) ──
     const profileSnapshots = new Map<string, ProfileRecord>();
     const holdingSnapshots = new Map<string, HoldingRecord | null>();
     const portfolioSnapshots = new Map<string, any>();
@@ -469,26 +617,29 @@ export class InMemorySettlementRepository implements SettlementRepository {
     const priceHistoryCountBefore = this.db.stockPriceHistory.length;
 
     for (const [userId, cashDelta] of netCashDeltas.entries()) {
-      const profile = getProfile(userId);
-      if (!profile) {
+      const view = getAccountView(userId);
+      if (!view) {
         return failBatch({
           errorCode: 'PRE_VALIDATION_FAILED',
           error: `PRE_VALIDATION_FAILED: Profile not found for user ${userId}`,
         });
       }
-      if (!Number.isFinite(profile.cash) || !Number.isFinite(cashDelta)) {
+      if (!Number.isFinite(view.cash) || !Number.isFinite(cashDelta)) {
         return failBatch({
           errorCode: 'PRE_VALIDATION_FAILED',
           error: `PRE_VALIDATION_FAILED: Non-finite cash balance for user ${userId}`,
         });
       }
-      if (profile.cash + cashDelta < 0) {
+      if (view.cash + cashDelta < 0) {
         return failBatch({
           errorCode: 'PRE_VALIDATION_FAILED',
-          error: `PRE_VALIDATION_FAILED: Insufficient cash for user ${userId}. Required delta: ${cashDelta}, Current cash: ${profile.cash}`,
+          error: `PRE_VALIDATION_FAILED: Insufficient cash for user ${userId}. Required delta: ${cashDelta}, Current cash: ${view.cash}`,
         });
       }
-      profileSnapshots.set(profile.id, { ...profile });
+      const existingProfile = this.db.profiles.get(this.db.profileUserIdIndex.get(userId) || userId);
+      if (existingProfile) {
+        profileSnapshots.set(existingProfile.id, { ...existingProfile });
+      }
 
       const port = this.db.institutionalPortfolios.get(userId);
       if (port) {
@@ -533,11 +684,29 @@ export class InMemorySettlementRepository implements SettlementRepository {
 
     try {
       for (const [userId, cashDelta] of netCashDeltas.entries()) {
-        const profile = getProfile(userId)!;
-        profile.cash = roundMoney(profile.cash + cashDelta);
+        const view = getAccountView(userId)!;
+        const nextCash = roundMoney(view.cash + cashDelta);
+        if (view.needsProfileCreation) {
+          const newProfile: ProfileRecord = {
+            id: userId,
+            user_id: userId,
+            username: view.institutionName || userId,
+            nickname: view.institutionName || userId,
+            cash: nextCash,
+            net_worth: view.netWorth,
+            rank_tier: 'INSTITUTION',
+            created_at: this.db.getIsoTimestamp(),
+          };
+          this.db.profiles.set(userId, newProfile);
+          this.db.profileUserIdIndex.set(userId, userId);
+          newlyCreatedProfileIds.add(userId);
+        } else {
+          const profile = this.db.profiles.get(this.db.profileUserIdIndex.get(userId) || userId)!;
+          profile.cash = nextCash;
+        }
         const port = this.db.institutionalPortfolios.get(userId);
         if (port) {
-          port.current_cash = profile.cash;
+          port.current_cash = nextCash;
         }
       }
 
@@ -591,6 +760,8 @@ export class InMemorySettlementRepository implements SettlementRepository {
           stock_id: trade.stock_id,
           buyer_id: buyerId,
           seller_id: sellerId,
+          buy_order_id: trade.buy_order_id,
+          sell_order_id: trade.sell_order_id,
           buyer_is_bot: trade.buyer_is_bot,
           seller_is_bot: trade.seller_is_bot,
           price: trade.price,
@@ -625,12 +796,17 @@ export class InMemorySettlementRepository implements SettlementRepository {
       // 체결 주문 상태 일괄 갱신
       for (const [orderId, allocated] of allocatedPerOrder.entries()) {
         const ord = this.db.orders.get(orderId)!;
-        ord.filled = (ord.filled || 0) + allocated;
-        if (ord.filled >= ord.size) {
-          ord.status = 'filled';
-        } else {
-          ord.status = 'partial';
-        }
+        const origQty = ord.originalQuantity ?? ord.size;
+        const prevFilled = ord.filledQuantity ?? ord.filled ?? 0;
+        const nextFilled = prevFilled + allocated;
+        const nextRemaining = Math.max(0, origQty - nextFilled);
+        ord.originalQuantity = origQty;
+        ord.filledQuantity = nextFilled;
+        ord.remainingQuantity = nextRemaining;
+        ord.filled = nextFilled;
+        ord.size = nextRemaining;
+        ord.status = nextRemaining === 0 ? 'filled' : 'partial';
+        ord.version = (ord.version || 1) + 1;
       }
 
       // 명시적 orderUpdates 반영 (allocated 외 주문)
@@ -638,11 +814,22 @@ export class InMemorySettlementRepository implements SettlementRepository {
         for (const upd of batch.orderUpdates) {
           const ord = this.db.orders.get(upd.id);
           if (ord) {
-            if (!allocatedPerOrder.has(upd.id) && upd.size !== undefined) {
-              ord.size = upd.size;
-            }
-            if (upd.status) {
-              ord.status = upd.status;
+            if (!allocatedPerOrder.has(upd.id)) {
+              if (upd.expectedVersion !== undefined && (ord.version || 1) !== upd.expectedVersion) {
+                throw new Error(`ORDER_CAS_MISMATCH: Version mismatch for ${upd.id}`);
+              }
+              if (upd.size !== undefined) {
+                ord.size = upd.size;
+                ord.remainingQuantity = upd.size;
+              }
+              if (upd.status) {
+                if (ord.status === 'filled' && (upd.status === 'open' || upd.status === 'partial')) {
+                  // Do not reopen filled orders
+                } else {
+                  ord.status = upd.status;
+                }
+              }
+              ord.version = (ord.version || 1) + 1;
             }
           }
         }
@@ -682,6 +869,10 @@ export class InMemorySettlementRepository implements SettlementRepository {
       });
     } catch (err) {
       // ── Phase 5: 완전 롤백 ──
+      for (const id of newlyCreatedProfileIds) {
+        this.db.profiles.delete(id);
+        this.db.profileUserIdIndex.delete(id);
+      }
       for (const [pid, snap] of profileSnapshots.entries()) {
         const p = this.db.profiles.get(pid);
         if (p) Object.assign(p, snap);
@@ -895,29 +1086,66 @@ export class InMemorySettlementRepository implements SettlementRepository {
     if (this.db.settlementLedger.has(params.idempotencyKey)) {
       return { success: true, errorCode: 'ALREADY_SETTLED' };
     }
-    if (typeof params.payoutAmount !== 'number' || !Number.isFinite(params.payoutAmount) || params.payoutAmount < 0) {
-      return {
-        success: false,
-        errorCode: 'INVALID_PAYOUT_AMOUNT',
-        error: `Payout amount must be a finite non-negative number: ${params.payoutAmount}`,
-      };
+
+    const hid = `${params.userId}_${params.optionId}`;
+    const holding = this.db.holdings.get(hid);
+    if (!holding) {
+      return { success: false, errorCode: 'POSITION_NOT_FOUND', error: `Position not found for ${hid}` };
     }
+    if (holding.stock_id !== params.optionId) {
+      return { success: false, errorCode: 'POSITION_ASSET_MISMATCH', error: `Holding asset ${holding.stock_id} does not match option ${params.optionId}` };
+    }
+    if (typeof holding.quantity !== 'number' || !Number.isFinite(holding.quantity) || holding.quantity <= 0) {
+      return { success: false, errorCode: 'INVALID_POSITION_QUANTITY', error: `Invalid position quantity: ${holding.quantity}` };
+    }
+    if (params.expectedQuantity !== undefined && holding.quantity !== params.expectedQuantity) {
+      return { success: false, errorCode: 'POSITION_QUANTITY_MISMATCH', error: `Position quantity ${holding.quantity} does not match expected ${params.expectedQuantity}` };
+    }
+
+    const contract = this.db.optionsContracts.get(params.optionId);
+    if (!contract) {
+      return { success: false, errorCode: 'CONTRACT_NOT_FOUND', error: `Option contract ${params.optionId} not found` };
+    }
+    const expiryTime = Date.parse(contract.expiry_date);
+    const now = params.now ?? this.db.getNowMs();
+    if (Number.isFinite(expiryTime) && expiryTime > now) {
+      return { success: false, errorCode: 'EXPIRY_DATE_NOT_REACHED', error: `Option has not expired: ${contract.expiry_date}` };
+    }
+
+    const closePrice = params.underlyingClosePrice;
+    if (closePrice === undefined || closePrice === null) {
+      return { success: false, errorCode: 'HELD_MISSING_UNDERLYING_PRICE', error: 'Underlying close price missing' };
+    }
+    if (typeof closePrice !== 'number' || !Number.isFinite(closePrice) || closePrice <= 0) {
+      return { success: false, errorCode: 'HELD_INVALID_PRICE', error: `Invalid underlying close price: ${closePrice}` };
+    }
+
     const pid = this.db.profileUserIdIndex.get(params.userId) || params.userId;
     const profile = this.db.profiles.get(pid);
     if (!profile) {
       return { success: false, errorCode: 'USER_NOT_FOUND', error: `User profile not found: ${params.userId}` };
     }
 
-    const hid = `${params.userId}_${params.optionId}`;
-    const holding = this.db.holdings.get(hid);
+    // Authoritative payout calculated inside trust boundary
+    const optType = (contract.type || contract.option_type || 'CALL').toUpperCase();
+    let diffPerUnit = 0;
+    if (optType === 'CALL') {
+      if (closePrice > contract.strike_price) {
+        diffPerUnit = closePrice - contract.strike_price;
+      }
+    } else if (contract.strike_price > closePrice) {
+      diffPerUnit = contract.strike_price - closePrice;
+    }
+    const multiplier = 250000;
+    const payoutAmount = roundMoney(diffPerUnit * holding.quantity * multiplier);
 
     const profileSnapshot = { ...profile };
-    const holdingSnapshot = holding ? { ...holding } : null;
+    const holdingSnapshot = { ...holding };
     const historyCountBefore = this.db.optionSettlements.length;
 
     try {
-      if (params.payoutAmount > 0) {
-        const nextCash = roundMoney(profile.cash + params.payoutAmount);
+      if (payoutAmount > 0) {
+        const nextCash = roundMoney(profile.cash + payoutAmount);
         if (!Number.isFinite(nextCash)) throw new Error('Cash calculation overflow');
         profile.cash = nextCash;
       }
@@ -926,7 +1154,7 @@ export class InMemorySettlementRepository implements SettlementRepository {
         id: params.idempotencyKey,
         user_id: params.userId,
         option_id: params.optionId,
-        payout_amount: params.payoutAmount,
+        payout_amount: payoutAmount,
         settled_at: this.db.getIsoTimestamp(),
       });
 
@@ -934,10 +1162,8 @@ export class InMemorySettlementRepository implements SettlementRepository {
         throw new Error('FAULT_INJECTION_FAIL_AT_CLOSE');
       }
 
-      if (holding) {
-        this.db.removeHoldingFromIndex(holding);
-        this.db.holdings.delete(hid);
-      }
+      this.db.removeHoldingFromIndex(holding);
+      this.db.holdings.delete(hid);
 
       if (params.faultInjection === 'FAIL_AT_LEDGER') {
         throw new Error('FAULT_INJECTION_FAIL_AT_LEDGER');
@@ -948,7 +1174,7 @@ export class InMemorySettlementRepository implements SettlementRepository {
         stock_id: params.optionId,
         price: 0,
         size: 0,
-        total_amount: params.payoutAmount,
+        total_amount: payoutAmount,
         buyer_fee_rate: 0,
         seller_fee_rate: 0,
         buyer_fee_amount: 0,
@@ -960,10 +1186,8 @@ export class InMemorySettlementRepository implements SettlementRepository {
     } catch (err) {
       Object.assign(profile, profileSnapshot);
       this.db.optionSettlements = this.db.optionSettlements.slice(0, historyCountBefore);
-      if (holdingSnapshot) {
-        this.db.holdings.set(hid, holdingSnapshot);
-        this.db.addHoldingToIndex(holdingSnapshot);
-      }
+      this.db.holdings.set(hid, holdingSnapshot);
+      this.db.addHoldingToIndex(holdingSnapshot);
       this.db.settlementLedger.delete(params.idempotencyKey);
       return {
         success: false,
@@ -983,19 +1207,30 @@ export class InMemorySettlementRepository implements SettlementRepository {
     if (this.db.settlementLedger.has(params.idempotencyKey)) {
       return { success: true, errorCode: 'ALREADY_SETTLED' };
     }
-    if (typeof params.principalAmount !== 'number' || !Number.isFinite(params.principalAmount) || params.principalAmount < 0) {
-      return {
-        success: false,
-        errorCode: 'INVALID_PRINCIPAL_AMOUNT',
-        error: `Principal amount must be a finite non-negative number: ${params.principalAmount}`,
-      };
+
+    const hid = `${params.userId}_${params.bondId}`;
+    const holding = this.db.holdings.get(hid);
+    if (!holding) {
+      return { success: false, errorCode: 'POSITION_NOT_FOUND', error: `Bond holding not found for ${hid}` };
     }
-    if (params.couponAmount !== undefined && (typeof params.couponAmount !== 'number' || !Number.isFinite(params.couponAmount) || params.couponAmount < 0)) {
-      return {
-        success: false,
-        errorCode: 'INVALID_COUPON_AMOUNT',
-        error: `Coupon amount must be a finite non-negative number: ${params.couponAmount}`,
-      };
+    if (holding.stock_id !== params.bondId) {
+      return { success: false, errorCode: 'POSITION_ASSET_MISMATCH', error: `Holding asset ${holding.stock_id} does not match bond ${params.bondId}` };
+    }
+    if (typeof holding.quantity !== 'number' || !Number.isFinite(holding.quantity) || holding.quantity <= 0) {
+      return { success: false, errorCode: 'INVALID_POSITION_QUANTITY', error: `Invalid position quantity: ${holding.quantity}` };
+    }
+    if (params.expectedQuantity !== undefined && holding.quantity !== params.expectedQuantity) {
+      return { success: false, errorCode: 'POSITION_QUANTITY_MISMATCH', error: `Position quantity ${holding.quantity} does not match expected ${params.expectedQuantity}` };
+    }
+
+    const bond = this.db.bonds.get(params.bondId);
+    if (!bond) {
+      return { success: false, errorCode: 'BOND_NOT_FOUND', error: `Bond ${params.bondId} not found` };
+    }
+    const maturityTime = Date.parse(bond.maturity_date || bond.maturity);
+    const now = params.now ?? this.db.getNowMs();
+    if (Number.isFinite(maturityTime) && maturityTime > now) {
+      return { success: false, errorCode: 'MATURITY_DATE_NOT_REACHED', error: 'Bond has not reached maturity' };
     }
 
     const pid = this.db.profileUserIdIndex.get(params.userId) || params.userId;
@@ -1004,13 +1239,28 @@ export class InMemorySettlementRepository implements SettlementRepository {
       return { success: false, errorCode: 'USER_NOT_FOUND', error: `User profile not found: ${params.userId}` };
     }
 
-    const hid = `${params.userId}_${params.bondId}`;
-    const holding = this.db.holdings.get(hid);
+    const authoritativePrincipal = roundMoney(bond.face_value * holding.quantity);
+    const authoritativeCoupon = roundMoney(bond.face_value * (bond.coupon_rate ?? 0) * holding.quantity);
 
+    if (params.principalAmount !== undefined && Math.abs(params.principalAmount - authoritativePrincipal) > 0.01) {
+      return {
+        success: false,
+        errorCode: 'INVALID_PRINCIPAL_AMOUNT',
+        error: `Principal amount mismatch: expected ${authoritativePrincipal}, got ${params.principalAmount}`,
+      };
+    }
+    if (params.couponAmount !== undefined && Math.abs(params.couponAmount - authoritativeCoupon) > 0.01) {
+      return {
+        success: false,
+        errorCode: 'INVALID_COUPON_AMOUNT',
+        error: `Coupon amount mismatch: expected ${authoritativeCoupon}, got ${params.couponAmount}`,
+      };
+    }
+
+    const totalPayout = roundMoney(authoritativePrincipal + authoritativeCoupon);
     const profileSnapshot = { ...profile };
-    const holdingSnapshot = holding ? { ...holding } : null;
+    const holdingSnapshot = { ...holding };
     const historyCountBefore = this.db.bondCouponPayments.length;
-    const totalPayout = roundMoney(params.principalAmount + (params.couponAmount ?? 0));
 
     try {
       if (totalPayout > 0) {
@@ -1023,8 +1273,8 @@ export class InMemorySettlementRepository implements SettlementRepository {
         id: params.idempotencyKey,
         user_id: params.userId,
         bond_id: params.bondId,
-        principal_amount: params.principalAmount,
-        coupon_amount: params.couponAmount ?? 0,
+        principal_amount: authoritativePrincipal,
+        coupon_amount: authoritativeCoupon,
         payment_type: 'MATURITY_REDEMPTION',
         paid_at: this.db.getIsoTimestamp(),
       });
@@ -1033,10 +1283,8 @@ export class InMemorySettlementRepository implements SettlementRepository {
         throw new Error('FAULT_INJECTION_FAIL_AT_CLOSE');
       }
 
-      if (holding) {
-        this.db.removeHoldingFromIndex(holding);
-        this.db.holdings.delete(hid);
-      }
+      this.db.removeHoldingFromIndex(holding);
+      this.db.holdings.delete(hid);
 
       if (params.faultInjection === 'FAIL_AT_LEDGER') {
         throw new Error('FAULT_INJECTION_FAIL_AT_LEDGER');
@@ -1059,10 +1307,8 @@ export class InMemorySettlementRepository implements SettlementRepository {
     } catch (err) {
       Object.assign(profile, profileSnapshot);
       this.db.bondCouponPayments = this.db.bondCouponPayments.slice(0, historyCountBefore);
-      if (holdingSnapshot) {
-        this.db.holdings.set(hid, holdingSnapshot);
-        this.db.addHoldingToIndex(holdingSnapshot);
-      }
+      this.db.holdings.set(hid, holdingSnapshot);
+      this.db.addHoldingToIndex(holdingSnapshot);
       this.db.settlementLedger.delete(params.idempotencyKey);
       return {
         success: false,

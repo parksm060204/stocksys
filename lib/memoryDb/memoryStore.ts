@@ -126,6 +126,10 @@ export interface OrderRecord {
   status: 'open' | 'partial' | 'filled' | 'cancelled' | 'expired';
   is_lp: boolean;
   created_at: string;
+  originalQuantity?: number;
+  filledQuantity?: number;
+  remainingQuantity?: number;
+  version?: number;
   // ABM participant & sequencing fields
   participantId?: string;
   participantKind?: string;
@@ -144,6 +148,8 @@ export interface TradeRecord {
   stock_id: string;
   buyer_id?: string | null;
   seller_id?: string | null;
+  buy_order_id?: string;
+  sell_order_id?: string;
   buyer_is_bot: boolean;
   seller_is_bot: boolean;
   price: number;

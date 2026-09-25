@@ -513,7 +513,26 @@ async function main() {
     const db = makeDb();
     const repo = new InMemorySettlementRepository(db);
 
-    // 옵션 포지션 등록
+    // 옵션 계약 및 포지션 등록
+    db.optionsContracts.set('OPT_CALL', {
+      id: 'OPT_CALL',
+      underlying_stock_id: 'STOCK_1',
+      ticker: 'OPT_CALL',
+      asset_class: 'option',
+      type: 'CALL',
+      option_type: 'CALL',
+      strike_price: 100,
+      current_price: 1,
+      expiry_date: '2026-01-01T00:00:00.000Z',
+      open_interest: 10,
+      volume: 10,
+      delta: 0.5,
+      gamma: 0.01,
+      theta: -0.01,
+      implied_volatility: 0.2,
+      created_at: '2026-01-01T00:00:00.000Z',
+    });
+
     const optHolding = {
       id: `${BUYER}_OPT_CALL`, user_id: BUYER, stock_id: 'OPT_CALL',
       quantity: 5, avg_price: 200, created_at: '2026-01-01T00:00:00.000Z',
@@ -528,7 +547,7 @@ async function main() {
     const failClose = await repo.settleOptionExpiryAtomically({
       userId: BUYER,
       optionId: 'OPT_CALL',
-      payoutAmount: 500000,
+      underlyingClosePrice: 100.4,
       idempotencyKey: 'opt_idem_fail1',
       faultInjection: 'FAIL_AT_CLOSE',
     });
@@ -541,7 +560,7 @@ async function main() {
     const failLedger = await repo.settleOptionExpiryAtomically({
       userId: BUYER,
       optionId: 'OPT_CALL',
-      payoutAmount: 500000,
+      underlyingClosePrice: 100.4,
       idempotencyKey: 'opt_idem_fail2',
       faultInjection: 'FAIL_AT_LEDGER',
     });
@@ -554,7 +573,7 @@ async function main() {
     const optSuccess = await repo.settleOptionExpiryAtomically({
       userId: BUYER,
       optionId: 'OPT_CALL',
-      payoutAmount: 500000,
+      underlyingClosePrice: 100.4,
       idempotencyKey: 'opt_idem_success',
     });
     assert.strictEqual(optSuccess.success, true, 'clean option expiry must succeed');
@@ -566,11 +585,27 @@ async function main() {
     const optRetry = await repo.settleOptionExpiryAtomically({
       userId: BUYER,
       optionId: 'OPT_CALL',
-      payoutAmount: 500000,
+      underlyingClosePrice: 100.4,
       idempotencyKey: 'opt_idem_success',
     });
     assert.strictEqual(optRetry.success, true, 'retry must be marked success');
     assert.strictEqual(db.profiles.get(BUYER)!.cash, initialCash + 500000, 'cash must not be double-paid');
+
+    // 채권 등록
+    db.bonds.set('BOND_10Y', {
+      id: 'BOND_10Y',
+      ticker: 'KRBOND10Y',
+      name: 'Korea Treasury Bond 10Y',
+      bond_type: 'TREASURY',
+      maturity: '2026-01-01T00:00:00.000Z',
+      maturity_date: '2026-01-01T00:00:00.000Z',
+      coupon_rate: 0.05,
+      face_value: 10000,
+      current_price: 10000,
+      ytm: 0.05,
+      duration: 8.5,
+      volume: 100,
+    });
 
     // 15e. Bond: FAIL_AT_CLOSE -> 100% 롤백
     const bondHolding = {

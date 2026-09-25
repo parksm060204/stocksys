@@ -5106,3 +5106,19 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 **요청 요약:** Git 원격 저장소 커밋 및 푸시 (Commit and push to remote repository).
 **수행 결과:**
 - 거래 엔진 및 정산 원자성 강화 커밋(`d243789`)을 원격 저장소 `origin/main`(`https://github.com/parksm060204/stocksys.git`)으로 push 준비 및 이력 기록.
+---
+## 2026-09-25 21:00
+
+**요청 요약:** 거래소 코어·정산·시뮬레이션 6대 불변조건 보장 및 10대 결함 근본 수정 (주문 재플레이 차단, 다종목 주문 ID 충돌 방지, 부분 체결 정규 수량 모델, 권위 기반 옵션·채권 정산, 일반 주문과 LP 주문 생명주기 분리, 원자적 LP 갱신, 관리자 시나리오 엔진 동기화, 정산 사전 검증 부수효과 제거, 전체 런타임 결정론 롤백 스냅샷).
+
+**수행 결과:**
+- **주문 재정산 및 중복 삽입 차단 (`lib/repositories/inMemory/InMemorySettlementRepository.ts`, `lib/repositories/types.ts`)**: `newOrders`를 insert-only로 엄격화하여 기존 주문 ID 재유입 시 `ORDER_ALREADY_EXISTS`로 배치 전체 거부 및 무변경 롤백. 배치 내부 동일 ID 중복 제출 사전 차단.
+- **다종목 신규 주문 ID 결정론적 고유성 확보 (`engine-server/src/settlement/deterministicOrderId.ts`, `MarketEngine.ts`)**: `simulationRunId`, `tickSequence`, `stockId`, `participantId`, `side`, `perTickOrderSequence`, `strategyId`를 canonical 인코딩하여 주문장 길이에 의존하지 않는 안전한 결정론적 주문 ID 생성기 구현 (100개 종목 x 10참여자 10,000건 생성 시 충돌 0건).
+- **부분 체결 정규 수량 모델 통일 (`lib/repositories/types.ts`, `lib/memoryDb/memoryStore.ts`, `MarketEngine.ts`)**: 주문 수량을 `originalQuantity`, `filledQuantity`, `remainingQuantity` 정규 모델로 통일하고 불변식(`filledQuantity + remainingQuantity = originalQuantity`) 강제. 매칭 엔진과 정산 저장소 간 불일치를 해결하여 40주 체결 후 다음 틱에서 정확히 잔량 60주만 매칭 완료.
+- **권위 데이터 기반 파생상품(옵션·채권) 정산 (`OptionSettlementEngine.ts`, `InMemorySettlementRepository.ts`)**: 외부 주입 payoutAmount를 완전 불신하고, 저장소 신뢰 경계 내부에서 계약 규격, 기초자산 종가, 권위 holding 수량을 직접 조회하여 산출. holding 누락 시 `POSITION_NOT_FOUND`, 수량 불일치 시 `POSITION_QUANTITY_MISMATCH`, 미도래 만기 거부 및 비정상 가격 fail-closed 처리.
+- **일반 전략 주문과 LP 주문 생명주기 분리 (`MarketEngine.ts`, `orderSourceMetadata.ts`)**: `is_lp === true` 및 인가된 `LIQUIDITY_PROVIDER` 참가자만 LP 호가 슬롯 갱신 대상으로 한정하고, 위조된 LP 플래그는 `REJECTED_UNAUTHORIZED_LP`로 거부. 일반 전략 주문 및 기관 지정가 주문은 원본 참여자/전략 메타데이터를 유지하며 독립 영구 저장.
+- **원자적 LP Quote Refresh 및 롤백 보장 (`MarketEngine.ts`)**: 결정론적 슬롯 ID 및 쿼트 generation을 도입하여 delete-before-insert 경로를 완전 제거. 갱신 전 슬롯 스냅샷을 생성하여 chunk 실패 시 이전 세대 주문장으로 원자적 롤백. 100틱 이상 운용 시에도 LP 주문 수 상한(10개) 유지.
+- **관리자 시나리오와 실행 엔진 인스턴스 단일 권위 연결 (`app/api/admin/scenarios/route.ts`)**: 관리자 API와 원자재 시장 엔진이 공유 singleton `commodityEngineInstance.scenarioManager`를 사용하도록 composition root 통합. 관리자 주입 시나리오가 실행 엔진 틱에 즉각 반영되며 별도 인스턴스와 격리 보장.
+- **실패 배치의 프로필 생성 부수효과 제거 (`InMemorySettlementRepository.ts`)**: 정산 사전 검증 단계에서 `getAccountView` 순수 읽기 함수 도입하여 임시 프로필 생성을 일체 배제. 검증 실패 시 프로필 맵 및 저장소 핑거프린트 100% 무변경 유지.
+- **런타임 전체 상태 결정론적 스냅샷 및 롤백 (`MarketEngine.ts`, `simulationRandom.ts`)**: 틱 시작 시 PRNG 서브네임스페이스(jump, diffusion, event, fx) 상태, 틱 카운터, 활성 이벤트, ID 생성기를 포함하는 런타임 스냅샷을 생성하고, 정산 실패 시 온전히 복원. 장애 후 재시도 시 정상 실행과 bit-for-bit 동일한 핑거프린트 산출.
+- **회귀 테스트 9종 신규 작성 및 전체 검증 통과**: `scripts/test-phase3-*.ts` 9종 작성, 동시성/결정론 20회 반복 무결성 검증, `npx tsc --noEmit` 0 errors, `npm --prefix engine-server run build` 0 errors, `npm run lint` 0 errors, `npm run build` 0 errors, `phase0-baseline-audit.ts` PASS, 금지 서비스명 및 추적 빌드 산출물 0건 확인.

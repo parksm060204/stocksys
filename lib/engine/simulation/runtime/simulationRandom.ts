@@ -22,6 +22,7 @@ export interface SimulationRandomSource {
   normal(mean?: number, standardDeviation?: number): number;
   fork(namespace: string): SimulationRandomSource;
   snapshot(): SimulationRandomSnapshot;
+  restore?(snapshot: SimulationRandomSnapshot): void;
 }
 
 /**
@@ -92,5 +93,11 @@ export class DefaultSimulationRandomSource implements SimulationRandomSource {
       state: this.prng.getState(),
       namespace: this.namespace,
     };
+  }
+
+  public restore(snapshot: SimulationRandomSnapshot): void {
+    if (snapshot && typeof snapshot.state === 'number') {
+      this.prng.setState(snapshot.state);
+    }
   }
 }

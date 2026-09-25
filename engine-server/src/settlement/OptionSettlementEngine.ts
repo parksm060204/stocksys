@@ -169,6 +169,9 @@ export class OptionSettlementEngine {
         const settlementRes = await this.repositories.settlement.settleOptionExpiryAtomically({
           userId: pos.userId,
           optionId: contract.id,
+          underlyingClosePrice: underlyingPrice,
+          expectedQuantity: pos.quantity,
+          now,
           payoutAmount: settlement.payoutAmount,
           idempotencyKey: key,
         });

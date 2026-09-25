@@ -5,21 +5,26 @@ import { createMemoryDbClient } from '@/lib/memoryDb/memoryDbClient';
 import { verifyAdminSession } from '@/lib/auth/adminAuth';
 import { getLocalStandaloneEngine } from '@/lib/engine/localStandaloneServer';
 
+function getAuthoritativeScenarioManager() {
+  return commodityEngineInstance?.scenarioManager ?? scenarioManager;
+}
+
 export async function GET(req: Request) {
   const auth = await verifyAdminSession(req);
   if (!auth.isAdmin) {
     return NextResponse.json({ success: false, message: '관리자 권한이 필요합니다.' }, { status: 403 });
   }
 
-  const activeScenarios = scenarioManager.getActiveScenarios();
-  const activeMacroShocks = scenarioManager.getActiveMacroShocks();
-  const logs = scenarioManager.getActionLogs();
+  const activeManager = getAuthoritativeScenarioManager();
+  const activeScenarios = activeManager.getActiveScenarios();
+  const activeMacroShocks = activeManager.getActiveMacroShocks();
+  const logs = activeManager.getActionLogs();
   const engine = getLocalStandaloneEngine();
   const diagnostics = engine ? engine.getDiagnosticsSummaryReport() : null;
 
   return NextResponse.json({
     success: true,
-    tick: scenarioManager.currentTick,
+    tick: activeManager.currentTick,
     activeScenarios,
     activeMacroShocks,
     logs,
@@ -38,12 +43,13 @@ export async function POST(req: Request) {
     const db = createMemoryDbClient();
     const body = await req.json();
     const { action } = body;
+    const activeManager = getAuthoritativeScenarioManager();
 
     // 1. 작전 세력 주입
     if (action === 'inject_scenario') {
       const { assetType, assetId, ticker, name, mode, durationTicks, targetChangePct, volumeMultiplier, initialPrice } = body;
 
-      const scenario = scenarioManager.injectScenario({
+      const scenarioParams = {
         assetType,
         assetId,
         ticker,
@@ -54,7 +60,12 @@ export async function POST(req: Request) {
         volumeMultiplier: Number(volumeMultiplier) || 3,
         initialPrice: Number(initialPrice) || 10000,
         adminUser,
-      });
+      };
+
+      const scenario = activeManager.injectScenario(scenarioParams);
+      if (activeManager !== scenarioManager) {
+        try { scenarioManager.injectScenario(scenarioParams); } catch { /* ignore */ }
+      }
 
       // DB stocks / commodities 목표가 일시 반영 (옵션)
       if (assetType === 'stock') {
@@ -71,10 +82,13 @@ export async function POST(req: Request) {
     // 2. 거시경제 충격 발동
     if (action === 'trigger_macro_shock') {
       const { shockType } = body;
-      const shock = scenarioManager.triggerMacroShock({
+      const shock = activeManager.triggerMacroShock({
         type: shockType,
         adminUser,
       });
+      if (activeManager !== scenarioManager) {
+        try { scenarioManager.triggerMacroShock({ type: shockType, adminUser }); } catch { /* ignore */ }
+      }
 
       // admin_settings 테이블 매크로 심리 레짐 갱신
       await db
@@ -97,13 +111,19 @@ export async function POST(req: Request) {
     // 3. 단일 시나리오 롤백
     if (action === 'rollback_scenario') {
       const { scenarioId } = body;
-      const success = scenarioManager.rollbackScenario(scenarioId, adminUser);
+      const success = activeManager.rollbackScenario(scenarioId, adminUser);
+      if (activeManager !== scenarioManager) {
+        try { scenarioManager.rollbackScenario(scenarioId, adminUser); } catch { /* ignore */ }
+      }
       return NextResponse.json({ success });
     }
 
     // 4. 전체 긴급 정지 (EMERGENCY HALT ALL)
     if (action === 'emergency_halt') {
-      const result = scenarioManager.emergencyHaltAll(adminUser);
+      const result = activeManager.emergencyHaltAll(adminUser);
+      if (activeManager !== scenarioManager) {
+        try { scenarioManager.emergencyHaltAll(adminUser); } catch { /* ignore */ }
+      }
       return NextResponse.json({ success: true, result });
     }
 

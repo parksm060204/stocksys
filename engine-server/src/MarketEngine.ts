@@ -32,12 +32,14 @@ import {
 } from './risk/orderSourceMetadata';
 import { createInMemoryRepositoryBundle } from '../../lib/repositories/inMemory';
 import type { RepositoryBundle } from '../../lib/repositories/repositoryBundle';
-import type { TradeSettlementInput } from '../../lib/repositories/types';
+import type { TradeSettlementInput, PostCommitWarning } from '../../lib/repositories/types';
 import { MemoryDatabase } from '../../lib/memoryDb/memoryStore';
 
 export interface TickResult {
   readonly success: boolean;
   readonly tickCount: number;
+  readonly commitStatus: 'NOT_COMMITTED' | 'COMMITTED';
+  readonly postCommitWarnings?: readonly PostCommitWarning[];
   readonly errorCode?: string;
   readonly diagnostics?: unknown;
   readonly error?: string;
@@ -233,6 +235,7 @@ export class MarketEngine {
   private realWorldFetcher: RealWorldFetcher = new RealWorldFetcher();
   public commodityEngine!: CommodityMarketEngine;
   public settlementService!: SettlementBatchService;
+  private currentTickCommitStatus: 'NOT_COMMITTED' | 'COMMITTED' = 'NOT_COMMITTED';
 
   constructor(dependencies?: MarketEngineDependencies) {
     this.simulationContext = dependencies?.simulationContext || createSimulationContext();
@@ -593,6 +596,10 @@ export class MarketEngine {
       fxRandomSnapshot: (this.fxRandom as any)?.snapshot ? (this.fxRandom as any).snapshot() : null,
     };
 
+    let commitStatus: 'NOT_COMMITTED' | 'COMMITTED' = 'NOT_COMMITTED';
+    this.currentTickCommitStatus = 'NOT_COMMITTED';
+    const postCommitWarnings: PostCommitWarning[] = [];
+
     try {
       this.tickCount++;
 
@@ -604,7 +611,7 @@ export class MarketEngine {
         const kstMinutes = now.getUTCMinutes();
         const kstDecimal = kstHours + kstMinutes / 60;
         if (kstDecimal < 18 || kstDecimal >= 22.5) {
-          return { success: true, tickCount: this.tickCount };
+          return { success: true, commitStatus: 'NOT_COMMITTED', tickCount: this.tickCount };
         }
       }
 
@@ -717,7 +724,8 @@ export class MarketEngine {
         allOrders.push(...bot.executeArbitrage(marketState, marketState.adminBaseRate));
       }
       for (const bot of this.pensionFundAgents) {
-        allOrders.push(...bot.evaluateMarketAndPlaceOrders(marketState, false));
+        const pOrders = await bot.evaluateMarketAndPlaceOrders(marketState, false);
+        if (Array.isArray(pOrders)) allOrders.push(...pOrders);
       }
       for (const bot of this.commercialHedgerAgents) {
         const cmd = (marketState.commodities || []).find((c: any) => c.commodity_id === bot.config.targetCommodity || c.id === bot.config.targetCommodity);
@@ -784,7 +792,11 @@ export class MarketEngine {
 
       console.log(`[Tick Debug] Collected ${allOrders.length} raw orders across all active bot fleets (stocks: ${marketState.stocks?.length || 0}).`);
 
-      await this.processBatchOrders(allOrders, marketState, shouldRefreshLp);
+      const batchResult = await this.processBatchOrders(allOrders, marketState, shouldRefreshLp);
+      commitStatus = batchResult.commitStatus;
+      if (batchResult.postCommitWarnings && batchResult.postCommitWarnings.length > 0) {
+        postCommitWarnings.push(...batchResult.postCommitWarnings);
+      }
 
       if (allOrders.length > 0) {
         // 자체 여기(Self-excitation) 발생: 주문량에 비례하여 강도 증가
@@ -799,19 +811,51 @@ export class MarketEngine {
 
       // Random Event Trigger (about 1% chance per tick)
       if (this.eventRandom.nextBoolean(0.01)) {
-        await this.triggerRandomEvents();
+        try {
+          await this.triggerRandomEvents();
+        } catch (eventErr: any) {
+          postCommitWarnings.push({
+            stage: 'RANDOM_EVENTS',
+            message: eventErr instanceof Error ? eventErr.message : String(eventErr),
+            error: eventErr,
+          });
+        }
       }
 
       // trades(최신 5,000건) & stock_price_history(최신 3,000건) 슬라이딩 윈도우 트리밍 (매 20틱)
       if (this.tickCount % 20 === 0) {
-        this.trimOldTrades();
+        try {
+          await this.trimOldTrades();
+        } catch (trimErr: any) {
+          postCommitWarnings.push({
+            stage: 'TRIM_OLD_TRADES',
+            message: trimErr instanceof Error ? trimErr.message : String(trimErr),
+            error: trimErr,
+          });
+        }
       }
 
       return {
         success: true,
+        commitStatus: 'COMMITTED',
         tickCount: this.tickCount,
+        postCommitWarnings: postCommitWarnings.length > 0 ? postCommitWarnings : undefined,
       };
     } catch (error: any) {
+      if (this.currentTickCommitStatus === 'COMMITTED' || commitStatus === 'COMMITTED') {
+        postCommitWarnings.push({
+          stage: 'POST_COMMIT_UNHANDLED',
+          message: error instanceof Error ? error.message : String(error),
+          error,
+        });
+        return {
+          success: true,
+          commitStatus: 'COMMITTED',
+          tickCount: this.tickCount,
+          postCommitWarnings,
+        };
+      }
+
       // Deterministic rollback of all engine runtime state
       this.tickCount = runtimeSnapshot.tickCount;
       this.partialFillSequence = runtimeSnapshot.partialFillSequence;
@@ -840,6 +884,7 @@ export class MarketEngine {
       const errorCode = this.lastSettlementError || (error?.code ?? 'TICK_EXECUTION_ERROR');
       return {
         success: false,
+        commitStatus: 'NOT_COMMITTED',
         tickCount: this.tickCount,
         errorCode,
         diagnostics: this.lastOrderRiskDiagnostics,
@@ -1019,7 +1064,14 @@ export class MarketEngine {
     return safeOrder;
   }
 
-  private async processBatchOrders(lpOrders: any[], marketState: any, refreshLpOrders: boolean = true) {
+  private async processBatchOrders(
+    lpOrders: any[],
+    marketState: any,
+    refreshLpOrders: boolean = true
+  ): Promise<{
+    commitStatus: 'NOT_COMMITTED' | 'COMMITTED';
+    postCommitWarnings?: PostCommitWarning[];
+  }> {
     // 1. 저장소의 미체결(Open) 주문들을 가져옵니다.
     const allOpenOrders = await this.repositories.markets.getOpenOrders();
     const activeOpenOrders = allOpenOrders.filter((o: any) => o.status === 'open' || o.status === 'partial');
@@ -1430,24 +1482,107 @@ export class MarketEngine {
     }
 
     // ── Phase 4: Authoritative 단일 Unit-of-Work 원자적 커밋 ──
-    // 거래 정산, 주문 상태, 시세, 가격 이력을 하나의 롤백 경계 안에서 먼저 await한다.
-    const settlementResult = await this.repositories.settlement.commitMatchedBatchAtomically({
-      trades: stagedTrades,
-      newOrders: Array.from(newOrdersToCommitMap.values()),
-      orderUpdates: stagedOrderUpdates,
-      marketPriceUpdates,
-      priceHistory,
-    });
+    const isTrueLpOrder = (o: any) =>
+      Boolean(o.is_lp && (o.participantKind === 'LIQUIDITY_PROVIDER' || o.participantKind === 'MARKET_MAKER' || o.orderType === 'LP_QUOTE' || o.orderRole === 'LP_QUOTE'));
+
+    // 미체결 일반 전략 주문은 원래 참여자/전략/메타데이터를 유지한 채 저장소에 저장
+    const strategicOrdersToPersist: any[] = [];
+    for (const stockId of Object.keys(orderBookByStock)) {
+      const book = orderBookByStock[stockId]!;
+      for (const bid of book.bids) {
+        if (!bid._fromRepo && !isTrueLpOrder(bid) && !newOrdersToCommitMap.has(bid.id)) {
+          strategicOrdersToPersist.push(bid);
+        }
+      }
+      for (const ask of book.asks) {
+        if (!ask._fromRepo && !isTrueLpOrder(ask) && !newOrdersToCommitMap.has(ask.id)) {
+          strategicOrdersToPersist.push(ask);
+        }
+      }
+    }
+
+    let stagedStrategicOrderIds: string[] = [];
+    if (strategicOrdersToPersist.length > 0) {
+      const ordersToSave = strategicOrdersToPersist.map(o => ({
+        id: o.id || buildDeterministicOrderId({
+          simulationRunId: this.simulationRunId,
+          tickSequence: this.tickCount,
+          stockId: o.stock_id,
+          participantId: o.participantId || extractParticipantId(o) || 'unknown',
+          side: o.side,
+          perTickOrderSequence: ++perTickOrderSequence,
+          strategyId: o.strategyId,
+        }),
+        stock_id: o.stock_id,
+        user_id: o.user_id ?? o.participantId ?? null,
+        participantId: o.participantId || extractParticipantId(o) || null,
+        participantKind: o.participantKind,
+        strategyId: o.strategyId,
+        order_type: o.orderType || o.order_type || 'LIMIT',
+        side: o.side,
+        price: o.price,
+        size: o.size,
+        originalQuantity: o.originalQuantity ?? o.size,
+        filledQuantity: o.filledQuantity ?? 0,
+        remainingQuantity: o.remainingQuantity ?? o.size,
+        filled: 0,
+        remaining: o.size,
+        status: o.status || 'open',
+        is_lp: false,
+        created_at: o.created_at || new Date(this.simClock.now()).toISOString(),
+        version: o.version ?? 1,
+      }));
+      stagedStrategicOrderIds = ordersToSave.map(o => o.id);
+      // Pre-commit authoritative persistence - must NOT swallow with catch!
+      await this.repositories.markets.insertOrders(ordersToSave);
+    }
+
+    // Build orderCas for resting open orders being matched
+    const orderCasList: Array<{ id: string; expectedRemaining?: number; expectedFilled?: number; expectedVersion?: number }> = [];
+    for (const ord of workingSizes.keys()) {
+      if (ord && ord._fromRepo && ord.id) {
+        const repoOrder = activeOpenOrders.find(u => u.id === ord.id);
+        orderCasList.push({
+          id: ord.id,
+          expectedRemaining: repoOrder?.remainingQuantity ?? repoOrder?.remaining ?? repoOrder?.size ?? ord.remainingQuantity ?? ord.remaining ?? ord.size,
+          expectedFilled: repoOrder?.filledQuantity ?? repoOrder?.filled ?? ord.filledQuantity ?? ord.filled ?? 0,
+          expectedVersion: repoOrder?.version ?? ord.version ?? 1,
+        });
+      }
+    }
+
+    let settlementResult;
+    try {
+      settlementResult = await this.repositories.settlement.commitMatchedBatchAtomically({
+        trades: stagedTrades,
+        newOrders: Array.from(newOrdersToCommitMap.values()),
+        orderUpdates: stagedOrderUpdates,
+        marketPriceUpdates,
+        priceHistory,
+        orderCas: orderCasList,
+      });
+    } catch (err: any) {
+      if (stagedStrategicOrderIds.length > 0) {
+        await this.repositories.markets.deleteOrders(stagedStrategicOrderIds).catch(() => {});
+      }
+      throw err;
+    }
 
     if (!settlementResult.success) {
+      if (stagedStrategicOrderIds.length > 0) {
+        await this.repositories.markets.deleteOrders(stagedStrategicOrderIds).catch(() => {});
+      }
       this.lastSettlementError = settlementResult.errorCode ?? 'SETTLEMENT_FAILED';
       console.error(
         `[MarketEngine] Authoritative settlement REJECTED: ${settlementResult.errorCode} ${settlementResult.error ?? ''}`
       );
-      // 정산 실패 시 어떤 성공 상태도 남기지 않고 오류를 전파한다.
-      throw new Error(`Settlement rejected: ${settlementResult.errorCode}`);
+      const err = new Error(`Settlement rejected: ${settlementResult.errorCode}`);
+      (err as any).code = settlementResult.errorCode;
+      throw err;
     }
     this.lastSettlementError = null;
+    this.currentTickCommitStatus = 'COMMITTED';
+    const postCommitWarnings: PostCommitWarning[] = [];
 
     // ── Phase 5: 정산 성공 확인 후에만 메모리 상태 반영 ──
     // 5.1 주문 잔량 및 상태 메모리 반영
@@ -1521,66 +1656,17 @@ export class MarketEngine {
           totalAmount: settlementResult.totalAmount,
           totalFeeAmount: settlementResult.totalFeeAmount,
         });
-      } catch (obsErr) {
+      } catch (obsErr: any) {
         console.warn('[MarketEngine] Execution observer post-commit warning:', obsErr);
+        postCommitWarnings.push({
+          stage: 'OBSERVER_POST_COMMIT',
+          message: obsErr instanceof Error ? obsErr.message : String(obsErr),
+          error: obsErr,
+        });
       }
     }
 
-    const isTrueLpOrder = (o: any) =>
-      Boolean(o.is_lp && (o.participantKind === 'LIQUIDITY_PROVIDER' || o.participantKind === 'MARKET_MAKER' || o.orderType === 'LP_QUOTE' || o.orderRole === 'LP_QUOTE'));
-
-    // 미체결 일반 전략 주문은 원래 참여자/전략/메타데이터를 유지한 채 저장소에 저장
-    const strategicOrdersToPersist: any[] = [];
-    for (const stockId of Object.keys(orderBookByStock)) {
-      const book = orderBookByStock[stockId]!;
-      for (const bid of book.bids) {
-        if (!bid._fromRepo && !isTrueLpOrder(bid) && !newOrdersToCommitMap.has(bid.id)) {
-          strategicOrdersToPersist.push(bid);
-        }
-      }
-      for (const ask of book.asks) {
-        if (!ask._fromRepo && !isTrueLpOrder(ask) && !newOrdersToCommitMap.has(ask.id)) {
-          strategicOrdersToPersist.push(ask);
-        }
-      }
-    }
-
-    if (strategicOrdersToPersist.length > 0) {
-      const ordersToSave = strategicOrdersToPersist.map(o => ({
-        id: o.id || buildDeterministicOrderId({
-          simulationRunId: this.simulationRunId,
-          tickSequence: this.tickCount,
-          stockId: o.stock_id,
-          participantId: o.participantId || extractParticipantId(o) || 'unknown',
-          side: o.side,
-          perTickOrderSequence: ++perTickOrderSequence,
-          strategyId: o.strategyId,
-        }),
-        stock_id: o.stock_id,
-        user_id: o.user_id ?? o.participantId ?? null,
-        participantId: o.participantId || extractParticipantId(o) || null,
-        participantKind: o.participantKind,
-        strategyId: o.strategyId,
-        order_type: o.orderType || o.order_type || 'LIMIT',
-        side: o.side,
-        price: o.price,
-        size: o.size,
-        originalQuantity: o.originalQuantity ?? o.size,
-        filledQuantity: o.filledQuantity ?? 0,
-        remainingQuantity: o.remainingQuantity ?? o.size,
-        filled: 0,
-        remaining: o.size,
-        status: o.status || 'open',
-        is_lp: false,
-        created_at: o.created_at || new Date(this.simClock.now()).toISOString(),
-        version: o.version ?? 1,
-      }));
-      await this.repositories.markets.insertOrders(ordersToSave).catch((err) => {
-        console.warn('[MarketEngine] Failed to save strategic orders:', err);
-      });
-    }
-
-    // 6.2 LP 호가 갱신: 오직 실제 LP 주문만 대상으로 처리
+    // 6.2 LP 호가 갱신: refreshLpQuotesAtomically 사용
     const lpOrdersToInsert: any[] = [];
     if (refreshLpOrders) {
       for (const stockId of Object.keys(orderBookByStock)) {
@@ -1605,22 +1691,9 @@ export class MarketEngine {
         else entry.asks.push(o);
       }
 
-      // Snapshot previous LP orders for rollback if needed
-      const previousLpOrdersSnapshot = new Map<string, any>();
-      for (const stockId of Object.keys(byStock)) {
-        for (let slot = 0; slot < 5; slot++) {
-          const buyId = `lp_${stockId}_buy_slot${slot}`;
-          const sellId = `lp_${stockId}_sell_slot${slot}`;
-          const buyOrd = (this.repositories as any).db?.orders?.get(buyId);
-          if (buyOrd) previousLpOrdersSnapshot.set(buyId, { ...buyOrd });
-          const sellOrd = (this.repositories as any).db?.orders?.get(sellId);
-          if (sellOrd) previousLpOrdersSnapshot.set(sellId, { ...sellOrd });
-        }
-      }
-
       const nextGeneration = this.lpQuoteGeneration + 1;
       const safeLpOrders: any[] = [];
-      const unusedSlotUpdates: any[] = [];
+      const unusedSlotIds: string[] = [];
 
       for (const [stockId, { bids, asks }] of Object.entries(byStock)) {
         const topAsks = asks.sort((a, b) => a.price - b.price).slice(0, 5);
@@ -1628,10 +1701,11 @@ export class MarketEngine {
         const topBids = bids.filter(b => b.price < minAskPrice).sort((a, b) => b.price - a.price).slice(0, 5);
 
         for (let slot = 0; slot < 5; slot++) {
+          const buyId = `lp_${stockId}_buy_slot${slot}`;
           if (slot < topBids.length) {
             const o = topBids[slot];
             const rawLpOrder = {
-              id: `lp_${stockId}_buy_slot${slot}`,
+              id: buyId,
               stock_id: stockId,
               user_id: null,
               participantId: o.participantId || extractParticipantId(o) || 'lp_market_maker',
@@ -1656,18 +1730,16 @@ export class MarketEngine {
               safeLpOrders.push(safeOrder);
             }
           } else {
-            unusedSlotUpdates.push({
-              id: `lp_${stockId}_buy_slot${slot}`,
-              status: 'cancelled' as const,
-            });
+            unusedSlotIds.push(buyId);
           }
         }
 
         for (let slot = 0; slot < 5; slot++) {
+          const sellId = `lp_${stockId}_sell_slot${slot}`;
           if (slot < topAsks.length) {
             const o = topAsks[slot];
             const rawLpOrder = {
-              id: `lp_${stockId}_sell_slot${slot}`,
+              id: sellId,
               stock_id: stockId,
               user_id: null,
               participantId: o.participantId || extractParticipantId(o) || 'lp_market_maker',
@@ -1692,42 +1764,46 @@ export class MarketEngine {
               safeLpOrders.push(safeOrder);
             }
           } else {
-            unusedSlotUpdates.push({
-              id: `lp_${stockId}_sell_slot${slot}`,
-              status: 'cancelled' as const,
-            });
+            unusedSlotIds.push(sellId);
           }
         }
       }
 
       try {
-        if (safeLpOrders.length > 0) {
-          for (let i = 0; i < safeLpOrders.length; i += 500) {
-            const chunk = safeLpOrders.slice(i, i + 500);
-            await this.repositories.markets.insertOrders(chunk);
+        if (this.repositories.settlement.refreshLpQuotesAtomically) {
+          const lpRefreshResult = await this.repositories.settlement.refreshLpQuotesAtomically({
+            quotes: safeLpOrders,
+            expectedGeneration: this.lpQuoteGeneration,
+            nextGeneration,
+            staleSlotIdsToCancel: unusedSlotIds,
+          });
+          if (!lpRefreshResult.success) {
+            postCommitWarnings.push({
+              stage: 'LP_QUOTE_REFRESH',
+              message: lpRefreshResult.error || `LP quote refresh failed: ${lpRefreshResult.errorCode}`,
+            });
+          } else {
+            this.lpQuoteGeneration = nextGeneration;
           }
-        }
-        if (unusedSlotUpdates.length > 0) {
-          await this.repositories.markets.updateOrders(unusedSlotUpdates);
-        }
-        this.lpQuoteGeneration = nextGeneration;
-      } catch (lpErr: any) {
-        console.warn('[MarketEngine] LP quote refresh failed, rolling back LP orderbook:', lpErr?.message);
-        const db = (this.repositories as any).db;
-        if (db) {
-          for (const [id, snap] of previousLpOrdersSnapshot.entries()) {
-            db.orders.set(id, { ...snap });
-          }
-          for (const ord of safeLpOrders) {
-            if (!previousLpOrdersSnapshot.has(ord.id)) {
-              const cur = db.orders.get(ord.id);
-              if (cur && cur.version === nextGeneration) {
-                db.orders.delete(ord.id);
-                db.removeOrderFromIndex?.(cur);
-              }
+        } else {
+          if (safeLpOrders.length > 0) {
+            for (let i = 0; i < safeLpOrders.length; i += 500) {
+              const chunk = safeLpOrders.slice(i, i + 500);
+              await this.repositories.markets.insertOrders(chunk);
             }
           }
+          if (unusedSlotIds.length > 0) {
+            await this.repositories.markets.updateOrders(unusedSlotIds.map(id => ({ id, status: 'cancelled' as const })));
+          }
+          this.lpQuoteGeneration = nextGeneration;
         }
+      } catch (lpErr: any) {
+        console.warn('[MarketEngine] LP quote refresh failed (post-commit warning):', lpErr?.message);
+        postCommitWarnings.push({
+          stage: 'LP_QUOTE_REFRESH',
+          message: lpErr instanceof Error ? lpErr.message : String(lpErr),
+          error: lpErr,
+        });
       }
     }
 
@@ -1736,49 +1812,70 @@ export class MarketEngine {
     }
 
     // 6.3 채권 / 원자재 시세 반영
-    const bondUpdates: any[] = [];
-    const commodityCurrentUpdates: any[] = [];
-    for (const [sId, rawPrice] of Object.entries(updatedStocks)) {
-      const bondItem = marketState.bonds?.find((b: any) => b.id === sId);
-      const commodityItem = marketState.commodities?.find((c: any) => c.id === sId);
-      if (bondItem) {
-        const finalPrice = Math.max(80.00, Math.min(120.00, this.alignToTickSize(rawPrice, 'bonds')));
-        bondUpdates.push({ id: sId, current_price: finalPrice });
-      } else if (commodityItem) {
-        const prevClose = Number(commodityItem.previous_close || commodityItem.current_price || 100);
-        const finalPrice = Math.max(prevClose * 0.50, Math.min(prevClose * 2.00, rawPrice));
-        commodityCurrentUpdates.push({ id: sId, current_price: finalPrice });
+    try {
+      const bondUpdates: any[] = [];
+      const commodityCurrentUpdates: any[] = [];
+      for (const [sId, rawPrice] of Object.entries(updatedStocks)) {
+        const bondItem = marketState.bonds?.find((b: any) => b.id === sId);
+        const commodityItem = marketState.commodities?.find((c: any) => c.id === sId);
+        if (bondItem) {
+          const finalPrice = Math.max(80.00, Math.min(120.00, this.alignToTickSize(rawPrice, 'bonds')));
+          bondUpdates.push({ id: sId, current_price: finalPrice });
+        } else if (commodityItem) {
+          const prevClose = Number(commodityItem.previous_close || commodityItem.current_price || 100);
+          const finalPrice = Math.max(prevClose * 0.50, Math.min(prevClose * 2.00, rawPrice));
+          commodityCurrentUpdates.push({ id: sId, current_price: finalPrice });
+        }
       }
-    }
-    if (bondUpdates.length > 0) {
-      await this.repositories.markets.upsertBonds(bondUpdates);
-    }
-    if (commodityCurrentUpdates.length > 0) {
-      await this.repositories.markets.upsertCommodities(commodityCurrentUpdates);
+      if (bondUpdates.length > 0) {
+        await this.repositories.markets.upsertBonds(bondUpdates);
+      }
+      if (commodityCurrentUpdates.length > 0) {
+        await this.repositories.markets.upsertCommodities(commodityCurrentUpdates);
+      }
+    } catch (projectionErr: any) {
+      postCommitWarnings.push({
+        stage: 'MARKET_PROJECTIONS',
+        message: projectionErr instanceof Error ? projectionErr.message : String(projectionErr),
+        error: projectionErr,
+      });
     }
 
     // 6.4 원자재 시장 엔진 틱 가동 및 DB 정기 반영
-    this.commodityEngine.nextTick();
-    if (this.tickCount % 5 === 0) {
-      const commodityUpdates = this.commodityEngine.getAllCommodities().map((c) => ({
-        commodity_id: c.id,
-        name: c.nameKo,
-        category: c.category,
-        unit: c.unit,
-        tick_size: c.tickSize,
-        current_price: c.currentPrice,
-        previous_close: c.previousPrice,
-        volume: c.volume,
-      }));
-      await this.repositories.markets.upsertCommodities(commodityUpdates);
+    try {
+      this.commodityEngine.nextTick();
+      if (this.tickCount % 5 === 0) {
+        const commodityUpdates = this.commodityEngine.getAllCommodities().map((c) => ({
+          commodity_id: c.id,
+          name: c.nameKo,
+          category: c.category,
+          unit: c.unit,
+          tick_size: c.tickSize,
+          current_price: c.currentPrice,
+          previous_close: c.previousPrice,
+          volume: c.volume,
+        }));
+        await this.repositories.markets.upsertCommodities(commodityUpdates);
+      }
+    } catch (commErr: any) {
+      postCommitWarnings.push({
+        stage: 'COMMODITY_ENGINE_TICK',
+        message: commErr instanceof Error ? commErr.message : String(commErr),
+        error: commErr,
+      });
     }
 
     // 6.5 옵션 만기 정산 및 채권 쿠폰 지급 배치 실행 (50틱 주기)
     if (this.tickCount % 50 === 0) {
       try {
         await this.settlementService.runDailySettlementBatch();
-      } catch (err) {
+      } catch (err: any) {
         console.error('[Engine] Settlement Batch Error:', err);
+        postCommitWarnings.push({
+          stage: 'DAILY_SETTLEMENT_BATCH',
+          message: err instanceof Error ? err.message : String(err),
+          error: err,
+        });
       }
     }
 
@@ -1838,12 +1935,22 @@ export class MarketEngine {
           } else {
             await this.repositories.participants.upsertPortfolios(portfoliosToUpsert);
           }
-        } catch (portErr) {
+        } catch (portErr: any) {
           console.warn('[MarketEngine] Portfolio sync warning:', portErr);
+          postCommitWarnings.push({
+            stage: 'PORTFOLIO_SYNC',
+            message: portErr instanceof Error ? portErr.message : String(portErr),
+            error: portErr,
+          });
         }
         this.lastPortfolioUpsertMs = now;
       }
     }
+
+    return {
+      commitStatus: 'COMMITTED',
+      postCommitWarnings: postCommitWarnings.length > 0 ? postCommitWarnings : undefined,
+    };
   }
 
   /**

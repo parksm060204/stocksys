@@ -19,6 +19,9 @@ export class PensionFundAgent extends BaseAgent {
   }
 
   public evaluateMarketAndPlaceOrders(currentMarket: any, isCreditCrunch: boolean = false) {
+    if (typeof (this as any).generateOrders === 'function') {
+      return (this as any).generateOrders(currentMarket, isCreditCrunch);
+    }
     const orders: any[] = [];
 
     const targetYTMConfig = this.config.targetYTM || { "1Y_BOND": 0.025, "3Y_BOND": 0.030, "5Y_BOND": 0.032, "10Y_BOND": 0.035 };

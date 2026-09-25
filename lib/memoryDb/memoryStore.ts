@@ -279,12 +279,24 @@ export class MemoryDatabase {
   public botsConfig: any[] = [];
   public optionSettlements: any[] = [];
   public bondCouponPayments: any[] = [];
+  public lpAccounts: Set<string> = new Set(['bot_as_mm_001', 'AS_MARKET_MAKER', 'bot_options_mm_001', 'lp_market_maker']);
+  public lpQuoteGeneration: number = 0;
+  public lpLiabilities: Map<string, number> = new Map();
   /**
    * Authoritative settlement ledger.
    * 정산 성공한 trade ID를 데이터 계층이 유일 권위로 보유한다.
    * repository 인스턴스를 재생성해도 이 원장 덕분에 중복 정산이 차단된다.
    */
   public settlementLedger: Map<string, SettlementLedgerEntry> = new Map();
+
+  public isAuthorizedLp(id: string): boolean {
+    if (!id) return false;
+    if (this.lpAccounts.has(id)) return true;
+    return this.botsConfig.some((b: any) =>
+      (b.bot_id === id || b.id === id) &&
+      (b.participant_kind === 'LIQUIDITY_PROVIDER' || b.participantKind === 'LIQUIDITY_PROVIDER' || b.type === 'OPTIONS_MM')
+    );
+  }
 
   // ── 2. 보조 인덱스 계층 (Secondary Indexes for O(1) Lookups) ──
   public tickerIndex: Map<string, string> = new Map(); // ticker -> stockId

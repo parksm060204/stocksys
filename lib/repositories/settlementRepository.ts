@@ -11,7 +11,9 @@ import type {
   MatchedBatchCommitInput,
   OptionExpirySettlementParams,
   BondMaturitySettlementParams,
-  NonTradeSettlementResult
+  NonTradeSettlementResult,
+  RefreshLpQuotesParams,
+  RefreshLpQuotesResult,
 } from './types';
 
 export interface SettlementRepository {
@@ -35,6 +37,13 @@ export interface SettlementRepository {
   commitMatchedBatchAtomically(
     batch: MatchedBatchCommitInput
   ): Promise<SettlementBatchResult>;
+
+  /**
+   * LP 호가 갱신, stale 슬롯 취소, generation CAS를 단일 트랜잭션으로 원자적 처리한다.
+   */
+  refreshLpQuotesAtomically(
+    params: RefreshLpQuotesParams
+  ): Promise<RefreshLpQuotesResult>;
 
   /**
    * 옵션 만기 지급과 포지션 청산을 단일 원자적 작업으로 처리한다.

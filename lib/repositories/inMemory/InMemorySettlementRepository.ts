@@ -30,12 +30,42 @@ import type {
   MatchedBatchCommitInput,
   OptionExpirySettlementParams,
   BondMaturitySettlementParams,
-  NonTradeSettlementResult
+  NonTradeSettlementResult,
+  RefreshLpQuotesParams,
+  RefreshLpQuotesResult,
 } from '../types';
 import { roundMoney, validateTradeSettlementInput, SettlementValidationSuccess } from '../settlementPolicy';
 
 function isNonEmptyId(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
+}
+
+function validateAndNormalizeOrderQuantities(ord: {
+  originalQuantity?: number;
+  size?: number;
+  filledQuantity?: number;
+  filled?: number;
+  remainingQuantity?: number;
+}): { origQty: number; filledQty: number; remainingQty: number } | null {
+  const origRaw = ord.originalQuantity !== undefined ? ord.originalQuantity : ord.size;
+  if (typeof origRaw !== 'number' || !Number.isFinite(origRaw) || !Number.isSafeInteger(origRaw) || origRaw <= 0) {
+    return null;
+  }
+  const filledRaw = ord.filledQuantity !== undefined ? ord.filledQuantity : (ord.filled ?? 0);
+  if (typeof filledRaw !== 'number' || !Number.isFinite(filledRaw) || !Number.isSafeInteger(filledRaw) || filledRaw < 0) {
+    return null;
+  }
+  if (filledRaw > origRaw) {
+    return null;
+  }
+  const remRaw = ord.remainingQuantity !== undefined ? ord.remainingQuantity : (origRaw - filledRaw);
+  if (typeof remRaw !== 'number' || !Number.isFinite(remRaw) || !Number.isSafeInteger(remRaw) || remRaw < 0) {
+    return null;
+  }
+  if (filledRaw + remRaw !== origRaw) {
+    return null;
+  }
+  return { origQty: origRaw, filledQty: filledRaw, remainingQty: remRaw };
 }
 
 function emptyResult(overrides: Partial<SettlementBatchResult> = {}): SettlementBatchResult {
@@ -53,6 +83,11 @@ function emptyResult(overrides: Partial<SettlementBatchResult> = {}): Settlement
 
 export class InMemorySettlementRepository implements SettlementRepository {
   constructor(private readonly db: MemoryDatabase) {}
+
+  public isAuthorizedLpAccount(userId: string | null | undefined): boolean {
+    if (!userId) return false;
+    return this.db.isAuthorizedLp(userId);
+  }
 
   /** Authoritative ledger 조회 (인스턴스가 재생성되어도 동일하게 동작) */
   public isTradeSettled(tradeId: string): boolean {
@@ -94,6 +129,178 @@ export class InMemorySettlementRepository implements SettlementRepository {
     }
   }
 
+  public async refreshLpQuotesAtomically(
+    params: RefreshLpQuotesParams
+  ): Promise<RefreshLpQuotesResult> {
+    let release: () => void;
+    const nextLock = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const prevLock = this.mutex;
+    this.mutex = prevLock.then(() => nextLock);
+
+    await prevLock;
+    try {
+      return await this.executeRefreshLpQuotesAtomically(params);
+    } finally {
+      release!();
+    }
+  }
+
+  private async executeRefreshLpQuotesAtomically(
+    params: RefreshLpQuotesParams
+  ): Promise<RefreshLpQuotesResult> {
+    const generationBefore = (this.db as any).lpQuoteGeneration ?? 0;
+
+    // CAS check on generation
+    if (params.expectedGeneration !== undefined && generationBefore !== params.expectedGeneration) {
+      return {
+        success: false,
+        errorCode: 'CAS_GENERATION_MISMATCH',
+        error: `CAS_GENERATION_MISMATCH: Current generation ${generationBefore} !== expected ${params.expectedGeneration}`,
+        updatedQuotesCount: 0,
+        cancelledQuotesCount: 0,
+        newGeneration: generationBefore,
+      };
+    }
+
+    // Validation: All quotes must be from authorized LP and valid safe integer quantities
+    for (const q of params.quotes) {
+      const participant = q.participantId || q.user_id;
+      if (!this.isAuthorizedLpAccount(participant)) {
+        return {
+          success: false,
+          errorCode: 'UNAUTHORIZED_LP_ORDER',
+          error: `UNAUTHORIZED_LP_ORDER: Participant ${participant} is not an authorized LP`,
+          updatedQuotesCount: 0,
+          cancelledQuotesCount: 0,
+          newGeneration: generationBefore,
+        };
+      }
+      const existing = this.db.orders.get(q.id);
+      if (existing) {
+        const existingIsLp = Boolean(
+          existing.is_lp ||
+          (existing as any).participantKind === 'LIQUIDITY_PROVIDER' ||
+          (existing as any).orderRole === 'LP_QUOTE'
+        );
+        if (!existingIsLp) {
+          return {
+            success: false,
+            errorCode: 'CANNOT_UPGRADE_NON_LP_ORDER',
+            error: `CANNOT_UPGRADE_NON_LP_ORDER: Order ${q.id} is not an LP order and cannot be upgraded`,
+            updatedQuotesCount: 0,
+            cancelledQuotesCount: 0,
+            newGeneration: generationBefore,
+          };
+        }
+      }
+      const validQty = validateAndNormalizeOrderQuantities(q);
+      if (!validQty) {
+        return {
+          success: false,
+          errorCode: 'INVALID_ORDER_QUANTITY',
+          error: `INVALID_ORDER_QUANTITY: LP Quote ${q.id} has invalid quantity`,
+          updatedQuotesCount: 0,
+          cancelledQuotesCount: 0,
+          newGeneration: generationBefore,
+        };
+      }
+    }
+
+    // Snapshot state for atomic all-or-nothing rollback
+    const ordersSnapshot = new Map<string, OrderRecord>();
+    const newlyInsertedIds = new Set<string>();
+
+    try {
+      // Chunked writing (500 quotes per chunk)
+      const chunkSize = 500;
+      for (let i = 0; i < params.quotes.length; i += chunkSize) {
+        const chunk = params.quotes.slice(i, i + chunkSize);
+        for (const q of chunk) {
+          if (!this.db.orders.has(q.id)) {
+            newlyInsertedIds.add(q.id);
+          } else if (!ordersSnapshot.has(q.id)) {
+            ordersSnapshot.set(q.id, { ...this.db.orders.get(q.id)! });
+          }
+          const validQty = validateAndNormalizeOrderQuantities(q)!;
+          const normalized: OrderRecord = {
+            ...q,
+            originalQuantity: validQty.origQty,
+            filledQuantity: validQty.filledQty,
+            remainingQuantity: validQty.remainingQty,
+            size: validQty.remainingQty,
+            filled: validQty.filledQty,
+            status: 'open',
+            is_lp: true,
+            version: params.nextGeneration,
+          };
+          this.db.orders.set(q.id, normalized);
+          this.db.addOrderToIndex(normalized);
+        }
+
+        if (i === 0 && params.faultInjection === 'FAIL_AFTER_FIRST_CHUNK') {
+          throw new Error('FAULT_INJECTION_FAIL_AFTER_FIRST_CHUNK');
+        }
+      }
+
+      // Stale quote cancellation
+      let cancelledCount = 0;
+      if (params.staleSlotIdsToCancel && params.staleSlotIdsToCancel.length > 0) {
+        if (params.faultInjection === 'FAIL_DURING_STALE_CANCEL') {
+          throw new Error('FAULT_INJECTION_FAIL_DURING_STALE_CANCEL');
+        }
+        for (const slotId of params.staleSlotIdsToCancel) {
+          const ord = this.db.orders.get(slotId);
+          if (ord) {
+            if (!ordersSnapshot.has(slotId)) {
+              ordersSnapshot.set(slotId, { ...ord });
+            }
+            ord.status = 'cancelled';
+            ord.version = params.nextGeneration;
+            cancelledCount++;
+          }
+        }
+      }
+
+      if (params.faultInjection === 'FAIL_BEFORE_GENERATION_UPDATE') {
+        throw new Error('FAULT_INJECTION_FAIL_BEFORE_GENERATION_UPDATE');
+      }
+
+      // Generation update
+      (this.db as any).lpQuoteGeneration = params.nextGeneration;
+
+      return {
+        success: true,
+        updatedQuotesCount: params.quotes.length,
+        cancelledQuotesCount: cancelledCount,
+        newGeneration: params.nextGeneration,
+      };
+    } catch (err: any) {
+      // Roll back all newly inserted orders
+      for (const id of newlyInsertedIds) {
+        const cur = this.db.orders.get(id);
+        if (cur) this.db.removeOrderFromIndex(cur);
+        this.db.orders.delete(id);
+      }
+      // Restore previous order state
+      for (const [id, snap] of ordersSnapshot.entries()) {
+        this.db.orders.set(id, snap);
+      }
+      (this.db as any).lpQuoteGeneration = generationBefore;
+      this.db.rebuildIndexes();
+
+      return {
+        success: false,
+        errorCode: err.message?.includes('FAULT_INJECTION') ? 'FAULT_INJECTION' : 'EXECUTION_FAILED',
+        error: err.message,
+        updatedQuotesCount: 0,
+        cancelledQuotesCount: 0,
+        newGeneration: generationBefore,
+      };
+    }
+  }
+
   private async executeCommitMatchedBatchAtomically(
     batch: MatchedBatchCommitInput
   ): Promise<SettlementBatchResult> {
@@ -121,22 +328,29 @@ export class InMemorySettlementRepository implements SettlementRepository {
           });
         }
         seenBatchOrderIds.add(ord.id);
-        const origQty = Math.round(Number(ord.originalQuantity ?? ord.size ?? 0));
-        const filledQty = Math.round(Number(ord.filledQuantity ?? ord.filled ?? 0));
-        const remainingQty = Math.round(Number(ord.remainingQuantity ?? (origQty - filledQty)));
-        if (!Number.isFinite(origQty) || origQty <= 0) {
+
+        const claimsLp = Boolean(
+          ord.is_lp ||
+          (ord as any).participantKind === 'LIQUIDITY_PROVIDER' ||
+          (ord as any).orderRole === 'LP_QUOTE' ||
+          (ord as any).orderType === 'LP_QUOTE'
+        );
+        const orderParticipant = ord.participantId || ord.user_id;
+        if (claimsLp && !this.isAuthorizedLpAccount(orderParticipant)) {
           return emptyResult({
             success: false,
-            errorCode: 'INVALID_ORDER_QUANTITY',
-            error: `INVALID_ORDER_QUANTITY: Order ${ord.id} originalQuantity must be positive integer: ${origQty}`,
+            errorCode: 'UNAUTHORIZED_LP_ORDER',
+            error: `UNAUTHORIZED_LP_ORDER: Participant ${orderParticipant} is not an authorized LP account`,
             rollbackOccurred: false,
           });
         }
-        if (!Number.isFinite(filledQty) || filledQty < 0 || !Number.isFinite(remainingQty) || remainingQty < 0 || (filledQty + remainingQty !== origQty)) {
+
+        const validQty = validateAndNormalizeOrderQuantities(ord);
+        if (!validQty) {
           return emptyResult({
             success: false,
             errorCode: 'INVALID_ORDER_QUANTITY',
-            error: `INVALID_ORDER_QUANTITY: Order ${ord.id} quantity mismatch: orig=${origQty}, filled=${filledQty}, remaining=${remainingQty}`,
+            error: `INVALID_ORDER_QUANTITY: Order ${ord.id} has invalid or non-safe-integer quantity`,
             rollbackOccurred: false,
           });
         }
@@ -146,12 +360,80 @@ export class InMemorySettlementRepository implements SettlementRepository {
     // ── Pre-check: lpQuoteUpserts must be authorized LP quotes ──
     if (batch.lpQuoteUpserts && batch.lpQuoteUpserts.length > 0) {
       for (const lpOrd of batch.lpQuoteUpserts) {
-        const isLp = Boolean(lpOrd.is_lp || (lpOrd as any).participantKind === 'LIQUIDITY_PROVIDER' || (lpOrd as any).orderRole === 'LP_QUOTE');
-        if (!isLp) {
+        const orderParticipant = lpOrd.participantId || lpOrd.user_id;
+        if (!this.isAuthorizedLpAccount(orderParticipant)) {
           return emptyResult({
             success: false,
-            errorCode: 'REJECTED_UNAUTHORIZED_LP',
-            error: `Order ${lpOrd.id} is not an authorized LP quote`,
+            errorCode: 'UNAUTHORIZED_LP_ORDER',
+            error: `UNAUTHORIZED_LP_ORDER: Participant ${orderParticipant} is not an authorized LP quote`,
+            rollbackOccurred: false,
+          });
+        }
+
+        const existing = this.db.orders.get(lpOrd.id);
+        if (existing) {
+          const existingIsLp = Boolean(
+            existing.is_lp ||
+            (existing as any).participantKind === 'LIQUIDITY_PROVIDER' ||
+            (existing as any).orderRole === 'LP_QUOTE'
+          );
+          if (!existingIsLp) {
+            return emptyResult({
+              success: false,
+              errorCode: 'CANNOT_UPGRADE_NON_LP_ORDER',
+              error: `CANNOT_UPGRADE_NON_LP_ORDER: Order ${lpOrd.id} is not an LP order and cannot be upgraded`,
+              rollbackOccurred: false,
+            });
+          }
+        }
+
+        const validQty = validateAndNormalizeOrderQuantities(lpOrd);
+        if (!validQty) {
+          return emptyResult({
+            success: false,
+            errorCode: 'INVALID_ORDER_QUANTITY',
+            error: `INVALID_ORDER_QUANTITY: LP Quote ${lpOrd.id} has invalid quantity`,
+            rollbackOccurred: false,
+          });
+        }
+      }
+    }
+
+    // ── Pre-check: orderCas validation ──
+    if (batch.orderCas && batch.orderCas.length > 0) {
+      for (const cas of batch.orderCas) {
+        const existing = this.db.orders.get(cas.id);
+        if (!existing) {
+          return emptyResult({
+            success: false,
+            errorCode: 'ORDER_CAS_MISMATCH',
+            error: `ORDER_CAS_MISMATCH: Order ${cas.id} not found in database`,
+            rollbackOccurred: false,
+          });
+        }
+        if (cas.expectedVersion !== undefined && (existing.version ?? 1) !== cas.expectedVersion) {
+          return emptyResult({
+            success: false,
+            errorCode: 'ORDER_CAS_MISMATCH',
+            error: `ORDER_CAS_MISMATCH: Order ${cas.id} version mismatch (expected: ${cas.expectedVersion}, actual: ${existing.version ?? 1})`,
+            rollbackOccurred: false,
+          });
+        }
+        const existingRem = existing.remainingQuantity ?? existing.remaining ?? existing.size;
+        if (cas.expectedRemaining !== undefined && existingRem !== cas.expectedRemaining) {
+          return emptyResult({
+            success: false,
+            errorCode: 'ORDER_CAS_MISMATCH',
+            error: `ORDER_CAS_MISMATCH: Order ${cas.id} remaining mismatch (expected: ${cas.expectedRemaining}, actual: ${existingRem})`,
+            rollbackOccurred: false,
+          });
+        }
+        const existingFilled = existing.filledQuantity ?? existing.filled ?? 0;
+        if (cas.expectedFilled !== undefined && existingFilled !== cas.expectedFilled) {
+          return emptyResult({
+            success: false,
+            errorCode: 'ORDER_CAS_MISMATCH',
+            error: `ORDER_CAS_MISMATCH: Order ${cas.id} filled mismatch (expected: ${cas.expectedFilled}, actual: ${existingFilled})`,
             rollbackOccurred: false,
           });
         }
@@ -180,17 +462,15 @@ export class InMemorySettlementRepository implements SettlementRepository {
         if (batch.newOrders) {
           for (const ord of batch.newOrders) {
             newlyInsertedOrderIds.add(ord.id);
-            const origQty = Math.round(Number(ord.originalQuantity ?? ord.size));
-            const filledQty = Math.round(Number(ord.filledQuantity ?? ord.filled ?? 0));
-            const remainingQty = Math.round(Number(ord.remainingQuantity ?? (origQty - filledQty)));
+            const validQty = validateAndNormalizeOrderQuantities(ord)!;
             const normalizedOrd: OrderRecord = {
               ...ord,
-              originalQuantity: origQty,
-              filledQuantity: filledQty,
-              remainingQuantity: remainingQty,
-              size: remainingQty,
-              filled: filledQty,
-              status: remainingQty === 0 ? 'filled' : (filledQty > 0 ? 'partial' : 'open'),
+              originalQuantity: validQty.origQty,
+              filledQuantity: validQty.filledQty,
+              remainingQuantity: validQty.remainingQty,
+              size: validQty.remainingQty,
+              filled: validQty.filledQty,
+              status: validQty.remainingQty === 0 ? 'filled' : (validQty.filledQty > 0 ? 'partial' : 'open'),
               version: ord.version ?? 1,
             };
             this.db.orders.set(ord.id, normalizedOrd);
@@ -204,8 +484,15 @@ export class InMemorySettlementRepository implements SettlementRepository {
             } else if (!ordersSnapshot.has(ord.id)) {
               ordersSnapshot.set(ord.id, { ...this.db.orders.get(ord.id)! });
             }
+            const validQty = validateAndNormalizeOrderQuantities(ord)!;
             const normalizedOrd: OrderRecord = {
               ...ord,
+              originalQuantity: validQty.origQty,
+              filledQuantity: validQty.filledQty,
+              remainingQuantity: validQty.remainingQty,
+              size: validQty.remainingQty,
+              filled: validQty.filledQty,
+              status: validQty.remainingQty === 0 ? 'filled' : (validQty.filledQty > 0 ? 'partial' : 'open'),
               version: (ord.version ?? 1) + 1,
             };
             this.db.orders.set(ord.id, normalizedOrd);
@@ -323,17 +610,15 @@ export class InMemorySettlementRepository implements SettlementRepository {
     if (batch.newOrders && batch.newOrders.length > 0) {
       for (const ord of batch.newOrders) {
         newlyInsertedOrderIds.add(ord.id);
-        const origQty = Math.round(Number(ord.originalQuantity ?? ord.size));
-        const filledQty = Math.round(Number(ord.filledQuantity ?? ord.filled ?? 0));
-        const remainingQty = Math.round(Number(ord.remainingQuantity ?? (origQty - filledQty)));
+        const validQty = validateAndNormalizeOrderQuantities(ord)!;
         const normalizedOrd: OrderRecord = {
           ...ord,
-          originalQuantity: origQty,
-          filledQuantity: filledQty,
-          remainingQuantity: remainingQty,
-          size: remainingQty,
-          filled: filledQty,
-          status: remainingQty === 0 ? 'filled' : (filledQty > 0 ? 'partial' : 'open'),
+          originalQuantity: validQty.origQty,
+          filledQuantity: validQty.filledQty,
+          remainingQuantity: validQty.remainingQty,
+          size: validQty.remainingQty,
+          filled: validQty.filledQty,
+          status: validQty.remainingQty === 0 ? 'filled' : (validQty.filledQty > 0 ? 'partial' : 'open'),
           version: ord.version ?? 1,
         };
         this.db.orders.set(ord.id, normalizedOrd);
@@ -348,8 +633,15 @@ export class InMemorySettlementRepository implements SettlementRepository {
         } else if (!originalOrdersBeforeBatch.has(ord.id)) {
           originalOrdersBeforeBatch.set(ord.id, { ...this.db.orders.get(ord.id)! });
         }
+        const validQty = validateAndNormalizeOrderQuantities(ord)!;
         const normalizedOrd: OrderRecord = {
           ...ord,
+          originalQuantity: validQty.origQty,
+          filledQuantity: validQty.filledQty,
+          remainingQuantity: validQty.remainingQty,
+          size: validQty.remainingQty,
+          filled: validQty.filledQty,
+          status: validQty.remainingQty === 0 ? 'filled' : (validQty.filledQty > 0 ? 'partial' : 'open'),
           version: (ord.version ?? 1) + 1,
         };
         this.db.orders.set(ord.id, normalizedOrd);
@@ -409,6 +701,36 @@ export class InMemorySettlementRepository implements SettlementRepository {
           errorCode: 'ORDER_NOT_FOUND',
           error: `ORDER_NOT_FOUND: Sell order ${trade.sell_order_id} not found in authoritative orders store`,
         });
+      }
+
+      const sellerClaimsLp = Boolean(
+        sellOrder.is_lp ||
+        (sellOrder as any).participantKind === 'LIQUIDITY_PROVIDER' ||
+        (sellOrder as any).orderRole === 'LP_QUOTE'
+      );
+      if (sellerClaimsLp) {
+        const sellerParticipant = trade.seller_id || sellOrder.participantId || sellOrder.user_id;
+        if (!this.isAuthorizedLpAccount(sellerParticipant)) {
+          return failBatch({
+            errorCode: 'UNAUTHORIZED_LP_ORDER',
+            error: `UNAUTHORIZED_LP_ORDER: Seller ${sellerParticipant} claims LP privileges but is not an authorized LP account`,
+          });
+        }
+      }
+
+      const buyerClaimsLp = Boolean(
+        buyOrder.is_lp ||
+        (buyOrder as any).participantKind === 'LIQUIDITY_PROVIDER' ||
+        (buyOrder as any).orderRole === 'LP_QUOTE'
+      );
+      if (buyerClaimsLp) {
+        const buyerParticipant = trade.buyer_id || buyOrder.participantId || buyOrder.user_id;
+        if (!this.isAuthorizedLpAccount(buyerParticipant)) {
+          return failBatch({
+            errorCode: 'UNAUTHORIZED_LP_ORDER',
+            error: `UNAUTHORIZED_LP_ORDER: Buyer ${buyerParticipant} claims LP privileges but is not an authorized LP account`,
+          });
+        }
       }
 
       if (buyOrder.side !== 'buy') {
@@ -531,6 +853,7 @@ export class InMemorySettlementRepository implements SettlementRepository {
       delta: number;
     }
     const netHoldingDeltas = new Map<string, HoldingDelta>();
+    const netLpLiabilityDeltas = new Map<string, number>();
 
     let totalVolume = 0;
     let totalAmount = 0;
@@ -560,11 +883,28 @@ export class InMemorySettlementRepository implements SettlementRepository {
         netCashDeltas.set(sellerId, (netCashDeltas.get(sellerId) || 0) + (v.tradeAmount - v.fees.sellerFeeAmount));
         const sellOrder = this.db.orders.get(trade.sell_order_id);
         const isLp = Boolean(sellOrder?.is_lp || (sellOrder as any)?.participantKind === 'LIQUIDITY_PROVIDER');
+        const key = `${sellerId}::${trade.stock_id}`;
         if (!isLp) {
-          const key = `${sellerId}::${trade.stock_id}`;
           const existing = netHoldingDeltas.get(key) || { userId: sellerId, stockId: trade.stock_id, delta: 0 };
           existing.delta -= trade.size;
           netHoldingDeltas.set(key, existing);
+        } else {
+          // LP inventory handling: deduct from holdings down to 0, remainder becomes LP liability
+          const holding = getHolding(sellerId, trade.stock_id);
+          const currentQty = holding ? holding.quantity : 0;
+          const existingDelta = netHoldingDeltas.get(key)?.delta || 0;
+          const availableHolding = Math.max(0, currentQty + existingDelta);
+          const holdingDeduct = Math.min(availableHolding, trade.size);
+          const shortQty = trade.size - holdingDeduct;
+
+          if (holdingDeduct > 0) {
+            const existing = netHoldingDeltas.get(key) || { userId: sellerId, stockId: trade.stock_id, delta: 0 };
+            existing.delta -= holdingDeduct;
+            netHoldingDeltas.set(key, existing);
+          }
+          if (shortQty > 0) {
+            netLpLiabilityDeltas.set(key, (netLpLiabilityDeltas.get(key) || 0) + shortQty);
+          }
         }
       }
     }
@@ -610,6 +950,7 @@ export class InMemorySettlementRepository implements SettlementRepository {
     const profileSnapshots = new Map<string, ProfileRecord>();
     const holdingSnapshots = new Map<string, HoldingRecord | null>();
     const portfolioSnapshots = new Map<string, any>();
+    const lpLiabilitiesSnapshot = new Map(this.db.lpLiabilities);
     const tradesCountBefore = this.db.trades.length;
     const ledgerEntriesBefore = new Map(this.db.settlementLedger);
     const ordersSnapshot = new Map<string, OrderRecord>();
@@ -746,8 +1087,17 @@ export class InMemorySettlementRepository implements SettlementRepository {
         if (sellerId !== null) {
           const hid = `${sellerId}_${trade.stock_id}`;
           const h = this.db.holdings.get(hid);
-          if (h) {
-            h.quantity = Math.max(0, h.quantity - trade.size);
+          const sellOrder = this.db.orders.get(trade.sell_order_id);
+          const isLp = Boolean(sellOrder?.is_lp || (sellOrder as any)?.participantKind === 'LIQUIDITY_PROVIDER');
+          if (!isLp) {
+            if (h) {
+              h.quantity = Math.max(0, h.quantity - trade.size);
+            }
+          } else {
+            if (h) {
+              const holdingDeduct = Math.min(h.quantity, trade.size);
+              h.quantity = h.quantity - holdingDeduct;
+            }
           }
           const port = this.db.institutionalPortfolios.get(sellerId);
           if (port) {
@@ -791,6 +1141,18 @@ export class InMemorySettlementRepository implements SettlementRepository {
         };
         this.db.settlementLedger.set(v.tradeId, ledgerEntry);
         newlySettledIds.push(v.tradeId);
+      }
+
+      for (const [key, shortQty] of netLpLiabilityDeltas.entries()) {
+        this.db.lpLiabilities.set(key, (this.db.lpLiabilities.get(key) || 0) + shortQty);
+      }
+
+      if (batch.faultInjection === 'FAIL_AFTER_HOLDINGS_UPDATED') {
+        throw new Error('FAULT_INJECTION_FAIL_AFTER_HOLDINGS_UPDATED');
+      }
+
+      if (batch.faultInjection === 'FAIL_AFTER_TRADES_INSERTED') {
+        throw new Error('FAULT_INJECTION_FAIL_AFTER_TRADES_INSERTED');
       }
 
       // 체결 주문 상태 일괄 갱신
@@ -881,14 +1243,26 @@ export class InMemorySettlementRepository implements SettlementRepository {
         const port = this.db.institutionalPortfolios.get(botId);
         if (port) Object.assign(port, snap);
       }
-      for (const [hid, snap] of holdingSnapshots.entries()) {
+      for (const [holdingKey, snap] of holdingSnapshots.entries()) {
         if (snap === null) {
-          this.db.holdings.delete(hid);
+          // Newly created holding: key is "userId::stockId", DB key is "userId_stockId"
+          // Try both formats for safety
+          const realId = holdingKey.replace('::', '_');
+          this.db.holdings.delete(realId);
+          this.db.holdings.delete(holdingKey); // fallback
         } else {
-          const h = this.db.holdings.get(hid);
-          if (h) Object.assign(h, snap);
+          // Existing holding: snap.id is the authoritative DB key
+          const realId = snap.id || holdingKey.replace('::', '_');
+          const h = this.db.holdings.get(realId);
+          if (h) {
+            Object.assign(h, snap);
+          } else {
+            // Holding was somehow deleted entirely — restore it
+            this.db.holdings.set(realId, { ...snap });
+          }
         }
       }
+      this.db.lpLiabilities = new Map(lpLiabilitiesSnapshot);
       this.db.trades = this.db.trades.slice(0, tradesCountBefore);
       this.db.rebuildIndexes();
       for (const [id, entry] of ledgerEntriesBefore.entries()) {
@@ -917,7 +1291,7 @@ export class InMemorySettlementRepository implements SettlementRepository {
 
       return emptyResult({
         success: false,
-        errorCode: 'EXECUTION_FAILED',
+        errorCode: err instanceof Error && err.message.startsWith('FAULT_INJECTION') ? err.message : 'EXECUTION_FAILED',
         error: `EXECUTION_FAILED: ${err instanceof Error ? err.message : String(err)}`,
         rollbackOccurred: true,
       });
@@ -1087,6 +1461,10 @@ export class InMemorySettlementRepository implements SettlementRepository {
       return { success: true, errorCode: 'ALREADY_SETTLED' };
     }
 
+    if (params.now !== undefined && (typeof params.now !== 'number' || !Number.isFinite(params.now))) {
+      return { success: false, errorCode: 'INVALID_NOW', error: 'now must be a finite number' };
+    }
+
     const hid = `${params.userId}_${params.optionId}`;
     const holding = this.db.holdings.get(hid);
     if (!holding) {
@@ -1095,7 +1473,7 @@ export class InMemorySettlementRepository implements SettlementRepository {
     if (holding.stock_id !== params.optionId) {
       return { success: false, errorCode: 'POSITION_ASSET_MISMATCH', error: `Holding asset ${holding.stock_id} does not match option ${params.optionId}` };
     }
-    if (typeof holding.quantity !== 'number' || !Number.isFinite(holding.quantity) || holding.quantity <= 0) {
+    if (typeof holding.quantity !== 'number' || !Number.isFinite(holding.quantity) || !Number.isSafeInteger(holding.quantity) || holding.quantity <= 0) {
       return { success: false, errorCode: 'INVALID_POSITION_QUANTITY', error: `Invalid position quantity: ${holding.quantity}` };
     }
     if (params.expectedQuantity !== undefined && holding.quantity !== params.expectedQuantity) {
@@ -1106,10 +1484,34 @@ export class InMemorySettlementRepository implements SettlementRepository {
     if (!contract) {
       return { success: false, errorCode: 'CONTRACT_NOT_FOUND', error: `Option contract ${params.optionId} not found` };
     }
+
     const expiryTime = Date.parse(contract.expiry_date);
+    if (!Number.isFinite(expiryTime) || isNaN(expiryTime)) {
+      return { success: false, errorCode: 'INVALID_EXPIRY_DATE', error: `Invalid option expiry date: ${contract.expiry_date}` };
+    }
+
     const now = params.now ?? this.db.getNowMs();
-    if (Number.isFinite(expiryTime) && expiryTime > now) {
+    if (expiryTime > now) {
       return { success: false, errorCode: 'EXPIRY_DATE_NOT_REACHED', error: `Option has not expired: ${contract.expiry_date}` };
+    }
+
+    const optType = (contract.type || contract.option_type || '').toUpperCase();
+    if (optType !== 'CALL' && optType !== 'PUT') {
+      return { success: false, errorCode: 'INVALID_OPTION_TYPE', error: `Invalid option type: ${contract.type || contract.option_type}` };
+    }
+
+    if (typeof contract.strike_price !== 'number' || !Number.isFinite(contract.strike_price) || contract.strike_price <= 0) {
+      return { success: false, errorCode: 'INVALID_STRIKE_PRICE', error: `Invalid strike price: ${contract.strike_price}` };
+    }
+
+    const underlyingId = contract.underlying_asset_id || (contract as any).underlying_id || contract.stock_id;
+    if (!underlyingId || typeof underlyingId !== 'string') {
+      return { success: false, errorCode: 'INVALID_UNDERLYING_ID', error: 'Missing or empty underlying ID' };
+    }
+
+    const multiplier = contract.multiplier ?? 250000;
+    if (typeof multiplier !== 'number' || !Number.isFinite(multiplier) || multiplier <= 0) {
+      return { success: false, errorCode: 'INVALID_MULTIPLIER', error: `Invalid multiplier: ${multiplier}` };
     }
 
     const closePrice = params.underlyingClosePrice;
@@ -1127,7 +1529,6 @@ export class InMemorySettlementRepository implements SettlementRepository {
     }
 
     // Authoritative payout calculated inside trust boundary
-    const optType = (contract.type || contract.option_type || 'CALL').toUpperCase();
     let diffPerUnit = 0;
     if (optType === 'CALL') {
       if (closePrice > contract.strike_price) {
@@ -1136,8 +1537,10 @@ export class InMemorySettlementRepository implements SettlementRepository {
     } else if (contract.strike_price > closePrice) {
       diffPerUnit = contract.strike_price - closePrice;
     }
-    const multiplier = 250000;
     const payoutAmount = roundMoney(diffPerUnit * holding.quantity * multiplier);
+    if (!Number.isFinite(payoutAmount) || payoutAmount < 0 || payoutAmount > Number.MAX_SAFE_INTEGER) {
+      return { success: false, errorCode: 'PAYOUT_OVERFLOW', error: 'Option payout overflow' };
+    }
 
     const profileSnapshot = { ...profile };
     const holdingSnapshot = { ...holding };
@@ -1208,6 +1611,10 @@ export class InMemorySettlementRepository implements SettlementRepository {
       return { success: true, errorCode: 'ALREADY_SETTLED' };
     }
 
+    if (params.now !== undefined && (typeof params.now !== 'number' || !Number.isFinite(params.now))) {
+      return { success: false, errorCode: 'INVALID_NOW', error: 'now must be a finite number' };
+    }
+
     const hid = `${params.userId}_${params.bondId}`;
     const holding = this.db.holdings.get(hid);
     if (!holding) {
@@ -1216,7 +1623,7 @@ export class InMemorySettlementRepository implements SettlementRepository {
     if (holding.stock_id !== params.bondId) {
       return { success: false, errorCode: 'POSITION_ASSET_MISMATCH', error: `Holding asset ${holding.stock_id} does not match bond ${params.bondId}` };
     }
-    if (typeof holding.quantity !== 'number' || !Number.isFinite(holding.quantity) || holding.quantity <= 0) {
+    if (typeof holding.quantity !== 'number' || !Number.isFinite(holding.quantity) || !Number.isSafeInteger(holding.quantity) || holding.quantity <= 0) {
       return { success: false, errorCode: 'INVALID_POSITION_QUANTITY', error: `Invalid position quantity: ${holding.quantity}` };
     }
     if (params.expectedQuantity !== undefined && holding.quantity !== params.expectedQuantity) {
@@ -1227,10 +1634,25 @@ export class InMemorySettlementRepository implements SettlementRepository {
     if (!bond) {
       return { success: false, errorCode: 'BOND_NOT_FOUND', error: `Bond ${params.bondId} not found` };
     }
-    const maturityTime = Date.parse(bond.maturity_date || bond.maturity);
+
+    const maturityDateStr = bond.maturity_date || bond.maturity;
+    const maturityTime = Date.parse(maturityDateStr);
+    if (!Number.isFinite(maturityTime) || isNaN(maturityTime)) {
+      return { success: false, errorCode: 'INVALID_MATURITY_DATE', error: `Invalid bond maturity date: ${maturityDateStr}` };
+    }
+
     const now = params.now ?? this.db.getNowMs();
-    if (Number.isFinite(maturityTime) && maturityTime > now) {
+    if (maturityTime > now) {
       return { success: false, errorCode: 'MATURITY_DATE_NOT_REACHED', error: 'Bond has not reached maturity' };
+    }
+
+    if (typeof bond.face_value !== 'number' || !Number.isFinite(bond.face_value) || bond.face_value <= 0) {
+      return { success: false, errorCode: 'INVALID_FACE_VALUE', error: `Invalid bond face value: ${bond.face_value}` };
+    }
+
+    const couponRate = bond.coupon_rate ?? 0;
+    if (typeof couponRate !== 'number' || !Number.isFinite(couponRate) || couponRate < 0 || couponRate > 1.0) {
+      return { success: false, errorCode: 'INVALID_COUPON_RATE', error: `Invalid bond coupon rate: ${couponRate}` };
     }
 
     const pid = this.db.profileUserIdIndex.get(params.userId) || params.userId;
@@ -1240,7 +1662,7 @@ export class InMemorySettlementRepository implements SettlementRepository {
     }
 
     const authoritativePrincipal = roundMoney(bond.face_value * holding.quantity);
-    const authoritativeCoupon = roundMoney(bond.face_value * (bond.coupon_rate ?? 0) * holding.quantity);
+    const authoritativeCoupon = roundMoney(bond.face_value * couponRate * holding.quantity);
 
     if (params.principalAmount !== undefined && Math.abs(params.principalAmount - authoritativePrincipal) > 0.01) {
       return {
@@ -1258,6 +1680,10 @@ export class InMemorySettlementRepository implements SettlementRepository {
     }
 
     const totalPayout = roundMoney(authoritativePrincipal + authoritativeCoupon);
+    if (!Number.isFinite(totalPayout) || totalPayout < 0 || totalPayout > Number.MAX_SAFE_INTEGER) {
+      return { success: false, errorCode: 'PAYOUT_OVERFLOW', error: 'Bond payout overflow' };
+    }
+
     const profileSnapshot = { ...profile };
     const holdingSnapshot = { ...holding };
     const historyCountBefore = this.db.bondCouponPayments.length;

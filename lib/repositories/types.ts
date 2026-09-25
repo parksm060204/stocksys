@@ -166,19 +166,33 @@ export function normalizeOrderQuantities(order: {
   filledQuantity?: number;
   remainingQuantity?: number;
 }): CanonicalOrderQuantities {
-  const original = Math.round(Number(order.originalQuantity ?? order.size ?? 0));
-  const filled = Math.round(Number(order.filledQuantity ?? order.filled ?? 0));
-  if (!Number.isFinite(original) || original <= 0) {
-    throw new RangeError(`originalQuantity must be a positive integer, got ${original}`);
+  const origRaw = order.originalQuantity !== undefined ? order.originalQuantity : order.size;
+  if (typeof origRaw !== 'number' || !Number.isFinite(origRaw) || !Number.isSafeInteger(origRaw) || origRaw <= 0) {
+    throw new RangeError(`originalQuantity must be a positive safe integer, got ${origRaw}`);
   }
-  if (!Number.isFinite(filled) || filled < 0) {
-    throw new RangeError(`filledQuantity must be a non-negative integer, got ${filled}`);
+
+  const filledRaw = order.filledQuantity !== undefined ? order.filledQuantity : (order.filled ?? 0);
+  if (typeof filledRaw !== 'number' || !Number.isFinite(filledRaw) || !Number.isSafeInteger(filledRaw) || filledRaw < 0) {
+    throw new RangeError(`filledQuantity must be a non-negative safe integer, got ${filledRaw}`);
   }
-  const remaining = Math.max(0, original - filled);
+
+  if (filledRaw > origRaw) {
+    throw new RangeError(`filledQuantity (${filledRaw}) cannot exceed originalQuantity (${origRaw})`);
+  }
+
+  const remRaw = order.remainingQuantity !== undefined ? order.remainingQuantity : (origRaw - filledRaw);
+  if (typeof remRaw !== 'number' || !Number.isFinite(remRaw) || !Number.isSafeInteger(remRaw) || remRaw < 0) {
+    throw new RangeError(`remainingQuantity must be a non-negative safe integer, got ${remRaw}`);
+  }
+
+  if (filledRaw + remRaw !== origRaw) {
+    throw new RangeError(`filledQuantity (${filledRaw}) + remainingQuantity (${remRaw}) !== originalQuantity (${origRaw})`);
+  }
+
   return {
-    originalQuantity: original,
-    filledQuantity: filled,
-    remainingQuantity: remaining,
+    originalQuantity: origRaw,
+    filledQuantity: filledRaw,
+    remainingQuantity: remRaw,
   };
 }
 
@@ -211,6 +225,40 @@ export interface MatchedBatchCommitInput {
     readonly expectedFilled?: number;
     readonly expectedVersion?: number;
   }[];
+  readonly faultInjection?: 'FAIL_AFTER_TRADES_INSERTED' | 'FAIL_AFTER_HOLDINGS_UPDATED' | 'FAIL_BEFORE_LEDGER';
+}
+
+export interface RefreshLpQuotesParams {
+  readonly quotes: readonly OrderRecord[];
+  readonly expectedGeneration?: number;
+  readonly nextGeneration: number;
+  readonly staleSlotIdsToCancel?: readonly string[];
+  readonly faultInjection?: 'FAIL_AFTER_FIRST_CHUNK' | 'FAIL_DURING_STALE_CANCEL' | 'FAIL_BEFORE_GENERATION_UPDATE';
+}
+
+export interface RefreshLpQuotesResult {
+  readonly success: boolean;
+  readonly updatedQuotesCount: number;
+  readonly cancelledQuotesCount: number;
+  readonly newGeneration: number;
+  readonly errorCode?: string;
+  readonly error?: string;
+}
+
+export interface PostCommitWarning {
+  readonly stage: string;
+  readonly message: string;
+  readonly error?: unknown;
+}
+
+export interface TickResult {
+  readonly success: boolean;
+  readonly tickCount: number;
+  readonly commitStatus: 'NOT_COMMITTED' | 'COMMITTED';
+  readonly errorCode?: string;
+  readonly error?: string;
+  readonly diagnostics?: readonly any[];
+  readonly postCommitWarnings?: readonly PostCommitWarning[];
 }
 
 export interface OptionExpirySettlementParams {
@@ -241,3 +289,4 @@ export interface NonTradeSettlementResult {
   readonly error?: string;
   readonly rollbackOccurred?: boolean;
 }
+

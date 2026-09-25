@@ -160,8 +160,8 @@ export function validateTradeSettlementInput(
   if (typeof trade.size !== 'number' || !Number.isFinite(trade.size)) {
     return failure('TRADE_SIZE_NOT_FINITE', tradeId, `size must be a finite number: ${trade.size}`);
   }
-  if (!Number.isInteger(trade.size)) {
-    return failure('TRADE_SIZE_NOT_INTEGER', tradeId, `size must be an integer: ${trade.size}`);
+  if (!Number.isSafeInteger(trade.size)) {
+    return failure('TRADE_SIZE_NOT_INTEGER', tradeId, `size must be a safe integer: ${trade.size}`);
   }
   if (trade.size <= 0) {
     return failure('TRADE_SIZE_NOT_POSITIVE', tradeId, `size must be > 0: ${trade.size}`);
@@ -186,7 +186,11 @@ export function validateTradeSettlementInput(
   }
 
   // 7. 수수료율: rate만 허용, 범위 검사
-  const rates = trade.fee_rates;
+  const rates = trade.fee_rates || (
+    typeof trade.buyer_fee_rate === 'number' && typeof trade.seller_fee_rate === 'number'
+      ? { buyerFeeRate: trade.buyer_fee_rate, sellerFeeRate: trade.seller_fee_rate }
+      : undefined
+  );
   if (!rates || typeof rates !== 'object') {
     return failure('FEE_RATES_MISSING', tradeId, 'fee_rates must be provided with buyerFeeRate and sellerFeeRate');
   }

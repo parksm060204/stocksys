@@ -14,7 +14,7 @@ import { MemoryDatabase, OrderRecord, StockRecord, ProfileRecord, HoldingRecord 
 import { createInMemoryRepositoryBundle } from '../lib/repositories/inMemory';
 import { createSimulationContext } from '../lib/engine/simulation/runtime/simulationContext';
 import { StaticTimeSource } from '../lib/engine/simulation/runtime/simulationTimeSource';
-import type { MarketExecutionObserver } from '../engine-server/src/MarketEngine';
+import type { MarketExecutionObserver } from '../engine-server/src/observers/MarketExecutionObserver';
 
 class NoopObserver implements MarketExecutionObserver {
   public async onSettlementCommitted() {}
@@ -36,15 +36,6 @@ async function setupEngine(): Promise<{ engine: MarketEngine; db: MemoryDatabase
     name: 'Samsung Electronics',
     current_price: 70000,
     previous_close: 70000,
-    open_price: 70000,
-    high: 70000,
-    low: 70000,
-    volume: 1000,
-    change_rate: 0,
-    market_cap: 70000000000,
-    pe_ratio: 10,
-    dividend_yield: 2,
-    sector: 'Technology',
     market: 'domestic',
     shares_outstanding: 1000000,
     floating_shares: 800000,
@@ -55,12 +46,8 @@ async function setupEngine(): Promise<{ engine: MarketEngine; db: MemoryDatabase
   const buyerProfile: ProfileRecord = {
     id: BUYER_ID,
     user_id: BUYER_ID,
-    username: 'Buyer',
-    nickname: 'Buyer',
     cash: 10_000_000,
     net_worth: 10_000_000,
-    rank_tier: 'Bronze',
-    created_at: new Date(NOW).toISOString(),
   };
   db.profiles.set(BUYER_ID, buyerProfile);
   db.profileUserIdIndex.set(BUYER_ID, BUYER_ID);
@@ -68,12 +55,8 @@ async function setupEngine(): Promise<{ engine: MarketEngine; db: MemoryDatabase
   const sellerProfile: ProfileRecord = {
     id: SELLER_ID,
     user_id: SELLER_ID,
-    username: 'Seller',
-    nickname: 'Seller',
     cash: 1_000_000,
     net_worth: 8_000_000,
-    rank_tier: 'Bronze',
-    created_at: new Date(NOW).toISOString(),
   };
   db.profiles.set(SELLER_ID, sellerProfile);
   db.profileUserIdIndex.set(SELLER_ID, SELLER_ID);
@@ -84,7 +67,6 @@ async function setupEngine(): Promise<{ engine: MarketEngine; db: MemoryDatabase
     stock_id: STOCK_ID,
     quantity: 100,
     avg_price: 68000,
-    created_at: new Date(NOW).toISOString(),
   };
   db.holdings.set(sellerHolding.id, sellerHolding);
   db.addHoldingToIndex(sellerHolding);
@@ -97,7 +79,6 @@ async function setupEngine(): Promise<{ engine: MarketEngine; db: MemoryDatabase
     side: 'buy',
     price: 70000,
     size: 10,
-    filled: 0,
     originalQuantity: 10,
     filledQuantity: 0,
     remainingQuantity: 10,
@@ -116,7 +97,6 @@ async function setupEngine(): Promise<{ engine: MarketEngine; db: MemoryDatabase
     side: 'sell',
     price: 70000,
     size: 10,
-    filled: 0,
     originalQuantity: 10,
     filledQuantity: 0,
     remainingQuantity: 10,

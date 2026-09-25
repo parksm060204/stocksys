@@ -842,7 +842,7 @@ export class MarketEngine {
         postCommitWarnings: postCommitWarnings.length > 0 ? postCommitWarnings : undefined,
       };
     } catch (error: any) {
-      if ((this.currentTickCommitStatus as string) === 'COMMITTED' || commitStatus === 'COMMITTED') {
+      if (this.currentTickCommitStatus === 'COMMITTED' || commitStatus === 'COMMITTED') {
         postCommitWarnings.push({
           stage: 'POST_COMMIT_UNHANDLED',
           message: error instanceof Error ? error.message : String(error),

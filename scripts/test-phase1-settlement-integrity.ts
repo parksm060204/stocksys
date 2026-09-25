@@ -433,6 +433,7 @@ async function main() {
       }),
     ]);
 
+    console.log('TEST 13 res:', res);
     assert.strictEqual(res.success, true, 'user-bot trade must settle successfully');
     const userProfileAfter = db.profiles.get(BUYER)!;
     const expectedCash = userCashBefore - notional - expectedBuyerFee;

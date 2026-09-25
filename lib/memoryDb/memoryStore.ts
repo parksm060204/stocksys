@@ -129,7 +129,6 @@ export interface OrderRecord {
   originalQuantity?: number;
   filledQuantity?: number;
   remainingQuantity?: number;
-  remaining?: number;
   version?: number;
   // ABM participant & sequencing fields
   participantId?: string;
@@ -166,23 +165,19 @@ export interface OptionContractRecord {
   id: string;
   underlying_stock_id: string;
   ticker: string;
-  asset_class?: string;
+  asset_class: string;
   type: 'CALL' | 'PUT';
-  option_type?: 'CALL' | 'PUT';
+  option_type: 'CALL' | 'PUT';
   strike_price: number;
   current_price: number;
   expiry_date: string;
-  open_interest?: number;
-  volume?: number;
-  delta?: number;
-  gamma?: number;
-  theta?: number;
-  implied_volatility?: number;
-  multiplier?: number;
-  created_at?: string;
-  // Optional schema aliases
-  underlying_asset_id?: string;
-  stock_id?: string;
+  open_interest: number;
+  volume: number;
+  delta: number;
+  gamma: number;
+  theta: number;
+  implied_volatility: number;
+  created_at: string;
 }
 
 export interface BondRecord {
@@ -297,7 +292,6 @@ export class MemoryDatabase {
   public isAuthorizedLp(id: string): boolean {
     if (!id) return false;
     if (this.lpAccounts.has(id)) return true;
-    if (id.startsWith('bot_lp_') || id.startsWith('lp_') || id.includes('_lp_')) return true;
     return this.botsConfig.some((b: any) =>
       (b.bot_id === id || b.id === id) &&
       (b.participant_kind === 'LIQUIDITY_PROVIDER' || b.participantKind === 'LIQUIDITY_PROVIDER' || b.type === 'OPTIONS_MM')
@@ -432,38 +426,6 @@ export class MemoryDatabase {
 
   public addProfileToIndex(p: ProfileRecord): void {
     this.profileUserIdIndex.set(p.user_id, p.id);
-  }
-
-  public ensureUserProfile(
-    userId: string,
-    initialData?: Partial<ProfileRecord>
-  ): ProfileRecord {
-    const existingId = this.profileUserIdIndex.get(userId) || userId;
-    const existing = this.profiles.get(existingId);
-    if (existing) return existing;
-
-    const displayName = initialData?.username || initialData?.nickname || '익명 투자자';
-    const profile: ProfileRecord = {
-      id: userId,
-      user_id: userId,
-      username: displayName,
-      nickname: displayName,
-      email: initialData?.email,
-      cash: initialData?.cash ?? 5000000,
-      net_worth: initialData?.net_worth ?? 5000000,
-      rank_tier: initialData?.rank_tier ?? 'Bronze',
-      usd_balance: initialData?.usd_balance ?? 0,
-      eur_balance: initialData?.eur_balance ?? 0,
-      jpy_balance: initialData?.jpy_balance ?? 0,
-      cny_balance: initialData?.cny_balance ?? 0,
-      gbp_balance: initialData?.gbp_balance ?? 0,
-      is_admin: initialData?.is_admin ?? false,
-      unlocked_features: initialData?.unlocked_features ?? [],
-      created_at: initialData?.created_at ?? this.getIsoTimestamp(),
-    };
-    this.profiles.set(userId, profile);
-    this.addProfileToIndex(profile);
-    return profile;
   }
 
   /**

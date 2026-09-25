@@ -5122,3 +5122,10 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 - **실패 배치의 프로필 생성 부수효과 제거 (`InMemorySettlementRepository.ts`)**: 정산 사전 검증 단계에서 `getAccountView` 순수 읽기 함수 도입하여 임시 프로필 생성을 일체 배제. 검증 실패 시 프로필 맵 및 저장소 핑거프린트 100% 무변경 유지.
 - **런타임 전체 상태 결정론적 스냅샷 및 롤백 (`MarketEngine.ts`, `simulationRandom.ts`)**: 틱 시작 시 PRNG 서브네임스페이스(jump, diffusion, event, fx) 상태, 틱 카운터, 활성 이벤트, ID 생성기를 포함하는 런타임 스냅샷을 생성하고, 정산 실패 시 온전히 복원. 장애 후 재시도 시 정상 실행과 bit-for-bit 동일한 핑거프린트 산출.
 - **회귀 테스트 9종 신규 작성 및 전체 검증 통과**: `scripts/test-phase3-*.ts` 9종 작성, 동시성/결정론 20회 반복 무결성 검증, `npx tsc --noEmit` 0 errors, `npm --prefix engine-server run build` 0 errors, `npm run lint` 0 errors, `npm run build` 0 errors, `phase0-baseline-audit.ts` PASS, 금지 서비스명 및 추적 빌드 산출물 0건 확인.
+---
+## 2026-09-25 21:05
+
+**요청 요약:** Git 원격 저장소 커밋 및 푸시 (Commit and push to remote repository).
+
+**수행 결과:**
+- 검증 완료된 거래소 코어·정산 불변조건 강화 및 10대 결함 해결 커밋(`5f5093f`)과 관련 작업 이력을 원격 저장소 `origin/main`(`https://github.com/parksm060204/stocksys.git`)으로 성공적으로 push 완료.

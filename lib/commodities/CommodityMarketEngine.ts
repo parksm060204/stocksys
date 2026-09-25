@@ -13,7 +13,7 @@ import { computeNextPrice } from './priceEngine';
 import { CommodityOrderBook, MatchResult } from './CommodityOrderBook';
 import { CommodityEventSystem } from './eventSystem';
 import { CommodityBot, createBotSwarm, BotRatios } from './bots';
-import { scenarioManager } from '../scenario/ScenarioManager';
+import { ScenarioManager } from '../scenario/ScenarioManager';
 import type { SimulationContext } from '../engine/simulation/runtime/simulationContext';
 import { createSimulationContext } from '../engine/simulation/runtime/simulationContext';
 import type { SimulationTimeSource } from '../engine/simulation/runtime/simulationTimeSource';
@@ -38,6 +38,7 @@ export interface CommodityEngineOptions {
   eventProbability?: number;
   initialTick?: number;
   simulationContext?: SimulationContext;
+  scenarioManager?: ScenarioManager;
 }
 
 export class CommodityMarketEngine {
@@ -49,6 +50,7 @@ export class CommodityMarketEngine {
   public tradesHistory: CommodityTrade[] = [];
   public readonly simContext: SimulationContext;
   public readonly clock: SimulationTimeSource;
+  public readonly scenarioManager: ScenarioManager;
   private readonly priceRandom: SimulationRandomSource;
   private readonly eventRandom: SimulationRandomSource;
   private readonly engineRandom: SimulationRandomSource;
@@ -99,6 +101,10 @@ export class CommodityMarketEngine {
     });
 
     this.currentTick = options?.initialTick ?? 0;
+    this.scenarioManager = options?.scenarioManager ?? new ScenarioManager({
+      clock: this.clock,
+      seed: options?.simulationContext ? (options.simulationContext.seed ?? 42) : 42,
+    });
   }
 
   /**
@@ -183,7 +189,7 @@ export class CommodityMarketEngine {
     }
 
     // ── 5. 가격 갱신 (수학 공식 적용 + 시나리오 Bias 주입) ──
-    scenarioManager.stepTick();
+    this.scenarioManager.stepTick();
     const priceSummaries: Record<string, { price: number; changePct: number; volume: number }> = {};
 
     this.commodities.forEach((state, commodityId) => {
@@ -192,7 +198,7 @@ export class CommodityMarketEngine {
       const executedVolume = match ? match.totalBuyVolume : 0;
 
       // 시나리오 바이어스 적용 (작전 세력 및 거시경제 충격)
-      const bias = scenarioManager.getAssetBias(commodityId);
+      const bias = this.scenarioManager.getAssetBias(commodityId);
       const biasedNetBuyVolume = netBuyVolume * bias.buyBias - (netBuyVolume < 0 ? Math.abs(netBuyVolume) * bias.sellBias : 0);
 
       // 공식에 의한 차기 가격 산출

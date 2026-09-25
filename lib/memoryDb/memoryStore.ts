@@ -237,6 +237,14 @@ export class SequentialIdGenerator implements DeterministicIdGenerator {
     this.counter += 1;
     return `${prefix}_${this.baseSeed}_${this.counter.toString().padStart(6, '0')}`;
   }
+
+  public getSnapshot(): number {
+    return this.counter;
+  }
+
+  public restoreSnapshot(snapshot: number): void {
+    this.counter = snapshot;
+  }
 }
 
 export interface DatabaseExecutionContext {
@@ -311,6 +319,22 @@ export class MemoryDatabase {
     }
     this.fallbackCounter += 1;
     return `${prefix}_${this.fallbackCounter.toString().padStart(6, '0')}`;
+  }
+
+  public snapshotIdGenerator(): unknown {
+    if (this.executionContext && typeof (this.executionContext.idGenerator as any).getSnapshot === 'function') {
+      return (this.executionContext.idGenerator as any).getSnapshot();
+    }
+    return this.fallbackCounter;
+  }
+
+  public restoreIdGenerator(snapshot: unknown): void {
+    if (snapshot === null || snapshot === undefined) return;
+    if (this.executionContext && typeof (this.executionContext.idGenerator as any).restoreSnapshot === 'function') {
+      (this.executionContext.idGenerator as any).restoreSnapshot(snapshot);
+    } else if (typeof snapshot === 'number') {
+      this.fallbackCounter = snapshot;
+    }
   }
 
   /**

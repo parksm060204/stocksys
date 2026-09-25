@@ -11,12 +11,20 @@ import type { RepositoryBundle } from '../../../lib/repositories/repositoryBundl
 import type { SimulationTimeSource } from '../../../lib/engine/simulation/runtime/simulationTimeSource';
 import type { OptionContract, OptionPosition, OptionSettlementResult } from './types';
 
+export interface HeldOptionResult {
+  readonly optionId: string;
+  readonly userId: string;
+  readonly reason: 'HELD_MISSING_UNDERLYING_PRICE' | 'HELD_INVALID_PRICE';
+  readonly underlyingPrice?: number;
+}
+
 export interface OptionSettlementBatchResult {
   readonly settledCount: number;
   readonly itmCount: number;
   readonly otmCount: number;
   readonly totalPayout: number;
   readonly results: readonly OptionSettlementResult[];
+  readonly heldResults: readonly HeldOptionResult[];
 }
 
 export class OptionSettlementEngine {
@@ -47,13 +55,13 @@ export class OptionSettlementEngine {
     const strikePrice = contract.strike_price;
     const quantity = position.quantity;
 
-    if (!Number.isFinite(underlyingClosePrice) || underlyingClosePrice < 0) {
+    if (!Number.isFinite(underlyingClosePrice) || underlyingClosePrice <= 0) {
       throw new RangeError(
-        `[OptionSettlementEngine] underlyingClosePrice must be finite and non-negative: ${underlyingClosePrice}`
+        `[OptionSettlementEngine] underlyingClosePrice must be finite and positive: ${underlyingClosePrice}`
       );
     }
-    if (!Number.isFinite(quantity) || quantity < 0) {
-      throw new RangeError(`[OptionSettlementEngine] quantity must be finite and non-negative: ${quantity}`);
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      throw new RangeError(`[OptionSettlementEngine] quantity must be finite and positive: ${quantity}`);
     }
 
     let isItm = false;
@@ -104,6 +112,7 @@ export class OptionSettlementEngine {
     }
 
     const results: OptionSettlementResult[] = [];
+    const heldResults: HeldOptionResult[] = [];
     let itmCount = 0;
     let otmCount = 0;
     let totalPayout = 0;
@@ -112,8 +121,37 @@ export class OptionSettlementEngine {
       const expTime = Date.parse(contract.expiry_date);
       if (!Number.isFinite(expTime) || expTime > now) continue;
 
-      const underlyingPrice =
-        params.underlyingPrices[contract.underlying_stock_id] ?? contract.strike_price;
+      const rawUnderlyingPrice = params.underlyingPrices[contract.underlying_stock_id];
+      if (rawUnderlyingPrice === undefined || rawUnderlyingPrice === null) {
+        // 기초자산 가격 누락 시 fail-closed: 정산 보류
+        for (const pos of params.positions) {
+          if (pos.optionId === contract.id && pos.quantity > 0) {
+            heldResults.push({
+              optionId: contract.id,
+              userId: pos.userId,
+              reason: 'HELD_MISSING_UNDERLYING_PRICE',
+            });
+          }
+        }
+        continue;
+      }
+
+      if (!Number.isFinite(rawUnderlyingPrice) || rawUnderlyingPrice <= 0) {
+        // 기초자산 가격이 NaN, Infinity, 0 이하인 경우 fail-closed: 정산 보류
+        for (const pos of params.positions) {
+          if (pos.optionId === contract.id && pos.quantity > 0) {
+            heldResults.push({
+              optionId: contract.id,
+              userId: pos.userId,
+              reason: 'HELD_INVALID_PRICE',
+              underlyingPrice: rawUnderlyingPrice,
+            });
+          }
+        }
+        continue;
+      }
+
+      const underlyingPrice = rawUnderlyingPrice;
 
       for (const pos of params.positions) {
         if (pos.optionId !== contract.id || pos.quantity <= 0) continue;
@@ -147,6 +185,6 @@ export class OptionSettlementEngine {
       }
     }
 
-    return { settledCount: results.length, itmCount, otmCount, totalPayout, results };
+    return { settledCount: results.length, itmCount, otmCount, totalPayout, results, heldResults };
   }
 }

@@ -5083,3 +5083,19 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 **요청 요약:** Git 원격 저장소 푸시 (Push to remote repository).
 **수행 결과:**
 - 검증 완료된 커밋(`9c51fc8`)을 원격 저장소 `origin/main`(`https://github.com/parksm060204/stocksys.git`)으로 성공적으로 push 완료.
+
+---
+## 2026-09-25 19:55
+
+**요청 요약:** 거래 엔진·정산 원자성·감사 무결성 잔여 결함 8종 전면 수정 — 중복·초과 체결 방지 및 CAS 원자성, 감사 도구 false PASS 수정 및 self-test 작성, 봇 자산·위험 통제 단일 권위 통합, LP 주문 사전 삭제(delete-before-settlement) 제거, 옵션 만기 fail-closed 가격 검증, 원자재 시나리오 결정론·격리, MarketEngine.tick() 에러 계약 정립 및 침묵 제거, 결정론적 ID 생성기 롤백 복원.
+
+**수행 결과:**
+- **중복·초과 체결 방지 및 정산 원자성 (InMemorySettlementRepository.ts, types.ts)**: commitMatchedBatchAtomically에 주문 존재 여부, 매수/매도 방향, 종목 일치, 참가자 일치, 주문 한도 가격, 주문 잔량(remaining = size - filled) 및 배치 누적 수량 초과 검증 구현. LP 외 일반 매도 잔고 검증(공매도 차단) 및 CAS(orderCas: { id, expectedFilled, expectedStatus }) 원자적 검증 추가. 정산 큐 뮤텍스 직렬화로 동시 배치 정산 시 중복 체결 완벽 차단. 실패 시 신규 등록 주문 제거 및 롤백 스냅샷 복원으로 순수 0-mutation 보장.
+- **감사 도구(Phase 0 Baseline Audit) False PASS 제거 및 자체 테스트 (scripts/phase0-baseline-audit.ts, scripts/test-phase0-audit-self.ts)**: git -c core.quotepath=false ls-files로 Git 추적 파일 전체를 안전하게 수집하고 바이너리 파일(.mp4, .png 등) 정밀 제외. 대소문자 무관 금지 외부 DB 서비스명 및 실질 코드 내용 검사 강화. 인프라 오류 은폐(try-catch 무시)를 제거하고 auditErrors 배열로 명시적 추적 및 비정상 종료 처리. 감사 도구 자체 테스트 스크립트 작성 및 통과 확인.
+- **봇 자산·위험 통제 단일 권위 통합 (orderSourceMetadata.ts, MarketEngine.ts, InMemorySettlementRepository.ts)**: 주문 제출 위험 검사 시 메모리 봇 객체의 정적 현금이 아닌 ParticipantRepository 및 프로필 단일 권위(availableCash) 조회로 변경. 체결 정산 시 profiles 및 institutional_portfolios 장부에 원자적 감액/증액 영구 반영. 엔진 재시작 시 DB 장부로부터 봇 잔고를 복원하고 정산 완료 후 메모리 상태와 실시간 동기화.
+- **LP 주문 사전 삭제(Delete-Before-Settlement) 패턴 제거 (MarketEngine.ts)**: tick() 시작 지점의 무조건적 safeDeleteLpOrders() 호출 제거 (매칭 전 호가 증발 방지). 결정론적 슬롯 ID(lp_${stockId}_${side}_slot${slot}) 기반의 호가 갱신 및 insertOrders(UPSERT/덮어쓰기) 방식으로 전환. 호가 생성 버전(lpQuoteGeneration)을 관리하고 미사용 슬롯만 안전하게 취소 처리하여 호가 공백 및 Postgres Dead Tuple 축적 방지.
+- **옵션 만기 정산 Fail-Closed 가격 검증 (OptionSettlementEngine.ts)**: 기초자산 종가가 누락되었거나 NaN, Infinity, <= 0인 비정상 가격일 경우 정산을 즉시 보류(HELD_MISSING_UNDERLYING_PRICE, HELD_INVALID_PRICE). 보류 시 현금, 포지션, 원장에 대해 일체의 상태 변이를 허용하지 않는 0-mutation 계약 구현.
+- **원자재 시나리오 결정론 및 엔진 인스턴스 격리 (ScenarioManager.ts, CommodityMarketEngine.ts)**: Date.now(), Math.random(), 전역 mutable 싱글톤을 전면 제거하고 주입된 SimulationTimeSource 및 시드 기반 SequentialIdGenerator 적용. 각 CommodityMarketEngine 인스턴스마다 독립된 ScenarioManager를 보유하도록 격리하여 인스턴스 간 상태 오염 방지.
+- **MarketEngine.tick() 에러 계약 정립 및 에러 침묵 제거 (MarketEngine.ts, InMemoryParticipantRepository.ts)**: tick(): Promise<TickResult>로 변경하여 { success: true, tickCount } 또는 { success: false, tickCount, errorCode, diagnostics, error }를 명시적으로 반환. 정산 실패 시 console.error에만 남기고 성공으로 리턴하던 침묵 패턴을 제거하고 에러를 명시적으로 전파.
+- **결정론적 ID 생성기 롤백 복원 (memoryStore.ts, InMemorySettlementRepository.ts)**: SequentialIdGenerator 및 MemoryDatabase에 getSnapshot() / restoreSnapshot() 구현. 정산 트랜잭션 시작 전 ID 생성기 카운터를 스냅샷하고, 실패 롤백 시 카운터를 원복하여 장애 재시도 시 bit-for-bit 동일한 결정론적 식별자 생성 보장.
+- **회귀 테스트 7종 신규 작성 및 전체 검증 통과**: test-phase0-audit-self.ts, test-phase2-order-settlement-concurrency.ts, test-phase2-bot-portfolio-authority.ts, test-phase2-lp-order-lifecycle.ts, test-phase2-option-expiry-failclosed.ts, test-phase2-commodity-scenario-determinism.ts, test-phase2-engine-tick-rollback-id.ts 전원 PASS. npm run audit:phase0 (PASS), npm run test:phase0 (PASS), npm run test:phase1 (PASS), npx tsc --noEmit (PASS), npm run lint (PASS), npm run build (PASS), npm audit --omit=dev (0 vulnerabilities).

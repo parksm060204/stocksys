@@ -43,6 +43,7 @@ export interface AuditResult {
   confirmExecutionBeforeSettlementHits: string[];
   /** former external DB service name hits across repository */
   legacyDbServiceNameHits: string[];
+  auditInfraErrors: string[];
   /** repository + memoryDb directories included in audit scope */
   auditedDirectories: string[];
   trackedNodeModulesCount: number;
@@ -80,9 +81,10 @@ export function runPhase0Audit(): AuditResult {
   const engineServerSrc = path.join(rootDir, 'engine-server', 'src');
   const simCoreDir = path.join(rootDir, 'lib', 'engine', 'simulation');
   const libCommodities = path.join(rootDir, 'lib', 'commodities');
-  // 감사 범위에 repository 계층과 데이터 계층을 포함한다.
+  // 감사 범위에 repository 계층과 데이터 계층, scenario 계층을 포함한다.
   const libRepositories = path.join(rootDir, 'lib', 'repositories');
   const libMemoryDb = path.join(rootDir, 'lib', 'memoryDb');
+  const libScenario = path.join(rootDir, 'lib', 'scenario');
   const libRuntime = path.join(rootDir, 'lib', 'engine', 'simulation', 'runtime');
 
   const tsRegex = /\.(ts|tsx)$/;
@@ -91,10 +93,11 @@ export function runPhase0Audit(): AuditResult {
   const commodityFiles = scanFiles(libCommodities, tsRegex);
   const repositoryFiles = scanFiles(libRepositories, tsRegex);
   const memoryDbFiles = scanFiles(libMemoryDb, tsRegex);
+  const scenarioFiles = scanFiles(libScenario, tsRegex);
   const runtimeFilesOnly = scanFiles(libRuntime, tsRegex);
 
   const runtimeFiles = Array.from(
-    new Set([...engineFiles, ...simFiles, ...commodityFiles, ...repositoryFiles, ...memoryDbFiles])
+    new Set([...engineFiles, ...simFiles, ...commodityFiles, ...repositoryFiles, ...memoryDbFiles, ...scenarioFiles])
   );
 
   let engineMathRandom = 0;
@@ -269,40 +272,56 @@ export function runPhase0Audit(): AuditResult {
 
   // 저장소 전체의 이전 외부 DB 서비스 명칭 검사 (대소문자 구분 없음, 0건이어야 함)
   const legacyDbServiceNameHits: string[] = [];
-  function scanAllRepoFiles(dir: string): string[] {
-    let results: string[] = [];
-    if (!fs.existsSync(dir)) return results;
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (
-        entry.name === '.git' ||
-        entry.name === 'node_modules' ||
-        entry.name === '.next' ||
-        entry.name === 'dist' ||
-        entry.name === 'archive'
-      ) {
-        continue;
-      }
-      const fullPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        results = results.concat(scanAllRepoFiles(fullPath));
-      } else if (entry.isFile()) {
-        results.push(fullPath);
-      }
-    }
-    return results;
+  const auditInfraErrors: string[] = [];
+
+  const BINARY_EXTENSIONS = new Set([
+    '.png', '.jpg', '.jpeg', '.gif', '.ico', '.webp', '.svgz',
+    '.pdf', '.zip', '.gz', '.tar', '.tgz', '.woff', '.woff2', '.ttf', '.eot',
+    '.bin', '.exe', '.dll', '.so', '.dylib', '.lock',
+    '.mp4', '.webm', '.avi', '.mov', '.mkv', '.mp3', '.wav', '.ogg'
+  ]);
+
+  let trackedRepoFiles: string[] = [];
+  try {
+    const gitLsOut = execSync('git -c core.quotepath=false ls-files', { cwd: rootDir, encoding: 'utf-8' });
+    trackedRepoFiles = gitLsOut.split('\n').map((s) => s.trim().replace(/^"|"$/g, '')).filter(Boolean);
+  } catch (err: any) {
+    auditInfraErrors.push(`git ls-files failed: ${err.message}`);
   }
-  const allRepoFiles = scanAllRepoFiles(rootDir);
-  for (const file of allRepoFiles) {
-    if (path.resolve(file) === path.resolve(__filename)) continue;
+
+  const forbiddenName = Buffer.from('c3VwYWJhc2U=', 'base64').toString('ascii');
+  const forbiddenPattern = new RegExp(forbiddenName, 'i');
+
+  const selfAuditScript = path.resolve(__filename);
+  const selfTestScript = path.resolve(path.join(rootDir, 'scripts', 'test-phase0-audit-self.ts'));
+
+  for (const relPath of trackedRepoFiles) {
+    const fullPath = path.resolve(rootDir, relPath);
+    if (fullPath === selfAuditScript || fullPath === selfTestScript) {
+      continue;
+    }
+
+    const ext = path.extname(fullPath).toLowerCase();
+    if (BINARY_EXTENSIONS.has(ext)) {
+      continue;
+    }
+
+    let buffer: Buffer;
     try {
-      const forbiddenName = Buffer.from('c3VwYWJhc2U=', 'base64').toString('ascii');
-      const forbiddenPattern = new RegExp(forbiddenName, 'i');
-      if (forbiddenPattern.test(content)) {
-        legacyDbServiceNameHits.push(path.relative(rootDir, file));
-      }
-    } catch {
-      // ignore binary files
+      buffer = fs.readFileSync(fullPath);
+    } catch (readErr: any) {
+      auditInfraErrors.push(`Failed to read tracked file ${relPath}: ${readErr.message}`);
+      continue;
+    }
+
+    // Explicit binary check: null byte in first 8KB
+    if (buffer.subarray(0, 8192).includes(0)) {
+      continue;
+    }
+
+    const content = buffer.toString('utf-8');
+    if (forbiddenPattern.test(content)) {
+      legacyDbServiceNameHits.push(relPath);
     }
   }
 
@@ -418,7 +437,8 @@ export function runPhase0Audit(): AuditResult {
     promiseAllSettledAuthoritativeHits,
     confirmExecutionBeforeSettlementHits,
     legacyDbServiceNameHits,
-    auditedDirectories: ['engine-server/src', 'lib/engine/simulation', 'lib/commodities', 'lib/repositories', 'lib/memoryDb'],
+    auditInfraErrors,
+    auditedDirectories: ['engine-server/src', 'lib/engine/simulation', 'lib/commodities', 'lib/repositories', 'lib/memoryDb', 'lib/scenario'],
     trackedNodeModulesCount,
     trackedDistCount,
     warnings
@@ -450,6 +470,7 @@ if (require.main === module) {
   console.log(`- Authoritative Promise.allSettled Error Swallowing: ${res.promiseAllSettledAuthoritativeHits.length === 0 ? 'NONE (CLEAN)' : res.promiseAllSettledAuthoritativeHits.join(', ')}`);
   console.log(`- confirmExecution Before Settlement Commit: ${res.confirmExecutionBeforeSettlementHits.length === 0 ? 'NONE (CLEAN)' : res.confirmExecutionBeforeSettlementHits.join(', ')}`);
   console.log(`- Former External DB Service Name References: ${res.legacyDbServiceNameHits.length === 0 ? 'NONE (0 HITS)' : res.legacyDbServiceNameHits.join(', ')}`);
+  console.log(`- Audit Infrastructure Errors: ${res.auditInfraErrors.length === 0 ? 'NONE (CLEAN)' : res.auditInfraErrors.join(', ')}`);
   console.log(`- Tracked engine-server/node_modules Files: ${res.trackedNodeModulesCount}`);
   console.log(`- Tracked engine-server/dist Files: ${res.trackedDistCount}`);
   console.log(`  (findings above are blocking only; documented wall-clock boundaries and standalone scripts are classified, not hidden)`);
@@ -459,7 +480,13 @@ if (require.main === module) {
     res.warnings.forEach(w => console.log(`  * ${w}`));
   }
 
+  if (res.auditInfraErrors.length > 0) {
+    console.error('\nAudit Infrastructure Errors:');
+    res.auditInfraErrors.forEach(e => console.error(`  ! ${e}`));
+  }
+
   const passed =
+    res.auditInfraErrors.length === 0 &&
     res.engineServerMathRandomCount === 0 &&
     res.deterministicCoreMathRandomCount === 0 &&
     res.orderSafetyCanonicalCount === 1 &&

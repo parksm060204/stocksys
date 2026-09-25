@@ -72,22 +72,38 @@ export class InMemorySettlementRepository implements SettlementRepository {
     return this.commitMatchedBatchAtomically({ trades });
   }
 
+  private mutex: Promise<void> = Promise.resolve();
+
   public async commitMatchedBatchAtomically(
     batch: MatchedBatchCommitInput
   ): Promise<SettlementBatchResult> {
-    const res = await this.executeCommitMatchedBatchAtomically(batch);
-    this.lastSettlementError = res.errorCode ?? null;
-    return res;
+    let release: () => void;
+    const nextLock = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const prevLock = this.mutex;
+    this.mutex = prevLock.then(() => nextLock);
+
+    await prevLock;
+    try {
+      const res = await this.executeCommitMatchedBatchAtomically(batch);
+      this.lastSettlementError = res.errorCode ?? null;
+      return res;
+    } finally {
+      release!();
+    }
   }
 
   private async executeCommitMatchedBatchAtomically(
     batch: MatchedBatchCommitInput
   ): Promise<SettlementBatchResult> {
     const trades = batch.trades || [];
+    const idGenSnapshot = (this.db as any).snapshotIdGenerator?.() ?? null;
 
     // 거래가 없는 경우: 주문/시세/가격이력만 있는 배치 처리
     if (trades.length === 0) {
       if (
+        (!batch.newOrders || batch.newOrders.length === 0) &&
         (!batch.orderUpdates || batch.orderUpdates.length === 0) &&
         (!batch.marketPriceUpdates || batch.marketPriceUpdates.length === 0) &&
         (!batch.priceHistory || batch.priceHistory.length === 0)
@@ -97,15 +113,29 @@ export class InMemorySettlementRepository implements SettlementRepository {
 
       // 주문/시세만 원자적으로 반영
       const ordersSnapshot = new Map<string, OrderRecord>();
+      const newlyInsertedOrderIds = new Set<string>();
       const stocksSnapshot = new Map<string, StockRecord>();
       const priceHistoryCountBefore = this.db.stockPriceHistory.length;
 
       try {
+        if (batch.newOrders) {
+          for (const ord of batch.newOrders) {
+            if (!this.db.orders.has(ord.id)) {
+              newlyInsertedOrderIds.add(ord.id);
+            } else if (!ordersSnapshot.has(ord.id)) {
+              ordersSnapshot.set(ord.id, { ...this.db.orders.get(ord.id)! });
+            }
+            this.db.orders.set(ord.id, { ...ord });
+            this.db.addOrderToIndex(ord);
+          }
+        }
         if (batch.orderUpdates) {
           for (const upd of batch.orderUpdates) {
             const ord = this.db.orders.get(upd.id);
             if (ord) {
-              ordersSnapshot.set(upd.id, { ...ord });
+              if (!ordersSnapshot.has(upd.id)) {
+                ordersSnapshot.set(upd.id, { ...ord });
+              }
               ord.size = upd.size;
               ord.status = upd.status;
             }
@@ -132,6 +162,11 @@ export class InMemorySettlementRepository implements SettlementRepository {
         }
         return emptyResult({ success: true });
       } catch (err) {
+        for (const id of newlyInsertedOrderIds) {
+          const ord = this.db.orders.get(id);
+          if (ord) this.db.removeOrderFromIndex(ord);
+          this.db.orders.delete(id);
+        }
         for (const [id, snap] of ordersSnapshot.entries()) {
           this.db.orders.set(id, snap);
         }
@@ -139,6 +174,8 @@ export class InMemorySettlementRepository implements SettlementRepository {
           this.db.stocks.set(id, snap);
         }
         this.db.stockPriceHistory = this.db.stockPriceHistory.slice(0, priceHistoryCountBefore);
+        this.db.rebuildIndexes();
+        (this.db as any).restoreIdGenerator?.(idGenSnapshot);
         return emptyResult({
           success: false,
           errorCode: 'EXECUTION_FAILED',
@@ -149,8 +186,6 @@ export class InMemorySettlementRepository implements SettlementRepository {
     }
 
     // ── Phase 0: 멱등성 사전 분류 ──
-    // 이미 authoritative ledger에 정산된 ID는 어떤 상태도 변경하지 않고 skip한다.
-    // batch 내부 중복(new trade)은 아래 검증 단계에서 거부된다.
     const skippedTradeIds: string[] = [];
     const pendingInputs: TradeSettlementInput[] = [];
     for (const t of trades) {
@@ -165,14 +200,13 @@ export class InMemorySettlementRepository implements SettlementRepository {
       return emptyResult({ skippedTradeIds });
     }
 
-    // ── Phase 1: 완전 검증 (아무 상태도 읽거나 변경하지 않은 순수 단계) ──
+    // ── Phase 1: 완전 검증 (순수 검증 단계) ──
     const seenIds = new Set<string>();
     const validated: SettlementValidationSuccess[] = [];
 
     for (const raw of pendingInputs) {
       const result = validateTradeSettlementInput(raw, seenIds, () => false);
       if (!result.ok) {
-        // batch 전체 거부. 현금/보유/거래/인덱스/원장 어떤 것도 변경하지 않는다.
         return emptyResult({
           success: false,
           errorCode: result.errorCode,
@@ -185,7 +219,174 @@ export class InMemorySettlementRepository implements SettlementRepository {
       validated.push(result);
     }
 
-    // ── Phase 2: 순 합계 산출 (validated 결과만 사용) ──
+    // ── Phase 1.5: 신규 주문 staging 및 참조 주문의 권위 상태·잔량 검증 (과체결/중복정산 차단) ──
+    const newlyInsertedOrderIds = new Set<string>();
+    const originalOrdersBeforeBatch = new Map<string, OrderRecord>();
+
+    if (batch.newOrders && batch.newOrders.length > 0) {
+      for (const ord of batch.newOrders) {
+        if (!this.db.orders.has(ord.id)) {
+          newlyInsertedOrderIds.add(ord.id);
+        } else if (!originalOrdersBeforeBatch.has(ord.id)) {
+          originalOrdersBeforeBatch.set(ord.id, { ...this.db.orders.get(ord.id)! });
+        }
+        this.db.orders.set(ord.id, { ...ord });
+        this.db.addOrderToIndex(ord);
+      }
+    }
+
+    const failBatch = (res: { errorCode: string; error: string; rejectedTradeIds?: readonly string[] }) => {
+      for (const id of newlyInsertedOrderIds) {
+        const ord = this.db.orders.get(id);
+        if (ord) this.db.removeOrderFromIndex(ord);
+        this.db.orders.delete(id);
+      }
+      for (const [id, snap] of originalOrdersBeforeBatch.entries()) {
+        this.db.orders.set(id, snap);
+      }
+      this.db.rebuildIndexes();
+      (this.db as any).restoreIdGenerator?.(idGenSnapshot);
+      return emptyResult({
+        success: false,
+        errorCode: res.errorCode,
+        error: res.error,
+        rejectedTradeIds: res.rejectedTradeIds ?? [],
+        rollbackOccurred: true,
+      });
+    };
+
+    const allocatedPerOrder = new Map<string, number>();
+
+    for (let i = 0; i < validated.length; i++) {
+      const trade = pendingInputs[i];
+
+      if (!isNonEmptyId(trade.buy_order_id) || !isNonEmptyId(trade.sell_order_id)) {
+        return failBatch({
+          errorCode: 'ORDER_ID_MISSING',
+          error: `ORDER_ID_MISSING: Trade ${trade.id} is missing buy or sell order id`,
+        });
+      }
+
+      const buyOrder = this.db.orders.get(trade.buy_order_id);
+      if (!buyOrder) {
+        return failBatch({
+          errorCode: 'ORDER_NOT_FOUND',
+          error: `ORDER_NOT_FOUND: Buy order ${trade.buy_order_id} not found in authoritative orders store`,
+        });
+      }
+
+      const sellOrder = this.db.orders.get(trade.sell_order_id);
+      if (!sellOrder) {
+        return failBatch({
+          errorCode: 'ORDER_NOT_FOUND',
+          error: `ORDER_NOT_FOUND: Sell order ${trade.sell_order_id} not found in authoritative orders store`,
+        });
+      }
+
+      if (buyOrder.side !== 'buy') {
+        return failBatch({
+          errorCode: 'ORDER_SIDE_MISMATCH',
+          error: `ORDER_SIDE_MISMATCH: Order ${trade.buy_order_id} side is ${buyOrder.side}, expected buy`,
+        });
+      }
+      if (sellOrder.side !== 'sell') {
+        return failBatch({
+          errorCode: 'ORDER_SIDE_MISMATCH',
+          error: `ORDER_SIDE_MISMATCH: Order ${trade.sell_order_id} side is ${sellOrder.side}, expected sell`,
+        });
+      }
+
+      if (buyOrder.stock_id !== trade.stock_id || sellOrder.stock_id !== trade.stock_id) {
+        return failBatch({
+          errorCode: 'ORDER_STOCK_MISMATCH',
+          error: `ORDER_STOCK_MISMATCH: Trade stock ${trade.stock_id} does not match order stocks`,
+        });
+      }
+
+      const expectedBuyer = buyOrder.participantId || buyOrder.user_id;
+      if (trade.buyer_id && expectedBuyer && trade.buyer_id !== expectedBuyer) {
+        return failBatch({
+          errorCode: 'ORDER_PARTICIPANT_MISMATCH',
+          error: `ORDER_PARTICIPANT_MISMATCH: Trade buyer ${trade.buyer_id} does not match order buyer ${expectedBuyer}`,
+        });
+      }
+      const expectedSeller = sellOrder.participantId || sellOrder.user_id;
+      if (trade.seller_id && expectedSeller && trade.seller_id !== expectedSeller) {
+        return failBatch({
+          errorCode: 'ORDER_PARTICIPANT_MISMATCH',
+          error: `ORDER_PARTICIPANT_MISMATCH: Trade seller ${trade.seller_id} does not match order seller ${expectedSeller}`,
+        });
+      }
+
+      if (buyOrder.status !== 'open' && buyOrder.status !== 'partial') {
+        return failBatch({
+          errorCode: 'ORDER_INVALID_STATUS',
+          error: `ORDER_INVALID_STATUS: Buy order ${buyOrder.id} status is ${buyOrder.status}`,
+        });
+      }
+      if (sellOrder.status !== 'open' && sellOrder.status !== 'partial') {
+        return failBatch({
+          errorCode: 'ORDER_INVALID_STATUS',
+          error: `ORDER_INVALID_STATUS: Sell order ${sellOrder.id} status is ${sellOrder.status}`,
+        });
+      }
+
+      if (buyOrder.price < trade.price || sellOrder.price > trade.price) {
+        return failBatch({
+          errorCode: 'ORDER_PRICE_MISMATCH',
+          error: `ORDER_PRICE_MISMATCH: Trade price ${trade.price} outside limits (buy: ${buyOrder.price}, sell: ${sellOrder.price})`,
+        });
+      }
+
+      allocatedPerOrder.set(
+        trade.buy_order_id,
+        (allocatedPerOrder.get(trade.buy_order_id) || 0) + trade.size
+      );
+      allocatedPerOrder.set(
+        trade.sell_order_id,
+        (allocatedPerOrder.get(trade.sell_order_id) || 0) + trade.size
+      );
+    }
+
+    for (const [orderId, allocated] of allocatedPerOrder.entries()) {
+      const ord = this.db.orders.get(orderId)!;
+      const filled = ord.filled || 0;
+      const remaining = Math.max(0, ord.size - filled);
+      if (allocated > remaining) {
+        return failBatch({
+          errorCode: 'ORDER_OVERFILL',
+          error: `ORDER_OVERFILL: Order ${orderId} remaining qty is ${remaining}, but batch requests ${allocated}`,
+        });
+      }
+    }
+
+    // CAS 검증
+    if (batch.orderCas) {
+      for (const cas of batch.orderCas) {
+        const ord = this.db.orders.get(cas.id);
+        if (!ord) {
+          return failBatch({
+            errorCode: 'ORDER_CAS_MISMATCH',
+            error: `ORDER_CAS_MISMATCH: Order ${cas.id} not found`,
+          });
+        }
+        const remaining = Math.max(0, ord.size - (ord.filled || 0));
+        if (cas.expectedRemaining !== undefined && cas.expectedRemaining !== remaining) {
+          return failBatch({
+            errorCode: 'ORDER_CAS_MISMATCH',
+            error: `ORDER_CAS_MISMATCH: Order ${cas.id} remaining ${remaining} !== expected ${cas.expectedRemaining}`,
+          });
+        }
+        if (cas.expectedFilled !== undefined && cas.expectedFilled !== (ord.filled || 0)) {
+          return failBatch({
+            errorCode: 'ORDER_CAS_MISMATCH',
+            error: `ORDER_CAS_MISMATCH: Order ${cas.id} filled ${ord.filled || 0} !== expected ${cas.expectedFilled}`,
+          });
+        }
+      }
+    }
+
+    // ── Phase 2: 순 합계 산출 (권위 있는 모든 참가자 대상) ──
     const netCashDeltas = new Map<string, number>();
     interface HoldingDelta {
       userId: string;
@@ -208,8 +409,8 @@ export class InMemorySettlementRepository implements SettlementRepository {
       totalAmount += v.tradeAmount;
       totalFeeAmount += v.fees.buyerFeeAmount + v.fees.sellerFeeAmount;
 
-      // Buyer: pays tradeAmount + buyerFeeAmount (feeAmount may be negative => rebate credit)
-      if (buyerId !== null && !trade.buyer_is_bot) {
+      // Buyer: pays tradeAmount + buyerFeeAmount
+      if (buyerId !== null) {
         netCashDeltas.set(buyerId, (netCashDeltas.get(buyerId) || 0) - (v.tradeAmount + v.fees.buyerFeeAmount));
         const key = `${buyerId}::${trade.stock_id}`;
         const existing = netHoldingDeltas.get(key) || { userId: buyerId, stockId: trade.stock_id, delta: 0 };
@@ -218,18 +419,40 @@ export class InMemorySettlementRepository implements SettlementRepository {
       }
 
       // Seller: receives tradeAmount - sellerFeeAmount
-      if (sellerId !== null && !trade.seller_is_bot) {
+      if (sellerId !== null) {
         netCashDeltas.set(sellerId, (netCashDeltas.get(sellerId) || 0) + (v.tradeAmount - v.fees.sellerFeeAmount));
-        const key = `${sellerId}::${trade.stock_id}`;
-        const existing = netHoldingDeltas.get(key) || { userId: sellerId, stockId: trade.stock_id, delta: 0 };
-        existing.delta -= trade.size;
-        netHoldingDeltas.set(key, existing);
+        const sellOrder = this.db.orders.get(trade.sell_order_id);
+        const isLp = Boolean(sellOrder?.is_lp || (sellOrder as any)?.participantKind === 'LIQUIDITY_PROVIDER');
+        if (!isLp) {
+          const key = `${sellerId}::${trade.stock_id}`;
+          const existing = netHoldingDeltas.get(key) || { userId: sellerId, stockId: trade.stock_id, delta: 0 };
+          existing.delta -= trade.size;
+          netHoldingDeltas.set(key, existing);
+        }
       }
     }
 
     const getProfile = (userId: string): ProfileRecord | null => {
       const pid = this.db.profileUserIdIndex.get(userId) || userId;
-      return this.db.profiles.get(pid) || null;
+      let p = this.db.profiles.get(pid);
+      if (!p) {
+        const port = this.db.institutionalPortfolios.get(userId);
+        if (port) {
+          p = {
+            id: userId,
+            user_id: userId,
+            username: port.name || userId,
+            nickname: port.name || userId,
+            cash: port.current_cash,
+            net_worth: port.total_capital ?? port.current_cash,
+            rank_tier: 'INSTITUTION',
+            created_at: this.db.getIsoTimestamp(),
+          };
+          this.db.profiles.set(userId, p);
+          this.db.profileUserIdIndex.set(userId, userId);
+        }
+      }
+      return p || null;
     };
     const getHolding = (userId: string, stockId: string): HoldingRecord | null => {
       return this.db.holdings.get(`${userId}_${stockId}`) || null;
@@ -238,6 +461,7 @@ export class InMemorySettlementRepository implements SettlementRepository {
     // ── Phase 3: 잔액/보유 사전 검증 + 전체 스냅샷 (단일 롤백 경계) ──
     const profileSnapshots = new Map<string, ProfileRecord>();
     const holdingSnapshots = new Map<string, HoldingRecord | null>();
+    const portfolioSnapshots = new Map<string, any>();
     const tradesCountBefore = this.db.trades.length;
     const ledgerEntriesBefore = new Map(this.db.settlementLedger);
     const ordersSnapshot = new Map<string, OrderRecord>();
@@ -247,50 +471,54 @@ export class InMemorySettlementRepository implements SettlementRepository {
     for (const [userId, cashDelta] of netCashDeltas.entries()) {
       const profile = getProfile(userId);
       if (!profile) {
-        return emptyResult({
-          success: false,
+        return failBatch({
           errorCode: 'PRE_VALIDATION_FAILED',
           error: `PRE_VALIDATION_FAILED: Profile not found for user ${userId}`,
-          rollbackOccurred: true,
         });
       }
       if (!Number.isFinite(profile.cash) || !Number.isFinite(cashDelta)) {
-        return emptyResult({
-          success: false,
+        return failBatch({
           errorCode: 'PRE_VALIDATION_FAILED',
           error: `PRE_VALIDATION_FAILED: Non-finite cash balance for user ${userId}`,
-          rollbackOccurred: true,
         });
       }
       if (profile.cash + cashDelta < 0) {
-        return emptyResult({
-          success: false,
+        return failBatch({
           errorCode: 'PRE_VALIDATION_FAILED',
           error: `PRE_VALIDATION_FAILED: Insufficient cash for user ${userId}. Required delta: ${cashDelta}, Current cash: ${profile.cash}`,
-          rollbackOccurred: true,
         });
       }
       profileSnapshots.set(profile.id, { ...profile });
+
+      const port = this.db.institutionalPortfolios.get(userId);
+      if (port) {
+        portfolioSnapshots.set(userId, { ...port });
+      }
     }
 
     for (const [key, item] of netHoldingDeltas.entries()) {
       const holding = getHolding(item.userId, item.stockId);
       const currentQty = holding ? holding.quantity : 0;
       if (!Number.isFinite(currentQty) || !Number.isFinite(item.delta) || currentQty + item.delta < 0) {
-        return emptyResult({
-          success: false,
+        return failBatch({
           errorCode: 'PRE_VALIDATION_FAILED',
           error: `PRE_VALIDATION_FAILED: Insufficient holdings for user ${item.userId} stock ${item.stockId}. Required delta: ${item.delta}, Current qty: ${currentQty}`,
-          rollbackOccurred: true,
         });
       }
       holdingSnapshots.set(key, holding ? { ...holding } : null);
     }
 
+    for (const orderId of allocatedPerOrder.keys()) {
+      const ord = this.db.orders.get(orderId);
+      if (ord) ordersSnapshot.set(orderId, { ...ord });
+    }
+
     if (batch.orderUpdates) {
       for (const upd of batch.orderUpdates) {
         const ord = this.db.orders.get(upd.id);
-        if (ord) ordersSnapshot.set(upd.id, { ...ord });
+        if (ord && !ordersSnapshot.has(upd.id)) {
+          ordersSnapshot.set(upd.id, { ...ord });
+        }
       }
     }
     if (batch.marketPriceUpdates) {
@@ -307,6 +535,10 @@ export class InMemorySettlementRepository implements SettlementRepository {
       for (const [userId, cashDelta] of netCashDeltas.entries()) {
         const profile = getProfile(userId)!;
         profile.cash = roundMoney(profile.cash + cashDelta);
+        const port = this.db.institutionalPortfolios.get(userId);
+        if (port) {
+          port.current_cash = profile.cash;
+        }
       }
 
       for (let i = 0; i < validated.length; i++) {
@@ -315,7 +547,7 @@ export class InMemorySettlementRepository implements SettlementRepository {
         const buyerId = isNonEmptyId(trade.buyer_id) ? trade.buyer_id : null;
         const sellerId = isNonEmptyId(trade.seller_id) ? trade.seller_id : null;
 
-        if (buyerId !== null && !trade.buyer_is_bot) {
+        if (buyerId !== null) {
           const hid = `${buyerId}_${trade.stock_id}`;
           let h = this.db.holdings.get(hid);
           if (!h) {
@@ -335,13 +567,22 @@ export class InMemorySettlementRepository implements SettlementRepository {
           const totalQty = h.quantity + trade.size;
           h.avg_price = totalQty > 0 ? (prevCost + newCost) / totalQty : trade.price;
           h.quantity = totalQty;
+
+          const port = this.db.institutionalPortfolios.get(buyerId);
+          if (port) {
+            port.current_stock = (port.current_stock || 0) + trade.size;
+          }
         }
 
-        if (sellerId !== null && !trade.seller_is_bot) {
+        if (sellerId !== null) {
           const hid = `${sellerId}_${trade.stock_id}`;
           const h = this.db.holdings.get(hid);
           if (h) {
             h.quantity = Math.max(0, h.quantity - trade.size);
+          }
+          const port = this.db.institutionalPortfolios.get(sellerId);
+          if (port) {
+            port.current_stock = Math.max(0, (port.current_stock || 0) - trade.size);
           }
         }
 
@@ -381,13 +622,28 @@ export class InMemorySettlementRepository implements SettlementRepository {
         newlySettledIds.push(v.tradeId);
       }
 
-      // 주문 상태 일괄 커밋
+      // 체결 주문 상태 일괄 갱신
+      for (const [orderId, allocated] of allocatedPerOrder.entries()) {
+        const ord = this.db.orders.get(orderId)!;
+        ord.filled = (ord.filled || 0) + allocated;
+        if (ord.filled >= ord.size) {
+          ord.status = 'filled';
+        } else {
+          ord.status = 'partial';
+        }
+      }
+
+      // 명시적 orderUpdates 반영 (allocated 외 주문)
       if (batch.orderUpdates) {
         for (const upd of batch.orderUpdates) {
           const ord = this.db.orders.get(upd.id);
           if (ord) {
-            ord.size = upd.size;
-            ord.status = upd.status;
+            if (!allocatedPerOrder.has(upd.id) && upd.size !== undefined) {
+              ord.size = upd.size;
+            }
+            if (upd.status) {
+              ord.status = upd.status;
+            }
           }
         }
       }
@@ -425,10 +681,14 @@ export class InMemorySettlementRepository implements SettlementRepository {
         skippedTradeIds,
       });
     } catch (err) {
-      // ── Phase 5: 완전 롤백 (현금/보유/거래/인덱스/원장/주문/시세/가격이력) ──
+      // ── Phase 5: 완전 롤백 ──
       for (const [pid, snap] of profileSnapshots.entries()) {
         const p = this.db.profiles.get(pid);
         if (p) Object.assign(p, snap);
+      }
+      for (const [botId, snap] of portfolioSnapshots.entries()) {
+        const port = this.db.institutionalPortfolios.get(botId);
+        if (port) Object.assign(port, snap);
       }
       for (const [hid, snap] of holdingSnapshots.entries()) {
         if (snap === null) {
@@ -446,6 +706,14 @@ export class InMemorySettlementRepository implements SettlementRepository {
       for (const id of newlySettledIds) {
         this.db.settlementLedger.delete(id);
       }
+      for (const id of newlyInsertedOrderIds) {
+        const ord = this.db.orders.get(id);
+        if (ord) this.db.removeOrderFromIndex(ord);
+        this.db.orders.delete(id);
+      }
+      for (const [id, snap] of originalOrdersBeforeBatch.entries()) {
+        this.db.orders.set(id, snap);
+      }
       for (const [id, snap] of ordersSnapshot.entries()) {
         this.db.orders.set(id, snap);
       }
@@ -453,6 +721,8 @@ export class InMemorySettlementRepository implements SettlementRepository {
         this.db.stocks.set(id, snap);
       }
       this.db.stockPriceHistory = this.db.stockPriceHistory.slice(0, priceHistoryCountBefore);
+      this.db.rebuildIndexes();
+      (this.db as any).restoreIdGenerator?.(idGenSnapshot);
 
       return emptyResult({
         success: false,

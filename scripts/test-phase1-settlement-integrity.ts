@@ -41,6 +41,39 @@ function makeDb(): MemoryDatabase {
   const h = { id: `${SELLER}_${STOCK}`, user_id: SELLER, stock_id: STOCK, quantity: 10_000, avg_price: 1000, created_at: '2026-01-01T00:00:00.000Z' };
   db.holdings.set(h.id, h);
   db.addHoldingToIndex(h);
+
+  const bo = {
+    id: 'BO_1',
+    stock_id: STOCK,
+    user_id: BUYER,
+    participantId: BUYER,
+    side: 'buy' as const,
+    price: 100_000_000,
+    size: 10_000_000,
+    filled: 0,
+    status: 'open' as const,
+    is_lp: false,
+    created_at: '2026-01-01T00:00:00.000Z',
+  };
+  db.orders.set(bo.id, bo);
+  db.addOrderToIndex(bo);
+
+  const so = {
+    id: 'SO_1',
+    stock_id: STOCK,
+    user_id: SELLER,
+    participantId: SELLER,
+    side: 'sell' as const,
+    price: 1,
+    size: 10_000_000,
+    filled: 0,
+    status: 'open' as const,
+    is_lp: false,
+    created_at: '2026-01-01T00:00:00.000Z',
+  };
+  db.orders.set(so.id, so);
+  db.addOrderToIndex(so);
+
   return db;
 }
 
@@ -308,9 +341,27 @@ async function main() {
     const ledgerBefore = db.settlementLedger.size;
     const tradesBefore = db.trades.length;
 
+    db.profiles.set('bot_gamma', { id: 'bot_gamma', user_id: 'bot_gamma', username: 'bg', nickname: 'bg', cash: 50_000_000, net_worth: 50_000_000, rank_tier: 'DIAMOND', created_at: '2026-01-01T00:00:00.000Z' });
+    db.profiles.set('bot_delta', { id: 'bot_delta', user_id: 'bot_delta', username: 'bd', nickname: 'bd', cash: 50_000_000, net_worth: 50_000_000, rank_tier: 'DIAMOND', created_at: '2026-01-01T00:00:00.000Z' });
+    db.profileUserIdIndex.set('bot_gamma', 'bot_gamma');
+    db.profileUserIdIndex.set('bot_delta', 'bot_delta');
+    const hDelta = { id: `bot_delta_${STOCK}`, user_id: 'bot_delta', stock_id: STOCK, quantity: 1000, avg_price: 50000, created_at: '2026-01-01T00:00:00.000Z' };
+    db.holdings.set(hDelta.id, hDelta);
+    db.addHoldingToIndex(hDelta);
+
+    const boGamma = { id: 'BO_BG', stock_id: STOCK, user_id: 'bot_gamma', participantId: 'bot_gamma', side: 'buy' as const, price: 50000, size: 20, filled: 0, status: 'open' as const, is_lp: false, created_at: '2026-01-01T00:00:00.000Z' };
+    db.orders.set(boGamma.id, boGamma);
+    db.addOrderToIndex(boGamma);
+
+    const soDelta = { id: 'SO_BD', stock_id: STOCK, user_id: 'bot_delta', participantId: 'bot_delta', side: 'sell' as const, price: 50000, size: 20, filled: 0, status: 'open' as const, is_lp: false, created_at: '2026-01-01T00:00:00.000Z' };
+    db.orders.set(soDelta.id, soDelta);
+    db.addOrderToIndex(soDelta);
+
     const res = await repo.settleTradeBatchAtomically([
       trade({
         id: 'bot_vs_bot_01',
+        buy_order_id: 'BO_BG',
+        sell_order_id: 'SO_BD',
         buyer_id: 'bot_gamma',
         seller_id: 'bot_delta',
         buyer_is_bot: true,
@@ -353,9 +404,25 @@ async function main() {
     const sellerFeeRate = 0.0005; // 5 bps -> 125 KRW
     const expectedBuyerFee = Math.round(notional * buyerFeeRate); // 375
 
+    db.profiles.set('bot_lp_omega', { id: 'bot_lp_omega', user_id: 'bot_lp_omega', username: 'lp_omega', nickname: 'lp_omega', cash: 50_000_000, net_worth: 50_000_000, rank_tier: 'DIAMOND', created_at: '2026-01-01T00:00:00.000Z' });
+    db.profileUserIdIndex.set('bot_lp_omega', 'bot_lp_omega');
+    const hLp = { id: `bot_lp_omega_${STOCK}`, user_id: 'bot_lp_omega', stock_id: STOCK, quantity: 1000, avg_price: 25000, created_at: '2026-01-01T00:00:00.000Z' };
+    db.holdings.set(hLp.id, hLp);
+    db.addHoldingToIndex(hLp);
+
+    const boUser = { id: 'BO_USER_13', stock_id: STOCK, user_id: BUYER, participantId: BUYER, side: 'buy' as const, price: tradePrice, size: tradeSize, filled: 0, status: 'open' as const, is_lp: false, created_at: '2026-01-01T00:00:00.000Z' };
+    db.orders.set(boUser.id, boUser);
+    db.addOrderToIndex(boUser);
+
+    const soLp = { id: 'SO_LP_13', stock_id: STOCK, user_id: 'bot_lp_omega', participantId: 'bot_lp_omega', side: 'sell' as const, price: tradePrice, size: tradeSize, filled: 0, status: 'open' as const, is_lp: true, created_at: '2026-01-01T00:00:00.000Z' };
+    db.orders.set(soLp.id, soLp);
+    db.addOrderToIndex(soLp);
+
     const res = await repo.settleTradeBatchAtomically([
       trade({
         id: 'user_vs_bot_01',
+        buy_order_id: 'BO_USER_13',
+        sell_order_id: 'SO_LP_13',
         buyer_id: BUYER,
         seller_id: 'bot_lp_omega',
         buyer_is_bot: false,

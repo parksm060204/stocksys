@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Phase 1 Settlement Repository Atomic & Idempotency Test
  *
  * Validates:
@@ -25,6 +25,7 @@ async function runSettlementAtomicTests() {
   // Setup accounts
   const buyerId = 'user_buyer_1';
   const sellerId = 'user_seller_1';
+  const emptySellerId = 'user_seller_empty';
   const stockId = 'stock_samsung';
 
   db.profiles.set(buyerId, {
@@ -75,6 +76,33 @@ async function runSettlementAtomicTests() {
     dividend_yield: 2,
     sector: 'semiconductor',
   });
+
+  const makeOrder = (id: string, side: 'buy' | 'sell', userId: string, price: number, size: number) => {
+    const o = {
+      id,
+      stock_id: stockId,
+      user_id: userId,
+      participantId: userId,
+      side,
+      price,
+      size,
+      filled: 0,
+      status: 'open' as const,
+      is_lp: false,
+      created_at: '2026-01-01T00:00:00Z',
+    };
+    db.orders.set(id, o);
+    db.addOrderToIndex(o);
+  };
+
+  makeOrder('order_b1', 'buy', buyerId, 60_000, 100);
+  makeOrder('order_s1', 'sell', sellerId, 60_000, 100);
+  makeOrder('order_b2', 'buy', buyerId, 60_000, 100);
+  makeOrder('order_s2', 'sell', sellerId, 60_000, 100);
+  makeOrder('order_b3', 'buy', buyerId, 60_000, 1_000_000);
+  makeOrder('order_s3', 'sell', sellerId, 60_000, 1_000_000);
+  makeOrder('order_b4', 'buy', buyerId, 60_000, 100);
+  makeOrder('order_s4', 'sell', emptySellerId, 60_000, 100);
 
   // ── TEST 1: Successful Atomic Batch Settlement ──
   console.log('[TEST 1] Successful Atomic Batch Settlement');
@@ -176,7 +204,7 @@ async function runSettlementAtomicTests() {
 
   // ── TEST 4: Negative Cash / Short Selling Prevention ──
   console.log('\n[TEST 4] Negative Invariant Enforcement');
-  const emptySellerId = 'user_seller_empty';
+
   db.profiles.set(emptySellerId, {
     id: emptySellerId,
     user_id: emptySellerId,

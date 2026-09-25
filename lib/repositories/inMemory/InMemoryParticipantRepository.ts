@@ -50,9 +50,24 @@ export class InMemoryParticipantRepository implements ParticipantRepository {
 
   public async updateProfile(userId: string, updates: Partial<ProfileRecord>): Promise<void> {
     const profileId = this.db.profileUserIdIndex.get(userId) || userId;
-    const profile = this.db.profiles.get(profileId);
+    let profile = this.db.profiles.get(profileId);
     if (profile) {
       Object.assign(profile, updates);
+    } else {
+      profile = {
+        id: userId,
+        user_id: userId,
+        username: updates.username ?? userId,
+        nickname: updates.nickname ?? userId,
+        rank_tier: updates.rank_tier ?? 'RETAIL',
+        cash: 0,
+        net_worth: 0,
+        created_at: this.db.getIsoTimestamp(),
+        ...updates,
+      };
+      this.db.profiles.set(userId, profile);
+      this.db.profileUserIdIndex.set(userId, userId);
+      this.db.addProfileToIndex(profile);
     }
   }
 

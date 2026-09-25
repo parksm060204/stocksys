@@ -155,6 +155,7 @@ export interface SettlementBatchResult {
 
 export interface MatchedBatchCommitInput {
   readonly trades: readonly TradeSettlementInput[];
+  readonly newOrders?: readonly OrderRecord[];
   readonly orderUpdates?: readonly {
     readonly id: string;
     readonly size: number;
@@ -168,6 +169,12 @@ export interface MatchedBatchCommitInput {
     readonly stock_id: string;
     readonly price: number;
     readonly recorded_at: string;
+  }[];
+  readonly orderCas?: readonly {
+    readonly id: string;
+    readonly expectedRemaining?: number;
+    readonly expectedFilled?: number;
+    readonly expectedVersion?: number;
   }[];
 }
 

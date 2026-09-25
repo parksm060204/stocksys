@@ -8,11 +8,29 @@ import {
   AssetType,
 } from './types';
 
+export interface ScenarioManagerOptions {
+  readonly clock?: { now(): number };
+  readonly seed?: number;
+}
+
 export class ScenarioManager {
   private activeScenarios: Map<string, ManipulationScenario> = new Map();
   private activeMacroShocks: Map<string, MacroShockEvent> = new Map();
   private actionLogs: AdminActionLog[] = [];
   public currentTick: number = 0;
+  private readonly clock: { now(): number };
+  private readonly seed: number;
+  private idCounter: number = 0;
+
+  constructor(options?: ScenarioManagerOptions) {
+    this.clock = options?.clock ?? { now: () => 1774000000000 };
+    this.seed = options?.seed ?? 0;
+  }
+
+  public nextDeterministicId(prefix: string): string {
+    this.idCounter += 1;
+    return `${prefix}_${this.seed}_${this.idCounter.toString().padStart(6, '0')}`;
+  }
 
   /**
    * 작전 세력 시나리오 주입
@@ -33,8 +51,9 @@ export class ScenarioManager {
     const targetChange = params.targetChangePct ?? (params.mode === 'pump' ? 50 : params.mode === 'dump' ? -35 : 0);
     const totalTicks = params.mode === 'full_cycle' ? duration * 3 : duration;
 
+    const now = this.clock.now();
     const scenario: ManipulationScenario = {
-      id: `scen_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      id: this.nextDeterministicId('scen'),
       assetType: params.assetType,
       assetId: params.assetId,
       ticker: params.ticker,
@@ -49,14 +68,14 @@ export class ScenarioManager {
       initialPrice: params.initialPrice,
       currentPrice: params.initialPrice,
       status: 'active',
-      createdAt: Date.now(),
+      createdAt: now,
       createdBy: params.adminUser || 'admin',
     };
 
     this.activeScenarios.set(scenario.id, scenario);
 
     this.logAction({
-      id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      id: this.nextDeterministicId('log'),
       actionType: 'INJECT_SCENARIO',
       targetId: params.assetId,
       targetName: `[${params.ticker}] ${params.name}`,
@@ -68,7 +87,7 @@ export class ScenarioManager {
         initialPrice: params.initialPrice,
       },
       adminUser: scenario.createdBy,
-      timestamp: Date.now(),
+      timestamp: now,
     });
 
     return scenario;
@@ -144,8 +163,9 @@ export class ScenarioManager {
         break;
     }
 
+    const now = this.clock.now();
     const shockEvent: MacroShockEvent = {
-      id: `shock_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      id: this.nextDeterministicId('shock'),
       type: params.type,
       title,
       headline,
@@ -156,13 +176,13 @@ export class ScenarioManager {
       durationTicks,
       remainingTicks: durationTicks,
       affectedAssets,
-      createdAt: Date.now(),
+      createdAt: now,
     };
 
     this.activeMacroShocks.set(shockEvent.id, shockEvent);
 
     this.logAction({
-      id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      id: this.nextDeterministicId('log'),
       actionType: 'TRIGGER_MACRO_SHOCK',
       targetName: title,
       details: {
@@ -172,7 +192,7 @@ export class ScenarioManager {
         durationTicks,
       },
       adminUser: params.adminUser || 'admin',
-      timestamp: Date.now(),
+      timestamp: now,
     });
 
     return shockEvent;
@@ -188,8 +208,9 @@ export class ScenarioManager {
     scenario.status = 'cancelled';
     this.activeScenarios.delete(scenarioId);
 
+    const now = this.clock.now();
     this.logAction({
-      id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      id: this.nextDeterministicId('log'),
       actionType: 'ROLLBACK_SCENARIO',
       targetId: scenario.assetId,
       targetName: `[${scenario.ticker}] ${scenario.name}`,
@@ -199,7 +220,7 @@ export class ScenarioManager {
         remainingTicks: scenario.remainingTicks,
       },
       adminUser,
-      timestamp: Date.now(),
+      timestamp: now,
     });
 
     return true;
@@ -215,15 +236,16 @@ export class ScenarioManager {
     this.activeScenarios.clear();
     this.activeMacroShocks.clear();
 
+    const now = this.clock.now();
     this.logAction({
-      id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      id: this.nextDeterministicId('log'),
       actionType: 'EMERGENCY_HALT_ALL',
       details: {
         cancelledScenariosCount: cancelledScenarios,
         cancelledShocksCount: cancelledShocks,
       },
       adminUser,
-      timestamp: Date.now(),
+      timestamp: now,
     });
 
     return { cancelledScenarios, cancelledShocks };

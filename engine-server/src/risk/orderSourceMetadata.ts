@@ -114,13 +114,22 @@ export async function verifyParticipantProfile(
       ]
     : undefined;
 
-  // 참가자 현금과 포지션은 초기 botsConfig의 고정값이 아니라 authoritative 현재 상태를 조회해야 한다.
-  const availableCash = profile
-    ? Number(profile.cash ?? 0)
-    : Number((bot?.current_cash ?? 0) as number);
-  const accountEquity = profile
-    ? Number(profile.net_worth ?? profile.cash ?? 0)
-    : Number((bot?.account_equity ?? bot?.total_capital ?? bot?.current_cash ?? 0) as number);
+  // 참가자 현금과 포지션의 단일 권위 저장소: profile 또는 institutional_portfolios
+  // 초기화 이후에는 정적 설정 현금을 fallback으로 사용하지 않는다.
+  let availableCash = 0;
+  let accountEquity = 0;
+
+  if (profile) {
+    availableCash = Number(profile.cash ?? 0);
+    accountEquity = Number(profile.net_worth ?? profile.cash ?? 0);
+  } else if (typeof repositories.participant.getPortfolios === 'function') {
+    const portfolios = await repositories.participant.getPortfolios();
+    const port = (portfolios || []).find((p: any) => (p.bot_id ?? p.id) === participantId);
+    if (port) {
+      availableCash = Number(port.current_cash ?? 0);
+      accountEquity = Number(port.total_capital ?? port.current_cash ?? 0);
+    }
+  }
 
   const holding = await repositories.participant.getHolding(participantId, stockId);
   const currentPosition = holding ? Number(holding.quantity || 0) : 0;

@@ -5099,3 +5099,10 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 - **MarketEngine.tick() 에러 계약 정립 및 에러 침묵 제거 (MarketEngine.ts, InMemoryParticipantRepository.ts)**: tick(): Promise<TickResult>로 변경하여 { success: true, tickCount } 또는 { success: false, tickCount, errorCode, diagnostics, error }를 명시적으로 반환. 정산 실패 시 console.error에만 남기고 성공으로 리턴하던 침묵 패턴을 제거하고 에러를 명시적으로 전파.
 - **결정론적 ID 생성기 롤백 복원 (memoryStore.ts, InMemorySettlementRepository.ts)**: SequentialIdGenerator 및 MemoryDatabase에 getSnapshot() / restoreSnapshot() 구현. 정산 트랜잭션 시작 전 ID 생성기 카운터를 스냅샷하고, 실패 롤백 시 카운터를 원복하여 장애 재시도 시 bit-for-bit 동일한 결정론적 식별자 생성 보장.
 - **회귀 테스트 7종 신규 작성 및 전체 검증 통과**: test-phase0-audit-self.ts, test-phase2-order-settlement-concurrency.ts, test-phase2-bot-portfolio-authority.ts, test-phase2-lp-order-lifecycle.ts, test-phase2-option-expiry-failclosed.ts, test-phase2-commodity-scenario-determinism.ts, test-phase2-engine-tick-rollback-id.ts 전원 PASS. npm run audit:phase0 (PASS), npm run test:phase0 (PASS), npm run test:phase1 (PASS), npx tsc --noEmit (PASS), npm run lint (PASS), npm run build (PASS), npm audit --omit=dev (0 vulnerabilities).
+
+---
+## 2026-09-25 20:00
+
+**요청 요약:** Git 원격 저장소 커밋 및 푸시 (Commit and push to remote repository).
+**수행 결과:**
+- 거래 엔진 및 정산 원자성 강화 커밋(`d243789`)을 원격 저장소 `origin/main`(`https://github.com/parksm060204/stocksys.git`)으로 push 준비 및 이력 기록.

@@ -41,6 +41,15 @@ function setupDb(): { db: MemoryDatabase; bundle: ReturnType<typeof createInMemo
     name: 'Samsung Electronics',
     current_price: 75000,
     previous_close: 70000,
+    open_price: 75000,
+    high: 75000,
+    low: 70000,
+    volume: 10000,
+    change_rate: 0,
+    market_cap: 75000 * 1000000,
+    pe_ratio: 15,
+    dividend_yield: 0.02,
+    sector: 'IT',
     market: 'domestic',
     shares_outstanding: 1000000,
     floating_shares: 800000,
@@ -51,8 +60,12 @@ function setupDb(): { db: MemoryDatabase; bundle: ReturnType<typeof createInMemo
   const profile: ProfileRecord = {
     id: USER_ID,
     user_id: USER_ID,
+    username: 'user_retail_1',
+    nickname: 'user_retail_1',
+    rank_tier: 'Bronze',
     cash: 50_000_000,
     net_worth: 100_000_000,
+    created_at: new Date(NOW).toISOString(),
   };
   db.profiles.set(USER_ID, profile);
   db.profileUserIdIndex.set(USER_ID, USER_ID);
@@ -69,6 +82,8 @@ async function run() {
     const { db, bundle } = setupDb();
     const opt: OptionContractRecord = {
       id: 'opt_invalid_date',
+      ticker: 'OPT_TEST_INVALID_DATE',
+      underlying_stock_id: STOCK_ID,
       stock_id: STOCK_ID,
       underlying_asset_id: STOCK_ID,
       type: 'CALL',
@@ -85,6 +100,7 @@ async function run() {
       stock_id: opt.id,
       quantity: 5,
       avg_price: 5000,
+      created_at: new Date(NOW).toISOString(),
     };
     db.holdings.set(holding.id, holding);
     db.addHoldingToIndex(holding);
@@ -111,6 +127,8 @@ async function run() {
     const { db, bundle } = setupDb();
     const opt: OptionContractRecord = {
       id: 'opt_invalid_type',
+      ticker: 'OPT_TEST_INVALID_TYPE',
+      underlying_stock_id: STOCK_ID,
       stock_id: STOCK_ID,
       underlying_asset_id: STOCK_ID,
       type: 'FORWARD' as any,
@@ -127,6 +145,7 @@ async function run() {
       stock_id: opt.id,
       quantity: 5,
       avg_price: 5000,
+      created_at: new Date(NOW).toISOString(),
     };
     db.holdings.set(holding.id, holding);
     db.addHoldingToIndex(holding);
@@ -153,6 +172,8 @@ async function run() {
     const { db, bundle } = setupDb();
     const opt: OptionContractRecord = {
       id: 'opt_invalid_strike',
+      ticker: 'OPT_TEST_INVALID_STRIKE',
+      underlying_stock_id: STOCK_ID,
       stock_id: STOCK_ID,
       underlying_asset_id: STOCK_ID,
       type: 'CALL',
@@ -169,6 +190,7 @@ async function run() {
       stock_id: opt.id,
       quantity: 5,
       avg_price: 5000,
+      created_at: new Date(NOW).toISOString(),
     };
     db.holdings.set(holding.id, holding);
     db.addHoldingToIndex(holding);
@@ -214,6 +236,7 @@ async function run() {
       stock_id: bond.id,
       quantity: 10,
       avg_price: 10000,
+      created_at: new Date(NOW).toISOString(),
     };
     db.holdings.set(holding.id, holding);
     db.addHoldingToIndex(holding);
@@ -258,6 +281,7 @@ async function run() {
       stock_id: bond.id,
       quantity: 10,
       avg_price: 10000,
+      created_at: new Date(NOW).toISOString(),
     };
     db.holdings.set(holding.id, holding);
     db.addHoldingToIndex(holding);

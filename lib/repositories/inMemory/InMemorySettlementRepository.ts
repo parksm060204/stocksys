@@ -855,6 +855,43 @@ export class InMemorySettlementRepository implements SettlementRepository {
     const netHoldingDeltas = new Map<string, HoldingDelta>();
     const netLpLiabilityDeltas = new Map<string, number>();
 
+    interface AuthoritativeAccountView {
+      id: string;
+      cash: number;
+      netWorth: number;
+      isInstitution: boolean;
+      needsProfileCreation: boolean;
+      institutionName?: string;
+    }
+    const getAccountView = (userId: string): AuthoritativeAccountView | null => {
+      const pid = this.db.profileUserIdIndex.get(userId) || userId;
+      const p = this.db.profiles.get(pid);
+      if (p) {
+        return {
+          id: p.id,
+          cash: p.cash,
+          netWorth: p.net_worth,
+          isInstitution: p.rank_tier === 'INSTITUTION',
+          needsProfileCreation: false,
+        };
+      }
+      const port = this.db.institutionalPortfolios.get(userId);
+      if (port) {
+        return {
+          id: userId,
+          cash: port.current_cash,
+          netWorth: port.total_capital ?? port.current_cash,
+          isInstitution: true,
+          needsProfileCreation: true,
+          institutionName: port.name || userId,
+        };
+      }
+      return null;
+    };
+    const getHolding = (userId: string, stockId: string): HoldingRecord | null => {
+      return this.db.holdings.get(`${userId}_${stockId}`) || null;
+    };
+
     let totalVolume = 0;
     let totalAmount = 0;
     let totalFeeAmount = 0;
@@ -908,43 +945,6 @@ export class InMemorySettlementRepository implements SettlementRepository {
         }
       }
     }
-
-    interface AuthoritativeAccountView {
-      id: string;
-      cash: number;
-      netWorth: number;
-      isInstitution: boolean;
-      needsProfileCreation: boolean;
-      institutionName?: string;
-    }
-    const getAccountView = (userId: string): AuthoritativeAccountView | null => {
-      const pid = this.db.profileUserIdIndex.get(userId) || userId;
-      const p = this.db.profiles.get(pid);
-      if (p) {
-        return {
-          id: p.id,
-          cash: p.cash,
-          netWorth: p.net_worth,
-          isInstitution: p.rank_tier === 'INSTITUTION',
-          needsProfileCreation: false,
-        };
-      }
-      const port = this.db.institutionalPortfolios.get(userId);
-      if (port) {
-        return {
-          id: userId,
-          cash: port.current_cash,
-          netWorth: port.total_capital ?? port.current_cash,
-          isInstitution: true,
-          needsProfileCreation: true,
-          institutionName: port.name || userId,
-        };
-      }
-      return null;
-    };
-    const getHolding = (userId: string, stockId: string): HoldingRecord | null => {
-      return this.db.holdings.get(`${userId}_${stockId}`) || null;
-    };
 
     // ── Phase 3: 잔액/보유 사전 검증 + 전체 스냅샷 (단일 롤백 경계, 순수 read-only) ──
     const profileSnapshots = new Map<string, ProfileRecord>();
@@ -1504,7 +1504,7 @@ export class InMemorySettlementRepository implements SettlementRepository {
       return { success: false, errorCode: 'INVALID_STRIKE_PRICE', error: `Invalid strike price: ${contract.strike_price}` };
     }
 
-    const underlyingId = contract.underlying_asset_id || (contract as any).underlying_id || contract.stock_id;
+    const underlyingId = contract.underlying_stock_id || contract.underlying_asset_id || (contract as any).underlying_id || contract.stock_id;
     if (!underlyingId || typeof underlyingId !== 'string') {
       return { success: false, errorCode: 'INVALID_UNDERLYING_ID', error: 'Missing or empty underlying ID' };
     }

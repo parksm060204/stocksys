@@ -14,7 +14,7 @@ import { MemoryDatabase, StockRecord, ProfileRecord } from '../lib/memoryDb/memo
 import { createInMemoryRepositoryBundle } from '../lib/repositories/inMemory';
 import { createSimulationContext } from '../lib/engine/simulation/runtime/simulationContext';
 import { StaticTimeSource } from '../lib/engine/simulation/runtime/simulationTimeSource';
-import type { MarketExecutionObserver } from '../engine-server/src/observers/MarketExecutionObserver';
+import type { MarketExecutionObserver } from '../engine-server/src/MarketEngine';
 
 class NoopObserver implements MarketExecutionObserver {
   public async onSettlementCommitted() {}
@@ -35,6 +35,15 @@ async function run() {
     name: 'Samsung Electronics',
     current_price: 70000,
     previous_close: 70000,
+    open_price: 70000,
+    high: 70000,
+    low: 70000,
+    volume: 1000,
+    change_rate: 0,
+    market_cap: 70000000000,
+    pe_ratio: 10,
+    dividend_yield: 2,
+    sector: 'Technology',
     market: 'domestic',
     shares_outstanding: 1000000,
     floating_shares: 800000,
@@ -45,8 +54,12 @@ async function run() {
   const profile: ProfileRecord = {
     id: BOT_ID,
     user_id: BOT_ID,
+    username: 'National Pension Service',
+    nickname: 'National Pension Service',
     cash: 50_000_000_000,
     net_worth: 50_000_000_000,
+    rank_tier: 'Challenger',
+    created_at: new Date().toISOString(),
   };
   db.profiles.set(BOT_ID, profile);
   db.profileUserIdIndex.set(BOT_ID, BOT_ID);

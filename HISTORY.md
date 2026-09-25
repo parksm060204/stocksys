@@ -5129,3 +5129,16 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 
 **수행 결과:**
 - 검증 완료된 거래소 코어·정산 불변조건 강화 및 10대 결함 해결 커밋(`5f5093f`)과 관련 작업 이력을 원격 저장소 `origin/main`(`https://github.com/parksm060204/stocksys.git`)으로 성공적으로 push 완료.
+
+---
+## 2026-09-26 02:55
+
+**요청 요약:** LP 매도 정산 실패 수정, 옵션 만기 정산 스키마 일치, 구글 로그인 신규 사용자 계좌 격리/생성, 타입 검사 오류 전면 해결(0 errors), AI 분석 API 남용 방지 및 보안 강화.
+
+**수행 결과:**
+- **LP 매도 정산 실패 해결 (`lib/repositories/inMemory/InMemorySettlementRepository.ts`, `lib/memoryDb/memoryStore.ts`)**: `AuthoritativeAccountView`, `getAccountView`, `getHolding` 선언을 정산 루프 상단으로 호이스팅하여 TDZ/ReferenceError를 해결하고, `isAuthorizedLp`가 `bot_lp_`, `lp_`, `_lp_` 계정 식별자를 정확히 인가하도록 개선하여 LP가 매도자인 거래의 무차입 결제 및 잔고 정산이 정상 수행되도록 수정.
+- **옵션 만기 정산 스키마 일치 및 무결성 확보 (`lib/repositories/inMemory/InMemorySettlementRepository.ts`, `lib/memoryDb/memoryStore.ts`)**: `OptionContractRecord`의 표준 필드 `underlying_stock_id`를 우선 참조하도록 수정하고, `multiplier`, `ticker`, `current_price` 계약 규격을 통일. ITM 계약 정상 지급, OTM 계약 무지급 및 포지션 정상 종료, 동일 멱등키 재시도 시 `ALREADY_SETTLED` 반환 및 중복 지급 방지 검증.
+- **Google 로그인 신규 사용자 계좌 누락 및 게스트 공유 차단 (`lib/memoryDb/memoryDbClient.ts`, `lib/memoryDb/memoryStore.ts`, `app/api/auth/[...nextauth]/route.ts`)**: `memoryDbClient`의 프로필 조회 및 단건 추출(`isSingle`, `isMaybeSingle`) 시 비인증/미존재 사용자를 게스트 계좌로 fallback 반환하던 로직을 완전 제거. 신규 인증 사용자는 본인 고유 ID로 프로필과 초기 자산(500만 원, Bronze 티어)이 정확히 1회 생성(`ensureUserProfile`)되도록 구현하고 NextAuth 콜백(`signIn`, `jwt`, `session`)을 `try-catch` 안전 패턴으로 보호.
+- **타입 검사 0건 달성 (`npx tsc --noEmit`)**: 주문 잔량(`remaining?: number`), 수수료율 옵션 타입(`fee_rates`, `buyer/seller_fee_rate`), `MarketEngine.ts` CAS 커밋 상태 불일치, 누락된 `MarketExecutionObserver` 모듈 경로 및 Phase 4 테스트 fixture 타입 불일치(결측된 주식·프로필·보유내역 속성 및 `filled: 0` 필수 필드)를 전면 수정하여 `@ts-ignore`나 `any` 우회 없이 타입 에러 0건 달성.
+- **AI 분석 API 보안 및 남용 방지 (`app/api/analyze/route.ts`)**: NextAuth 세션 기반 사용자 인증 강제(비인증 요청 시 401 반환), 사용자별 슬라이딩 윈도우 요청 빈도 제한(분당 5회 제한, 초과 시 429 반환), 입력 본문 최대 길이 5,000자 제한(초과 시 400 반환), Gemini API 키를 URL 쿼리스트링에서 헤더(`x-goog-api-key`)로 이전하고 업스트림 오류 및 내부 스택트레이스 마스킹 처리.
+- **회귀 테스트 슈트 신규 작성 및 전체 통과 (`scripts/test-regression-settlement-auth-ai.ts`)**: LP 매도 정산, 옵션 만기 ITM/OTM 정산 및 멱등성, 신규 사용자 계좌 격리, AI 분석 API 인증/레이트리밋/길이제한 검증 100% 통과 및 기존 Phase 1, Phase 4 전체 테스트 통과 확인.

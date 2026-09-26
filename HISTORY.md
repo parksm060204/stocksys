@@ -5204,3 +5204,14 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 - **작업 기록 복원 및 신규 이력 추가 (`HISTORY.md`)**: `a78e563`에서 삭제되었던 2026-09-26 18:27, 2026-09-27 00:25, 2026-09-27 00:46 작업 기록을 복원하고 현재 변경 사항 기록 추가.
 - **운영 환경 보안 및 호출 제한 정책 유지 확인 (`lib/rateLimit/sharedRateLimiter.ts`, `app/api/analyze/route.ts`)**: 운영 환경(`NODE_ENV === 'production'`) 내 인메모리 레이트리밋 우회 차단, 저장소 오류 시 503 반환, HTTPS 프로토콜 및 `ENGINE_DB_SERVICE_ROLE_KEY` 서버 전용 키 강제 유지.
 - **회귀 테스트 및 타입 검사 전체 통과**: `node --import tsx scripts/test-regression-settlement-auth-ai.ts` (전체 5개 섹션 통과), `npx tsc --noEmit` (0 errors).
+---
+## 2026-09-27 01:08
+
+**요청 요약:** Redis(Upstash) 파이프라인 응답 유효성 및 명령별 에러 검증 강화 (기본값 1 허용 취약점 제거, 장애/이상 응답 시 503 처리 및 회귀 테스트 추가).
+
+**수행 결과:**
+- **Redis 파이프라인 응답 및 명령별 오류 검증 강화 (`lib/rateLimit/sharedRateLimiter.ts`)**: `UpstashRedisRateLimiterStore.consume()`에서 `INCR`, `EXPIRE`, `TTL` 결과에 대한 개별 `error` 필드 검증을 추가하고, `INCR` 카운트가 유효한 양의 정수가 아니거나(`NaN`, 문자열, 음수, 0, 결측 등) 응답 배열이 올바르지 않을 때 기본값 `1`로 허용하던 Fail-Open 결함을 제거하여 즉시 `RateLimiterServiceUnavailableError`를 발생시키도록 수정.
+- **PostgreSQL 결과 카운트 검증 강화 (`lib/rateLimit/sharedRateLimiter.ts`)**: `PostgresRateLimiterStore`에서도 `count`가 유효한 양의 정수가 아닐 때 기본값 `1`로 대체하지 않고 `RateLimiterServiceUnavailableError`를 발생시키도록 동일하게 강화.
+- **비정상 응답 시 503 반환 및 Gemini 0회 호출 보장 (`app/api/analyze/route.ts`)**: 신뢰할 수 없는 Redis 결과 발생 시 `/api/analyze`가 503을 반환하고 외부 Gemini API를 일체 호출하지 않도록 방어.
+- **Upstash Redis 파이프라인 무결성 회귀 테스트 추가 (`scripts/test-regression-settlement-auth-ai.ts`)**: 정상 파이프라인(200 및 Gemini 1회 호출), 한도 초과(429 및 Gemini 0회 호출), 명령별 오류(`INCR`, `EXPIRE`, `TTL` 오류 시 503), 빈 배열 및 구조 결함(503), 항목 누락(503), 문자열·`NaN`·음수·0·실수 카운트(503) 전 항목을 모의 응답으로 검증 통과.
+- **타입 검사 및 전체 테스트 통과**: `node --import tsx scripts/test-regression-settlement-auth-ai.ts` (6개 섹션 전원 통과), `npx tsc --noEmit` (0 errors).

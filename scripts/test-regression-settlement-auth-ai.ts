@@ -821,6 +821,183 @@ async function testProductionRateLimiterSecurityAndFailClosed() {
   }
 }
 
+async function testUpstashRedisRateLimiterIntegrity() {
+  console.log('\n--- 6. Testing Upstash Redis Pipeline Response Integrity & Error Handling ---');
+
+  const envKeysToRestore = [
+    'NODE_ENV',
+    'USE_LOCAL_IN_MEMORY_RATE_LIMIT',
+    'NEXT_PUBLIC_USE_IN_MEMORY',
+    'ENGINE_DB_URL',
+    'ENGINE_DB_SERVICE_ROLE_KEY',
+    'UPSTASH_REDIS_REST_URL',
+    'UPSTASH_REDIS_REST_TOKEN',
+    'GEMINI_API_KEY',
+  ];
+  const savedEnv: Record<string, string | undefined> = {};
+  for (const k of envKeysToRestore) {
+    savedEnv[k] = process.env[k];
+  }
+  const originalFetch = global.fetch;
+
+  try {
+    (process.env as Record<string, string | undefined>).NODE_ENV = 'production';
+    delete process.env.USE_LOCAL_IN_MEMORY_RATE_LIMIT;
+    delete process.env.NEXT_PUBLIC_USE_IN_MEMORY;
+    delete process.env.ENGINE_DB_URL;
+    delete process.env.ENGINE_DB_SERVICE_ROLE_KEY;
+    process.env.UPSTASH_REDIS_REST_URL = 'https://fake-redis.upstash.io';
+    process.env.UPSTASH_REDIS_REST_TOKEN = 'secret-redis-token-123';
+    process.env.GEMINI_API_KEY = 'test-gemini-key';
+
+    let geminiCallCount = 0;
+    setGeminiFetcher(async () => {
+      geminiCallCount++;
+      return new Response(
+        JSON.stringify({
+          candidates: [{ content: { parts: [{ text: JSON.stringify({ summary: '정상 분석', impacts: [] }) }] } }],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    });
+
+    const testUserId = 'usr_redis_test_user';
+    setSessionGetter(async () => ({ user: { id: testUserId } }));
+
+    const makeReq = () =>
+      new NextRequest('http://localhost:3000/api/analyze', {
+        method: 'POST',
+        body: JSON.stringify({ text: '테스트용 경제 분석 기사 본문입니다.' }),
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+    let mockPipelineResponse: unknown = null;
+    global.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const urlStr = String(input);
+      if (urlStr.includes('/pipeline')) {
+        const headers = (init?.headers || {}) as Record<string, string>;
+        assert.strictEqual(headers['Authorization'], 'Bearer secret-redis-token-123');
+        return new Response(JSON.stringify(mockPipelineResponse), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return originalFetch(input, init);
+    };
+
+    // 1. Normal pipeline response: count <= limit (e.g. 1) -> 200, Gemini called 1 time
+    mockPipelineResponse = [{ result: 1 }, { result: 1 }, { result: 60 }];
+    geminiCallCount = 0;
+    const okRes = await analyzePostHandler(makeReq());
+    assert.strictEqual(okRes.status, 200, 'Normal Redis response must return 200');
+    assert.strictEqual(geminiCallCount, 1, 'Gemini must be called exactly 1 time on allowed request');
+    console.log('✅ [PASS] Normal Redis pipeline response returns 200 with 1 Gemini call');
+
+    // 2. Normal pipeline response: count > limit (e.g. 6 > 5) -> 429, Gemini called 0 times
+    mockPipelineResponse = [{ result: 6 }, { result: 1 }, { result: 60 }];
+    geminiCallCount = 0;
+    const rateLimitExceededRes = await analyzePostHandler(makeReq());
+    assert.strictEqual(rateLimitExceededRes.status, 429, 'Exceeded Redis rate limit must return 429');
+    assert.strictEqual(geminiCallCount, 0, 'Gemini must NOT be called when limit is exceeded (429)');
+    console.log('✅ [PASS] Exceeded Redis rate limit (count > limit) returns 429 with 0 Gemini calls');
+
+    // 3. Command-level errors in pipeline -> 503, Gemini called 0 times
+    const commandErrorCases = [
+      { name: 'INCR command error', resp: [{ error: 'ERR command failed' }, { result: 1 }, { result: 60 }] },
+      { name: 'EXPIRE command error', resp: [{ result: 1 }, { error: 'ERR syntax error' }, { result: 60 }] },
+      { name: 'TTL command error', resp: [{ result: 1 }, { result: 1 }, { error: 'ERR timeout' }] },
+    ];
+    for (const { name, resp } of commandErrorCases) {
+      mockPipelineResponse = resp;
+      geminiCallCount = 0;
+      const errRes = await analyzePostHandler(makeReq());
+      assert.strictEqual(errRes.status, 503, `${name} must return 503`);
+      assert.strictEqual(geminiCallCount, 0, `Gemini must NOT be called on ${name}`);
+      await assert.rejects(
+        async () => defaultUpstashStore.consume('test', 5, 60000),
+        (err: Error) => err instanceof RateLimiterServiceUnavailableError && err.message.includes('command error')
+      );
+    }
+    console.log('✅ [PASS] Redis command-level errors (INCR/EXPIRE/TTL) return 503 with 0 Gemini calls');
+
+    // 4. Empty array and truncated pipeline responses -> 503, Gemini called 0 times
+    const malformedStructureCases = [
+      { name: 'Empty array []', resp: [] },
+      { name: 'Array with 1 item', resp: [{ result: 1 }] },
+      { name: 'Array with 2 items', resp: [{ result: 1 }, { result: 1 }] },
+      { name: 'Non-array object {}', resp: { error: 'some error' } },
+    ];
+    for (const { name, resp } of malformedStructureCases) {
+      mockPipelineResponse = resp;
+      geminiCallCount = 0;
+      const errRes = await analyzePostHandler(makeReq());
+      assert.strictEqual(errRes.status, 503, `${name} must return 503`);
+      assert.strictEqual(geminiCallCount, 0, `Gemini must NOT be called on ${name}`);
+      await assert.rejects(
+        async () => defaultUpstashStore.consume('test', 5, 60000),
+        (err: Error) => err instanceof RateLimiterServiceUnavailableError
+      );
+    }
+    console.log('✅ [PASS] Empty array and malformed pipeline structures return 503 with 0 Gemini calls');
+
+    // 5. Missing results inside items -> 503, Gemini called 0 times
+    const missingResultCases = [
+      { name: 'Missing result in item 0 [{}]', resp: [{}, { result: 1 }, { result: 60 }] },
+      { name: 'Missing result in EXPIRE', resp: [{ result: 1 }, {}, { result: 60 }] },
+      { name: 'Missing result in TTL', resp: [{ result: 1 }, { result: 1 }, {}] },
+    ];
+    for (const { name, resp } of missingResultCases) {
+      mockPipelineResponse = resp;
+      geminiCallCount = 0;
+      const errRes = await analyzePostHandler(makeReq());
+      assert.strictEqual(errRes.status, 503, `${name} must return 503`);
+      assert.strictEqual(geminiCallCount, 0, `Gemini must NOT be called on ${name}`);
+      await assert.rejects(
+        async () => defaultUpstashStore.consume('test', 5, 60000),
+        (err: Error) => err instanceof RateLimiterServiceUnavailableError
+      );
+    }
+    console.log('✅ [PASS] Missing results in pipeline items return 503 with 0 Gemini calls');
+
+    // 6. String, NaN, negative, and invalid integer counts -> 503, Gemini called 0 times
+    const invalidCountCases = [
+      { name: 'String count "not-a-number"', resp: [{ result: 'not-a-number' }, { result: 1 }, { result: 60 }] },
+      { name: 'String count "1"', resp: [{ result: '1' }, { result: 1 }, { result: 60 }] },
+      { name: 'NaN count', resp: [{ result: NaN }, { result: 1 }, { result: 60 }] },
+      { name: 'Negative count -1', resp: [{ result: -1 }, { result: 1 }, { result: 60 }] },
+      { name: 'Zero count 0', resp: [{ result: 0 }, { result: 1 }, { result: 60 }] },
+      { name: 'Float count 1.5', resp: [{ result: 1.5 }, { result: 1 }, { result: 60 }] },
+      { name: 'Null count', resp: [{ result: null }, { result: 1 }, { result: 60 }] },
+    ];
+    for (const { name, resp } of invalidCountCases) {
+      mockPipelineResponse = resp;
+      geminiCallCount = 0;
+      const errRes = await analyzePostHandler(makeReq());
+      assert.strictEqual(errRes.status, 503, `${name} must return 503 without fallback to 1`);
+      assert.strictEqual(geminiCallCount, 0, `Gemini must NOT be called on ${name}`);
+      await assert.rejects(
+        async () => defaultUpstashStore.consume('test', 5, 60000),
+        (err: Error) => err instanceof RateLimiterServiceUnavailableError && err.message.includes('Invalid Redis INCR count')
+      );
+    }
+    console.log('✅ [PASS] String, NaN, negative, and invalid counts return 503 without defaulting to 1');
+
+  } finally {
+    for (const k of envKeysToRestore) {
+      if (savedEnv[k] === undefined) {
+        delete (process.env as Record<string, string | undefined>)[k];
+      } else {
+        (process.env as Record<string, string | undefined>)[k] = savedEnv[k];
+      }
+    }
+    global.fetch = originalFetch;
+    setCustomLimiterStore(null);
+    setSessionGetter(null);
+    setGeminiFetcher(null);
+    resetRateLimits();
+  }
+}
+
 async function runAll() {
   console.log('================================================================');
   console.log('🚀 RUNNING ALL REGRESSION TESTS FOR FIXES');
@@ -831,6 +1008,7 @@ async function runAll() {
   await testAuthProfileCreationAndIsolation();
   await testAiAnalyzeApiSecurity();
   await testProductionRateLimiterSecurityAndFailClosed();
+  await testUpstashRedisRateLimiterIntegrity();
 
   console.log('\n================================================================');
   console.log('🎉 ALL REGRESSION TESTS PASSED SUCCESSFULLY');

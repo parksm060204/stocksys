@@ -158,16 +158,33 @@ export class PostgresRateLimiterStore implements IRateLimiterStore {
       );
     }
 
+    let data: unknown;
     try {
-      const data = await res.json();
-      return {
-        allowed: Boolean(data.allowed),
-        count: Number(data.count ?? 1),
-        resetAt: Number(data.reset_at ?? Date.now() + windowMs),
-      };
+      data = await res.json();
     } catch (err) {
       throw new RateLimiterServiceUnavailableError('Failed to parse database rate limit response', err);
     }
+
+    const typedData = data as { allowed?: unknown; count?: unknown; reset_at?: unknown } | null | undefined;
+    const rawCount = typedData?.count;
+    if (
+      rawCount === undefined ||
+      rawCount === null ||
+      typeof rawCount !== 'number' ||
+      !Number.isInteger(rawCount) ||
+      Number.isNaN(rawCount) ||
+      rawCount <= 0
+    ) {
+      throw new RateLimiterServiceUnavailableError(
+        `Invalid database rate limit count: expected positive integer, received ${JSON.stringify(rawCount)}`
+      );
+    }
+
+    return {
+      allowed: Boolean(typedData?.allowed),
+      count: rawCount,
+      resetAt: Number(typedData?.reset_at ?? Date.now() + windowMs),
+    };
   }
 
   public reset(_key?: string): void {
@@ -250,19 +267,78 @@ export class UpstashRedisRateLimiterStore implements IRateLimiterStore {
       );
     }
 
+    let results: unknown;
     try {
-      const results = await res.json();
-      const count = Number(results[0]?.result ?? 1);
-      const ttl = Number(results[2]?.result ?? windowSec);
-      const resetAt = Date.now() + Math.max(ttl, 1) * 1000;
-      return {
-        allowed: count <= limit,
-        count,
-        resetAt,
-      };
+      results = await res.json();
     } catch (err) {
-      throw new RateLimiterServiceUnavailableError('Failed to parse Redis rate limit response', err);
+      throw new RateLimiterServiceUnavailableError('Failed to parse Redis rate limit response JSON', err);
     }
+
+    if (!Array.isArray(results) || results.length < 3) {
+      throw new RateLimiterServiceUnavailableError(
+        `Invalid Redis pipeline response structure: expected array of at least 3 elements, received ${
+          Array.isArray(results) ? results.length : typeof results
+        }`
+      );
+    }
+
+    const [incrItem, expireItem, ttlItem] = results as Array<
+      { result?: unknown; error?: string } | null | undefined
+    >;
+
+    // 1. Verify command-level errors across INCR, EXPIRE, and TTL
+    if (incrItem?.error) {
+      throw new RateLimiterServiceUnavailableError(`Redis INCR command error: ${incrItem.error}`);
+    }
+    if (expireItem?.error) {
+      throw new RateLimiterServiceUnavailableError(`Redis EXPIRE command error: ${expireItem.error}`);
+    }
+    if (ttlItem?.error) {
+      throw new RateLimiterServiceUnavailableError(`Redis TTL command error: ${ttlItem.error}`);
+    }
+
+    // 2. Validate INCR count: must be a valid positive integer (never default to 1)
+    const rawCount = incrItem?.result;
+    if (
+      rawCount === undefined ||
+      rawCount === null ||
+      typeof rawCount !== 'number' ||
+      !Number.isInteger(rawCount) ||
+      Number.isNaN(rawCount) ||
+      rawCount <= 0
+    ) {
+      throw new RateLimiterServiceUnavailableError(
+        `Invalid Redis INCR count: expected positive integer, received ${JSON.stringify(rawCount)}`
+      );
+    }
+    const count = rawCount;
+
+    // 3. Validate EXPIRE result structure
+    if (!expireItem || expireItem.result === undefined) {
+      throw new RateLimiterServiceUnavailableError('Missing Redis EXPIRE result in pipeline response');
+    }
+
+    // 4. Validate TTL result structure
+    const rawTtl = ttlItem?.result;
+    if (
+      rawTtl === undefined ||
+      rawTtl === null ||
+      typeof rawTtl !== 'number' ||
+      !Number.isInteger(rawTtl) ||
+      Number.isNaN(rawTtl)
+    ) {
+      throw new RateLimiterServiceUnavailableError(
+        `Invalid Redis TTL result: expected integer, received ${JSON.stringify(rawTtl)}`
+      );
+    }
+    const ttlSeconds = rawTtl > 0 ? rawTtl : windowSec;
+
+    const resetAt = Date.now() + Math.max(ttlSeconds, 1) * 1000;
+    return {
+      allowed: count <= limit,
+      count,
+      resetAt,
+    };
   }
 
   public reset(_key?: string): void {}

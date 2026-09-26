@@ -164,7 +164,7 @@ export class MemoryQueryBuilder {
       } else if (this.tableName === 'profiles' && (eqUserId || eqId)) {
         const uid = String(eqUserId || eqId);
         const profId = db.profileUserIdIndex.get(uid) || uid;
-        const profile = db.profiles.get(profId) || db.profiles.get(GUEST_USER_ID);
+        const profile = db.profiles.get(profId);
         targetList = profile ? [profile] : [];
       } else {
         // 인덱스가 없는 경우 기본 전체 테이블 스캔
@@ -265,6 +265,9 @@ export class MemoryQueryBuilder {
             db.activePlayerEvents.push(record);
           } else if (this.tableName === 'active_manipulations') {
             db.activeManipulations.push(record);
+          } else if (this.tableName === 'profiles') {
+            db.profiles.set(id, record as ProfileRecord);
+            db.addProfileToIndex(record as ProfileRecord);
           } else if (this.tableName === 'market_news' || this.tableName === 'news' || this.tableName === 'news_v2') {
             db.marketNews.push(record);
           }
@@ -293,6 +296,12 @@ export class MemoryQueryBuilder {
             const merged = { ...existing, ...item, id: key } as CommodityRecord;
             db.commodities.set(key, merged);
             db.addCommodityToIndex(merged);
+          } else if (this.tableName === 'profiles') {
+            const key = item.id || item.user_id;
+            const existing = db.profiles.get(key) || ({} as ProfileRecord);
+            const merged = { ...existing, ...item, id: key, user_id: item.user_id || existing.user_id || key } as ProfileRecord;
+            db.profiles.set(key, merged);
+            db.addProfileToIndex(merged);
           } else if (this.tableName === 'holdings') {
             const key = item.id || `${item.user_id}_${item.stock_id}`;
             const rec = { ...item, id: key } as HoldingRecord;
@@ -375,19 +384,12 @@ export class MemoryQueryBuilder {
 
       if (this.isSingle) {
         if (result.length === 0) {
-          if (this.tableName === 'profiles') {
-            const fallbackGuest = db.profiles.get(GUEST_USER_ID);
-            if (fallbackGuest) return { data: fallbackGuest, error: null };
-          }
           return { data: null, error: { message: 'Row not found (PGRST116)' } };
         }
         return { data: result[0], error: null };
       }
 
       if (this.isMaybeSingle) {
-        if (result.length === 0 && this.tableName === 'profiles') {
-          return { data: db.profiles.get(GUEST_USER_ID) || null, error: null };
-        }
         return { data: result.length > 0 ? result[0] : null, error: null };
       }
 
@@ -462,16 +464,16 @@ export class MemoryDbClient {
       const delta = Number(params?.p_delta || params?.amount || 0);
 
       const updatedProfile = await db.updateAtomic<ProfileRecord>(`profile:${userId}`, (prev) => {
-        const user = prev || db.profiles.get(userId) || db.profiles.get(GUEST_USER_ID);
+        const user = prev || db.profiles.get(userId);
         if (!user) {
           const newUser: ProfileRecord = {
             id: userId,
             user_id: userId,
             username: '새 사용자',
             nickname: '새 사용자',
-            cash: 100000000 + delta,
-            net_worth: 100000000 + delta,
-            rank_tier: 'Silver',
+            cash: 5000000 + delta,
+            net_worth: 5000000 + delta,
+            rank_tier: 'Bronze',
             created_at: this.getIsoTimestamp(),
           };
           return newUser;

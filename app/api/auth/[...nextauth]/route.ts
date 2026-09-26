@@ -1,6 +1,8 @@
 import NextAuth, { type NextAuthOptions } from "next-auth";
 import GoogleProvider from "next-auth/providers/google";
 
+import { memoryDb } from "@/lib/memoryDb/memoryStore";
+
 const providers = [];
 
 if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
@@ -15,21 +17,53 @@ if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
 export const authOptions: NextAuthOptions = {
   providers,
   callbacks: {
-    async signIn() {
-      // 명시적 인증 허용 정책 (추가 인가 검증이 필요할 경우 여기에 정책 작성)
-      return true;
-    },
-    async jwt({ token, user }) {
-      if (user?.id) {
-        token.userId = user.id;
+    async signIn({ user, account, profile }) {
+      try {
+        const userId = user?.id || (account?.providerAccountId as string) || (profile as any)?.sub;
+        if (userId) {
+          memoryDb.ensureUserProfile(userId, {
+            username: user.name || (user.email ? user.email.split('@')[0] : '익명 투자자'),
+            nickname: user.name || '익명 투자자',
+            email: user.email || undefined,
+          });
+        }
+        return true;
+      } catch (e) {
+        console.error('[Auth] signIn error (ignored):', e);
+        return true;
       }
-      return token;
+    },
+    async jwt({ token, user, account }) {
+      try {
+        if (user?.id) {
+          token.userId = user.id;
+        } else if (account?.providerAccountId) {
+          token.userId = account.providerAccountId;
+        }
+        return token;
+      } catch (e) {
+        console.error('[Auth] jwt error (ignored):', e);
+        return token;
+      }
     },
     async session({ session, token }) {
-      if (session.user) {
-        session.user.id = (token.userId as string) || token.sub || '';
+      try {
+        if (session.user) {
+          const resolvedId = (token.userId as string) || token.sub || '';
+          session.user.id = resolvedId;
+          if (resolvedId) {
+            memoryDb.ensureUserProfile(resolvedId, {
+              username: session.user.name || (session.user.email ? session.user.email.split('@')[0] : '익명 투자자'),
+              nickname: session.user.name || '익명 투자자',
+              email: session.user.email || undefined,
+            });
+          }
+        }
+        return session;
+      } catch (e) {
+        console.error('[Auth] session error (ignored):', e);
+        return session;
       }
-      return session;
     },
   },
   pages: {

@@ -126,7 +126,9 @@ export interface TradeSettlementInput {
   readonly price: number;
   readonly size: number;
   /** 수수료는 비율로만 전달한다. 금액은 정산 경계에서 계산한다. */
-  readonly fee_rates: TradeFeeRates;
+  readonly fee_rates?: TradeFeeRates;
+  readonly buyer_fee_rate?: number;
+  readonly seller_fee_rate?: number;
   readonly created_at?: string;
   readonly sequence?: number;
   readonly simulation_time?: number;

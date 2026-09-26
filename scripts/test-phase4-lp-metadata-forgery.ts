@@ -42,6 +42,15 @@ function setupDb(): { db: MemoryDatabase; bundle: ReturnType<typeof createInMemo
     name: 'Samsung Electronics',
     current_price: 70000,
     previous_close: 70000,
+    open_price: 70000,
+    high: 70000,
+    low: 70000,
+    volume: 1000,
+    change_rate: 0,
+    market_cap: 70000000000,
+    pe_ratio: 10,
+    dividend_yield: 2,
+    sector: 'Technology',
     market: 'domestic',
     shares_outstanding: 1000000,
     floating_shares: 800000,
@@ -53,8 +62,12 @@ function setupDb(): { db: MemoryDatabase; bundle: ReturnType<typeof createInMemo
   const attackerProfile: ProfileRecord = {
     id: ATTACKER_ID,
     user_id: ATTACKER_ID,
+    username: 'Attacker',
+    nickname: 'Attacker',
     cash: 0,
     net_worth: 0,
+    rank_tier: 'Bronze',
+    created_at: new Date(NOW).toISOString(),
   };
   db.profiles.set(ATTACKER_ID, attackerProfile);
   db.profileUserIdIndex.set(ATTACKER_ID, ATTACKER_ID);
@@ -63,8 +76,12 @@ function setupDb(): { db: MemoryDatabase; bundle: ReturnType<typeof createInMemo
   const buyerProfile: ProfileRecord = {
     id: BUYER_ID,
     user_id: BUYER_ID,
+    username: 'Buyer',
+    nickname: 'Buyer',
     cash: 10_000_000,
     net_worth: 10_000_000,
+    rank_tier: 'Bronze',
+    created_at: new Date(NOW).toISOString(),
   };
   db.profiles.set(BUYER_ID, buyerProfile);
   db.profileUserIdIndex.set(BUYER_ID, BUYER_ID);
@@ -73,8 +90,12 @@ function setupDb(): { db: MemoryDatabase; bundle: ReturnType<typeof createInMemo
   const lpProfile: ProfileRecord = {
     id: LEGIT_LP_ID,
     user_id: LEGIT_LP_ID,
+    username: 'LP Market Maker',
+    nickname: 'LP Market Maker',
     cash: 100_000_000_000,
     net_worth: 100_000_000_000,
+    rank_tier: 'Challenger',
+    created_at: new Date(NOW).toISOString(),
   };
   db.profiles.set(LEGIT_LP_ID, lpProfile);
   db.profileUserIdIndex.set(LEGIT_LP_ID, LEGIT_LP_ID);
@@ -88,6 +109,7 @@ function setupDb(): { db: MemoryDatabase; bundle: ReturnType<typeof createInMemo
     side: 'buy',
     price: 70000,
     size: 10,
+    filled: 0,
     originalQuantity: 10,
     filledQuantity: 0,
     remainingQuantity: 10,
@@ -106,6 +128,15 @@ function setupDb(): { db: MemoryDatabase; bundle: ReturnType<typeof createInMemo
 async function run() {
   console.log('--- Testing P1 LP Metadata Forgery & Unbacked Selling Prevention ---');
 
+  // An account name that resembles an LP is not proof of authorization.
+  {
+    const { db } = setupDb();
+    assert.strictEqual(db.isAuthorizedLp('bot_lp_unregistered'), false);
+    assert.strictEqual(db.isAuthorizedLp('lp_unregistered'), false);
+    assert.strictEqual(db.isAuthorizedLp(LEGIT_LP_ID), true);
+    console.log('✅ [PASS] LP authorization requires registry membership or trusted bot configuration');
+  }
+
   // Test 1: Ordinary user submitting forged is_lp order via newOrders
   {
     const { db, bundle } = setupDb();
@@ -120,6 +151,7 @@ async function run() {
       side: 'sell',
       price: 70000,
       size: 10,
+      filled: 0,
       originalQuantity: 10,
       filledQuantity: 0,
       remainingQuantity: 10,
@@ -190,6 +222,7 @@ async function run() {
       side: 'sell',
       price: 70000,
       size: 10,
+      filled: 0,
       status: 'open',
       is_lp: true,
       version: 1,
@@ -221,6 +254,7 @@ async function run() {
       side: 'sell',
       price: 70000,
       size: 5,
+      filled: 0,
       status: 'open',
       is_lp: false,
       version: 1,
@@ -239,6 +273,7 @@ async function run() {
       side: 'sell',
       price: 70000,
       size: 50,
+      filled: 0,
       status: 'open',
       is_lp: true,
       version: 1,
@@ -273,6 +308,7 @@ async function run() {
       side: 'sell',
       price: 70000,
       size: 10,
+      filled: 0,
       originalQuantity: 10,
       filledQuantity: 0,
       remainingQuantity: 10,
@@ -291,6 +327,8 @@ async function run() {
       size: 10,
       buyer_id: BUYER_ID,
       seller_id: ATTACKER_ID,
+      buyer_is_bot: false,
+      seller_is_bot: false,
       buy_order_id: 'ord_legit_buy_1',
       sell_order_id: 'ord_sneaky_sell',
       buyer_fee_rate: 0,

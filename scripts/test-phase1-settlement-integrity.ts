@@ -406,6 +406,7 @@ async function main() {
 
     db.profiles.set('bot_lp_omega', { id: 'bot_lp_omega', user_id: 'bot_lp_omega', username: 'lp_omega', nickname: 'lp_omega', cash: 50_000_000, net_worth: 50_000_000, rank_tier: 'DIAMOND', created_at: '2026-01-01T00:00:00.000Z' });
     db.profileUserIdIndex.set('bot_lp_omega', 'bot_lp_omega');
+    db.lpAccounts.add('bot_lp_omega');
     const hLp = { id: `bot_lp_omega_${STOCK}`, user_id: 'bot_lp_omega', stock_id: STOCK, quantity: 1000, avg_price: 25000, created_at: '2026-01-01T00:00:00.000Z' };
     db.holdings.set(hLp.id, hLp);
     db.addHoldingToIndex(hLp);
@@ -433,7 +434,6 @@ async function main() {
       }),
     ]);
 
-    console.log('TEST 13 res:', res);
     assert.strictEqual(res.success, true, 'user-bot trade must settle successfully');
     const userProfileAfter = db.profiles.get(BUYER)!;
     const expectedCash = userCashBefore - notional - expectedBuyerFee;

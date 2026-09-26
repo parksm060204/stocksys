@@ -1,5 +1,6 @@
 -- =====================================================================
 -- Migration: AI Rate Limits table & atomic check RPC for STOCKSYS VM-DB
+-- Security Lockdown: Server-only (service_role) execution and access
 -- =====================================================================
 
 CREATE TABLE IF NOT EXISTS public.ai_rate_limits (
@@ -8,10 +9,22 @@ CREATE TABLE IF NOT EXISTS public.ai_rate_limits (
   reset_at    timestamptz NOT NULL
 );
 
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.ai_rate_limits TO anon, authenticated, service_role;
+-- RLS & Access Control: Server-only (service_role) access
 ALTER TABLE public.ai_rate_limits ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "Rate limits manageable by service role" ON public.ai_rate_limits FOR ALL TO service_role USING (true);
-CREATE POLICY "Rate limits viewable by all" ON public.ai_rate_limits FOR SELECT TO anon, authenticated USING (true);
+
+REVOKE ALL ON TABLE public.ai_rate_limits FROM PUBLIC, anon, authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.ai_rate_limits TO service_role;
+
+DROP POLICY IF EXISTS "Rate limits manageable by service role" ON public.ai_rate_limits;
+DROP POLICY IF EXISTS "Rate limits viewable by all" ON public.ai_rate_limits;
+DROP POLICY IF EXISTS "Rate limits manageable by service role only" ON public.ai_rate_limits;
+
+CREATE POLICY "Rate limits manageable by service role only"
+  ON public.ai_rate_limits
+  FOR ALL
+  TO service_role
+  USING (true)
+  WITH CHECK (true);
 
 -- Atomic sliding-window rate limit checker
 CREATE OR REPLACE FUNCTION public.check_ai_rate_limit(
@@ -50,4 +63,7 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.check_ai_rate_limit TO anon, authenticated, service_role;
+-- By default in PostgreSQL, EXECUTE on functions is granted to PUBLIC.
+-- Revoke execute from PUBLIC, anon, and authenticated to prevent unauthorized rate limit manipulation.
+REVOKE ALL ON FUNCTION public.check_ai_rate_limit(text, int, int) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.check_ai_rate_limit(text, int, int) TO service_role;

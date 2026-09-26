@@ -5173,3 +5173,15 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 - **JSON 파싱 전 바이트 단위 본문 크기 제한 및 방어 (`app/api/analyze/route.ts`)**: `request.json()` 호출 전 `readBodyWithByteLimit`를 통해 스트림 단위로 바이트를 검사하여 `MAX_BODY_BYTES`(32 KB) 초과 요청을 즉시 413(Payload Too Large)으로 차단 (`Content-Length` 누락 또는 위조 헤더 방어). 유효하지 않은 JSON, 비문자열 `text`, 공백 본문, 5,000자 초과 요청은 400으로 응답하며 Gemini API를 일체 호출하지 않도록 방어.
 - **실제 라우트 회귀 테스트 강화 (`scripts/test-regression-settlement-auth-ai.ts`)**: 모의 세션(`setSessionGetter`) 및 모의 Gemini 응답(`setGeminiFetcher`)을 적용하여 `POST /api/analyze` 라우트의 200 정상 응답, 429 요청 빈도 초과, 413 본문 바이트 크기 초과, 400 텍스트 길이 초과, 400 잘못된 JSON/타입, 401 비인증 전 항목을 검증. 모든 거절 요청에서 외부 Gemini API 호출이 0건임을 확인.
 - **중복 산출물 제거 (`public/stocksys-fix-223fd9b.patch`)**: 웹 제공 불필요 산출물인 패치 사본을 저장소에서 삭제 완료.
+
+---
+## 2026-09-27 00:25
+
+**요청 요약:** AI 분석 API 운영 환경 호출 제한 안전성 강화 (Fail-Closed 503 적용, DB 권한 서버 전용 잠금, 전송 경로 보안 강화 및 모의 회귀 테스트 검증).
+
+**수행 결과:**
+- **운영 환경 호출 제한 저장소 장애 시 Fail-Closed 503 전환 (`lib/rateLimit/sharedRateLimiter.ts`, `app/api/analyze/route.ts`)**: 운영 환경(`NODE_ENV === 'production'`)에서 PostgreSQL/Redis 저장소 연결 실패, RPC 부재(404), 인증 오류(401/403) 발생 시 메모리 제한으로 우회(Fail-Open)하지 않고 `RateLimiterServiceUnavailableError`를 발생시켜 Gemini 호출 전 즉시 503 Service Unavailable을 반환하도록 수정. 메모리 저장소(`MemoryRateLimiterStore`)는 로컬 개발/테스트 환경(`isLocalDevMode()`)에서만 사용되도록 엄격히 제한.
+- **DB 권한 서버 전용(service_role) 잠금 및 신규 마이그레이션 작성 (`archive/legacy-postgres/sql/migrations/20260926_create_ai_rate_limits.sql`, `archive/legacy-postgres/sql/migrations/20260927_lockdown_ai_rate_limits_permissions.sql`)**: `ai_rate_limits` 테이블 및 `check_ai_rate_limit` RPC에 대해 `PUBLIC`, `anon`, `authenticated`의 모든 실행 및 접근 권한을 REVOKE하고 `service_role` 전용으로 잠금. 공개 조회 정책(`Rate limits viewable by all`)을 제거하여 일반/익명 사용자가 타인의 키를 조회하거나 임의 인자로 제한을 조작할 수 없도록 방어. 기존 배포에 멱등하게 적용 가능한 후속 마이그레이션 파일 작성.
+- **인증키 및 접속 경로 보안 강화 (`lib/rateLimit/sharedRateLimiter.ts`)**: 코드에 포함되었던 기본 외부 IP 및 평문 HTTP fallback 경로를 완전 제거하고, 서버 전용 `ENGINE_DB_URL` 및 `ENGINE_DB_SERVICE_ROLE_KEY`를 명시적으로 요구. 운영 환경에서 `http://` 접속 시도시 `RateLimiterConfigurationError`로 차단하고 HTTPS를 강제(Postgres 및 Upstash Redis REST 공통 적용).
+- **운영 경로 모의 회귀 테스트 추가 및 전 항목 통과 (`scripts/test-regression-settlement-auth-ai.ts`)**: 공유 저장소 정상 응답(200, Gemini 1회 호출), DB 연결 실패(503, Gemini 0회 호출), 404 RPC 누락(503, Gemini 0회 호출), 401/403 인증 오류(503, Gemini 0회 호출), 필수 환경변수 누락(503, Gemini 0회 호출), 비보안 HTTP 주소 설정(503, Gemini 0회 호출), SQL 마이그레이션 권한 잠금 무결성 전 항목을 모의 환경에서 검증 통과.
+- **빌드 및 타입 검사 무결성 확인**: `npx tsc --noEmit` (0 errors), `npm --prefix engine-server run build` (성공), `npm run build` (Next.js 16 Turbopack 프로덕션 빌드 성공).

@@ -9,6 +9,8 @@
  */
 
 import assert from 'node:assert';
+import fs from 'node:fs';
+import path from 'node:path';
 import { MemoryDatabase, StockRecord, OptionContractRecord, ProfileRecord, HoldingRecord, OrderRecord, memoryDb } from '../lib/memoryDb/memoryStore';
 import { createInMemoryRepositoryBundle } from '../lib/repositories/inMemory';
 import { createMemoryDbClient } from '../lib/memoryDb/memoryDbClient';
@@ -22,6 +24,13 @@ import {
   setGeminiFetcher,
   resetRateLimits,
 } from '../app/api/analyze/route';
+import {
+  defaultPostgresStore,
+  defaultUpstashStore,
+  setCustomLimiterStore,
+  RateLimiterConfigurationError,
+  RateLimiterServiceUnavailableError,
+} from '../lib/rateLimit/sharedRateLimiter';
 import { NextRequest } from 'next/server';
 
 const NOW = 1774483200000;
@@ -533,6 +542,261 @@ async function testAiAnalyzeApiSecurity() {
   }
 }
 
+async function testProductionRateLimiterSecurityAndFailClosed() {
+  console.log('\n--- 5. Testing Production Shared Rate Limiter Fail-Closed & Security Hardening ---');
+
+  const envKeysToRestore = [
+    'NODE_ENV',
+    'USE_LOCAL_IN_MEMORY_RATE_LIMIT',
+    'NEXT_PUBLIC_USE_IN_MEMORY',
+    'ENGINE_DB_URL',
+    'ENGINE_DB_SERVICE_ROLE_KEY',
+    'UPSTASH_REDIS_REST_URL',
+    'UPSTASH_REDIS_REST_TOKEN',
+    'GEMINI_API_KEY',
+  ];
+  const savedEnv: Record<string, string | undefined> = {};
+  for (const k of envKeysToRestore) {
+    savedEnv[k] = process.env[k];
+  }
+  const originalFetch = global.fetch;
+
+  try {
+    // 1. Verify SQL migrations strictly revoke anon/auth/PUBLIC and grant only to service_role
+    console.log('Testing SQL permission lockdown in migrations...');
+    const migrationDir = path.resolve(process.cwd(), 'archive/legacy-postgres/sql/migrations');
+    const baseMigration = fs.readFileSync(path.join(migrationDir, '20260926_create_ai_rate_limits.sql'), 'utf-8');
+    const lockdownMigration = fs.readFileSync(path.join(migrationDir, '20260927_lockdown_ai_rate_limits_permissions.sql'), 'utf-8');
+
+    for (const [name, sql] of [
+      ['20260926_create_ai_rate_limits.sql', baseMigration],
+      ['20260927_lockdown_ai_rate_limits_permissions.sql', lockdownMigration],
+    ]) {
+      assert.ok(
+        sql.includes('REVOKE ALL ON FUNCTION public.check_ai_rate_limit(text, int, int) FROM PUBLIC, anon, authenticated;'),
+        `${name} must revoke EXECUTE from PUBLIC, anon, and authenticated`
+      );
+      assert.ok(
+        sql.includes('REVOKE ALL ON TABLE public.ai_rate_limits FROM PUBLIC, anon, authenticated;'),
+        `${name} must revoke table permissions from PUBLIC, anon, and authenticated`
+      );
+      assert.ok(
+        sql.includes('GRANT EXECUTE ON FUNCTION public.check_ai_rate_limit(text, int, int) TO service_role;'),
+        `${name} must grant EXECUTE exclusively to service_role`
+      );
+      assert.ok(
+        sql.includes('GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.ai_rate_limits TO service_role;'),
+        `${name} must grant table permissions to service_role`
+      );
+      assert.ok(
+        !sql.includes('GRANT EXECUTE ON FUNCTION public.check_ai_rate_limit TO anon'),
+        `${name} must not grant EXECUTE to anon`
+      );
+    }
+    console.log('✅ [PASS] SQL migrations enforce strict server-only (service_role) permissions');
+
+    // Setup simulated production environment
+    (process.env as Record<string, string | undefined>).NODE_ENV = 'production';
+    delete process.env.USE_LOCAL_IN_MEMORY_RATE_LIMIT;
+    delete process.env.NEXT_PUBLIC_USE_IN_MEMORY;
+    delete process.env.UPSTASH_REDIS_REST_URL;
+    delete process.env.UPSTASH_REDIS_REST_TOKEN;
+    process.env.ENGINE_DB_URL = 'https://secure-db.internal:3001';
+    process.env.ENGINE_DB_SERVICE_ROLE_KEY = 'super-secret-service-role-key-999';
+    process.env.GEMINI_API_KEY = 'test-gemini-key';
+
+    let geminiCallCount = 0;
+    setGeminiFetcher(async () => {
+      geminiCallCount++;
+      return new Response(
+        JSON.stringify({
+          candidates: [{ content: { parts: [{ text: JSON.stringify({ summary: '정상 분석', impacts: [] }) }] } }],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    });
+
+    const testUserId = 'usr_prod_test_user';
+    setSessionGetter(async () => ({ user: { id: testUserId } }));
+
+    const makeReq = () =>
+      new NextRequest('http://localhost:3000/api/analyze', {
+        method: 'POST',
+        body: JSON.stringify({ text: '새로운 인공지능 반도체 개발 성공 뉴스' }),
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+    // 2. Production shared store normal response -> 200, Gemini called 1 time
+    let dbFetchCount = 0;
+    global.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const urlStr = String(input);
+      if (urlStr.includes('/rpc/check_ai_rate_limit')) {
+        dbFetchCount++;
+        const headers = (init?.headers || {}) as Record<string, string>;
+        assert.strictEqual(headers['apikey'], 'super-secret-service-role-key-999', 'PostgREST apikey must be service key');
+        assert.strictEqual(headers['Authorization'], 'Bearer super-secret-service-role-key-999', 'Bearer token must be service key');
+        return new Response(
+          JSON.stringify({
+            allowed: true,
+            count: 1,
+            reset_at: Date.now() + 60000,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      return originalFetch(input, init);
+    };
+
+    geminiCallCount = 0;
+    const okRes = await analyzePostHandler(makeReq());
+    assert.strictEqual(okRes.status, 200, 'Production normal response must be 200');
+    assert.strictEqual(geminiCallCount, 1, 'Gemini must be called exactly 1 time on successful rate limit');
+    assert.strictEqual(dbFetchCount, 1, 'DB check_ai_rate_limit RPC must be called');
+    console.log('✅ [PASS] Production shared store normal response returns 200 with 1 Gemini call');
+
+    // 3. Database connection failure -> 503, Gemini called 0 times
+    global.fetch = async (input: RequestInfo | URL): Promise<Response> => {
+      const urlStr = String(input);
+      if (urlStr.includes('/rpc/check_ai_rate_limit')) {
+        throw new Error('connect ECONNREFUSED 10.0.0.1:3001');
+      }
+      return originalFetch(input);
+    };
+
+    geminiCallCount = 0;
+    const connFailRes = await analyzePostHandler(makeReq());
+    assert.strictEqual(connFailRes.status, 503, 'DB connection failure must return 503');
+    const connFailJson = await connFailRes.json();
+    assert.ok(connFailJson.error.includes('일시적으로 사용할 수 없습니다'), 'Must return helpful Korean 503 error message');
+    assert.strictEqual(geminiCallCount, 0, 'Gemini must NOT be called on DB connection failure (0 times)');
+    console.log('✅ [PASS] DB connection failure returns 503 with 0 Gemini calls');
+
+    // 4. Missing RPC (404 Not Found from DB) -> 503, Gemini called 0 times
+    global.fetch = async (input: RequestInfo | URL): Promise<Response> => {
+      const urlStr = String(input);
+      if (urlStr.includes('/rpc/check_ai_rate_limit')) {
+        return new Response(JSON.stringify({ code: '42883', message: 'function check_ai_rate_limit does not exist' }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return originalFetch(input);
+    };
+
+    geminiCallCount = 0;
+    const notFoundRes = await analyzePostHandler(makeReq());
+    assert.strictEqual(notFoundRes.status, 503, 'DB 404 missing RPC must return 503');
+    assert.strictEqual(geminiCallCount, 0, 'Gemini must NOT be called on 404 RPC missing (0 times)');
+    console.log('✅ [PASS] DB 404 missing RPC returns 503 with 0 Gemini calls');
+
+    // 5. Auth Error (401 / 403 from DB) -> 503, Gemini called 0 times
+    global.fetch = async (input: RequestInfo | URL): Promise<Response> => {
+      const urlStr = String(input);
+      if (urlStr.includes('/rpc/check_ai_rate_limit')) {
+        return new Response(JSON.stringify({ message: 'JWT expired or invalid' }), {
+          status: 401,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return originalFetch(input);
+    };
+
+    geminiCallCount = 0;
+    const authFailRes = await analyzePostHandler(makeReq());
+    assert.strictEqual(authFailRes.status, 503, 'DB 401 auth error must return 503');
+    assert.strictEqual(geminiCallCount, 0, 'Gemini must NOT be called on DB auth error (0 times)');
+
+    global.fetch = async (input: RequestInfo | URL): Promise<Response> => {
+      const urlStr = String(input);
+      if (urlStr.includes('/rpc/check_ai_rate_limit')) {
+        return new Response(JSON.stringify({ message: 'Forbidden' }), {
+          status: 403,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return originalFetch(input);
+    };
+
+    geminiCallCount = 0;
+    const forbiddenRes = await analyzePostHandler(makeReq());
+    assert.strictEqual(forbiddenRes.status, 503, 'DB 403 forbidden error must return 503');
+    assert.strictEqual(geminiCallCount, 0, 'Gemini must NOT be called on DB 403 forbidden (0 times)');
+    console.log('✅ [PASS] DB auth errors (401, 403) return 503 with 0 Gemini calls');
+
+    // 6. Missing required environment variables -> 503, Gemini called 0 times
+    // 6a. Missing ENGINE_DB_URL
+    delete process.env.ENGINE_DB_URL;
+    geminiCallCount = 0;
+    const missingUrlRes = await analyzePostHandler(makeReq());
+    assert.strictEqual(missingUrlRes.status, 503, 'Missing ENGINE_DB_URL in prod must return 503');
+    assert.strictEqual(geminiCallCount, 0, 'Gemini must NOT be called when ENGINE_DB_URL is missing');
+    await assert.rejects(
+      async () => defaultPostgresStore.consume('test', 5, 60000),
+      (err: Error) => err instanceof RateLimiterConfigurationError && err.message.includes('ENGINE_DB_URL is required')
+    );
+
+    // 6b. Missing ENGINE_DB_SERVICE_ROLE_KEY
+    process.env.ENGINE_DB_URL = 'https://secure-db.internal:3001';
+    delete process.env.ENGINE_DB_SERVICE_ROLE_KEY;
+    geminiCallCount = 0;
+    const missingKeyRes = await analyzePostHandler(makeReq());
+    assert.strictEqual(missingKeyRes.status, 503, 'Missing ENGINE_DB_SERVICE_ROLE_KEY in prod must return 503');
+    assert.strictEqual(geminiCallCount, 0, 'Gemini must NOT be called when service key is missing');
+    await assert.rejects(
+      async () => defaultPostgresStore.consume('test', 5, 60000),
+      (err: Error) =>
+        err instanceof RateLimiterConfigurationError &&
+        err.message.includes('ENGINE_DB_SERVICE_ROLE_KEY is required')
+    );
+    console.log('✅ [PASS] Missing required env vars return 503 with 0 Gemini calls and throw RateLimiterConfigurationError');
+
+    // 7. Insecure HTTP address configured in production -> 503, Gemini called 0 times
+    // 7a. ENGINE_DB_URL with HTTP
+    process.env.ENGINE_DB_URL = 'http://insecure-db.internal:3001';
+    process.env.ENGINE_DB_SERVICE_ROLE_KEY = 'some-key';
+    geminiCallCount = 0;
+    const insecureDbRes = await analyzePostHandler(makeReq());
+    assert.strictEqual(insecureDbRes.status, 503, 'Insecure HTTP DB URL must return 503 in prod');
+    assert.strictEqual(geminiCallCount, 0, 'Gemini must NOT be called on insecure HTTP DB URL');
+    await assert.rejects(
+      async () => defaultPostgresStore.consume('test', 5, 60000),
+      (err: Error) =>
+        err instanceof RateLimiterConfigurationError &&
+        err.message.includes('Insecure HTTP protocol is prohibited')
+    );
+
+    // 7b. UPSTASH_REDIS_REST_URL with HTTP
+    delete process.env.ENGINE_DB_URL;
+    process.env.UPSTASH_REDIS_REST_URL = 'http://insecure-redis.upstash.io';
+    process.env.UPSTASH_REDIS_REST_TOKEN = 'redis-token-123';
+    geminiCallCount = 0;
+    const insecureRedisRes = await analyzePostHandler(makeReq());
+    assert.strictEqual(insecureRedisRes.status, 503, 'Insecure HTTP Redis URL must return 503 in prod');
+    assert.strictEqual(geminiCallCount, 0, 'Gemini must NOT be called on insecure HTTP Redis URL');
+    await assert.rejects(
+      async () => defaultUpstashStore.consume('test', 5, 60000),
+      (err: Error) =>
+        err instanceof RateLimiterConfigurationError &&
+        err.message.includes('Insecure HTTP protocol is prohibited')
+    );
+    console.log('✅ [PASS] Insecure HTTP configuration rejected with 503 and 0 Gemini calls');
+
+  } finally {
+    for (const k of envKeysToRestore) {
+      if (savedEnv[k] === undefined) {
+        delete (process.env as Record<string, string | undefined>)[k];
+      } else {
+        (process.env as Record<string, string | undefined>)[k] = savedEnv[k];
+      }
+    }
+    global.fetch = originalFetch;
+    setCustomLimiterStore(null);
+    setSessionGetter(null);
+    setGeminiFetcher(null);
+    resetRateLimits();
+  }
+}
+
 async function runAll() {
   console.log('================================================================');
   console.log('🚀 RUNNING ALL REGRESSION TESTS FOR FIXES');
@@ -542,6 +806,7 @@ async function runAll() {
   await testOptionExpirySettlement();
   await testAuthProfileCreationAndIsolation();
   await testAiAnalyzeApiSecurity();
+  await testProductionRateLimiterSecurityAndFailClosed();
 
   console.log('\n================================================================');
   console.log('🎉 ALL REGRESSION TESTS PASSED SUCCESSFULLY');

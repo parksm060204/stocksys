@@ -5,6 +5,8 @@ import {
   getActiveRateLimiterStore,
   defaultMemoryStore,
   setCustomLimiterStore,
+  RateLimiterConfigurationError,
+  RateLimiterServiceUnavailableError,
 } from "@/lib/rateLimit/sharedRateLimiter";
 
 export interface SectorImpact {
@@ -211,7 +213,16 @@ export async function POST(request: NextRequest) {
   }
 
   // 4. 유효한 요청에 대한 분당 요청 빈도 제한 (Rate Limiting)
-  const isAllowed = await checkRateLimit(authenticatedUserId);
+  let isAllowed: boolean;
+  try {
+    isAllowed = await checkRateLimit(authenticatedUserId);
+  } catch (err) {
+    console.error("[RateLimiter] Shared rate limit verification failed:", err);
+    return Response.json(
+      { error: "호출 제한 서비스를 일시적으로 사용할 수 없습니다." },
+      { status: 503 }
+    );
+  }
   if (!isAllowed) {
     return Response.json(
       { error: "요청이 너무 빈번합니다. 잠시 후 다시 시도해주세요." },

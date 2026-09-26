@@ -5162,3 +5162,14 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 **수행 결과:**
 - 검증 완료된 거래소 정산·인증·API 보안 복원 커밋(`de4e59b`)을 원격 저장소의 작업 브랜치 `origin/fix/restore-trading-safeguards`(`https://github.com/parksm060204/stocksys.git`)로 성공적으로 push 완료.
 - 원격 main 직접 푸시 및 병합 금지 지침을 준수하여 작업 브랜치를 통해 PR 생성 및 리뷰가 가능하도록 원격 동기화 완료.
+
+---
+## 2026-09-26 18:27
+
+**요청 요약:** AI 분석 API 분산 환경 호출 제한 공유, JSON 파싱 전 바이트 단위 본문 크기 제한(413), 모의 세션·Gemini 기반 실제 라우트 회귀 테스트 작성, 중복 패치 파일 제거.
+
+**수행 결과:**
+- **분산 환경 공유 호출 제한기 구현 (`lib/rateLimit/sharedRateLimiter.ts`, `archive/legacy-postgres/sql/migrations/20260926_create_ai_rate_limits.sql`)**: 다중 서버 환경에서 사용자별 분당 5회 제한을 원자적으로 적용할 수 있는 공유 저장소(`PostgresRateLimiterStore`, `UpstashRedisRateLimiterStore`) 구현. PostgreSQL VM-DB용 원자적 슬라이딩 윈도우 DDL 및 RPC(`check_ai_rate_limit`) 마이그레이션 스크립트 작성. 로컬 개발 모드(`NODE_ENV !== 'production'` 또는 `NEXT_PUBLIC_USE_IN_MEMORY === 'true'`)에서는 외부 의존성 없는 `MemoryRateLimiterStore`를 사용하도록 명확히 분리하고 장애 시 메모리 fallback 안전망 적용.
+- **JSON 파싱 전 바이트 단위 본문 크기 제한 및 방어 (`app/api/analyze/route.ts`)**: `request.json()` 호출 전 `readBodyWithByteLimit`를 통해 스트림 단위로 바이트를 검사하여 `MAX_BODY_BYTES`(32 KB) 초과 요청을 즉시 413(Payload Too Large)으로 차단 (`Content-Length` 누락 또는 위조 헤더 방어). 유효하지 않은 JSON, 비문자열 `text`, 공백 본문, 5,000자 초과 요청은 400으로 응답하며 Gemini API를 일체 호출하지 않도록 방어.
+- **실제 라우트 회귀 테스트 강화 (`scripts/test-regression-settlement-auth-ai.ts`)**: 모의 세션(`setSessionGetter`) 및 모의 Gemini 응답(`setGeminiFetcher`)을 적용하여 `POST /api/analyze` 라우트의 200 정상 응답, 429 요청 빈도 초과, 413 본문 바이트 크기 초과, 400 텍스트 길이 초과, 400 잘못된 JSON/타입, 401 비인증 전 항목을 검증. 모든 거절 요청에서 외부 Gemini API 호출이 0건임을 확인.
+- **중복 산출물 제거 (`public/stocksys-fix-223fd9b.patch`)**: 웹 제공 불필요 산출물인 패치 사본을 저장소에서 삭제 완료.

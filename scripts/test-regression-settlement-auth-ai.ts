@@ -12,7 +12,16 @@ import assert from 'node:assert';
 import { MemoryDatabase, StockRecord, OptionContractRecord, ProfileRecord, HoldingRecord, OrderRecord, memoryDb } from '../lib/memoryDb/memoryStore';
 import { createInMemoryRepositoryBundle } from '../lib/repositories/inMemory';
 import { createMemoryDbClient } from '../lib/memoryDb/memoryDbClient';
-import { POST as analyzePostHandler, MAX_TEXT_LENGTH, MAX_REQUESTS_PER_WINDOW, checkRateLimit } from '../app/api/analyze/route';
+import {
+  POST as analyzePostHandler,
+  MAX_TEXT_LENGTH,
+  MAX_REQUESTS_PER_WINDOW,
+  MAX_BODY_BYTES,
+  checkRateLimit,
+  setSessionGetter,
+  setGeminiFetcher,
+  resetRateLimits,
+} from '../app/api/analyze/route';
 import { NextRequest } from 'next/server';
 
 const NOW = 1774483200000;
@@ -343,33 +352,185 @@ async function testAuthProfileCreationAndIsolation() {
 }
 
 async function testAiAnalyzeApiSecurity() {
-  console.log('\n--- 4. Testing AI Analyze API Hardening & Abuse Prevention ---');
+  console.log('\n--- 4. Testing AI Analyze API Hardening, Route Guard & Shared Rate Limiter ---');
 
-  // 1. Unauthenticated request -> 401
-  const unauthReq = new NextRequest('http://localhost:3000/api/analyze', {
-    method: 'POST',
-    body: JSON.stringify({ text: 'Analyze stocks' }),
-    headers: { 'Content-Type': 'application/json' },
+  // Track all external Gemini calls to verify that rejected requests never trigger external calls
+  let externalGeminiCallCount = 0;
+  process.env.GEMINI_API_KEY = 'mock_gemini_api_key_for_testing';
+
+  setGeminiFetcher(async (_input, _init) => {
+    externalGeminiCallCount++;
+    return new Response(
+      JSON.stringify({
+        candidates: [
+          {
+            content: {
+              parts: [
+                {
+                  text: JSON.stringify({
+                    summary: '모의 분석 요약',
+                    impacts: [{ sector: '반도체', impact: 'positive', score: 8.5 }],
+                  }),
+                },
+              ],
+            },
+          },
+        ],
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } }
+    );
   });
 
-  const unauthRes = await analyzePostHandler(unauthReq);
-  assert.strictEqual(unauthRes.status, 401, 'Unauthenticated request must return 401');
-  const unauthBody = await unauthRes.json();
-  assert.strictEqual(unauthBody.error, '로그인이 필요한 서비스입니다.');
+  resetRateLimits();
 
-  // 2. Body length limit verification
-  assert.strictEqual(MAX_TEXT_LENGTH, 5000, 'Max prompt text length must be capped at 5000 characters');
+  try {
+    // 1. Unauthenticated request -> 401 (Zero external API calls)
+    setSessionGetter(async () => null);
+    const unauthReq = new NextRequest('http://localhost:3000/api/analyze', {
+      method: 'POST',
+      body: JSON.stringify({ text: '삼성전자 HBM 공급 계약 체결' }),
+      headers: { 'Content-Type': 'application/json' },
+    });
 
-  // 3. Rate limiting unit verification
-  const testKey = 'test_rate_user_' + Date.now();
-  for (let i = 0; i < MAX_REQUESTS_PER_WINDOW; i++) {
-    const allowed = checkRateLimit(testKey);
-    assert.strictEqual(allowed, true, `Request ${i + 1} within window must be allowed`);
+    const unauthRes = await analyzePostHandler(unauthReq);
+    assert.strictEqual(unauthRes.status, 401, 'Unauthenticated request must return 401');
+    assert.strictEqual(externalGeminiCallCount, 0, 'Unauthenticated request must NOT call external Gemini API');
+    console.log('✅ [PASS] Unauthenticated request returns 401 with 0 external API calls');
+
+    // 2. Authenticated valid request -> 200 (Calls external Gemini API)
+    const testUserId = 'usr_ai_test_alice';
+    setSessionGetter(async () => ({ user: { id: testUserId } }));
+
+    const validReq = new NextRequest('http://localhost:3000/api/analyze', {
+      method: 'POST',
+      body: JSON.stringify({ text: '삼성전자 HBM 공급 계약 체결' }),
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    const validRes = await analyzePostHandler(validReq);
+    assert.strictEqual(validRes.status, 200, 'Authenticated valid request must return 200');
+    assert.strictEqual(externalGeminiCallCount, 1, 'Valid request must invoke external API once');
+    const validBody = await validRes.json();
+    assert.strictEqual(validBody.summary, '모의 분석 요약');
+    assert.strictEqual(validBody.impacts[0].sector, '반도체');
+    console.log('✅ [PASS] Authenticated request returns 200 with successful Gemini response');
+
+    // 3. Rate limiting (5 requests per minute):
+    // Perform 4 more requests for testUserId (reaching 5 total)
+    for (let i = 2; i <= MAX_REQUESTS_PER_WINDOW; i++) {
+      const req = new NextRequest('http://localhost:3000/api/analyze', {
+        method: 'POST',
+        body: JSON.stringify({ text: `뉴스 텍스트 분석 ${i}` }),
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const res = await analyzePostHandler(req);
+      assert.strictEqual(res.status, 200);
+    }
+    assert.strictEqual(externalGeminiCallCount, 5, '5 valid requests within window must all execute');
+
+    // 6th request for same user -> 429 Too Many Requests (Zero external call)
+    const rateLimitedReq = new NextRequest('http://localhost:3000/api/analyze', {
+      method: 'POST',
+      body: JSON.stringify({ text: '6번째 초과 요청' }),
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const rateLimitedRes = await analyzePostHandler(rateLimitedReq);
+    assert.strictEqual(rateLimitedRes.status, 429, '6th request within 1 min must return 429');
+    assert.strictEqual(externalGeminiCallCount, 5, 'Rate-limited 429 request must NOT call external Gemini API');
+    console.log('✅ [PASS] Exceeding 5 requests/min returns 429 without external API calls');
+
+    // 4. Body byte size limit (> 32 KB) -> 413 Payload Too Large
+    const freshUser = 'usr_ai_test_bob';
+    setSessionGetter(async () => ({ user: { id: freshUser } }));
+
+    // 4a. Oversized with Content-Length header
+    const oversizedJson = JSON.stringify({ text: 'X'.repeat(MAX_BODY_BYTES + 1000) });
+    const oversizedHeaderReq = new NextRequest('http://localhost:3000/api/analyze', {
+      method: 'POST',
+      body: oversizedJson,
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': String(Buffer.byteLength(oversizedJson)),
+      },
+    });
+    const oversizedHeaderRes = await analyzePostHandler(oversizedHeaderReq);
+    assert.strictEqual(oversizedHeaderRes.status, 413, 'Oversized request via Content-Length must return 413');
+    assert.strictEqual(externalGeminiCallCount, 5, '413 request must NOT call external Gemini API');
+
+    // 4b. Oversized with missing or inaccurate Content-Length header (stream reader limit defense)
+    const oversizedStreamReq = new NextRequest('http://localhost:3000/api/analyze', {
+      method: 'POST',
+      body: oversizedJson,
+      headers: {
+        'Content-Type': 'application/json',
+        // Inaccurate Content-Length header pretending to be tiny
+        'Content-Length': '10',
+      },
+    });
+    const oversizedStreamRes = await analyzePostHandler(oversizedStreamReq);
+    assert.strictEqual(oversizedStreamRes.status, 413, 'Oversized request with inaccurate Content-Length must return 413');
+    assert.strictEqual(externalGeminiCallCount, 5, '413 request must NOT call external Gemini API');
+    console.log('✅ [PASS] Body exceeding 32 KB returns 413 (both Content-Length and stream limits defended)');
+
+    // 5. Text length limit (> 5,000 characters) -> 400 Bad Request
+    const longTextUser = 'usr_ai_test_carol';
+    setSessionGetter(async () => ({ user: { id: longTextUser } }));
+    const longTextJson = JSON.stringify({ text: 'A'.repeat(MAX_TEXT_LENGTH + 1) });
+    const longTextReq = new NextRequest('http://localhost:3000/api/analyze', {
+      method: 'POST',
+      body: longTextJson,
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const longTextRes = await analyzePostHandler(longTextReq);
+    assert.strictEqual(longTextRes.status, 400, 'Text exceeding 5,000 characters must return 400');
+    assert.strictEqual(externalGeminiCallCount, 5, '400 request must NOT call external Gemini API');
+    console.log('✅ [PASS] Text exceeding 5,000 characters returns 400 without external API call');
+
+    // 6. Invalid JSON / non-string text -> 400 Bad Request
+    const invalidJsonReq = new NextRequest('http://localhost:3000/api/analyze', {
+      method: 'POST',
+      body: '{"text": not_valid_json}',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const invalidJsonRes = await analyzePostHandler(invalidJsonReq);
+    assert.strictEqual(invalidJsonRes.status, 400, 'Invalid JSON must return 400');
+    assert.strictEqual(externalGeminiCallCount, 5, 'Invalid JSON must NOT call external Gemini API');
+
+    const nonStringReq = new NextRequest('http://localhost:3000/api/analyze', {
+      method: 'POST',
+      body: JSON.stringify({ text: 12345 }),
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const nonStringRes = await analyzePostHandler(nonStringReq);
+    assert.strictEqual(nonStringRes.status, 400, 'Non-string text must return 400');
+    assert.strictEqual(externalGeminiCallCount, 5, 'Non-string text must NOT call external Gemini API');
+
+    const emptyTextReq = new NextRequest('http://localhost:3000/api/analyze', {
+      method: 'POST',
+      body: JSON.stringify({ text: '   ' }),
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const emptyTextRes = await analyzePostHandler(emptyTextReq);
+    assert.strictEqual(emptyTextRes.status, 400, 'Empty/whitespace text must return 400');
+    assert.strictEqual(externalGeminiCallCount, 5, 'Empty text must NOT call external Gemini API');
+    console.log('✅ [PASS] Invalid JSON and non-string/empty text return 400 without external API calls');
+
+    // 7. Unit rate limiter check
+    const unitKey = 'test_rate_user_unit_' + Date.now();
+    for (let i = 0; i < MAX_REQUESTS_PER_WINDOW; i++) {
+      const allowed = await checkRateLimit(unitKey);
+      assert.strictEqual(allowed, true, `Unit request ${i + 1} within window must be allowed`);
+    }
+    const unitBlocked = await checkRateLimit(unitKey);
+    assert.strictEqual(unitBlocked, false, 'Unit request exceeding MAX_REQUESTS_PER_WINDOW must be blocked');
+    console.log('✅ [PASS] Unit rate limiter verification passed');
+
+  } finally {
+    // Clean up test hooks
+    setSessionGetter(null);
+    setGeminiFetcher(null);
+    resetRateLimits();
   }
-  const blocked = checkRateLimit(testKey);
-  assert.strictEqual(blocked, false, 'Request exceeding MAX_REQUESTS_PER_WINDOW must be blocked');
-
-  console.log('✅ [PASS] AI Analyze API 401 unauth, rate limit (5 req/min), and 5000 char limits verified');
 }
 
 async function runAll() {

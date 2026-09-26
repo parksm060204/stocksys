@@ -313,27 +313,36 @@ export class UpstashRedisRateLimiterStore implements IRateLimiterStore {
     }
     const count = rawCount;
 
-    // 3. Validate EXPIRE result structure
-    if (!expireItem || expireItem.result === undefined) {
-      throw new RateLimiterServiceUnavailableError('Missing Redis EXPIRE result in pipeline response');
+    // 3. Validate EXPIRE result structure and value
+    const rawExpire = expireItem?.result;
+    if (
+      rawExpire === undefined ||
+      rawExpire === null ||
+      typeof rawExpire !== 'number' ||
+      !Number.isInteger(rawExpire) ||
+      (rawExpire !== 0 && rawExpire !== 1)
+    ) {
+      throw new RateLimiterServiceUnavailableError(
+        `Invalid Redis EXPIRE result: expected 0 or 1, received ${JSON.stringify(rawExpire)}`
+      );
     }
 
-    // 4. Validate TTL result structure
+    // 4. Validate TTL result structure: must be a positive integer (TTL <= 0 indicates unexpiring or expired key)
     const rawTtl = ttlItem?.result;
     if (
       rawTtl === undefined ||
       rawTtl === null ||
       typeof rawTtl !== 'number' ||
       !Number.isInteger(rawTtl) ||
-      Number.isNaN(rawTtl)
+      Number.isNaN(rawTtl) ||
+      rawTtl <= 0
     ) {
       throw new RateLimiterServiceUnavailableError(
-        `Invalid Redis TTL result: expected integer, received ${JSON.stringify(rawTtl)}`
+        `Invalid Redis TTL result: expected positive integer greater than 0, received ${JSON.stringify(rawTtl)}`
       );
     }
-    const ttlSeconds = rawTtl > 0 ? rawTtl : windowSec;
 
-    const resetAt = Date.now() + Math.max(ttlSeconds, 1) * 1000;
+    const resetAt = Date.now() + rawTtl * 1000;
     return {
       allowed: count <= limit,
       count,

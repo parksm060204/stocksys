@@ -5215,3 +5215,12 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 - **비정상 응답 시 503 반환 및 Gemini 0회 호출 보장 (`app/api/analyze/route.ts`)**: 신뢰할 수 없는 Redis 결과 발생 시 `/api/analyze`가 503을 반환하고 외부 Gemini API를 일체 호출하지 않도록 방어.
 - **Upstash Redis 파이프라인 무결성 회귀 테스트 추가 (`scripts/test-regression-settlement-auth-ai.ts`)**: 정상 파이프라인(200 및 Gemini 1회 호출), 한도 초과(429 및 Gemini 0회 호출), 명령별 오류(`INCR`, `EXPIRE`, `TTL` 오류 시 503), 빈 배열 및 구조 결함(503), 항목 누락(503), 문자열·`NaN`·음수·0·실수 카운트(503) 전 항목을 모의 응답으로 검증 통과.
 - **타입 검사 및 전체 테스트 통과**: `node --import tsx scripts/test-regression-settlement-auth-ai.ts` (6개 섹션 전원 통과), `npx tsc --noEmit` (0 errors).
+---
+## 2026-09-27 01:14
+
+**요청 요약:** 회귀 테스트 복원 및 미만료 Redis 키(TTL <= 0) / 잘못된 EXPIRE 결과 오류 처리 강화.
+
+**수행 결과:**
+- **회귀 테스트 파일 완전 복원 및 검증 확장 (`scripts/test-regression-settlement-auth-ai.ts`)**: `86da41d`에서 0바이트로 초기화되었던 회귀 테스트 파일 전체(LP 정산, 옵션 만기, 계좌 격리, API 보안, 운영 공유 제한기, Redis 파이프라인 무결성 6개 섹션)를 온전히 복원하고 미만료 키 방어 테스트 케이스 추가.
+- **미만료 Redis 키 방어 및 EXPIRE 결과 엄격 검증 (`lib/rateLimit/sharedRateLimiter.ts`)**: `UpstashRedisRateLimiterStore.consume()`에서 `EXPIRE` 결과가 0 또는 1이 아니거나(null, 임의 문자열, 범위 초과 정수 등), `TTL` 결과가 0 이하(만료 설정 없는 key의 -1, 미존재 key의 -2, 만료된 0)일 때 기본 창 길이로 대체하지 않고 `RateLimiterServiceUnavailableError`를 발생시켜 즉시 503으로 차단하도록 수정 (영구 누적 차단 방지).
+- **모의 회귀 테스트 및 타입 검사 통과**: `node --import tsx scripts/test-regression-settlement-auth-ai.ts` (6개 섹션 전원 통과), `npx tsc --noEmit` (0 errors).

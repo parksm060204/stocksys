@@ -5153,3 +5153,12 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 - 앞선 기록의 계정 이름 접두사 기반 LP 인가를 제거함. 등록된 LP 계정 또는 신뢰된 봇 설정만 승인하며, 미등록 LP 형태의 이름이 거절되는 회귀 검증을 추가함.
 - 분석 API에서 문자열이 아닌 JSON 입력을 400으로 거절하도록 검증을 보강함.
 - `npx tsc --noEmit`, Phase 1 전체 테스트, 정산·옵션·인증·API 회귀 테스트, LP 권한 테스트를 통과함.
+
+---
+## 2026-09-26 17:20
+
+**요청 요약:** Git 원격 저장소 푸시 (Push to remote repository).
+
+**수행 결과:**
+- 검증 완료된 거래소 정산·인증·API 보안 복원 커밋(`de4e59b`)을 원격 저장소의 작업 브랜치 `origin/fix/restore-trading-safeguards`(`https://github.com/parksm060204/stocksys.git`)로 성공적으로 push 완료.
+- 원격 main 직접 푸시 및 병합 금지 지침을 준수하여 작업 브랜치를 통해 PR 생성 및 리뷰가 가능하도록 원격 동기화 완료.

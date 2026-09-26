@@ -280,12 +280,17 @@ export function setCustomLimiterStore(store: IRateLimiterStore | null): void {
 }
 
 /**
- * Checks whether the environment is explicit local development/testing mode
+ * Checks whether the environment is explicit local development/testing mode.
+ * In production (NODE_ENV === 'production'), local in-memory rate limiting is strictly prohibited
+ * and cannot be enabled via flags to prevent bypassing multi-server distributed limits.
  */
 export function isLocalDevMode(): boolean {
+  if (process.env.NODE_ENV === 'production') {
+    return false;
+  }
   if (process.env.USE_LOCAL_IN_MEMORY_RATE_LIMIT === 'true') return true;
   if (process.env.NEXT_PUBLIC_USE_IN_MEMORY === 'true') return true;
-  return process.env.NODE_ENV !== 'production';
+  return true;
 }
 
 /**

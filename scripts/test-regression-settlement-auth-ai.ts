@@ -27,6 +27,9 @@ import {
 import {
   defaultPostgresStore,
   defaultUpstashStore,
+  defaultMemoryStore,
+  getActiveRateLimiterStore,
+  isLocalDevMode,
   setCustomLimiterStore,
   RateLimiterConfigurationError,
   RateLimiterServiceUnavailableError,
@@ -597,8 +600,29 @@ async function testProductionRateLimiterSecurityAndFailClosed() {
 
     // Setup simulated production environment
     (process.env as Record<string, string | undefined>).NODE_ENV = 'production';
+    process.env.USE_LOCAL_IN_MEMORY_RATE_LIMIT = 'true';
+    assert.strictEqual(
+      isLocalDevMode(),
+      false,
+      'isLocalDevMode() must be false in production even with USE_LOCAL_IN_MEMORY_RATE_LIMIT=true'
+    );
     delete process.env.USE_LOCAL_IN_MEMORY_RATE_LIMIT;
+
+    process.env.NEXT_PUBLIC_USE_IN_MEMORY = 'true';
+    assert.strictEqual(
+      isLocalDevMode(),
+      false,
+      'isLocalDevMode() must be false in production even with NEXT_PUBLIC_USE_IN_MEMORY=true'
+    );
     delete process.env.NEXT_PUBLIC_USE_IN_MEMORY;
+
+    assert.notStrictEqual(
+      getActiveRateLimiterStore(),
+      defaultMemoryStore,
+      'getActiveRateLimiterStore() must NOT return defaultMemoryStore in production'
+    );
+    console.log('✅ [PASS] In-memory limiter strictly forbidden in production regardless of override flags');
+
     delete process.env.UPSTASH_REDIS_REST_URL;
     delete process.env.UPSTASH_REDIS_REST_TOKEN;
     process.env.ENGINE_DB_URL = 'https://secure-db.internal:3001';

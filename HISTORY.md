@@ -5185,3 +5185,12 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 - **인증키 및 접속 경로 보안 강화 (`lib/rateLimit/sharedRateLimiter.ts`)**: 코드에 포함되었던 기본 외부 IP 및 평문 HTTP fallback 경로를 완전 제거하고, 서버 전용 `ENGINE_DB_URL` 및 `ENGINE_DB_SERVICE_ROLE_KEY`를 명시적으로 요구. 운영 환경에서 `http://` 접속 시도시 `RateLimiterConfigurationError`로 차단하고 HTTPS를 강제(Postgres 및 Upstash Redis REST 공통 적용).
 - **운영 경로 모의 회귀 테스트 추가 및 전 항목 통과 (`scripts/test-regression-settlement-auth-ai.ts`)**: 공유 저장소 정상 응답(200, Gemini 1회 호출), DB 연결 실패(503, Gemini 0회 호출), 404 RPC 누락(503, Gemini 0회 호출), 401/403 인증 오류(503, Gemini 0회 호출), 필수 환경변수 누락(503, Gemini 0회 호출), 비보안 HTTP 주소 설정(503, Gemini 0회 호출), SQL 마이그레이션 권한 잠금 무결성 전 항목을 모의 환경에서 검증 통과.
 - **빌드 및 타입 검사 무결성 확인**: `npx tsc --noEmit` (0 errors), `npm --prefix engine-server run build` (성공), `npm run build` (Next.js 16 Turbopack 프로덕션 빌드 성공).
+---
+## 2026-09-27 00:46
+
+**요청 요약:** 최신 main(56bdfa6) 기준 빈 권한 잠금 마이그레이션(0바이트) 복원 및 운영 환경 내 인메모리 레이트리밋 우회 차단.
+
+**수행 결과:**
+- **권한 회수 마이그레이션 복원 (`archive/legacy-postgres/sql/migrations/20260927_lockdown_ai_rate_limits_permissions.sql`)**: 0바이트로 유실되었던 파일에 `check_ai_rate_limit` RPC 및 `ai_rate_limits` 테이블의 `PUBLIC`, `anon`, `authenticated` 권한 REVOKE 및 `service_role` 전용 잠금 SQL을 완전 복원하여 기존 배포 DB의 권한 회수가 정상 동작하도록 수정.
+- **운영 환경 인메모리 레이트리밋 강제 차단 (`lib/rateLimit/sharedRateLimiter.ts`)**: `isLocalDevMode()`에서 `NODE_ENV === 'production'`일 경우 환경변수(`USE_LOCAL_IN_MEMORY_RATE_LIMIT=true` 또는 `NEXT_PUBLIC_USE_IN_MEMORY=true`)가 설정되어 있어도 무조건 `false`를 반환하도록 수정하여, 다중 서버 분산 제한이 우회되는 결함을 원천 차단.
+- **회귀 테스트 및 검증 보강 (`scripts/test-regression-settlement-auth-ai.ts`)**: 빈 마이그레이션 방지 및 SQL 권한 잠금 검증, 운영 환경 플래그 주입 시 인메모리 제한 비활성화 검증 추가, 5개 회귀 테스트 스위트 전원 통과 확인.

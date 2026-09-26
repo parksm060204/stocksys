@@ -5224,3 +5224,13 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 - **회귀 테스트 파일 완전 복원 및 검증 확장 (`scripts/test-regression-settlement-auth-ai.ts`)**: `86da41d`에서 0바이트로 초기화되었던 회귀 테스트 파일 전체(LP 정산, 옵션 만기, 계좌 격리, API 보안, 운영 공유 제한기, Redis 파이프라인 무결성 6개 섹션)를 온전히 복원하고 미만료 키 방어 테스트 케이스 추가.
 - **미만료 Redis 키 방어 및 EXPIRE 결과 엄격 검증 (`lib/rateLimit/sharedRateLimiter.ts`)**: `UpstashRedisRateLimiterStore.consume()`에서 `EXPIRE` 결과가 0 또는 1이 아니거나(null, 임의 문자열, 범위 초과 정수 등), `TTL` 결과가 0 이하(만료 설정 없는 key의 -1, 미존재 key의 -2, 만료된 0)일 때 기본 창 길이로 대체하지 않고 `RateLimiterServiceUnavailableError`를 발생시켜 즉시 503으로 차단하도록 수정 (영구 누적 차단 방지).
 - **모의 회귀 테스트 및 타입 검사 통과**: `node --import tsx scripts/test-regression-settlement-auth-ai.ts` (6개 섹션 전원 통과), `npx tsc --noEmit` (0 errors).
+
+---
+## 2026-09-27 02:22
+
+**요청 요약:** 저장소 파일 0바이트화/삭제 정황 및 스파이웨어/외부 유출 가능성 전수 조사, 저장소 무결성 검증 및 깃 커밋·푸시.
+
+**수행 결과:**
+- **파일 0바이트화 원인 규명 및 증거 확보**: 커밋 `86da41d`, `a78e563`, `56bdfa6`, `13971c0`에서 발생한 0바이트 현상은 악성 스파이웨어가 아닌 OneDrive 동기화 경로에서의 에디터 버퍼 충돌(Accept Change/Overwrite)과 터미널 일괄 커밋 명령어(`git add . && git commit -m "first commit"`) 실행으로 인한 로컬 작업 미스임을 Git Reflog 및 PowerShell 실행 히스토리 대조로 규명.
+- **스파이웨어 및 데이터 유출/파괴 코드 전수 점검**: 외부 네트워크 호출(Gemini, Upstash Redis, PostgREST DB, Yahoo Finance 등 정상 연동 외 전무), 설치/패키지 훅(이상 없음), Git/Codex 훅(이상 없음), SQL 파괴 DDL/DML(비즈니스 로직 및 WAL 포화 방지 롤링 트리밍 외 무관), 임의 코드 실행(`eval`/`Function` 전무) 점검 완료.
+- **저장소 및 런타임 무결성 검증**: `node --import tsx scripts/test-regression-settlement-auth-ai.ts` (6개 세션 100% 통과), `npx tsc --noEmit` (타입 오류 0건) 정상 동작 확인.

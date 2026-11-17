@@ -1,20 +1,31 @@
 "use client";
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 
-export type OrderType = 'LIMIT' | 'MARKET' | 'CONDITIONAL' | 'BEST_LIMIT' | 'IOC' | 'FOK';
+export type OrderType = 'LIMIT' | 'MARKET';
 
 interface OptionOrderEntryProps {
+  contractId?: string;
   ticker: string;
   currentPrice: number;
+  multiplier?: number;
   userBalance?: number | null;
-  onOrderSubmit?: (order: { side: 'BUY' | 'SELL'; type: OrderType; price: number; qty: number }) => void;
+  onOrderSubmit?: (order: {
+    contractId?: string;
+    ticker: string;
+    side: 'BUY' | 'SELL';
+    type: OrderType;
+    price: number;
+    qty: number;
+  }) => Promise<any>;
 }
 
 export const OptionOrderEntry: React.FC<OptionOrderEntryProps> = ({
+  contractId,
   ticker,
-  currentPrice = 3360,
-  userBalance = 10000000,
+  currentPrice,
+  multiplier = 250000,
+  userBalance = null,
   onOrderSubmit,
 }) => {
   const [side, setSide] = useState<'BUY' | 'SELL'>('BUY');
@@ -22,33 +33,68 @@ export const OptionOrderEntry: React.FC<OptionOrderEntryProps> = ({
   const [price, setPrice] = useState<number>(currentPrice);
   const [qty, setQty] = useState<number>(1);
   const [fixedQty, setFixedQty] = useState<boolean>(false);
+  const [submitting, setSubmitting] = useState<boolean>(false);
+  const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
-  const totalAmount = price * qty;
+  useEffect(() => {
+    setPrice(currentPrice);
+  }, [currentPrice, ticker]);
+
+  const effectivePrice = orderType === 'MARKET' ? currentPrice : price;
+  const totalAmount = Math.round(effectivePrice * qty * multiplier);
 
   const handleQuickQty = (amount: number) => {
     setQty(amount);
   };
 
   const handlePctQty = (pct: number) => {
-    if (userBalance && price > 0) {
-      const maxPossible = Math.floor((userBalance * (pct / 100)) / price);
+    const unitCost = effectivePrice * multiplier;
+    if (userBalance !== null && userBalance > 0 && unitCost > 0) {
+      const maxPossible = Math.floor((userBalance * (pct / 100)) / unitCost);
       setQty(Math.max(1, maxPossible));
     }
   };
 
   const handlePriceTickOffset = (ticks: number) => {
-    const tickSize = 10;
-    setPrice((prev) => Math.max(10, prev + ticks * tickSize));
+    const tickSize = 0.05;
+    setPrice((prev) => Math.max(0.01, Math.round((prev + ticks * tickSize) * 100) / 100));
   };
 
-  const handleSubmit = (actionSide: 'BUY' | 'SELL') => {
-    onOrderSubmit?.({
-      side: actionSide,
-      type: orderType,
-      price: orderType === 'MARKET' ? 0 : price,
-      qty,
-    });
-    alert(`[HTS 주문 접수] ${ticker} | ${actionSide === 'BUY' ? '매수' : '매도'} | ${orderType} | ${qty}계약 (₩${price.toLocaleString()})`);
+  const handleSubmit = async (actionSide: 'BUY' | 'SELL') => {
+    if (submitting) return;
+    if (!onOrderSubmit) {
+      setFeedback({ type: 'error', message: '주문 제출 경로가 연결되지 않았습니다.' });
+      return;
+    }
+
+    setSubmitting(true);
+    setFeedback(null);
+    try {
+      const res = await onOrderSubmit({
+        contractId,
+        ticker,
+        side: actionSide,
+        type: orderType,
+        price: orderType === 'MARKET' ? 0 : price,
+        qty,
+      });
+      const ordStatus = res?.order?.status;
+      const defaultMsg =
+        ordStatus === 'open'
+          ? `[미체결 접수] ${ticker} ${actionSide === 'BUY' ? '매수' : '매도'} ${qty}계약 (체결 대기)`
+          : `[체결 완료] ${ticker} ${actionSide === 'BUY' ? '매수' : '매도'} ${res?.order?.filledQty ?? qty}계약`;
+      setFeedback({
+        type: 'success',
+        message: res?.message || defaultMsg,
+      });
+    } catch (err: any) {
+      setFeedback({
+        type: 'error',
+        message: err?.message || '옵션 주문 처리에 실패했습니다.',
+      });
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -81,17 +127,13 @@ export const OptionOrderEntry: React.FC<OptionOrderEntryProps> = ({
         </div>
       </div>
 
-      {/* 1. 6개 주문 유형 선택 탭 (지정가, 시장가, 조건부지정가, 최유리지정가, IOC, FOK) */}
+      {/* 1. 지원 주문 유형 선택 탭 (지정가, 시장가) */}
       <div className="space-y-1.5">
         <span className="text-xs font-extrabold text-[#8E939D] block">주문 방식 (ORDER TYPE)</span>
-        <div className="grid grid-cols-3 sm:grid-cols-6 gap-1.5 text-xs font-extrabold">
+        <div className="grid grid-cols-2 gap-1.5 text-xs font-extrabold">
           {[
-            { id: 'LIMIT', label: '지정가' },
-            { id: 'MARKET', label: '시장가' },
-            { id: 'CONDITIONAL', label: '조건부' },
-            { id: 'BEST_LIMIT', label: '최유리' },
-            { id: 'IOC', label: 'IOC' },
-            { id: 'FOK', label: 'FOK' },
+            { id: 'LIMIT', label: '지정가 (LIMIT)' },
+            { id: 'MARKET', label: '시장가 (MARKET)' },
           ].map((t) => (
             <button
               key={t.id}
@@ -177,12 +219,14 @@ export const OptionOrderEntry: React.FC<OptionOrderEntryProps> = ({
         <div className="flex items-center gap-2">
           <input
             type="number"
-            value={orderType === 'MARKET' ? 0 : price}
+            step="0.01"
+            min="0.01"
+            value={orderType === 'MARKET' ? currentPrice : price}
             disabled={orderType === 'MARKET'}
-            onChange={(e) => setPrice(parseInt(e.target.value) || 0)}
+            onChange={(e) => setPrice(Math.max(0.01, parseFloat(e.target.value) || 0))}
             className="flex-1 rounded-xl border border-border bg-[#0E1117] px-3 py-2 text-right font-mono text-[13.5px] font-black text-white outline-none focus:border-[#F04452]"
           />
-          <span className="text-[#8E939D] font-bold">원</span>
+          <span className="text-[#8E939D] font-bold">pt</span>
         </div>
 
         {/* 틱 조절 버튼 */}
@@ -214,27 +258,49 @@ export const OptionOrderEntry: React.FC<OptionOrderEntryProps> = ({
         </div>
       </div>
 
-      {/* 4. 총 주문 금액 표시 */}
-      <div className="flex justify-between items-center bg-[#161B22] px-3.5 py-2.5 rounded-xl border border-border">
-        <span className="text-[#8E939D] font-medium">총 주문 예상금액</span>
-        <span className="font-mono text-[14px] font-black text-white tabular-nums">
-          ₩{totalAmount.toLocaleString()}
-        </span>
+      {/* 4. 총 주문 금액 및 계좌 잔액 표시 */}
+      <div className="space-y-1.5 bg-[#161B22] px-3.5 py-2.5 rounded-xl border border-border">
+        <div className="flex justify-between items-center">
+          <span className="text-[#8E939D] font-medium">총 주문 예상금액 (승수 {multiplier.toLocaleString()})</span>
+          <span className="font-mono text-[14px] font-black text-white tabular-nums">
+            ₩{totalAmount.toLocaleString()}
+          </span>
+        </div>
+        <div className="flex justify-between items-center text-[11px]">
+          <span className="text-[#8E939D]">주문 가능 예수금</span>
+          <span className="font-mono font-bold text-[#F4F5F6] tabular-nums">
+            {userBalance !== null ? `₩${Math.floor(userBalance).toLocaleString()}` : '로그인 필요'}
+          </span>
+        </div>
       </div>
 
-      {/* 5. 매수 / 매도 / 정정 / 취소 주문 실행 버튼 바 */}
+      {feedback && (
+        <div
+          className={`px-3 py-2 rounded-xl border text-[11px] font-bold ${
+            feedback.type === 'success'
+              ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+              : 'bg-up/10 border-[#F04452]/30 text-up'
+          }`}
+        >
+          {feedback.message}
+        </div>
+      )}
+
+      {/* 5. 매수 / 매도 주문 실행 버튼 바 */}
       <div className="grid grid-cols-2 gap-2 pt-1">
         <button
+          disabled={submitting}
           onClick={() => handleSubmit('BUY')}
-          className="py-3 bg-up hover:bg-[#ff5252] text-white font-black text-xs rounded-full shadow-[0_0_15px_rgba(240,68,82,0.35)] transition-all active:scale-[0.98]"
+          className="py-3 bg-up hover:bg-[#ff5252] disabled:opacity-50 text-white font-black text-xs rounded-full shadow-[0_0_15px_rgba(240,68,82,0.35)] transition-all active:scale-[0.98]"
         >
-          신규 매수 제출 (BUY)
+          {submitting ? '처리 중...' : '신규 매수 제출 (BUY)'}
         </button>
         <button
+          disabled={submitting}
           onClick={() => handleSubmit('SELL')}
-          className="py-3 bg-down hover:bg-[#4092ff] text-white font-black text-xs rounded-full shadow-[0_0_15px_rgba(49,130,246,0.35)] transition-all active:scale-[0.98]"
+          className="py-3 bg-down hover:bg-[#4092ff] disabled:opacity-50 text-white font-black text-xs rounded-full shadow-[0_0_15px_rgba(49,130,246,0.35)] transition-all active:scale-[0.98]"
         >
-          신규 매도 제출 (SELL)
+          {submitting ? '처리 중...' : '신규 매도 제출 (SELL)'}
         </button>
       </div>
     </div>

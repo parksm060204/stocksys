@@ -1,4 +1,5 @@
 import { COMMODITY_DEFINITIONS } from '../commodities/definitions';
+import type { ExchangeRateRecord } from '../repositories/types';
 
 // ── 고정 UUID 규격 (Production 스키마 완벽 호환) ──
 export const GUEST_USER_ID = '00000000-0000-4000-8000-000000000001';
@@ -30,6 +31,13 @@ export const STOCK_UUID_MAP: Record<string, string> = {
   'SPY': '00000000-0000-4000-8000-000000000404',
   'QQQ': '00000000-0000-4000-8000-000000000405',
   'TQQQ': '00000000-0000-4000-8000-000000000406',
+  'KODEXINV2X': '00000000-0000-4000-8000-000000000407',
+  'KODEXSEMI': '00000000-0000-4000-8000-000000000408',
+  'TIGERBAT': '00000000-0000-4000-8000-000000000409',
+  'TSLL': '00000000-0000-4000-8000-000000000410',
+  'NVDL': '00000000-0000-4000-8000-000000000411',
+  'EWJ': '00000000-0000-4000-8000-000000000412',
+  'FXI': '00000000-0000-4000-8000-000000000413',
 };
 
 export interface StockRecord {
@@ -102,8 +110,58 @@ export interface ProfileRecord {
   cny_balance?: number;
   gbp_balance?: number;
   is_admin?: boolean;
+  has_options_license?: boolean;
   unlocked_features?: string[];
+  feature_expiries?: Record<string, string>;
+  news_subscriptions?: Record<string, string>;
+  acquired_passives?: string[];
   created_at: string;
+}
+
+export interface CommodityPositionRecord {
+  id: string;
+  user_id: string;
+  commodity_id: string;
+  side: 'long' | 'short' | 'flat';
+  quantity: number;
+  avg_entry_price: number;
+  reserved_margin_krw: number;
+  realized_pnl_krw: number;
+  updated_at: string;
+}
+
+export interface CommodityMarginReservation {
+  order_id: string;
+  user_id: string;
+  commodity_id: string;
+  side: 'buy' | 'sell';
+  total_size: number;
+  remaining_size: number;
+  margin_per_contract_krw: number;
+  reserved_krw: number;
+  status: 'open' | 'partial' | 'filled' | 'cancelled' | 'expired';
+  created_at: string;
+}
+
+export interface CommoditySettlementEntry {
+  id: string;
+  commodity_id: string;
+  tick: number;
+  settled_at: string;
+}
+
+export interface PersistedCommodityOrder {
+  id: string;
+  commodityId: string;
+  botId?: string | undefined;
+  userId?: string | undefined;
+  side: 'buy' | 'sell';
+  type: 'limit' | 'market';
+  price: number;
+  size: number;
+  filled: number;
+  createdAtTick: number;
+  createdAtTime: number;
 }
 
 export interface HoldingRecord {
@@ -276,7 +334,7 @@ export class MemoryDatabase {
   public bonds: Map<string, BondRecord> = new Map();
   public marketNews: MarketNewsRecord[] = [];
   public adminSettings: Map<string, any> = new Map();
-  public exchangeRates: any[] = [];
+  public exchangeRates: ExchangeRateRecord[] = [];
   public institutionalPortfolios: Map<string, any> = new Map();
   public playerEvents: any[] = [];
   public activePlayerEvents: any[] = [];
@@ -293,6 +351,27 @@ export class MemoryDatabase {
    * repository 인스턴스를 재생성해도 이 원장 덕분에 중복 정산이 차단된다.
    */
   public settlementLedger: Map<string, SettlementLedgerEntry> = new Map();
+  public settlementLedgerCutoffMs: number = 0;
+  public settledEpochWatermarks: Map<number, number> = new Map();
+  public settledOptionEpochWatermarks: Map<number, number> = new Map();
+  public settledDeterministicWatermarks: Map<string, number> = new Map();
+  public evictedCustomTradeIds: Set<string> = new Set();
+  public tradeEpoch: number = 1;
+  public tradeSeq: number = 0;
+  public optionTradeSeq: number = 0;
+  public engineNextEpoch: number = 1;
+  public engineTickCount: number = 0;
+  public enginePartialFillSequence: number = 0;
+  public commodityPositions: Map<string, CommodityPositionRecord> = new Map();
+  public commodityMarginReservations: Map<string, CommodityMarginReservation> = new Map();
+  public commoditySettlementLedger: Map<string, CommoditySettlementEntry> = new Map();
+  public commodityOpenOrders: Map<string, PersistedCommodityOrder> = new Map();
+  public commoditySettledEpochWatermarks: Map<number, number> = new Map();
+  public commodityEvictedCustomTradeIds: Set<string> = new Set();
+  public commodityNextEpoch: number = 1;
+  public commodityCurrentTick: number = 0;
+  public commodityUserOrderSeq: number = 0;
+  public commodityTradeSeq: number = 0;
 
   public isAuthorizedLp(id: string): boolean {
     if (!id) return false;
@@ -342,6 +421,18 @@ export class MemoryDatabase {
     }
     this.fallbackCounter += 1;
     return `${prefix}_${this.fallbackCounter.toString().padStart(6, '0')}`;
+  }
+
+  /**
+   * 단조 증가 에포크 기반 체결 ID 할당기 (trimSettlementLedger에서 워터마크 O(1) 압축 가능).
+   */
+  public nextMonotonicTradeId(kind: 'tr' | 'opt_tr' = 'tr'): string {
+    if (kind === 'opt_tr') {
+      this.optionTradeSeq += 1;
+      return `opt_tr_e${this.tradeEpoch}_${this.optionTradeSeq}`;
+    }
+    this.tradeSeq += 1;
+    return `tr_e${this.tradeEpoch}_${this.tradeSeq}`;
   }
 
   public snapshotIdGenerator(): unknown {
@@ -563,6 +654,13 @@ export class MemoryDatabase {
       { ticker: 'SPY', name: 'SPDR S&P 500', market: 'etf', current_price: 500.0, previous_close: 500.0, sector: 'Index ETF', sector_id: 'index', theme_ids: ['us', 'index'], is_core: false, shares_outstanding: 900000000, floating_shares: 900000000, base_liquidity: 0.99, base_spread_bps: 2, base_depth_shares: 5000, institutional_fit: 0.99, macro_exposure: { market_beta: 1.0 } },
       { ticker: 'QQQ', name: 'Invesco QQQ', market: 'etf', current_price: 430.0, previous_close: 430.0, sector: 'Index ETF', sector_id: 'index', theme_ids: ['us', 'tech_index'], is_core: false, shares_outstanding: 600000000, floating_shares: 600000000, base_liquidity: 0.99, base_spread_bps: 3, base_depth_shares: 4000, institutional_fit: 0.99, macro_exposure: { market_beta: 1.2 } },
       { ticker: 'TQQQ', name: 'ProShares UltraPro QQQ', market: 'etf', current_price: 60.0, previous_close: 60.0, sector: 'Leverage ETF', sector_id: 'index', theme_ids: ['us', 'leverage'], is_core: false, shares_outstanding: 500000000, floating_shares: 500000000, base_liquidity: 0.96, base_spread_bps: 5, base_depth_shares: 3000, institutional_fit: 0.60, macro_exposure: { market_beta: 3.0 } },
+      { ticker: 'KODEXINV2X', name: 'KODEX 200선물인버스2X (곱버스 -2X)', market: 'etf', current_price: 2500, previous_close: 2500, sector: 'Leverage ETF', sector_id: 'index', theme_ids: ['korea', 'inverse', 'leverage'], is_core: false, shares_outstanding: 400000000, floating_shares: 400000000, base_liquidity: 0.92, base_spread_bps: 10, base_depth_shares: 1500, institutional_fit: 0.65, macro_exposure: { market_beta: -2.0 } },
+      { ticker: 'KODEXSEMI', name: 'KODEX 반도체', market: 'etf', current_price: 32000, previous_close: 32000, sector: 'Sector ETF', sector_id: 'semiconductor', theme_ids: ['korea', 'semiconductor'], is_core: false, shares_outstanding: 150000000, floating_shares: 150000000, base_liquidity: 0.90, base_spread_bps: 10, base_depth_shares: 1000, institutional_fit: 0.85, macro_exposure: { market_beta: 1.1 } },
+      { ticker: 'TIGERBAT', name: 'TIGER 2차전지테마', market: 'etf', current_price: 25000, previous_close: 25000, sector: 'Sector ETF', sector_id: 'energy', theme_ids: ['korea', 'battery'], is_core: false, shares_outstanding: 160000000, floating_shares: 160000000, base_liquidity: 0.88, base_spread_bps: 12, base_depth_shares: 900, institutional_fit: 0.80, macro_exposure: { market_beta: 1.2 } },
+      { ticker: 'TSLL', name: 'Direxion Daily TSLA Bull 2X (테슬라 2X)', market: 'etf', current_price: 10.0, previous_close: 10.0, sector: 'Leverage ETF', sector_id: 'auto', theme_ids: ['us', 'ev', 'leverage'], is_core: false, shares_outstanding: 300000000, floating_shares: 300000000, base_liquidity: 0.94, base_spread_bps: 8, base_depth_shares: 2500, institutional_fit: 0.55, macro_exposure: { market_beta: 2.0 } },
+      { ticker: 'NVDL', name: 'GraniteShares 2x Long NVDA (엔비디아 2X)', market: 'etf', current_price: 45.0, previous_close: 45.0, sector: 'Leverage ETF', sector_id: 'semiconductor', theme_ids: ['us', 'ai', 'leverage'], is_core: false, shares_outstanding: 250000000, floating_shares: 250000000, base_liquidity: 0.95, base_spread_bps: 6, base_depth_shares: 2000, institutional_fit: 0.60, macro_exposure: { market_beta: 2.2 } },
+      { ticker: 'EWJ', name: 'iShares MSCI Japan ETF (일본)', market: 'etf', current_price: 70.0, previous_close: 70.0, sector: 'Index ETF', sector_id: 'index', theme_ids: ['global', 'japan'], is_core: false, shares_outstanding: 200000000, floating_shares: 200000000, base_liquidity: 0.92, base_spread_bps: 5, base_depth_shares: 2000, institutional_fit: 0.90, macro_exposure: { market_beta: 0.9 } },
+      { ticker: 'FXI', name: 'iShares China Large-Cap ETF (중국)', market: 'etf', current_price: 25.0, previous_close: 25.0, sector: 'Index ETF', sector_id: 'index', theme_ids: ['global', 'china'], is_core: false, shares_outstanding: 240000000, floating_shares: 240000000, base_liquidity: 0.91, base_spread_bps: 6, base_depth_shares: 2000, institutional_fit: 0.85, macro_exposure: { market_beta: 0.95 } },
     ];
 
     const now = this.getNowMs();
@@ -651,13 +749,40 @@ export class MemoryDatabase {
     ];
     bondList.forEach((b) => this.bonds.set(b.id, b));
 
-    // ── 옵션 계약 시드 ──
-    const expDate = new Date(this.getNowMs() + 14 * 24 * 60 * 60 * 1000).toISOString();
+    // ── 옵션 계약 시드 (현재 시점 기준 향후 3개 월물 + 기본 하위호환 계약) ──
+    const optBaseMs = this.executionContext ? this.getNowMs() : Date.now();
+    const expDate = new Date(optBaseMs + 30 * 24 * 60 * 60 * 1000).toISOString();
     const osId = STOCK_UUID_MAP['0010'] || '00000000-0000-4000-8000-000000000101';
     const optList: OptionContractRecord[] = [
-      { id: 'opt_c_720', underlying_stock_id: osId, ticker: 'IDX-K200-2608-C260.0', asset_class: 'STK', type: 'CALL', option_type: 'CALL', strike_price: 72000, current_price: 2.15, expiry_date: expDate, open_interest: 450, volume: 120, delta: 0.65, gamma: 0.04, theta: -0.15, implied_volatility: 0.22, created_at: this.getIsoTimestamp() },
-      { id: 'opt_p_720', underlying_stock_id: osId, ticker: 'IDX-K200-2608-P260.0', asset_class: 'STK', type: 'PUT', option_type: 'PUT', strike_price: 72000, current_price: 1.85, expiry_date: expDate, open_interest: 380, volume: 95, delta: -0.35, gamma: 0.04, theta: -0.12, implied_volatility: 0.21, created_at: this.getIsoTimestamp() },
+      { id: 'opt_c_720', underlying_stock_id: osId, ticker: 'IDX-K200-2608-C260.0', asset_class: 'STK', type: 'CALL', option_type: 'CALL', strike_price: 72000, current_price: 2.15, multiplier: 250000, expiry_date: expDate, open_interest: 450, volume: 120, delta: 0.65, gamma: 0.04, theta: -0.15, implied_volatility: 0.22, created_at: this.getIsoTimestamp() },
+      { id: 'opt_p_720', underlying_stock_id: osId, ticker: 'IDX-K200-2608-P260.0', asset_class: 'STK', type: 'PUT', option_type: 'PUT', strike_price: 72000, current_price: 1.85, multiplier: 250000, expiry_date: expDate, open_interest: 380, volume: 95, delta: -0.35, gamma: 0.04, theta: -0.12, implied_volatility: 0.21, created_at: this.getIsoTimestamp() },
     ];
+    const k200Chain: Array<[number, number, number]> = [
+      [290.0, 0.01, 30.90], [287.5, 0.01, 28.35], [285.0, 0.01, 25.35], [282.5, 0.01, 23.40],
+      [280.0, 0.02, 20.85], [277.5, 0.02, 17.90], [275.0, 0.05, 16.10], [272.5, 0.09, 13.00],
+      [270.0, 0.16, 10.50], [267.5, 0.31, 8.30], [265.0, 0.60, 5.90], [262.5, 1.18, 4.05],
+      [260.0, 2.15, 2.57],
+      [257.5, 3.60, 1.51], [255.0, 5.45, 0.85], [252.5, 7.50, 0.43], [250.0, 9.80, 0.23],
+      [247.5, 12.10, 0.14], [245.0, 13.85, 0.09], [242.5, 16.65, 0.07], [240.0, 19.15, 0.05],
+    ];
+    const baseUtcDate = new Date(optBaseMs);
+    for (let mOffset = 1; mOffset <= 3; mOffset++) {
+      const mDate = new Date(Date.UTC(baseUtcDate.getUTCFullYear(), baseUtcDate.getUTCMonth() + mOffset, 15, 6, 30, 0));
+      const yyyy = String(mDate.getUTCFullYear());
+      const mm = String(mDate.getUTCMonth() + 1).padStart(2, '0');
+      const yymm = `${yyyy.slice(2)}${mm}`;
+      const monthExpiryIso = mDate.toISOString();
+      const timeScale = 1 + (mOffset - 1) * 0.18;
+      for (const [strike, callPx, putPx] of k200Chain) {
+        const sLabel = strike.toFixed(1);
+        const scaledCall = Math.max(0.01, Math.round(callPx * timeScale * 100) / 100);
+        const scaledPut = Math.max(0.01, Math.round(putPx * timeScale * 100) / 100);
+        optList.push(
+          { id: `opt_k200_${yymm}_c_${sLabel}`, underlying_stock_id: osId, ticker: `IDX-K200-${yymm}-C${sLabel}`, asset_class: 'IDX', type: 'CALL', option_type: 'CALL', strike_price: strike, current_price: scaledCall, multiplier: 250000, expiry_date: monthExpiryIso, open_interest: 1000 + (mOffset - 1) * 200, volume: 100 + (3 - mOffset) * 40, created_at: this.getIsoTimestamp() },
+          { id: `opt_k200_${yymm}_p_${sLabel}`, underlying_stock_id: osId, ticker: `IDX-K200-${yymm}-P${sLabel}`, asset_class: 'IDX', type: 'PUT', option_type: 'PUT', strike_price: strike, current_price: scaledPut, multiplier: 250000, expiry_date: monthExpiryIso, open_interest: 1000 + (mOffset - 1) * 200, volume: 100 + (3 - mOffset) * 40, created_at: this.getIsoTimestamp() },
+        );
+      }
+    }
     optList.forEach((o) => this.optionsContracts.set(o.id, o));
 
     // ── 환율 시드 ──
@@ -690,6 +815,20 @@ export class MemoryDatabase {
     };
     this.profiles.set(guestUser.id, guestUser);
     this.addProfileToIndex(guestUser);
+
+    const optionsLpProfile: ProfileRecord = {
+      id: 'bot_options_mm_001',
+      user_id: 'bot_options_mm_001',
+      username: '옵션 마켓메이커 LP',
+      nickname: '옵션 마켓메이커 LP',
+      cash: 10_000_000_000_000,
+      net_worth: 10_000_000_000_000,
+      rank_tier: 'LP',
+      is_admin: false,
+      created_at: this.getIsoTimestamp(),
+    };
+    this.profiles.set(optionsLpProfile.id, optionsLpProfile);
+    this.addProfileToIndex(optionsLpProfile);
 
     // ── 테스트 사용자의 초기 보유 주식 (Holdings) ──
     const initialHoldings = [
@@ -858,8 +997,31 @@ export class MemoryDatabase {
     this.exchangeRates = [];
     this.institutionalPortfolios.clear();
     this.settlementLedger.clear();
+    this.settlementLedgerCutoffMs = 0;
+    this.settledEpochWatermarks.clear();
+    this.settledOptionEpochWatermarks.clear();
+    this.settledDeterministicWatermarks.clear();
+    this.evictedCustomTradeIds.clear();
+    this.tradeEpoch += 1;
+    this.tradeSeq = 0;
+    this.optionTradeSeq = 0;
+    this.engineNextEpoch += 1;
+    this.engineTickCount = 0;
+    this.enginePartialFillSequence = 0;
+    this.lpLiabilities.clear();
+    this.lpQuoteGeneration = 0;
     this.optionSettlements = [];
     this.bondCouponPayments = [];
+    this.commodityPositions.clear();
+    this.commodityMarginReservations.clear();
+    this.commoditySettlementLedger.clear();
+    this.commodityOpenOrders.clear();
+    this.commoditySettledEpochWatermarks.clear();
+    this.commodityEvictedCustomTradeIds.clear();
+    this.commodityNextEpoch += 1;
+    this.commodityCurrentTick = 0;
+    this.commodityUserOrderSeq = 0;
+    this.commodityTradeSeq = 0;
 
     this.seedDefaultData();
     this.rebuildIndexes();
@@ -867,8 +1029,126 @@ export class MemoryDatabase {
     this.publish('market_reset', { timestamp: this.getNowMs() });
   }
 
+  /**
+   * 정산 원장(settlementLedger)의 메모리 상한을 유지하되,
+   * 단조 증가 ID(tr_e<epoch>_<seq>, opt_tr_e<epoch>_<seq>) 및
+   * 결정론적 엔진 체결 ID(trade_<runId>_t<tick>_s..._f<seq>)는 에포크/runId 워터마크로 O(1) 압축하고,
+   * 임의 ID만 evictedCustomTradeIds에 보존하여 타임스탬프 누락/변조 재실행도 차단한다.
+   */
+  public trimSettlementLedger(maxEntries: number = 10000): number {
+    if (this.settlementLedger.size <= maxEntries) return 0;
+    const entries = Array.from(this.settlementLedger.entries());
+    const removeCount = entries.length - maxEntries;
+    let maxRemovedMs = this.settlementLedgerCutoffMs;
+    const monotonicRe = /^tr_e(\d+)_(\d+)$/;
+    const optionMonotonicRe = /^opt_tr_e(\d+)_(\d+)$/;
+    const deterministicTradeRe = /^trade_(.+?)_t\d+_s.+~.+_f(\d+)$/;
+
+    for (let i = 0; i < removeCount; i++) {
+      const [key, val] = entries[i];
+      const settledMs = Date.parse(val.settled_at || '');
+      if (Number.isFinite(settledMs) && settledMs > maxRemovedMs) {
+        maxRemovedMs = settledMs;
+      }
+      const match = monotonicRe.exec(key);
+      if (match) {
+        const epoch = Number(match[1]);
+        const seq = Number(match[2]);
+        const cur = this.settledEpochWatermarks.get(epoch) ?? 0;
+        if (seq > cur) this.settledEpochWatermarks.set(epoch, seq);
+      } else {
+        const optMatch = optionMonotonicRe.exec(key);
+        if (optMatch) {
+          const epoch = Number(optMatch[1]);
+          const seq = Number(optMatch[2]);
+          const cur = this.settledOptionEpochWatermarks.get(epoch) ?? 0;
+          if (seq > cur) this.settledOptionEpochWatermarks.set(epoch, seq);
+        } else {
+          const detMatch = deterministicTradeRe.exec(key);
+          if (detMatch) {
+            const runId = detMatch[1];
+            const fillSeq = Number(detMatch[2]);
+            const cur = this.settledDeterministicWatermarks.get(runId) ?? -1;
+            if (fillSeq > cur) this.settledDeterministicWatermarks.set(runId, fillSeq);
+          } else {
+            this.evictedCustomTradeIds.add(key);
+          }
+        }
+      }
+      this.settlementLedger.delete(key);
+    }
+    this.settlementLedgerCutoffMs = maxRemovedMs;
+    return removeCount;
+  }
+
+  public isTradeAlreadySettled(tradeId: string): boolean {
+    if (this.settlementLedger.has(tradeId)) return true;
+    const match = /^tr_e(\d+)_(\d+)$/.exec(tradeId);
+    if (match) {
+      const epoch = Number(match[1]);
+      const seq = Number(match[2]);
+      const wm = this.settledEpochWatermarks.get(epoch) ?? 0;
+      if (seq <= wm) return true;
+    }
+    const optMatch = /^opt_tr_e(\d+)_(\d+)$/.exec(tradeId);
+    if (optMatch) {
+      const epoch = Number(optMatch[1]);
+      const seq = Number(optMatch[2]);
+      const wm = this.settledOptionEpochWatermarks.get(epoch) ?? 0;
+      if (seq <= wm) return true;
+    }
+    const detMatch = /^trade_(.+?)_t\d+_s.+~.+_f(\d+)$/.exec(tradeId);
+    if (detMatch) {
+      const runId = detMatch[1];
+      const fillSeq = Number(detMatch[2]);
+      const wm = this.settledDeterministicWatermarks.get(runId);
+      if (wm !== undefined && fillSeq <= wm) return true;
+    }
+    return this.evictedCustomTradeIds.has(tradeId);
+  }
+
+  /**
+   * 원자재 정산 원장(commoditySettlementLedger) 트리밍:
+   * 단조 ID(cm_trade_e<epoch>_t<tick>_s<seq>)는 에포크 워터마크로 압축하고,
+   * 비단조 커스텀 ID는 commodityEvictedCustomTradeIds에 보존하여 단순 cap 삭제를 방지한다.
+   */
+  public trimCommoditySettlementLedger(maxEntries: number = 5000): number {
+    if (this.commoditySettlementLedger.size <= maxEntries) return 0;
+    const entries = Array.from(this.commoditySettlementLedger.entries());
+    const removeCount = entries.length - maxEntries;
+    const monotonicRe = /^cm_trade_e(\d+)_t\d+_s(\d+)$/;
+
+    for (let i = 0; i < removeCount; i++) {
+      const [key] = entries[i];
+      const match = monotonicRe.exec(key);
+      if (match) {
+        const epoch = Number(match[1]);
+        const seq = Number(match[2]);
+        const cur = this.commoditySettledEpochWatermarks.get(epoch) ?? 0;
+        if (seq > cur) this.commoditySettledEpochWatermarks.set(epoch, seq);
+      } else {
+        this.commodityEvictedCustomTradeIds.add(key);
+      }
+      this.commoditySettlementLedger.delete(key);
+    }
+    return removeCount;
+  }
+
+  public isCommodityTradeSettled(tradeId: string): boolean {
+    if (this.commoditySettlementLedger.has(tradeId)) return true;
+    const match = /^cm_trade_e(\d+)_t\d+_s(\d+)$/.exec(tradeId);
+    if (match) {
+      const epoch = Number(match[1]);
+      const seq = Number(match[2]);
+      const wm = this.commoditySettledEpochWatermarks.get(epoch) ?? 0;
+      if (seq <= wm) return true;
+    }
+    return this.commodityEvictedCustomTradeIds.has(tradeId);
+  }
+
   public exportSnapshot(): any {
     return {
+      schemaVersion: 2,
       stocks: Array.from(this.stocks.entries()),
       stockPriceHistory: [...this.stockPriceHistory],
       commodities: Array.from(this.commodities.entries()),
@@ -882,25 +1162,191 @@ export class MemoryDatabase {
       adminSettings: Array.from(this.adminSettings.entries()),
       exchangeRates: [...this.exchangeRates],
       institutionalPortfolios: Array.from(this.institutionalPortfolios.entries()),
+      playerEvents: [...this.playerEvents],
+      activePlayerEvents: [...this.activePlayerEvents],
+      activeManipulations: [...this.activeManipulations],
+      botsConfig: [...this.botsConfig],
+      settlementLedger: Array.from(this.settlementLedger.entries()),
+      settlementLedgerCutoffMs: this.settlementLedgerCutoffMs,
+      settledEpochWatermarks: Array.from(this.settledEpochWatermarks.entries()),
+      settledOptionEpochWatermarks: Array.from(this.settledOptionEpochWatermarks.entries()),
+      settledDeterministicWatermarks: Array.from(this.settledDeterministicWatermarks.entries()),
+      evictedCustomTradeIds: Array.from(this.evictedCustomTradeIds.values()),
+      tradeEpoch: this.tradeEpoch,
+      tradeSeq: this.tradeSeq,
+      optionTradeSeq: this.optionTradeSeq,
+      engineNextEpoch: this.engineNextEpoch,
+      engineTickCount: this.engineTickCount,
+      enginePartialFillSequence: this.enginePartialFillSequence,
+      lpLiabilities: Array.from(this.lpLiabilities.entries()),
+      lpQuoteGeneration: this.lpQuoteGeneration,
+      lpAccounts: Array.from(this.lpAccounts.values()),
+      optionSettlements: [...this.optionSettlements],
+      bondCouponPayments: [...this.bondCouponPayments],
+      commodityPositions: Array.from(this.commodityPositions.entries()),
+      commodityMarginReservations: Array.from(this.commodityMarginReservations.entries()),
+      commoditySettlementLedger: Array.from(this.commoditySettlementLedger.entries()),
+      commodityOpenOrders: Array.from(this.commodityOpenOrders.entries()),
+      commoditySettledEpochWatermarks: Array.from(this.commoditySettledEpochWatermarks.entries()),
+      commodityEvictedCustomTradeIds: Array.from(this.commodityEvictedCustomTradeIds.values()),
+      commodityNextEpoch: this.commodityNextEpoch,
+      commodityCurrentTick: this.commodityCurrentTick,
+      commodityUserOrderSeq: this.commodityUserOrderSeq,
+      commodityTradeSeq: this.commodityTradeSeq,
       timestamp: this.getNowMs(),
     };
   }
 
   public importSnapshot(data: any): void {
-    if (!data) return;
-    if (Array.isArray(data.stocks)) this.stocks = new Map(data.stocks);
-    if (Array.isArray(data.stockPriceHistory)) this.stockPriceHistory = [...data.stockPriceHistory];
-    if (Array.isArray(data.commodities)) this.commodities = new Map(data.commodities);
-    if (Array.isArray(data.profiles)) this.profiles = new Map(data.profiles);
-    if (Array.isArray(data.holdings)) this.holdings = new Map(data.holdings);
-    if (Array.isArray(data.orders)) this.orders = new Map(data.orders);
-    if (Array.isArray(data.trades)) this.trades = [...data.trades];
-    if (Array.isArray(data.optionsContracts)) this.optionsContracts = new Map(data.optionsContracts);
-    if (Array.isArray(data.bonds)) this.bonds = new Map(data.bonds);
-    if (Array.isArray(data.marketNews)) this.marketNews = [...data.marketNews];
-    if (Array.isArray(data.adminSettings)) this.adminSettings = new Map(data.adminSettings);
-    if (Array.isArray(data.exchangeRates)) this.exchangeRates = [...data.exchangeRates];
-    if (Array.isArray(data.institutionalPortfolios)) this.institutionalPortfolios = new Map(data.institutionalPortfolios);
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      throw new Error('유효하지 않은 스냅샷 형식입니다.');
+    }
+
+    const version = data.schemaVersion;
+    if (version !== undefined && version !== 1 && version !== 2) {
+      throw new Error(`지원하지 않는 스냅샷 버전입니다: ${String(version)}`);
+    }
+
+    if (!Array.isArray(data.profiles) || !Array.isArray(data.stocks) || !Array.isArray(data.orders)) {
+      throw new Error('스냅샷에 필수 장부 데이터(profiles, stocks, orders)가 누락되었습니다.');
+    }
+
+    if (version === 2) {
+      const requiredArrays = [
+        'settlementLedger',
+        'lpLiabilities',
+        'optionSettlements',
+        'bondCouponPayments',
+      ];
+      for (const field of requiredArrays) {
+        if (!Array.isArray(data[field])) {
+          throw new Error(`스냅샷(v2)에 필수 권위 데이터(${field})가 누락되었습니다.`);
+        }
+      }
+    } else {
+      // 구버전(v1) 스냅샷 마이그레이션 정책: 체결 이력이 있는데 정산 원장이 없으면 중복 정산 위험으로 복원 거절
+      if (Array.isArray(data.trades) && data.trades.length > 0 && !Array.isArray(data.settlementLedger)) {
+        throw new Error('구버전 스냅샷에 체결 이력은 있으나 settlementLedger가 없어 안전하게 복원할 수 없습니다.');
+      }
+    }
+
+    this.stocks = new Map(data.stocks);
+    this.stockPriceHistory = Array.isArray(data.stockPriceHistory) ? [...data.stockPriceHistory] : [];
+    this.commodities = Array.isArray(data.commodities) ? new Map(data.commodities) : new Map();
+    this.profiles = new Map(data.profiles);
+    this.holdings = Array.isArray(data.holdings) ? new Map(data.holdings) : new Map();
+    this.orders = new Map(data.orders);
+    this.trades = Array.isArray(data.trades) ? [...data.trades] : [];
+    this.optionsContracts = Array.isArray(data.optionsContracts) ? new Map(data.optionsContracts) : new Map();
+    this.bonds = Array.isArray(data.bonds) ? new Map(data.bonds) : new Map();
+    this.marketNews = Array.isArray(data.marketNews) ? [...data.marketNews] : [];
+    this.adminSettings = Array.isArray(data.adminSettings) ? new Map(data.adminSettings) : new Map();
+    this.exchangeRates = Array.isArray(data.exchangeRates) ? [...data.exchangeRates] : [];
+    this.institutionalPortfolios = Array.isArray(data.institutionalPortfolios)
+      ? new Map(data.institutionalPortfolios)
+      : new Map();
+    this.playerEvents = Array.isArray(data.playerEvents) ? [...data.playerEvents] : [];
+    this.activePlayerEvents = Array.isArray(data.activePlayerEvents) ? [...data.activePlayerEvents] : [];
+    this.activeManipulations = Array.isArray(data.activeManipulations) ? [...data.activeManipulations] : [];
+    this.botsConfig = Array.isArray(data.botsConfig) ? [...data.botsConfig] : [];
+    this.settlementLedger = Array.isArray(data.settlementLedger) ? new Map(data.settlementLedger) : new Map();
+    this.settlementLedgerCutoffMs =
+      typeof data.settlementLedgerCutoffMs === 'number' && Number.isFinite(data.settlementLedgerCutoffMs)
+        ? data.settlementLedgerCutoffMs
+        : 0;
+    this.settledEpochWatermarks = Array.isArray(data.settledEpochWatermarks)
+      ? new Map(data.settledEpochWatermarks)
+      : new Map();
+    this.settledOptionEpochWatermarks = Array.isArray(data.settledOptionEpochWatermarks)
+      ? new Map(data.settledOptionEpochWatermarks)
+      : new Map();
+    this.settledDeterministicWatermarks = Array.isArray(data.settledDeterministicWatermarks)
+      ? new Map(data.settledDeterministicWatermarks)
+      : new Map();
+    this.evictedCustomTradeIds = Array.isArray(data.evictedCustomTradeIds)
+      ? new Set(data.evictedCustomTradeIds)
+      : new Set();
+    const restoredEpoch =
+      typeof data.tradeEpoch === 'number' && Number.isFinite(data.tradeEpoch) && data.tradeEpoch >= 1
+        ? data.tradeEpoch
+        : 1;
+    // 재시작 시 항상 새 tradeEpoch로 진입해 스냅샷 직전 미저장 구간과의 ID 충돌을 원천 차단한다.
+    this.tradeEpoch = restoredEpoch + 1;
+    this.tradeSeq = 0;
+    this.optionTradeSeq = 0;
+    this.engineNextEpoch =
+      typeof data.engineNextEpoch === 'number' && Number.isFinite(data.engineNextEpoch) && data.engineNextEpoch >= 1
+        ? data.engineNextEpoch
+        : 1;
+    this.engineTickCount =
+      typeof data.engineTickCount === 'number' && Number.isFinite(data.engineTickCount) && data.engineTickCount >= 0
+        ? data.engineTickCount
+        : 0;
+    this.enginePartialFillSequence =
+      typeof data.enginePartialFillSequence === 'number' && Number.isFinite(data.enginePartialFillSequence) && data.enginePartialFillSequence >= 0
+        ? data.enginePartialFillSequence
+        : 0;
+    this.lpLiabilities = Array.isArray(data.lpLiabilities) ? new Map(data.lpLiabilities) : new Map();
+    this.lpQuoteGeneration =
+      typeof data.lpQuoteGeneration === 'number' && Number.isFinite(data.lpQuoteGeneration)
+        ? data.lpQuoteGeneration
+        : 0;
+    if (Array.isArray(data.lpAccounts)) {
+      this.lpAccounts = new Set(data.lpAccounts);
+    }
+    this.optionSettlements = Array.isArray(data.optionSettlements) ? [...data.optionSettlements] : [];
+    this.bondCouponPayments = Array.isArray(data.bondCouponPayments) ? [...data.bondCouponPayments] : [];
+    this.commodityPositions = Array.isArray(data.commodityPositions)
+      ? new Map(data.commodityPositions)
+      : new Map();
+    this.commodityMarginReservations = Array.isArray(data.commodityMarginReservations)
+      ? new Map(data.commodityMarginReservations)
+      : new Map();
+    this.commoditySettlementLedger = Array.isArray(data.commoditySettlementLedger)
+      ? new Map(data.commoditySettlementLedger)
+      : new Map();
+    this.commodityOpenOrders = Array.isArray(data.commodityOpenOrders)
+      ? new Map(data.commodityOpenOrders)
+      : new Map();
+    this.commoditySettledEpochWatermarks = Array.isArray(data.commoditySettledEpochWatermarks)
+      ? new Map(data.commoditySettledEpochWatermarks)
+      : new Map();
+    this.commodityEvictedCustomTradeIds = Array.isArray(data.commodityEvictedCustomTradeIds)
+      ? new Set(data.commodityEvictedCustomTradeIds)
+      : new Set();
+    this.commodityNextEpoch =
+      typeof data.commodityNextEpoch === 'number' && Number.isFinite(data.commodityNextEpoch) && data.commodityNextEpoch >= 1
+        ? data.commodityNextEpoch
+        : 1;
+    this.commodityCurrentTick =
+      typeof data.commodityCurrentTick === 'number' && Number.isFinite(data.commodityCurrentTick)
+        ? data.commodityCurrentTick
+        : 0;
+    this.commodityUserOrderSeq =
+      typeof data.commodityUserOrderSeq === 'number' && Number.isFinite(data.commodityUserOrderSeq)
+        ? data.commodityUserOrderSeq
+        : 0;
+    this.commodityTradeSeq =
+      typeof data.commodityTradeSeq === 'number' && Number.isFinite(data.commodityTradeSeq)
+        ? data.commodityTradeSeq
+        : 0;
+
+    // 복원 시 LP 옵션 계좌가 없으면 보장 (구버전 스냅샷 호환)
+    if (!this.profiles.has('bot_options_mm_001')) {
+      const optionsLpProfile: ProfileRecord = {
+        id: 'bot_options_mm_001',
+        user_id: 'bot_options_mm_001',
+        username: '옵션 마켓메이커 LP',
+        nickname: '옵션 마켓메이커 LP',
+        cash: 10_000_000_000_000,
+        net_worth: 10_000_000_000_000,
+        rank_tier: 'LP',
+        is_admin: false,
+        created_at: this.getIsoTimestamp(),
+      };
+      this.profiles.set('bot_options_mm_001', optionsLpProfile);
+    }
+
     this.rebuildIndexes();
   }
 

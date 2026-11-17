@@ -1,24 +1,122 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import Link from 'next/link';
-import { OptionMonthChainGrid } from './OptionMonthChainGrid';
-import { OptionOrderEntry } from './OptionOrderEntry';
+import { OptionMonthChainGrid, OptionContractItem } from './OptionMonthChainGrid';
+import { OptionOrderEntry, OrderType } from './OptionOrderEntry';
 import { OptionAccountPanel } from './OptionAccountPanel';
 import { TradeFeed } from './TradeFeed';
 import { useOptionMarketData } from '@/lib/hooks/useOptionMarketData';
+import { useAuth } from '@/lib/auth/useAuth';
+import { createClient } from '@/lib/db/client';
 
 export default function OptionHTSDashboard() {
-  const [selectedTicker, setSelectedTicker] = useState<string>('IDX-K200-2608-C260.0');
+  const [contracts, setContracts] = useState<OptionContractItem[]>([]);
+  const [selectedTicker, setSelectedTicker] = useState<string>('');
+  const [selectedContractId, setSelectedContractId] = useState<string | undefined>(undefined);
   const [selectedPrice, setSelectedPrice] = useState<number>(2.15);
   const [selectedType, setSelectedType] = useState<'CALL' | 'PUT'>('CALL');
+  const [selectedMultiplier, setSelectedMultiplier] = useState<number>(250000);
+  const [userBalance, setUserBalance] = useState<number | null>(null);
+  const [accountRefreshKey, setAccountRefreshKey] = useState<number>(0);
 
+  const { userId, isLoggedIn } = useAuth();
+  const db = useMemo(() => createClient(), []);
   const { trades, rolloverEvents } = useOptionMarketData(selectedTicker);
 
-  const handleSelectContract = (ticker: string, price: number, type: 'CALL' | 'PUT') => {
-    setSelectedTicker(ticker);
-    setSelectedPrice(price);
-    setSelectedType(type);
+  const fetchAccountAndContracts = useCallback(async () => {
+    const [{ data: contractList }, accountRes] = await Promise.all([
+      db.from('options_contracts').select('*'),
+      isLoggedIn && userId ? fetch('/api/options/account', { cache: 'no-store' }).then((r) => r.json()).catch(() => null) : Promise.resolve(null),
+    ]);
+
+    if (Array.isArray(contractList)) {
+      const nowMs = Date.now();
+      const validUnexpired = (contractList as OptionContractItem[]).filter((c) => {
+        const expMs = Date.parse(c.expiry_date);
+        return Number.isFinite(expMs) && expMs > nowMs;
+      });
+      const idxContracts = validUnexpired.filter((c) => c.asset_class === 'IDX');
+      const gridContracts = idxContracts.length > 0 ? idxContracts : validUnexpired;
+      setContracts(gridContracts);
+
+      if (gridContracts.length > 0) {
+        setSelectedContractId((prevId) => {
+          const existing = prevId ? gridContracts.find((c) => c.id === prevId) : undefined;
+          if (existing) {
+            setSelectedTicker(existing.ticker);
+            setSelectedPrice(Number(existing.current_price || 0));
+            setSelectedType((existing.option_type || existing.type) === 'PUT' ? 'PUT' : 'CALL');
+            setSelectedMultiplier(Number(existing.multiplier || 250000));
+            return existing.id;
+          }
+          const sortedByExpiry = [...gridContracts].sort(
+            (a, b) => Date.parse(a.expiry_date) - Date.parse(b.expiry_date)
+          );
+          const frontExpiry = sortedByExpiry[0].expiry_date;
+          const frontCall =
+            sortedByExpiry.find(
+              (c) =>
+                c.expiry_date === frontExpiry &&
+                (c.option_type || c.type) === 'CALL' &&
+                Math.abs(Number(c.strike_price) - 260) < 0.01
+            ) || sortedByExpiry[0];
+          setSelectedTicker(frontCall.ticker);
+          setSelectedPrice(Number(frontCall.current_price || 0));
+          setSelectedType((frontCall.option_type || frontCall.type) === 'PUT' ? 'PUT' : 'CALL');
+          setSelectedMultiplier(Number(frontCall.multiplier || 250000));
+          return frontCall.id;
+        });
+      }
+    }
+
+    if (accountRes?.success && accountRes.account) {
+      setUserBalance(Number(accountRes.account.availableCash ?? accountRes.account.cash ?? 0));
+    } else if (!isLoggedIn || !userId) {
+      setUserBalance(null);
+    }
+  }, [db, isLoggedIn, userId]);
+
+  useEffect(() => {
+    void fetchAccountAndContracts();
+  }, [fetchAccountAndContracts]);
+
+  const handleSelectContract = useCallback((contract: OptionContractItem) => {
+    const optType = (contract.option_type || contract.type) === 'PUT' ? 'PUT' : 'CALL';
+    setSelectedContractId(contract.id);
+    setSelectedTicker(contract.ticker);
+    setSelectedPrice(Number(contract.current_price || 0));
+    setSelectedType(optType);
+    setSelectedMultiplier(Number(contract.multiplier || 250000));
+  }, []);
+
+  const handleOrderSubmit = async (order: {
+    contractId?: string;
+    ticker: string;
+    side: 'BUY' | 'SELL';
+    type: OrderType;
+    price: number;
+    qty: number;
+  }) => {
+    const res = await fetch('/api/options/order', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contractId: order.contractId,
+        ticker: order.ticker,
+        side: order.side,
+        orderType: order.type,
+        price: order.price,
+        qty: order.qty,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      throw new Error(data.message || '옵션 주문 제출에 실패했습니다.');
+    }
+    setAccountRefreshKey((k) => k + 1);
+    await fetchAccountAndContracts();
+    return data;
   };
 
   return (
@@ -66,6 +164,8 @@ export default function OptionHTSDashboard() {
         {/* 좌측: [0513] 선물옵션월물별 행사가 매트릭스 (8컬럼 차지) */}
         <div className="col-span-12 md:col-span-8 flex flex-col min-h-[640px]">
           <OptionMonthChainGrid
+            contracts={contracts}
+            selectedContractId={selectedContractId}
             selectedTicker={selectedTicker}
             onSelectContract={handleSelectContract}
           />
@@ -74,12 +174,20 @@ export default function OptionHTSDashboard() {
         {/* 우측: HTS 주문 실행 패널 & 계좌 잔고/미체결 (4컬럼 차지) */}
         <div className="col-span-12 md:col-span-4 flex flex-col gap-6">
           <OptionOrderEntry
+            contractId={selectedContractId}
             ticker={selectedTicker}
             currentPrice={selectedPrice}
+            multiplier={selectedMultiplier}
+            userBalance={userBalance}
+            onOrderSubmit={handleOrderSubmit}
           />
 
           <div className="flex-1">
-            <OptionAccountPanel />
+            <OptionAccountPanel
+              isLoggedIn={isLoggedIn}
+              refreshTrigger={accountRefreshKey}
+              onAccountChanged={fetchAccountAndContracts}
+            />
           </div>
         </div>
       </div>

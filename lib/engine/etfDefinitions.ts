@@ -214,27 +214,9 @@ export const ETF_CATALOG: ExtendedETFDefinition[] = [
 ];
 
 /**
- * Seed ETF stocks directly into DB `stocks` table (market = 'etf')
+ * Seeded ETF stocks are now initialized authoritatively on the server in MemoryDatabase.
+ * Kept as a safe read-only no-op for backward compatibility.
  */
 export async function seedETFStocksToDatabase() {
-  try {
-    const db = createClient();
-    const etfRows = ETF_CATALOG.map(e => ({
-      ticker: e.etfTicker,
-      name: e.name,
-      market: 'etf',
-      sector: e.category === 'LEVERAGE' ? 'Leverage ETF' : (e.category === 'SECTOR' ? 'Sector ETF' : 'Index ETF'),
-      description: `${e.name} (${e.leverageFactor > 0 ? `+${e.leverageFactor}` : e.leverageFactor}X)`,
-      current_price: e.basePrice,
-      previous_close: e.basePrice,
-      open_price: e.basePrice,
-      volume: 50000,
-      market_cap: e.basePrice * e.totalOutstandingUnits,
-      is_listed: true
-    }));
-
-    await db.from('stocks').upsert(etfRows, { onConflict: 'ticker' });
-  } catch (err) {
-    console.error("Failed to seed ETF stocks:", err);
-  }
+  return;
 }

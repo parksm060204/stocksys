@@ -5224,13 +5224,98 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 - **회귀 테스트 파일 완전 복원 및 검증 확장 (`scripts/test-regression-settlement-auth-ai.ts`)**: `86da41d`에서 0바이트로 초기화되었던 회귀 테스트 파일 전체(LP 정산, 옵션 만기, 계좌 격리, API 보안, 운영 공유 제한기, Redis 파이프라인 무결성 6개 섹션)를 온전히 복원하고 미만료 키 방어 테스트 케이스 추가.
 - **미만료 Redis 키 방어 및 EXPIRE 결과 엄격 검증 (`lib/rateLimit/sharedRateLimiter.ts`)**: `UpstashRedisRateLimiterStore.consume()`에서 `EXPIRE` 결과가 0 또는 1이 아니거나(null, 임의 문자열, 범위 초과 정수 등), `TTL` 결과가 0 이하(만료 설정 없는 key의 -1, 미존재 key의 -2, 만료된 0)일 때 기본 창 길이로 대체하지 않고 `RateLimiterServiceUnavailableError`를 발생시켜 즉시 503으로 차단하도록 수정 (영구 누적 차단 방지).
 - **모의 회귀 테스트 및 타입 검사 통과**: `node --import tsx scripts/test-regression-settlement-auth-ai.ts` (6개 섹션 전원 통과), `npx tsc --noEmit` (0 errors).
+---
+## 2026-11-17 00:00
+
+**요청 요약:** 전체 코드의 보안, 거래·정산 정확성, 기능 연결 및 운영 안정성 리뷰.
+**수행 결과:**
+- `docs/code-review-2026-11-16.md`에 주요 실행 경로 검토 결과와 우선순위별 문제 11건, 파일 위치, 발생 조건 및 수정 방향을 정리했다.
+- 원자재 입력 검증·인증·증거금 정산, 프로필 민감 필드 수정, 장부 영속성, 옵션 주문 미연결, 상점·환전 기능 불일치, 주문 정보 공개와 메모리 누적 위험을 확인했다.
+- 프로덕션 빌드, 루트 및 engine-server 타입 검사, Phase 1 회귀 테스트 9개가 통과했다. ESLint는 오류 0건·경고 49건이었다.
+- 애플리케이션 코드는 수정하지 않았으며, 기존에 스테이징된 HISTORY.md 변경을 유지하고 이 기록만 하단에 추가했다.
 
 ---
-## 2026-09-27 02:22
+## 2026-11-17 00:45
 
-**요청 요약:** 저장소 파일 0바이트화/삭제 정황 및 스파이웨어/외부 유출 가능성 전수 조사, 저장소 무결성 검증 및 깃 커밋·푸시.
-
+**요청 요약:** `docs/code-review-2026-11-16.md`에 기록된 11개 보안·장부·영속성·기능 결함 전체 수정 및 검증.
 **수행 결과:**
-- **파일 0바이트화 원인 규명 및 증거 확보**: 커밋 `86da41d`, `a78e563`, `56bdfa6`, `13971c0`에서 발생한 0바이트 현상은 악성 스파이웨어가 아닌 OneDrive 동기화 경로에서의 에디터 버퍼 충돌(Accept Change/Overwrite)과 터미널 일괄 커밋 명령어(`git add . && git commit -m "first commit"`) 실행으로 인한 로컬 작업 미스임을 Git Reflog 및 PowerShell 실행 히스토리 대조로 규명.
-- **스파이웨어 및 데이터 유출/파괴 코드 전수 점검**: 외부 네트워크 호출(Gemini, Upstash Redis, PostgREST DB, Yahoo Finance 등 정상 연동 외 전무), 설치/패키지 훅(이상 없음), Git/Codex 훅(이상 없음), SQL 파괴 DDL/DML(비즈니스 로직 및 WAL 포화 방지 롤링 트리밍 외 무관), 임의 코드 실행(`eval`/`Function` 전무) 점검 완료.
-- **저장소 및 런타임 무결성 검증**: `node --import tsx scripts/test-regression-settlement-auth-ai.ts` (6개 세션 100% 통과), `npx tsc --noEmit` (타입 오류 0건) 정상 동작 확인.
+- **입력·권한·정보 공개 경계 수정 (`app/api/commodities/route.ts`, `lib/commodities/CommodityOrderBook.ts`, `lib/commodities/CommodityMarketEngine.ts`, `app/api/local-db/route.ts`, `lib/auth/sessionAuth.ts`, `lib/engine/localDevMode.ts`, `lib/auth/useAuth.ts`, `app/mypage/page.tsx`, `app/components/TradeNotifier.tsx`)**: 원자재 수량/가격/종목/참여자 위조 검증 및 `NaN` 매칭 무한 루프 방어, 이벤트 주입 관리자 검증, `profiles` UPDATE 명시적 허용 목록(`username`, `nickname`), `orders`/정산 테이블 세션 격리 및 공개 `trades` 식별자 제거, 프로덕션 게스트 자동 로그인 차단 구현.
+- **자산 장부·영속성·메모리 경계 수정 (`lib/memoryDb/StorageAdapter.ts`, `lib/memoryDb/PersistenceManager.ts`, `lib/memoryDb/memoryStore.ts`, `lib/engine/localStandaloneServer.ts`, `engine-server/src/index.ts`, `lib/commodities/commodityLedger.ts`)**: `fsync+rename` 원자적 스냅샷 저장, 단일 writer 직렬 큐, `schemaVersion: 2` 완전 스냅샷(정산 원장·LP 부채·파생/원자재 장부) 및 손상/불완전 구버전 거절, 복원 완료 후 엔진 시작 및 저장 실패 시 롤백 연결, `engine-server` 저장소 분리, 원자재 증거금 예약·체결 정산·만료 환불 연결, 오더북 미사용 `tradeHistory` 제거 및 `settlementLedger` 워터마크 트리밍 적용.
+- **옵션·상점·환전 사용자 기능 완성 (`app/api/options/order/route.ts`, `app/components/OptionHTSDashboard.tsx`, `app/components/OptionOrderEntry.tsx`, `lib/shop/catalog.ts`, `app/api/shop/purchase/route.ts`, `app/shop/page.tsx`, `lib/exchange/exchangeService.ts`, `app/exchange/page.tsx`, `lib/memoryDb/memoryDbClient.ts`)**: 옵션 HTS 실제 계약/잔액/서버 주문 연동, 상점 서버 구매 API·`media_outlets` 카탈로그·30일 만료 회수 구현, `exchange_currency` RPC 구현 및 미존재 RPC 명시적 오류 반환.
+- **검증 및 대응 문서 작성 (`scripts/test-review-fixes-verification.ts`, `docs/review-fixes-verification.md`)**: 루트/`engine-server` `tsc` 통과, `next build` 통과, ESLint 오류 0건, Phase 1 9개 테스트·Phase 2–4 정산/파생 회귀 5개·신규 수정 검증 테스트·격리된 프로덕션/개발 HTTP E2E 검증 통과.
+- **추가 리뷰·수정·재검증 루프 1회 완료**: `lib/commodities/commodityLedger.ts`의 `commoditySettlementLedger` 5,000건 상한 및 `lib/engine/localStandaloneServer.ts`의 주기적 `trimSettlementLedger(10000)` 호출을 추가 보완하고, `app/api/local-db/route.ts` 미사용 변수 정리 후 `tsc`, `engine-server tsc`, `next build`, `test-review-fixes-verification.ts`, `test-phase1-suite.ts` 재검증을 모두 통과했다.
+
+---
+## 2026-11-17 13:30
+
+**요청 요약:** 코디네이터 후속 수정 지시(`docs/review-fixes-coordinator-followup.md` A–F) 및 최종 리뷰 루프 1회 수행.
+**수행 결과:**
+- **A (옵션 지정가 매칭·자산 보존)**: `lib/options/optionOrderService.ts` 및 `app/api/options/order/route.ts`에서 실제 지정가 상·하한 매칭, LP(`bot_options_mm_001`) 상대방 정산, 비시장성 주문 미체결(`open`), 라이선스/만기/안전정수/저장실패 롤백 구현.
+- **B·C (정산 원장 트리밍 멱등성·원자재 에포크 분리)**: `lib/memoryDb/memoryStore.ts`, `InMemorySettlementRepository.ts`, `commodityLedger.ts`에서 `settledEpochWatermarks` + `evictedCustomTradeIds` 기반 영구 재생 차단 및 재시작 에포크 분리 구현.
+- **D·E (원자재 주문별 예약·비동기 정산·복원)**: `CommodityOrderBook.ts`, `CommodityMarketEngine.ts`, `app/api/commodities/route.ts`에서 `buyOrderId`/`sellOrderId` 귀속, 자기매매 방지, 손실 보존, `stepTickAsync()` 비동기 정산·롤백, 미체결 주문 복원 및 복원 후 지연 시작 구현.
+- **F (원자적 커밋 경계·다중 프로세스 파일 락)**: `StorageAdapter.ts` 배타적 `.lock` 파일 소유권 보호, `PersistenceManager.ts` 커밋 게이트, `dbMatching.ts`/`marketService.ts`/`exchangeService.ts` 락 내부 영속 저장 및 계좌별 롤백 적용.
+- **검증**: `tsc`(루트/`engine-server`), `eslint`(오류 0건), `next build`, `test-followup-a-to-f.ts`, `test-review-fixes-verification.ts`, `test-phase1-suite.ts`(9/9), Phase 2–4 회귀 5종 모두 통과.
+
+---
+## 2026-11-17 13:45
+
+**요청 요약:** 전체 코드 독립 재리뷰 1회 수행 (애플리케이션 코드 무수정, `docs/full-code-rereview-findings.md` 작성).
+**수행 결과:**
+- **독립 재리뷰 및 동적 재현 수행**: `app/api/*`, `lib/*`, `engine-server/src/*`, UI 전반과 이전 수정 11건·후속 A–F를 코드 수정 없이 재검증하고 `docs/full-code-rereview-findings.md`에 기록했다.
+- **신규 발견 및 동적 재현 결과**:
+  - `[P1-1]` `lib/engine/orderRisk.ts`의 `calculateReservedCash`가 옵션 승수(250,000)를 누락(`RESERVED_SEEN: 2`)하고 환전·상점·원자재가 주식/옵션 휴면 매수 예약을 차감하지 않아 교차 자산 이중 소비 가능 확인.
+  - `[P1-2]` `lib/memoryDb/memoryStore.ts`의 `trimSettlementLedger`에서 실제 코드가 `tr_e<epoch>_<seq>` ID를 생성하지 않아 100%가 `evictedCustomTradeIds`에 무한 누적됨을 재현 확인.
+  - `[P1-3]` `app/api/auth/[...nextauth]/route.ts`의 `signIn`/`session` 콜백이 `ensureLocalStandaloneReady()` 전에 `memoryDb.ensureUserProfile`을 호출함 확인.
+  - `[P1-4]` `engine-server` 재시작 시 `simulationContext.ts`가 항상 `run_seed_42`를 생성해 스냅샷 복원 후 ID 충돌 가능 및 틱 커밋 즉시 저장 부재 확인.
+  - `[P2-1~P3-1]` `LocalMarketEngineInstance.runTick` 20틱 주기 저장·반환값 무시, `OptionAccountPanel` 더미 데이터, `etf`/`RandomEventModal` 잔존 `cash` 직접 수정, `OptionOrderEntry` 100% 수량 수수료 미반영 기록.
+---
+## 2026-11-17 14:00
+
+**요청 요약:** 반복되는 Hook failed 오류의 원인인 셸 비호환 명령 수정 및 결과 리뷰.
+**수행 결과:**
+- .codex/hooks.json의 PostToolUse와 Stop 명령을 Bash 파일 검사 구문에서 Node 기반 선택적 훅 실행 명령으로 교체하여 PowerShell 5.1 호환성을 확보했다.
+- 파일 수정 이벤트, 종료 이벤트, 훅 파일이 없는 경우를 PowerShell 5.1 자식 프로세스에서 실행해 모두 종료 코드 0 및 stderr 없음으로 확인했다.
+- 임시 감사 로그로 실제 훅 스크립트가 stdin 이벤트와 세션 ID를 전달받는 것을 확인했으며 임시 로그는 정리했다. JSON 및 diff 검증을 통과했고 기존 matcher, timeout, 상태 메시지를 유지했다.
+---
+## 2026-11-17 14:25
+
+**요청 요약:** 최초 훅 수정 후에도 반복되는 종료 코드 1 오류 재진단 및 셸 호환 실행 보완.
+**수행 결과:**
+- 기존 node -e 인라인 명령이 PowerShell 5.1에서는 성공하지만 cmd.exe 경유 실행에서는 따옴표 해석 오류(Unterminated string constant)로 종료 코드 1을 반환하는 것을 재현했다.
+- .codex/run-impeccable-hook.cjs 실행기를 추가하고 두 이벤트의 명령을 node .codex/run-impeccable-hook.cjs로 단순화했다. 스크립트 상대 위치 및 Windows 경로를 file URL로 해석하며 stdin과 기존 훅 출력 계약을 유지한다.
+- PostToolUse/Stop × PowerShell 5.1/cmd.exe 네 조합에서 종료 코드 0, stderr 없음, 실제 이벤트·세션 입력 수신을 감사 로그로 확인했다.
+- 전역 Orca 훅은 두 셸 직접 실행에서 모두 종료 코드 0이었다. 실제 세션의 실패 훅 상세 결과는 조회하지 못했으므로 런타임 전체 오류 해소를 단정하지 않는다. 진단용 임시 스키마·프로세스·로그는 정리했다.
+
+---
+## 2026-11-17 14:46
+
+**요청 요약:** 현재 작업 트리 전체 구조와 주요 실행 경로의 코드 리뷰.
+**수행 결과:**
+- 주문·옵션·원자재·환전·상점·인증·저장·엔진 재시작·주요 화면을 검토하고 docs/code-review-2026-11-17-codex.md에 P1 7건과 P2 9건의 발생 조건, 근거 및 수정 방향을 기록했다. 애플리케이션 구현은 수정하지 않았다.
+- 옵션 승수·자격 우회, 미확정 상태의 성공 스냅샷 혼입, 원자재 롤백의 동시 환전 덮어쓰기, 환전 반올림 차익, 교차 자산 예약 누락 등을 격리 메모리 DB에서 재현했다.
+- 루트와 engine-server TypeScript 검사, 기존 리뷰 수정 검증 및 후속 A-F 테스트, Phase 1 회귀 테스트 9개를 통과했다. 실제 OAuth·브라우저 E2E·프로덕션 빌드·운영 장애 실험은 미실행으로 명시했다.
+
+---
+## 2026-11-17 15:07
+**요청 요약:** 코드 리뷰 16건을 AGY Hydrogen high를 이용해 수정 및 검증.
+**수행 결과:**
+- docs/codex-review-fixes-hydrogen-high-plan.md에 P1 7건/P2 9건 전체의 구현·회귀 검증·보고 요건을 작성했다.
+- Orca Antigravity 작업자를 gemini-4-hydrogen-high / effort high로 현재 작업 트리에서 실행했다. 시작 상태 ready를 확인했다(run_321ab45e8b1f, task_37fb3c4e5fc0, dispatch ctx_3863f0e300a9).
+- 수정 작업은 진행 중이며 완료 보고와 검증 근거를 받은 뒤 결과를 확인한다. 기존 미커밋 변경 보존, 운영 데이터 무변경, commit/push/deploy 금지를 지시했다.
+
+---
+## 2026-11-17 15:50
+
+**요청 요약:** Codex 코드 리뷰(docs/code-review-2026-11-17-codex.md)의 P1 7건 및 P2 9건, 총 16건 수정 및 회귀/빌드/HTTP 검증.
+**수행 결과:**
+- 자산 경계·동시성·정산 무결성(P1 1~7): 일반 주식 주문(`/api/orders`, `dbMatching.ts`, `/api/local-db`)에서 옵션·원자재·채권·미등록 ID를 차단했고, `PersistenceManager` 직렬 커밋 게이트(`withCommitGate`/`runWithCommitGate`), `accountLocks` 재진입·잠금 순서 통일 및 원자재 틱 스코프 롤백, `exchangeService.ts` 통화 최소 단위 내림(`floorCurrency`)을 통한 소액 왕복 차익 차단, 공용 가용 현금 계산(`getAvailableCashKrw`) 및 원자재 증거금 이중 차감 제거, `engine-server/src/restartRuntime.ts` 재시작 에포크 격리, `nextMonotonicTradeId` 및 에포크 워터마크 기반 `trimSettlementLedger()` 상한·재생 방지를 구현했다.
+- 엔진 내구성·옵션/원자재/ETF/이벤트/콜드스타트(P2 8~16): `localStandaloneServer`·`agentManager`·`MarketEngine.ts` 자동 체결 저장 경계 및 실패 전파, 옵션 LP vs 사용자 대기 주문 가격 우선 매칭, 원자재 `rate_to_krw` 일관 조회 및 포지션 축소 증거금 면제/중복 청산 방지, `/api/options/account`·`OptionAccountPanel` 실계좌 연동 및 `OptionMonthChainGrid` 동적 미래 만기 월물 전환, `ETF_CATALOG` 12종 서버 시드 및 `/etf` `/api/orders` 연동, `playerEventService.ts`·`/api/events/resolve`·`RandomEventModal` 서버 권위 처리, `ensureMemoryDbReady()`·`ensureLocalStandaloneReady()` 분리 및 `useAuth.ts` 클라이언트 번들 서버 코드 누수(`authOptions`) 제거를 완료했다.
+- 검증 및 보고: 최종 수정 후 루트/`engine-server` `tsc --noEmit`, `npx next build`, `test-review-fixes-verification.ts`, `test-followup-a-to-f.ts`, `test-phase1-suite.ts`, 신규 `scripts/test-codex-review-16-fixes.ts`(16건), 격리 `next start` HTTP E2E(`HTTP_E2E_OK`)를 모두 통과했으며 상세 내역을 `docs/codex-review-fixes-hydrogen-high-results.md`에 기록했다.
+
+---
+## 2026-11-17 16:03
+
+**요청 요약:** 리뷰 수정 결과를 Git에 커밋하고 원격 저장소에 푸시.
+**수행 결과:**
+- 리뷰 16건 관련 애플리케이션·엔진·저장 계층 수정, 회귀 검증 스크립트 및 보고서를 main 브랜치의 커밋 대상으로 정리했다.
+- 기존 검증 보고의 타입 검사·프로덕션 빌드·회귀/HTTP 검사 통과를 확인하고 변경분의 git diff --check를 통과했다. 원격 대상은 origin(parksm060204/stocksys)이다.

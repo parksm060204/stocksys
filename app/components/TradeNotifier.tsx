@@ -37,14 +37,11 @@ export default function TradeNotifier() {
       if (!isSubscribed) return;
 
       try {
-        // 내가 매수자이거나 매도자인 최근 체결건 조회
-        const { data: myTrades, error } = await db
-          .from('trades')
-          .select('id, stock_id, buyer_id, seller_id, price, size, created_at')
-          .or(`buyer_id.eq.${userId},seller_id.eq.${userId}`)
-          .gt('created_at', lastCheckTimeRef.current)
-          .order('created_at', { ascending: true })
-          .limit(20);
+        // 내가 매수자이거나 매도자인 최근 체결건 조회 (상대방 ID 노출 없이 서버 세션 기준)
+        const { data: myTrades, error } = await db.rpc('get_my_recent_trades', {
+          p_after: lastCheckTimeRef.current,
+          p_limit: 20,
+        });
 
         if (error) throw error;
 
@@ -55,7 +52,7 @@ export default function TradeNotifier() {
 
             // 초기 마운트 시의 과거 데이터는 알림을 띄우지 않고 ID만 등록
             if (!isInitialMountRef.current) {
-              const isBuyer = t.buyer_id === userId;
+              const isBuyer = Boolean(t.is_buyer);
               const stock = await getStockInfo(t.stock_id);
               const p = Number(t.price);
               const s = Number(t.size);

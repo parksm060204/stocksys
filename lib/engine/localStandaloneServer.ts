@@ -1,17 +1,20 @@
 import { memoryDb, StockRecord, TradeRecord, OrderRecord } from '../memoryDb/memoryStore';
 import { createMemoryDbClient } from '../memoryDb/memoryDbClient';
+import { persistenceManager, runWithCommitGate } from '../memoryDb/PersistenceManager';
 import { printLocalBannerOnce } from './localDevMode';
 import { withStockLock, withAllStockLocks } from './marketService';
 import { withAccountLocks } from '../memoryDb/accountLocks';
 import { snapshotTradingState, rollbackTradingState, TradingSnapshot } from '../memoryDb/memoryTransaction';
 import { calculateTradeFees, executeSettlement, SettlementTrade } from './settlement';
-import { randomUUID } from 'crypto';
 import { AgentManager, AgentManagerOptions } from './simulation/agentManager';
 import { SerialExecutionQueue } from './simulation/executionQueue';
 
 interface GlobalWithEngine {
   __STOCKSYS_ENGINE__?: LocalMarketEngineInstance;
   __STOCKSYS_ENGINE_INITIALIZING__?: boolean;
+  __STOCKSYS_DB_READY_PROMISE__?: Promise<void>;
+  __STOCKSYS_READY_PROMISE__?: Promise<void>;
+  __STOCKSYS_SHUTDOWN_REGISTERED__?: boolean;
 }
 
 type StandaloneFailureHook = (context: { stockId: string }) => void | boolean | Promise<void | boolean>;
@@ -34,9 +37,17 @@ export class LocalMarketEngineInstance {
   private readonly LP_REFRESH_TICKS: number = 5;
   private readonly MAX_RETAINED_LP_ORDERS_PER_STOCK: number = 30;
   private isTicking: boolean = false;
+  private onPersist?: () => Promise<boolean>;
+  public lastPersistOk: boolean = true;
+  public lastPersistError: string | null = null;
 
   // 국면 효과(Stage 2) 운용 모드는 안전 기본값 'OFF'로 시작.
   private agentManager: AgentManager = new AgentManager(42, 1773500000000);
+
+  public setOnPersist(fn?: () => Promise<boolean>): void {
+    this.onPersist = fn;
+    this.agentManager.setOnPersist(fn);
+  }
 
 
   // SDE: Merton Jump-Diffusion 가치 변동
@@ -187,6 +198,17 @@ export class LocalMarketEngineInstance {
       }
 
       await this.client.rpc('trim_old_market_data', { p_max_trades: 5000, p_max_history: 3000 });
+      memoryDb.trimSettlementLedger(10000);
+      const persistFn = this.onPersist || (() => persistenceManager.saveSnapshot(memoryDb));
+      const saved = await persistFn();
+      if (!saved) {
+        this.lastPersistOk = false;
+        this.lastPersistError = `Periodic snapshot save failed at tick ${this.tickCount}`;
+        console.error(`❌ [LocalMarketEngine] ${this.lastPersistError}`);
+      } else {
+        this.lastPersistOk = true;
+        this.lastPersistError = null;
+      }
     }
   }
 
@@ -420,7 +442,7 @@ export class LocalMarketEngineInstance {
 
           // 수수료 계산
           const { buyer_fee, seller_fee } = calculateTradeFees(isBidMaker, !isBidMaker);
-          const tradeId = `trade_${randomUUID()}`;
+          const tradeId = memoryDb.nextMonotonicTradeId('tr');
 
           tradesToSettle.push({
             id: tradeId,
@@ -445,78 +467,100 @@ export class LocalMarketEngineInstance {
 
         if (tradesToSettle.length === 0) return;
 
-        // 실제 사용자 계정 락 획득 후 원자적 정산 실행
+        // 실제 사용자 계정 락 획득 후 원자적 정산 및 영속 저장 실행
         const userIdsArray = Array.from(involvedUserIds);
         await withAccountLocks(userIdsArray, async () => {
-          const snap: TradingSnapshot = snapshotTradingState(stockId, userIdsArray);
-          for (const t of tradesToSettle) {
-            if (t.id) snap.createdTradeIds.add(t.id);
-          }
-
-          try {
-            // 정산 실행 및 검증
-            const settleResult = await executeSettlement(this.client, tradesToSettle);
-            if (!settleResult.success) {
-              throw new Error(settleResult.error?.message || '자동 매칭 정산 실패');
+          await runWithCommitGate(this.onPersist, async () => {
+            const snap: TradingSnapshot = snapshotTradingState(stockId, userIdsArray);
+            for (const t of tradesToSettle) {
+              if (t.id) snap.createdTradeIds.add(t.id);
             }
 
-            for (const tradeId of settleResult.trade_ids) {
-              snap.createdTradeIds.add(tradeId);
-            }
-
-            // ── Test-only failure hook after settlement ──
-            if (_standaloneTestFailureHook) {
-              const hookResult = await _standaloneTestFailureHook({ stockId });
-              if (hookResult !== false) {
-                throw new Error('[TEST] Injected standalone post-settlement failure');
+            try {
+              // 정산 실행 및 검증
+              const settleResult = await executeSettlement(this.client, tradesToSettle);
+              if (!settleResult.success) {
+                throw new Error(settleResult.error?.message || '자동 매칭 정산 실패');
               }
-            }
 
-            // 정산 성공 확정 후 주문 상태 실제 갱신
-            for (const update of orderUpdates) {
-              const liveOrder = memoryDb.orders.get(update.orderId);
-              if (liveOrder) {
-                liveOrder.filled = update.newFilled;
-                liveOrder.status = update.newStatus;
+              for (const tradeId of settleResult.trade_ids) {
+                snap.createdTradeIds.add(tradeId);
               }
+
+              // ── Test-only failure hook after settlement ──
+              if (_standaloneTestFailureHook) {
+                const hookResult = await _standaloneTestFailureHook({ stockId });
+                if (hookResult !== false) {
+                  throw new Error('[TEST] Injected standalone post-settlement failure');
+                }
+              }
+
+              // 정산 성공 확정 후 주문 상태 실제 갱신
+              for (const update of orderUpdates) {
+                const liveOrder = memoryDb.orders.get(update.orderId);
+                if (liveOrder) {
+                  liveOrder.filled = update.newFilled;
+                  liveOrder.status = update.newStatus;
+                }
+              }
+
+              // 종목 현재가, 최고가, 최저가, 거래량 확정 반영
+              if (lastExecPrice !== null && lastExecPrice > 0) {
+                const liveStock = memoryDb.stocks.get(stockId);
+                if (!liveStock) return;
+
+                const curHigh = Number(liveStock.high || 0);
+                const curLow = Number(liveStock.low || 0);
+                const newHigh = Math.max(curHigh, executionHigh);
+                const newLow = curLow === 0 ? executionLow : Math.min(curLow, executionLow);
+
+                liveStock.current_price = lastExecPrice;
+                liveStock.high = newHigh;
+                liveStock.low = newLow;
+                liveStock.high_price = newHigh;
+                liveStock.low_price = newLow;
+                liveStock.volume = Number(liveStock.volume || 0) + matchedVol;
+                liveStock.change_rate = parseFloat((((lastExecPrice - liveStock.previous_close) / liveStock.previous_close) * 100).toFixed(2));
+
+                // 주가 히스토리 추가
+                const histId = `hist_${stockId}_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`;
+                snap.createdHistoryIds.add(histId);
+                memoryDb.stockPriceHistory.push({
+                  id: histId,
+                  stock_id: stockId,
+                  price: lastExecPrice,
+                  recorded_at: now,
+                });
+
+                if (this.onPersist) {
+                  const saved = await this.onPersist();
+                  if (!saved) {
+                    this.lastPersistOk = false;
+                    this.lastPersistError = `Auto-matching persist failed for stock ${stockId}`;
+                    throw new Error(this.lastPersistError);
+                  }
+                  this.lastPersistOk = true;
+                  this.lastPersistError = null;
+                }
+
+                // 외부에 확정된 시세 발행
+                memoryDb.publish('stocks_changes', { eventType: 'UPDATE', new: liveStock });
+              } else if (this.onPersist) {
+                const saved = await this.onPersist();
+                if (!saved) {
+                  this.lastPersistOk = false;
+                  this.lastPersistError = `Auto-matching persist failed for stock ${stockId}`;
+                  throw new Error(this.lastPersistError);
+                }
+                this.lastPersistOk = true;
+                this.lastPersistError = null;
+              }
+            } catch (err) {
+              console.error(`[LocalMarketEngine] Matching settlement failed for stock ${stockId}, rolling back:`, err);
+              rollbackTradingState(snap);
+              // 에러를 상위로 전파하지 않고 해당 틱 롤백 완료
             }
-
-            // 종목 현재가, 최고가, 최저가, 거래량 확정 반영
-            if (lastExecPrice !== null && lastExecPrice > 0) {
-              const liveStock = memoryDb.stocks.get(stockId);
-              if (!liveStock) return;
-
-              const curHigh = Number(liveStock.high || 0);
-              const curLow = Number(liveStock.low || 0);
-              const newHigh = Math.max(curHigh, executionHigh);
-              const newLow = curLow === 0 ? executionLow : Math.min(curLow, executionLow);
-
-              liveStock.current_price = lastExecPrice;
-              liveStock.high = newHigh;
-              liveStock.low = newLow;
-              liveStock.high_price = newHigh;
-              liveStock.low_price = newLow;
-              liveStock.volume = Number(liveStock.volume || 0) + matchedVol;
-              liveStock.change_rate = parseFloat((((lastExecPrice - liveStock.previous_close) / liveStock.previous_close) * 100).toFixed(2));
-
-              // 주가 히스토리 추가
-              const histId = `hist_${stockId}_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`;
-              snap.createdHistoryIds.add(histId);
-              memoryDb.stockPriceHistory.push({
-                id: histId,
-                stock_id: stockId,
-                price: lastExecPrice,
-                recorded_at: now,
-              });
-
-              // 외부에 확정된 시세 발행
-              memoryDb.publish('stocks_changes', { eventType: 'UPDATE', new: liveStock });
-            }
-          } catch (err) {
-            console.error(`[LocalMarketEngine] Matching settlement failed for stock ${stockId}, rolling back:`, err);
-            rollbackTradingState(snap);
-            // 에러를 상위로 전파하지 않고 해당 틱 롤백 완료
-          }
+          });
         });
       });
     }
@@ -533,27 +577,87 @@ export class LocalMarketEngineInstance {
   }
 }
 
+/**
+ * 스냅샷 DB 복원만 독립적으로 대기한다. (인증 콜백에서 엔진 기동/세션 순환 호출 없이 안전하게 사용 가능)
+ */
+export async function ensureMemoryDbReady(): Promise<void> {
+  if (!globalObj.__STOCKSYS_DB_READY_PROMISE__) {
+    globalObj.__STOCKSYS_DB_READY_PROMISE__ = (async () => {
+      await persistenceManager.loadSnapshot(memoryDb);
+    })().catch((err) => {
+      globalObj.__STOCKSYS_DB_READY_PROMISE__ = undefined;
+      throw err;
+    });
+  }
+  return globalObj.__STOCKSYS_DB_READY_PROMISE__;
+}
+
+export async function ensureLocalStandaloneReady(): Promise<void> {
+  if (!globalObj.__STOCKSYS_READY_PROMISE__) {
+    globalObj.__STOCKSYS_READY_PROMISE__ = (async () => {
+      // 1. 스냅샷 복원 완료 전에는 엔진/주문을 시작하지 않는다.
+      await ensureMemoryDbReady();
+
+      // Next.js 프로덕션 빌드 단계에서는 백그라운드 타이머/엔진 루프를 기동하지 않는다.
+      if (process.env.NEXT_PHASE === 'phase-production-build') {
+        return;
+      }
+
+      // 2. 엔진 기동 및 주기적 스냅샷 자동 저장 연결
+      if (!globalObj.__STOCKSYS_ENGINE__) {
+        const engine = new LocalMarketEngineInstance();
+        engine.setOnPersist(persistConfirmedState);
+        globalObj.__STOCKSYS_ENGINE__ = engine;
+        await engine.start();
+      }
+      persistenceManager.startAutoSave(memoryDb, 30000);
+
+      // 3. 종료 시 최종 스냅샷 플러시 등록
+      if (!globalObj.__STOCKSYS_SHUTDOWN_REGISTERED__ && typeof process !== 'undefined' && typeof process.on === 'function') {
+        globalObj.__STOCKSYS_SHUTDOWN_REGISTERED__ = true;
+        const flushAndStop = async () => {
+          persistenceManager.stopAutoSave();
+          if (globalObj.__STOCKSYS_ENGINE__) {
+            globalObj.__STOCKSYS_ENGINE__.stop();
+          }
+          await persistenceManager.saveSnapshot(memoryDb).catch(() => false);
+          persistenceManager.releaseWriterLock();
+        };
+        process.once('SIGINT', () => {
+          flushAndStop().finally(() => process.exit(0));
+        });
+        process.once('SIGTERM', () => {
+          flushAndStop().finally(() => process.exit(0));
+        });
+      }
+    })().catch((err) => {
+      globalObj.__STOCKSYS_READY_PROMISE__ = undefined;
+      throw err;
+    });
+  }
+  return globalObj.__STOCKSYS_READY_PROMISE__;
+}
+
 export function ensureLocalStandaloneEngine(): void {
   if (globalObj.__STOCKSYS_ENGINE__) return;
-  if (globalObj.__STOCKSYS_ENGINE_INITIALIZING__) return;
+  void ensureLocalStandaloneReady().catch((err) => {
+    console.error('[LocalMarketEngine] Failed to initialize standalone runtime:', err);
+  });
+}
 
-  globalObj.__STOCKSYS_ENGINE_INITIALIZING__ = true;
-  try {
-    const engine = new LocalMarketEngineInstance();
-    engine.start().catch((err) => {
-      console.error('[LocalMarketEngine] Failed to start:', err);
-    });
-    globalObj.__STOCKSYS_ENGINE__ = engine;
-  } finally {
-    globalObj.__STOCKSYS_ENGINE_INITIALIZING__ = false;
-  }
+export async function persistConfirmedState(): Promise<boolean> {
+  return persistenceManager.saveSnapshot(memoryDb);
 }
 
 export function stopLocalStandaloneEngine(): void {
+  persistenceManager.stopAutoSave();
   if (globalObj.__STOCKSYS_ENGINE__) {
     globalObj.__STOCKSYS_ENGINE__.stop();
     globalObj.__STOCKSYS_ENGINE__ = undefined;
   }
+  persistenceManager.releaseWriterLock();
+  globalObj.__STOCKSYS_READY_PROMISE__ = undefined;
+  globalObj.__STOCKSYS_DB_READY_PROMISE__ = undefined;
 }
 
 export function getLocalStandaloneEngine(): LocalMarketEngineInstance | undefined {

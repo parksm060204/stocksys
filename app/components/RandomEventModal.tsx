@@ -30,6 +30,7 @@ export default function RandomEventModal() {
   const [activeEvent, setActiveEvent] = useState<ActiveEvent | null>(null);
   const [eventData, setEventData] = useState<PlayerEvent | null>(null);
   const [loading, setLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const { userId, isLoggedIn } = useAuth();
 
   useEffect(() => {
@@ -76,38 +77,35 @@ export default function RandomEventModal() {
   if (!activeEvent || !eventData) return null;
 
   const handleChoice = async (choice: 'A' | 'B') => {
-    if (loading) return;
+    if (loading || !activeEvent) return;
     setLoading(true);
+    setErrorMsg(null);
     try {
-      if (!isLoggedIn || !userId) return;
-      const uid = userId;
-
-      const cost = choice === 'A' ? eventData.choice_a_cost : eventData.choice_b_cost;
-      const passive = choice === 'A' ? eventData.choice_a_passive : eventData.choice_b_passive;
-
-      // Update cash & passive via an RPC or manually
-      // Note: In a real secure app, this should be an RPC to prevent tampering.
-      // For this simulator, we do it directly using client if RLS permits.
-      // Wait, RLS on profiles might not allow direct updates of cash by the user if it's protected, but our policy says "Users can update their own profile".
-      const { data: profile } = await db.from('profiles').select('cash, acquired_passives').eq('id', uid).single();
-      
-      if (profile) {
-        const newCash = Number(profile.cash) - cost;
-        const passives = Array.isArray(profile.acquired_passives) ? profile.acquired_passives : [];
-        if (passive && !passives.includes(passive)) {
-          passives.push(passive);
-        }
-
-        await db.from('profiles').update({ cash: newCash, acquired_passives: passives }).eq('id', uid);
+      if (!isLoggedIn || !userId) {
+        setErrorMsg('로그인이 필요한 기능입니다.');
+        return;
       }
 
-      // Mark event as resolved
-      await db.from('active_player_events').update({ status: 'resolved' }).eq('id', activeEvent.id);
+      const res = await fetch('/api/events/resolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          activeEventId: activeEvent.id,
+          choice,
+        }),
+      });
+      const data = await res.json();
+
+      if (!res.ok || !data.success) {
+        setErrorMsg(data.message || '이벤트 선택을 저장하지 못했습니다.');
+        return;
+      }
 
       setActiveEvent(null);
       setEventData(null);
-    } catch (e) {
+    } catch (e: any) {
       console.error(e);
+      setErrorMsg(e?.message || '이벤트 처리 중 통신 오류가 발생했습니다.');
     } finally {
       setLoading(false);
     }
@@ -123,9 +121,15 @@ export default function RandomEventModal() {
         
         <div className="p-6">
           <h3 className="text-xl font-bold text-tx mb-3">{eventData.title}</h3>
-          <p className="text-[14px] text-muted leading-relaxed mb-8">
+          <p className="text-[14px] text-muted leading-relaxed mb-6">
             {eventData.description}
           </p>
+
+          {errorMsg && (
+            <div className="mb-4 rounded-lg border border-red-500/50 bg-red-950/60 px-3 py-2 text-xs font-medium text-red-300">
+              {errorMsg}
+            </div>
+          )}
 
           <div className="flex flex-col gap-3">
             <button

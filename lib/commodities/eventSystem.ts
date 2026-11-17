@@ -261,4 +261,27 @@ export class CommodityEventSystem {
     this.newsFeed = [];
     this.eventHistory = [];
   }
+
+  public snapshotState(): {
+    activeEvents: ActiveCommodityEvent[];
+    newsFeed: CommodityNewsItem[];
+    eventHistory: ActiveCommodityEvent[];
+    randomSnapshot: ReturnType<NonNullable<CommodityEventSystem['random']>['snapshot']> | null;
+  } {
+    return {
+      activeEvents: this.activeEvents.map((e) => ({ ...e })),
+      newsFeed: this.newsFeed.map((n) => ({ ...n })),
+      eventHistory: this.eventHistory.map((e) => ({ ...e })),
+      randomSnapshot: this.random?.snapshot ? this.random.snapshot() : null,
+    };
+  }
+
+  public restoreState(snap: ReturnType<CommodityEventSystem['snapshotState']>): void {
+    this.activeEvents = snap.activeEvents.map((e) => ({ ...e }));
+    this.newsFeed = snap.newsFeed.map((n) => ({ ...n }));
+    this.eventHistory = snap.eventHistory.map((e) => ({ ...e }));
+    if (snap.randomSnapshot && this.random?.restore) {
+      this.random.restore(snap.randomSnapshot);
+    }
+  }
 }

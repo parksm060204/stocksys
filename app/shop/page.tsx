@@ -97,32 +97,52 @@ export default function ShopPage() {
 
     setLoading(true);
     try {
-      const { data: profile } = await db.from('profiles').select('cash, news_subscriptions').eq('id', userId).single();
-      if (!profile || Number(profile.cash || 0) < price) {
-        throw new Error("예수금이 부족합니다.");
+      const res = await fetch('/api/shop/purchase', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          itemType: 'news_subscription',
+          outletId: selectedOutlet.id,
+          days: selectedDays,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.message || '구매에 실패했습니다.');
       }
 
-      const currentSubs = (profile.news_subscriptions as Record<string, string>) || {};
-      const now = new Date();
-      now.setDate(now.getDate() + selectedDays);
-      const newExpiry = now.toISOString();
-      currentSubs[String(selectedOutlet.id)] = newExpiry;
-
-      const { error: profileErr } = await db
-        .from('profiles')
-        .update({
-          cash: Number(profile.cash) - price,
-          news_subscriptions: currentSubs
-        })
-        .eq('id', userId);
-
-      if (profileErr) throw profileErr;
-
-      setCash(prev => prev - price);
-      setUserSubs(prev => ({ ...prev, [String(selectedOutlet.id)]: newExpiry }));
+      setCash(Number(data.cash));
+      if (data.news_subscriptions) {
+        setUserSubs(data.news_subscriptions as Record<string, string>);
+      }
 
       alert(`성공적으로 ${selectedOutlet.name} 구독권을 결제했습니다.`);
       setSelectedOutlet(null);
+    } catch (e: any) {
+      console.error(e);
+      alert("구매 실패: " + (e.message || "알 수 없는 오류"));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const purchaseServerProduct = async (
+    productId: 'options_license' | 'custom_dashboard' | 'fee_booster' | 'scanner_item' | 'ai_predictor',
+    onSuccess: (data: any) => void
+  ) => {
+    setLoading(true);
+    try {
+      const res = await fetch('/api/shop/purchase', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ itemType: 'product', productId }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.message || '구매에 실패했습니다.');
+      }
+      setCash(Number(data.cash));
+      onSuccess(data);
     } catch (e: any) {
       console.error(e);
       alert("구매 실패: " + (e.message || "알 수 없는 오류"));
@@ -138,32 +158,10 @@ export default function ShopPage() {
 
     if (!confirm(`[파생상품] 파생상품 옵션 거래 자격증을 결제하시겠습니까?\n결제 금액: ₩${price.toLocaleString()}`)) return;
 
-    setLoading(true);
-    try {
-      const { data: profile } = await db.from('profiles').select('cash').eq('id', userId).single();
-      if (!profile || Number(profile.cash || 0) < price) {
-        throw new Error("예수금이 부족합니다.");
-      }
-
-      const { error: profileErr } = await db
-        .from('profiles')
-        .update({
-          cash: Number(profile.cash) - price,
-          has_options_license: true
-        })
-        .eq('id', userId);
-
-      if (profileErr) throw profileErr;
-
-      setCash(prev => prev - price);
+    await purchaseServerProduct('options_license', () => {
       setHasOptionsLicense(true);
       alert("파생상품 옵션 거래 자격증을 정상 취득했습니다.");
-    } catch (e: any) {
-      console.error(e);
-      alert("구매 실패: " + (e.message || "알 수 없는 오류"));
-    } finally {
-      setLoading(false);
-    }
+    });
   };
 
   const handleCustomDashboardPurchase = async () => {
@@ -173,37 +171,10 @@ export default function ShopPage() {
 
     if (!confirm(`[플랫폼] 메인 대시보드 커스텀 라이선스를 구매하시겠습니까?\n결제 금액: ₩${price.toLocaleString()}`)) return;
 
-    setLoading(true);
-    try {
-      const { data: profile } = await db.from('profiles').select('cash, unlocked_features').eq('id', userId).single();
-      if (!profile || Number(profile.cash || 0) < price) {
-        throw new Error("예수금이 부족합니다.");
-      }
-      const currentUnlocked = (profile?.unlocked_features as string[]) || [];
-      
-      if (!currentUnlocked.includes("custom_dashboard")) {
-        currentUnlocked.push("custom_dashboard");
-      }
-
-      const { error: profileErr } = await db
-        .from('profiles')
-        .update({ 
-          cash: Number(profile.cash) - price,
-          unlocked_features: currentUnlocked 
-        })
-        .eq('id', userId);
-
-      if (profileErr) throw profileErr;
-
-      setCash(prev => prev - price);
+    await purchaseServerProduct('custom_dashboard', () => {
       setHasCustomDashboard(true);
       alert("메인 대시보드 커스텀 라이선스를 구매했습니다.");
-    } catch (e: any) {
-      console.error(e);
-      alert("구매 실패: " + (e.message || "알 수 없는 오류"));
-    } finally {
-      setLoading(false);
-    }
+    });
   };
 
   const handleFeeBoosterPurchase = async () => {
@@ -211,37 +182,11 @@ export default function ShopPage() {
     const price = 1000000;
     if (cash < price) { alert("⚠️ 예수금이 부족합니다."); return; }
     if (!confirm("[혜택] 거래 수수료 50% 감면 부스터(30일)를 활성화하시겠습니까?\n결제 금액: ₩1,000,000")) return;
-    
-    setLoading(true);
-    try {
-      const { data: profile } = await db.from('profiles').select('cash, unlocked_features').eq('id', userId).single();
-      if (!profile || Number(profile.cash || 0) < price) {
-        throw new Error("예수금이 부족합니다.");
-      }
-      const currentUnlocked = (profile?.unlocked_features as string[]) || [];
-      if (!currentUnlocked.includes("fee_booster")) {
-        currentUnlocked.push("fee_booster");
-      }
 
-      const { error: profileErr } = await db
-        .from('profiles')
-        .update({
-          cash: Number(profile.cash) - price,
-          unlocked_features: currentUnlocked
-        })
-        .eq('id', userId);
-
-      if (profileErr) throw profileErr;
-
-      setCash(prev => prev - price);
+    await purchaseServerProduct('fee_booster', () => {
       setHasFeeBooster(true);
       alert("수수료 50% 감면 부스터가 활성화되었습니다.");
-    } catch (e: any) {
-      console.error(e);
-      alert("구매 실패: " + (e.message || "알 수 없는 오류"));
-    } finally {
-      setLoading(false);
-    }
+    });
   };
 
   const handleScannerPurchase = async () => {
@@ -249,37 +194,11 @@ export default function ShopPage() {
     const price = 2000000;
     if (cash < price) { alert("⚠️ 예수금이 부족합니다."); return; }
     if (!confirm("[분석] 기관 수급 실시간 스캐너(30일)를 구매하시겠습니까?\n결제 금액: ₩2,000,000")) return;
-    
-    setLoading(true);
-    try {
-      const { data: profile } = await db.from('profiles').select('cash, unlocked_features').eq('id', userId).single();
-      if (!profile || Number(profile.cash || 0) < price) {
-        throw new Error("예수금이 부족합니다.");
-      }
-      const currentUnlocked = (profile?.unlocked_features as string[]) || [];
-      if (!currentUnlocked.includes("scanner_item")) {
-        currentUnlocked.push("scanner_item");
-      }
 
-      const { error: profileErr } = await db
-        .from('profiles')
-        .update({
-          cash: Number(profile.cash) - price,
-          unlocked_features: currentUnlocked
-        })
-        .eq('id', userId);
-
-      if (profileErr) throw profileErr;
-
-      setCash(prev => prev - price);
+    await purchaseServerProduct('scanner_item', () => {
       setHasScanner(true);
       alert("기관 수급 실시간 스캐너가 활성화되었습니다.");
-    } catch (e: any) {
-      console.error(e);
-      alert("구매 실패: " + (e.message || "알 수 없는 오류"));
-    } finally {
-      setLoading(false);
-    }
+    });
   };
 
   const handleAiPredictorPurchase = async () => {
@@ -287,37 +206,11 @@ export default function ShopPage() {
     const price = 1500000;
     if (cash < price) { alert("⚠️ 예수금이 부족합니다."); return; }
     if (!confirm("[분석] AI 시황 예측 신호 부스터(30일)를 구매하시겠습니까?\n결제 금액: ₩1,500,000")) return;
-    
-    setLoading(true);
-    try {
-      const { data: profile } = await db.from('profiles').select('cash, unlocked_features').eq('id', userId).single();
-      if (!profile || Number(profile.cash || 0) < price) {
-        throw new Error("예수금이 부족합니다.");
-      }
-      const currentUnlocked = (profile?.unlocked_features as string[]) || [];
-      if (!currentUnlocked.includes("ai_predictor")) {
-        currentUnlocked.push("ai_predictor");
-      }
 
-      const { error: profileErr } = await db
-        .from('profiles')
-        .update({
-          cash: Number(profile.cash) - price,
-          unlocked_features: currentUnlocked
-        })
-        .eq('id', userId);
-
-      if (profileErr) throw profileErr;
-
-      setCash(prev => prev - price);
+    await purchaseServerProduct('ai_predictor', () => {
       setHasAiPredictor(true);
       alert("AI 시황 예측 부스터가 활성화되었습니다.");
-    } catch (e: any) {
-      console.error(e);
-      alert("구매 실패: " + (e.message || "알 수 없는 오류"));
-    } finally {
-      setLoading(false);
-    }
+    });
   };
 
   // Purchased items list

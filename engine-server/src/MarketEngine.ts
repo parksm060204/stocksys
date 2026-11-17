@@ -129,6 +129,12 @@ export interface MarketExecutionObserver {
   onSettlementCommitted(event: SettlementCommittedEvent): Promise<void>;
 }
 
+export interface TickCommitPersistInfo {
+  readonly tickCount: number;
+  readonly partialFillSequence: number;
+  readonly hadTrades: boolean;
+}
+
 export interface MarketEngineDependencies {
   simulationContext?: SimulationContext;
   marketDataSource?: MarketDataSource;
@@ -138,6 +144,11 @@ export interface MarketEngineDependencies {
   executionObserver?: MarketExecutionObserver;
   /** 결정론적 trade ID에 포함할 run 식별자 (미지정 시 시드의 결정론적 생성기 사용) */
   simulationRunId?: string;
+  /** 재시작 복원용 초기 틱/부분체결 카운터 */
+  initialTickCount?: number;
+  initialPartialFillSequence?: number;
+  /** 틱 커밋 시 영속 저장 경계 (저장 실패 시 false 반환) */
+  onTickCommitPersist?: (info: TickCommitPersistInfo) => Promise<boolean>;
 }
 
 export class MarketEngine {
@@ -156,8 +167,10 @@ export class MarketEngine {
   public readonly customPersistence?: MarketPersistence;
   public readonly customDataSource?: MarketDataSource;
   public readonly executionObserver?: MarketExecutionObserver;
+  public readonly onTickCommitPersist?: (info: TickCommitPersistInfo) => Promise<boolean>;
   /** 마지막 authoritative settlement 실패 코드 (성공 시 null) */
   private lastSettlementError: string | null = null;
+  private lastPersistenceError: string | null = null;
   /** 마지막 틱의 주문 위험 거부 진단 (reason code 포함) */
   private lastOrderRiskDiagnostics: any[] = [];
 
@@ -249,10 +262,12 @@ export class MarketEngine {
     this.customPersistence = dependencies?.persistence;
     this.customDataSource = dependencies?.marketDataSource;
     this.executionObserver = dependencies?.executionObserver;
+    this.onTickCommitPersist = dependencies?.onTickCommitPersist;
     this.lastTickTime = this.simClock.now();
     // 결정론적 run ID: simulation context의 결정론적 runId를 사용한다 (timestamp/UUID 금지).
     this.simulationRunId = dependencies?.simulationRunId ?? this.simulationContext.runId;
-    this.partialFillSequence = 0;
+    this.tickCount = dependencies?.initialTickCount ?? 0;
+    this.partialFillSequence = dependencies?.initialPartialFillSequence ?? 0;
 
     // authoritative 데이터 계층은 단일 RepositoryBundle로 통일한다.
     // 주입된 bundle이 있으면 그대로 사용하고, 없을 때만 기본 in-memory bundle을 생성한다.
@@ -281,6 +296,18 @@ export class MarketEngine {
   /** 마지막 authoritative settlement 실패 코드 (성공 시 null) */
   public getLastSettlementError(): string | null {
     return this.lastSettlementError;
+  }
+
+  /** 마지막 영속 저장 실패 사유 (정상 시 null) */
+  public getLastPersistenceError(): string | null {
+    return this.lastPersistenceError;
+  }
+
+  public getRuntimeCounters(): { tickCount: number; partialFillSequence: number } {
+    return {
+      tickCount: this.tickCount,
+      partialFillSequence: this.partialFillSequence,
+    };
   }
 
   public injectEvent(event: MarketEvent) {
@@ -835,6 +862,41 @@ export class MarketEngine {
         }
       }
 
+      const hadTrades = Boolean((batchResult as any)?.settledTradesCount > 0);
+      if (this.onTickCommitPersist) {
+        let persisted = false;
+        try {
+          persisted = await this.onTickCommitPersist({
+            tickCount: this.tickCount,
+            partialFillSequence: this.partialFillSequence,
+            hadTrades,
+          });
+        } catch (persistErr: any) {
+          persisted = false;
+          postCommitWarnings.push({
+            stage: 'DURABILITY_PERSIST',
+            message: persistErr instanceof Error ? persistErr.message : String(persistErr),
+            error: persistErr,
+          });
+        }
+        if (!persisted) {
+          this.lastPersistenceError = 'PERSISTENCE_FAILED';
+          postCommitWarnings.push({
+            stage: 'DURABILITY_PERSIST',
+            message: `Tick ${this.tickCount} snapshot persistence returned false.`,
+          });
+          return {
+            success: false,
+            commitStatus: 'COMMITTED',
+            tickCount: this.tickCount,
+            errorCode: 'PERSISTENCE_FAILED',
+            error: 'Tick snapshot persistence failed.',
+            postCommitWarnings,
+          };
+        }
+        this.lastPersistenceError = null;
+      }
+
       return {
         success: true,
         commitStatus: 'COMMITTED',
@@ -1070,6 +1132,7 @@ export class MarketEngine {
     refreshLpOrders: boolean = true
   ): Promise<{
     commitStatus: 'NOT_COMMITTED' | 'COMMITTED';
+    settledTradesCount?: number;
     postCommitWarnings?: PostCommitWarning[];
   }> {
     // 1. 저장소의 미체결(Open) 주문들을 가져옵니다.
@@ -1949,6 +2012,7 @@ export class MarketEngine {
 
     return {
       commitStatus: 'COMMITTED',
+      settledTradesCount: stagedTrades.length,
       postCommitWarnings: postCommitWarnings.length > 0 ? postCommitWarnings : undefined,
     };
   }

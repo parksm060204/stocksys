@@ -2,6 +2,9 @@
  * MUMYEONG: Order Risk & Balance Reservation System
  * 미체결(open, partial) 주문에 대한 예수금 및 보유 주식 예약(Reservation) 동적 계산
  */
+import type { MemoryDatabase } from '../memoryDb/memoryStore';
+
+export const OPTION_RESERVATION_FEE_RATE = 0.001;
 
 export interface OpenOrderForRisk {
   id?: string;
@@ -14,24 +17,93 @@ export interface OpenOrderForRisk {
   status: string;
 }
 
+export interface OptionContractMultiplierLookup {
+  has(id: string): boolean;
+  get(id: string): { multiplier?: number } | undefined;
+}
+
+/**
+ * 단일 매수 주문의 잔여 예약 예수금(옵션인 경우 계약별 승수 및 0.1% 수수료 포함) 계산
+ */
+export function calculateSingleBuyOrderReservedCash(
+  order: OpenOrderForRisk,
+  optionsContracts?: OptionContractMultiplierLookup
+): number {
+  if (order.side !== 'buy' || (order.status !== 'open' && order.status !== 'partial')) {
+    return 0;
+  }
+  const remainingQty = Math.max(0, Number(order.size) - Number(order.filled || 0));
+  if (remainingQty <= 0) return 0;
+
+  const contract = optionsContracts?.get(order.stock_id);
+  if (contract) {
+    const multiplier = Number(contract.multiplier ?? 250000);
+    const notional = Math.round(Number(order.price) * multiplier * remainingQty);
+    const fee = Math.round(notional * OPTION_RESERVATION_FEE_RATE);
+    return notional + fee;
+  }
+
+  return remainingQty * Number(order.price);
+}
+
 /**
  * 유저의 미체결 매수 주문으로 인해 예약된 총 예수금 계산
+ * (이미 현금에서 차감된 원자재 증거금은 이중 차감하지 않는다.)
  * @param orders 유저의 open/partial 주문 목록
  * @param excludeOrderId 수정/취소 대상인 경우 제외할 주문 ID
+ * @param optionsContracts 옵션 계약 승수 조회 맵 (지정 시 옵션 계약별 승수·수수료 반영)
  */
 export function calculateReservedCash(
   orders: OpenOrderForRisk[],
-  excludeOrderId?: string
+  excludeOrderId?: string,
+  optionsContracts?: OptionContractMultiplierLookup
 ): number {
   let reserved = 0;
   for (const o of orders) {
     if (excludeOrderId && o.id === excludeOrderId) continue;
-    if (o.side === 'buy' && (o.status === 'open' || o.status === 'partial')) {
-      const remainingQty = Math.max(0, Number(o.size) - Number(o.filled || 0));
-      reserved += remainingQty * Number(o.price);
-    }
+    reserved += calculateSingleBuyOrderReservedCash(o, optionsContracts);
   }
   return reserved;
+}
+
+/**
+ * MemoryDatabase 기준 계좌의 미체결(주식/ETF/옵션) 매수 예약 총액 계산.
+ * 원자재 증거금은 주문 등록 시 profile.cash에서 이미 차감되므로 중복 차감하지 않는다.
+ */
+export function calculateUserReservedCashKrw(
+  db: MemoryDatabase,
+  userId: string,
+  excludeOrderId?: string
+): number {
+  const orderIds = db.orderUserIndex.get(userId);
+  if (!orderIds || orderIds.size === 0) return 0;
+  const openOrders: OpenOrderForRisk[] = [];
+  for (const oid of orderIds) {
+    const ord = db.orders.get(oid);
+    if (!ord) continue;
+    if (ord.status === 'open' || ord.status === 'partial') {
+      openOrders.push(ord);
+    }
+  }
+  return calculateReservedCash(openOrders, excludeOrderId, db.optionsContracts);
+}
+
+/**
+ * 계좌의 현재 가용 KRW 현금(profile.cash - 미체결 주식/옵션 매수 예약금) 계산.
+ */
+export function getAvailableCashKrw(
+  db: MemoryDatabase,
+  userId: string,
+  excludeOrderId?: string
+): { cash: number; reservedCash: number; availableCash: number } {
+  const profile = db.profiles.get(userId);
+  const cash = Number(profile?.cash ?? 0);
+  const reservedCash = calculateUserReservedCashKrw(db, userId, excludeOrderId);
+  return {
+    cash,
+    reservedCash,
+    availableCash: Number.isFinite(cash) ? Math.max(0, cash - reservedCash) : 0,
+  };
 }
 
 /**
@@ -66,6 +138,7 @@ export interface ValidateOrderCapacityParams {
   currentHoldingQty: number;
   openOrders: OpenOrderForRisk[];
   excludeOrderId?: string;
+  optionsContracts?: OptionContractMultiplierLookup;
 }
 
 export interface OrderCapacityResult {
@@ -91,6 +164,7 @@ export function validateOrderCapacity(
     openOrders,
     stockId,
     excludeOrderId,
+    optionsContracts,
   } = params;
 
   if (incomingPrice <= 0 || incomingSize <= 0) {
@@ -104,7 +178,7 @@ export function validateOrderCapacity(
   }
 
   if (side === 'buy') {
-    const reservedCash = calculateReservedCash(openOrders, excludeOrderId);
+    const reservedCash = calculateReservedCash(openOrders, excludeOrderId, optionsContracts);
     const availableCash = Math.max(0, currentCash - reservedCash);
     const requiredCash = incomingPrice * incomingSize;
 

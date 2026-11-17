@@ -6,7 +6,7 @@
 
 import { useSession, signIn, signOut } from "next-auth/react";
 import type { Session } from "next-auth";
-import { isLocalStandaloneMode } from "@/lib/engine/localDevMode";
+import { isDevGuestAuthEnabled } from "@/lib/engine/localDevMode";
 import { GUEST_USER_ID } from "@/lib/memoryDb/memoryStore";
 
 // next-auth의 Session.user에 id 필드를 추가하는 확장
@@ -44,8 +44,8 @@ export function useAuth() {
       }
     : null;
 
-  // 로컬 독립형 개발 모드이고 OAuth 세션이 없는 경우 자동 게스트 로그인 제공
-  if (!authSession && isLocalStandaloneMode()) {
+  // 개발 환경 게스트 인증이 활성화된 경우에만 OAuth 미로그인 시 자동 게스트 로그인 제공 (프로덕션에서는 비활성화)
+  if (!authSession && status !== "loading" && isDevGuestAuthEnabled()) {
     authSession = {
       user: {
         id: GUEST_USER_ID,
@@ -66,9 +66,3 @@ export function useAuth() {
     signOut: () => signOut(),
   };
 }
-
-/**
- * 서버 컴포넌트에서 세션을 가져오는 헬퍼
- */
-export { getServerSession } from "next-auth";
-export { authOptions } from "@/app/api/auth/[...nextauth]/route";

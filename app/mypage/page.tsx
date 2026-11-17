@@ -3,7 +3,7 @@ import { fmtPrice } from "@/lib/format";
 import { createClient } from "@/lib/db/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
-import { isLocalStandaloneMode } from "@/lib/engine/localDevMode";
+import { isDevGuestAuthEnabled } from "@/lib/engine/localDevMode";
 import { GUEST_USER_ID } from "@/lib/memoryDb/memoryStore";
 
 export const revalidate = 0; // Disable static caching to fetch live user data
@@ -12,7 +12,7 @@ export default async function MyPage() {
   const session = await getServerSession(authOptions);
 
   let userId = session?.user?.id;
-  if (!userId && isLocalStandaloneMode()) {
+  if (!userId && isDevGuestAuthEnabled()) {
     userId = GUEST_USER_ID;
   }
 

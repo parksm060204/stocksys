@@ -1,12 +1,15 @@
 import { NextResponse } from 'next/server';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/app/api/auth/[...nextauth]/route';
-import { memoryDb, GUEST_USER_ID, OrderRecord } from '@/lib/memoryDb/memoryStore';
+import { memoryDb } from '@/lib/memoryDb/memoryStore';
 import { createMemoryDbClient } from '@/lib/memoryDb/memoryDbClient';
-import { ensureLocalStandaloneEngine, getLocalStandaloneEngine } from '@/lib/engine/localStandaloneServer';
-import { LocalMarketService, withStockLock, withAllStockLocks } from '@/lib/engine/marketService';
+import { ensureLocalStandaloneReady, getLocalStandaloneEngine, persistConfirmedState } from '@/lib/engine/localStandaloneServer';
+import { LocalMarketService, withAllStockLocks } from '@/lib/engine/marketService';
 import { verifyAdminSession } from '@/lib/auth/adminAuth';
+import { resolveAuthenticatedUserId } from '@/lib/auth/sessionAuth';
 import { sanitizePublicNewsRecord } from '@/lib/engine/simulation/marketEventTypes';
+import { pruneExpiredProfileEntitlements } from '@/lib/shop/catalog';
+import { executeCurrencyExchange } from '@/lib/exchange/exchangeService';
+import { withAccountLocks } from '@/lib/memoryDb/accountLocks';
+import { runWithCommitGate } from '@/lib/memoryDb/PersistenceManager';
 
 // 공개 시장 데이터 테이블 (SELECT 전용)
 const PUBLIC_READ_TABLES = new Set([
@@ -16,20 +19,30 @@ const PUBLIC_READ_TABLES = new Set([
   'options_contracts',
   'bonds',
   'exchange_rates',
+  'media_outlets',
   'market_news',
   'news',
   'news_v2',
   'player_events',
-  'active_player_events',
   'active_manipulations',
   'institutional_portfolios',
   'bots_config',
   'admin_settings',
-  'option_settlements',
-  'bond_coupon_payments',
   'trades',
 ]);
 const NEWS_TABLES = new Set(['market_news', 'news', 'news_v2']);
+const USER_SCOPED_READ_TABLES = new Set(['option_settlements', 'bond_coupon_payments', 'active_player_events']);
+const ALLOWED_PROFILE_UPDATE_FIELDS = new Set(['username', 'nickname']);
+
+function sanitizePublicTradeRecord(trade: any) {
+  if (!trade || typeof trade !== 'object') return trade;
+  const safeTrade = { ...trade };
+  delete safeTrade.buyer_id;
+  delete safeTrade.seller_id;
+  delete safeTrade.buy_order_id;
+  delete safeTrade.sell_order_id;
+  return safeTrade;
+}
 
 // 외부 클라이언트가 직접 호출할 수 없는 내부 정산/유지보수 RPC 목록
 const FORBIDDEN_INTERNAL_RPCS = new Set([
@@ -40,18 +53,10 @@ const FORBIDDEN_INTERNAL_RPCS = new Set([
 
 export async function POST(request: Request) {
   try {
-    ensureLocalStandaloneEngine();
+    await ensureLocalStandaloneReady();
 
     // 1. 서버 세션 기반 사용자 식별
-    let session: any = null;
-    try {
-      session = await getServerSession(authOptions);
-    } catch {
-      session = null;
-    }
-
-    const isProd = process.env.NODE_ENV === 'production';
-    const authenticatedUserId = session?.user?.id || (!isProd ? GUEST_USER_ID : null);
+    const authenticatedUserId = await resolveAuthenticatedUserId();
 
     const body = await request.json();
     const { action, tableName, query, fnName, params } = body;
@@ -84,10 +89,24 @@ export async function POST(request: Request) {
         const price = Number(params?.p_price ?? params?.price);
         const size = Number(params?.p_size ?? params?.size);
 
-        if (!stockId || (side !== 'buy' && side !== 'sell') || !Number.isFinite(price) || price <= 0 || !Number.isInteger(size) || size <= 0) {
+        if (!stockId || typeof stockId !== 'string' || (side !== 'buy' && side !== 'sell') || !Number.isFinite(price) || price <= 0 || !Number.isInteger(size) || size <= 0) {
           return NextResponse.json(
             { data: null, error: { message: '올바르지 않은 주문 파라미터입니다.' } },
             { status: 400 }
+          );
+        }
+
+        if (memoryDb.optionsContracts.has(stockId)) {
+          return NextResponse.json(
+            { data: null, error: { message: '옵션 계약은 옵션 전용 주문 API(/api/options/order)를 이용해 주세요.' } },
+            { status: 400 }
+          );
+        }
+
+        if (!memoryDb.stocks.has(stockId)) {
+          return NextResponse.json(
+            { data: null, error: { message: '등록되지 않은 주식/ETF 종목입니다.' } },
+            { status: 404 }
           );
         }
 
@@ -97,6 +116,7 @@ export async function POST(request: Request) {
           side,
           price,
           size,
+          onPersist: persistConfirmedState,
         });
 
         return NextResponse.json({
@@ -113,6 +133,56 @@ export async function POST(request: Request) {
           },
           error: res.success ? null : { message: res.message },
         });
+      }
+
+      if (fnName === 'exchange_currency') {
+        if (!authenticatedUserId) {
+          return NextResponse.json(
+            { data: null, error: { message: '로그인이 필요한 서비스입니다.' } },
+            { status: 401 }
+          );
+        }
+
+        const requestedUserId = params?.p_user_id ?? params?.user_id;
+        if (requestedUserId !== undefined && requestedUserId !== null && String(requestedUserId) !== authenticatedUserId) {
+          return NextResponse.json(
+            { data: null, error: { message: '다른 사용자의 계좌로 환전할 수 없습니다.' } },
+            { status: 403 }
+          );
+        }
+
+        const exRes = await executeCurrencyExchange({
+          db: memoryDb,
+          userId: authenticatedUserId,
+          fromCur: params?.p_from_cur ?? params?.from_cur,
+          toCur: params?.p_to_cur ?? params?.to_cur,
+          amount: Number(params?.p_amount ?? params?.amount),
+          onPersist: persistConfirmedState,
+        });
+
+        if (!exRes.success) {
+          return NextResponse.json(
+            { data: null, error: { message: exRes.message } },
+            { status: exRes.statusCode }
+          );
+        }
+
+        return NextResponse.json({ data: exRes.data, error: null });
+      }
+
+      if (fnName === 'get_my_recent_trades') {
+        if (!authenticatedUserId) {
+          return NextResponse.json(
+            { data: null, error: { message: '로그인이 필요한 서비스입니다.' } },
+            { status: 401 }
+          );
+        }
+        const mockClient = createMemoryDbClient();
+        const result = await mockClient.rpc(fnName, {
+          ...params,
+          p_user_id: authenticatedUserId,
+        });
+        return NextResponse.json(result);
       }
 
       // 기타 허용된 RPC 실행
@@ -140,6 +210,14 @@ export async function POST(request: Request) {
         await withAllStockLocks(allStockIds, async () => {
           memoryDb.resetToSeedData();
         });
+      }
+
+      const saved = await persistConfirmedState();
+      if (!saved) {
+        return NextResponse.json(
+          { data: null, error: { message: '초기화 스냅샷 저장에 실패했습니다.' } },
+          { status: 500 }
+        );
       }
 
       return NextResponse.json({ success: true, message: 'Market reset successfully' });
@@ -173,6 +251,41 @@ export async function POST(request: Request) {
               : sanitizePublicNewsRecord(result.data),
           });
         }
+        if (tableName === 'trades' && result.data) {
+          return NextResponse.json({
+            ...result,
+            data: Array.isArray(result.data)
+              ? result.data.map(sanitizePublicTradeRecord)
+              : sanitizePublicTradeRecord(result.data),
+          });
+        }
+        return NextResponse.json(result);
+      }
+
+      // ── [A-2] 본인 전용 정산 이력 테이블 (SELECT 전용, 세션 user_id 강제) ──
+      if (USER_SCOPED_READ_TABLES.has(tableName)) {
+        if (!authenticatedUserId) {
+          return NextResponse.json(
+            { data: null, error: { message: '로그인이 필요한 서비스입니다.' } },
+            { status: 401 }
+          );
+        }
+        if (qAction !== 'select') {
+          return NextResponse.json(
+            { data: null, error: { message: `정산 기록 테이블(${tableName})은 직접 수정할 수 없습니다.` } },
+            { status: 403 }
+          );
+        }
+
+        const safeQuery = { ...query };
+        const otherFilters = (safeQuery.filters || []).filter(
+          (f: any) => f.col !== 'user_id' && f.col !== 'userId'
+        );
+        safeQuery.filters = [...otherFilters, { col: 'user_id', op: 'eq', val: authenticatedUserId }];
+
+        const qb = createMemoryDbClient().from(tableName);
+        applyQueryOptions(qb, safeQuery);
+        const result = await qb.execute();
         return NextResponse.json(result);
       }
 
@@ -223,6 +336,9 @@ export async function POST(request: Request) {
 
           // 본인이 아닌 경우 민감 자산 정보(cash 등) 보호
           const isOwner = authenticatedUserId && targetId === authenticatedUserId;
+          if (isOwner) {
+            pruneExpiredProfileEntitlements(profile);
+          }
           const safeData = isOwner
             ? profile
             : {
@@ -245,26 +361,63 @@ export async function POST(request: Request) {
             return NextResponse.json({ data: null, error: { message: '인증이 필요합니다.' } }, { status: 401 });
           }
 
-          // cash, is_admin, net_worth 등 민감 장부/권한 필드 수정 원천 차단
-          const payload = query?.payloadData || {};
-          const forbiddenFields = ['cash', 'is_admin', 'net_worth', 'id', 'user_id'];
-          const hasForbidden = Object.keys(payload).some((k) => forbiddenFields.includes(k));
-
-          if (hasForbidden) {
+          // 명시적 허용 목록(username, nickname) 외 모든 필드 수정 원천 차단
+          const payload = query?.payloadData;
+          if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
             return NextResponse.json(
-              { data: null, error: { message: '자산 및 권한 정보는 클라이언트에서 직접 수정할 수 없습니다.' } },
+              { data: null, error: { message: '올바른 프로필 수정 요청 형식이 아닙니다.' } },
+              { status: 400 }
+            );
+          }
+
+          const keys = Object.keys(payload);
+          if (keys.length === 0) {
+            return NextResponse.json(
+              { data: null, error: { message: '수정할 프로필 필드가 없습니다.' } },
+              { status: 400 }
+            );
+          }
+
+          const hasDisallowed = keys.some((k) => !ALLOWED_PROFILE_UPDATE_FIELDS.has(k));
+          if (hasDisallowed) {
+            return NextResponse.json(
+              { data: null, error: { message: '자산, 권한, 구독 정보 등 허용되지 않은 필드는 직접 수정할 수 없습니다.' } },
               { status: 403 }
             );
           }
 
-          const existing = memoryDb.profiles.get(authenticatedUserId);
-          if (!existing) {
-            return NextResponse.json({ data: null, error: { message: '프로필을 찾을 수 없습니다.' } }, { status: 404 });
+          const sanitizedUpdate: Record<string, string> = {};
+          for (const key of keys) {
+            const val = payload[key];
+            if (typeof val !== 'string' || val.trim().length === 0 || val.trim().length > 40) {
+              return NextResponse.json(
+                { data: null, error: { message: `${key}은(는) 1~40자의 문자열이어야 합니다.` } },
+                { status: 400 }
+              );
+            }
+            sanitizedUpdate[key] = val.trim();
           }
 
-          const updated = { ...existing, ...payload };
-          memoryDb.profiles.set(authenticatedUserId, updated);
-          return NextResponse.json({ data: updated, error: null });
+          return await withAccountLocks([authenticatedUserId], async () => {
+            return await runWithCommitGate(persistConfirmedState, async () => {
+              const existing = memoryDb.profiles.get(authenticatedUserId);
+              if (!existing) {
+                return NextResponse.json({ data: null, error: { message: '프로필을 찾을 수 없습니다.' } }, { status: 404 });
+              }
+
+              const updated = { ...existing, ...sanitizedUpdate };
+              memoryDb.profiles.set(authenticatedUserId, updated);
+              const saved = await persistConfirmedState();
+              if (!saved) {
+                memoryDb.profiles.set(authenticatedUserId, existing);
+                return NextResponse.json(
+                  { data: null, error: { message: '프로필 저장에 실패했습니다.' } },
+                  { status: 500 }
+                );
+              }
+              return NextResponse.json({ data: updated, error: null });
+            });
+          });
         }
 
         return NextResponse.json(
@@ -276,29 +429,19 @@ export async function POST(request: Request) {
       // ── [D] Orders 테이블 ──
       if (tableName === 'orders') {
         if (qAction === 'select') {
-          const isUserQuery = query?.filters?.some((f: any) => f.col === 'user_id' || f.col === 'userId');
-
-          if (isUserQuery) {
-            if (!authenticatedUserId) {
-              return NextResponse.json({ data: null, error: { message: '인증이 필요합니다.' } }, { status: 401 });
-            }
-
-            // 본인 주문만 조회하도록 user_id 강제 고정
-            const safeQuery = { ...query };
-            const otherFilters = (safeQuery.filters || []).filter(
-              (f: any) => f.col !== 'user_id' && f.col !== 'userId'
-            );
-            safeQuery.filters = [...otherFilters, { col: 'user_id', op: 'eq', val: authenticatedUserId }];
-
-            const qb = createMemoryDbClient().from('orders');
-            applyQueryOptions(qb, safeQuery);
-            const result = await qb.execute();
-            return NextResponse.json(result);
+          if (!authenticatedUserId) {
+            return NextResponse.json({ data: null, error: { message: '인증이 필요합니다.' } }, { status: 401 });
           }
 
-          // 시장 오더북 조회 (status in ['open', 'partial'])
+          // 개인 주문 조회는 필터 유무와 관계없이 항상 세션 사용자로 제한
+          const safeQuery = { ...query };
+          const otherFilters = (safeQuery.filters || []).filter(
+            (f: any) => f.col !== 'user_id' && f.col !== 'userId'
+          );
+          safeQuery.filters = [...otherFilters, { col: 'user_id', op: 'eq', val: authenticatedUserId }];
+
           const qb = createMemoryDbClient().from('orders');
-          applyQueryOptions(qb, query);
+          applyQueryOptions(qb, safeQuery);
           const result = await qb.execute();
           return NextResponse.json(result);
         }
@@ -325,6 +468,7 @@ export async function POST(request: Request) {
           const cancelRes = await LocalMarketService.cancelOrder({
             orderId: String(targetOrderId),
             userId: authenticatedUserId,
+            onPersist: persistConfirmedState,
           });
 
           if (!cancelRes.success) {

@@ -251,6 +251,11 @@ export class AgentManager {
   private emptyBookStockRatio: number = 0;
   private marketIndexReturns: number[] = [];
   public lastObservation: RegimeObservation | null = null;
+  private onPersistCallback?: () => Promise<boolean>;
+
+  public setOnPersist(fn?: () => Promise<boolean>): void {
+    this.onPersistCallback = fn;
+  }
 
   private getUserOpenOrders(userId: string): OpenOrderForRisk[] {
     const userOrders: OpenOrderForRisk[] = [];
@@ -2056,6 +2061,8 @@ export class AgentManager {
         participantType: 'lp',
         accountId: lpAgent.accountId,
         agentId: lpAgent.agentId,
+        onPersist: this.onPersistCallback,
+        persistOnlyOnFill: true,
       });
 
       this.diagnostics.recordOrderSubmit('market_maker');
@@ -2101,6 +2108,8 @@ export class AgentManager {
       participantType: 'bot',
       accountId: accountId,
       agentId: agent.agentId,
+      onPersist: this.onPersistCallback,
+      persistOnlyOnFill: true,
     });
 
     this.diagnostics.recordOrderSubmit(agent.strategyType);

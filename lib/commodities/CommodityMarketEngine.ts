@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import {
   CommodityDefinition,
   CommodityState,
@@ -19,6 +20,10 @@ import { createSimulationContext } from '../engine/simulation/runtime/simulation
 import type { SimulationTimeSource } from '../engine/simulation/runtime/simulationTimeSource';
 import type { SimulationRandomSource } from '../engine/simulation/runtime/simulationRandom';
 import { SIMULATION_NAMESPACES } from '../engine/simulation/runtime/simulationNamespaces';
+import type { MemoryDatabase } from '../memoryDb/memoryStore';
+import { withAccountLocks } from '../memoryDb/accountLocks';
+import { runWithCommitGate } from '../memoryDb/PersistenceManager';
+import { settleCommodityTradeForUsers, releaseCommodityOrderMargin } from './commodityLedger';
 
 export interface TickSummary {
   tick: number;
@@ -39,6 +44,7 @@ export interface CommodityEngineOptions {
   initialTick?: number;
   simulationContext?: SimulationContext;
   scenarioManager?: ScenarioManager;
+  db?: MemoryDatabase;
 }
 
 export class CommodityMarketEngine {
@@ -51,10 +57,19 @@ export class CommodityMarketEngine {
   public readonly simContext: SimulationContext;
   public readonly clock: SimulationTimeSource;
   public readonly scenarioManager: ScenarioManager;
+  private db?: MemoryDatabase;
+  private onPersist?: () => Promise<boolean>;
   private readonly priceRandom: SimulationRandomSource;
   private readonly eventRandom: SimulationRandomSource;
   private readonly engineRandom: SimulationRandomSource;
   private userOrderSeq: number = 0;
+  private tradeSeq: number = 0;
+  private engineEpoch: number = 1;
+  private isTicking: boolean = false;
+  private reconciled: boolean = false;
+  private tickTail: Promise<void> = Promise.resolve();
+  private tickLockStorage = new AsyncLocalStorage<symbol>();
+  private activeTickToken: symbol | null = null;
 
   private isRunning: boolean = false;
   private intervalTimer: NodeJS.Timeout | null = null;
@@ -65,6 +80,7 @@ export class CommodityMarketEngine {
     const definitions = options?.customDefinitions || COMMODITY_DEFINITIONS;
     this.simContext = options?.simulationContext ?? createSimulationContext({ seed: 42 });
     this.clock = this.simContext.clock;
+    this.db = options?.db;
     this.engineRandom = this.simContext.fork(SIMULATION_NAMESPACES.COMMODITIES.ENGINE);
     this.eventRandom = this.simContext.fork(SIMULATION_NAMESPACES.COMMODITIES.EVENTS);
     this.priceRandom = this.simContext.fork(SIMULATION_NAMESPACES.COMMODITIES.PRICE);
@@ -162,7 +178,7 @@ export class CommodityMarketEngine {
 
     this.commodities.forEach((state, commodityId) => {
       const book = this.orderBooks.get(commodityId)!;
-      const res = book.matchOrders(state.currentPrice, tick);
+      const res = book.matchOrders(state.currentPrice, tick, () => this.nextTradeId());
       matchResults[commodityId] = res;
 
       totalTickNotional += res.executedNotional;
@@ -181,7 +197,7 @@ export class CommodityMarketEngine {
       }
 
       // 오래된 미체결 주문 청소 (50틱 이상 방치 주문 제거)
-      book.clearExpiredOrders(50, tick);
+      book.extractExpiredOrders(50, tick);
     });
 
     if (this.tradesHistory.length > 2000) {
@@ -294,31 +310,336 @@ export class CommodityMarketEngine {
    * 사용자 주문 제출 인터페이스
    */
   public submitUserOrder(order: Omit<CommodityOrder, 'id' | 'filled' | 'createdAtTick' | 'createdAtTime'>): CommodityOrder {
+    if (!order || typeof order !== 'object') {
+      throw new Error('유효한 주문 객체가 필요합니다.');
+    }
+    const commodity = this.commodities.get(order.commodityId);
+    if (!commodity) {
+      throw new Error(`존재하지 않는 원자재 종목입니다: ${String(order.commodityId)}`);
+    }
+    if (order.side !== 'buy' && order.side !== 'sell') {
+      throw new Error('주문 방향(side)은 buy 또는 sell이어야 합니다.');
+    }
+    if (order.type !== 'limit' && order.type !== 'market') {
+      throw new Error('주문 유형(type)은 limit 또는 market이어야 합니다.');
+    }
+    if (typeof order.size !== 'number' || !Number.isFinite(order.size) || !Number.isInteger(order.size) || order.size <= 0) {
+      throw new Error('주문 수량(size)은 1 이상의 유한한 정수여야 합니다.');
+    }
+    if (order.type === 'limit') {
+      if (typeof order.price !== 'number' || !Number.isFinite(order.price) || order.price <= 0) {
+        throw new Error('지정가 주문 가격(price)은 0보다 큰 유한한 숫자여야 합니다.');
+      }
+    }
+
+    const normalizedPrice = order.type === 'market' ? commodity.currentPrice : order.price;
     this.userOrderSeq += 1;
+    if (this.db) {
+      this.db.commodityCurrentTick = this.currentTick;
+      this.db.commodityUserOrderSeq = this.userOrderSeq;
+    }
     const fullOrder: CommodityOrder = {
       ...order,
-      id: `usr_${this.currentTick}_${this.userOrderSeq}`,
+      price: normalizedPrice,
+      id: `usr_e${this.engineEpoch}_t${this.currentTick}_s${this.userOrderSeq}`,
       filled: 0,
       createdAtTick: this.currentTick,
       createdAtTime: this.clock.now(),
     };
 
     const book = this.orderBooks.get(order.commodityId);
-    if (book) {
-      book.addOrder(fullOrder);
+    if (!book || !book.addOrder(fullOrder)) {
+      throw new Error('오더북에 주문을 등록할 수 없습니다.');
     }
     return fullOrder;
   }
 
+  private nextTradeId(): string {
+    this.tradeSeq += 1;
+    if (this.db) {
+      this.db.commodityTradeSeq = this.tradeSeq;
+    }
+    return `cm_trade_e${this.engineEpoch}_t${this.currentTick}_s${this.tradeSeq}`;
+  }
+
+  public attachDatabase(db: MemoryDatabase): void {
+    this.db = db;
+  }
+
   /**
-   * 자동 타이머 시작
+   * 틱 실행과 사용자 주문 등록/취소가 오더북 및 엔진 상태를 경합 없이 직렬화하도록 보장한다.
+   * (전역 락 순서: tickLock -> withAccountLocks -> commitGate)
    */
-  public start(intervalMs: number = 1000): void {
+  public async runWithTickLock<T>(fn: () => Promise<T>): Promise<T> {
+    const currentToken = this.tickLockStorage.getStore();
+    if (currentToken && currentToken === this.activeTickToken) {
+      return await fn();
+    }
+
+    let release!: () => void;
+    const prev = this.tickTail;
+    const next = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.tickTail = prev.then(() => next, () => next);
+    await prev;
+    const token = Symbol('commodityTickLock');
+    this.activeTickToken = token;
+    try {
+      return await this.tickLockStorage.run(token, fn);
+    } finally {
+      this.activeTickToken = null;
+      release();
+    }
+  }
+
+  /**
+   * DB 스냅샷 복원 후 엔진 에포크/시퀀스를 동기화하고,
+   * 미체결 주문을 오더북에 복원하거나 오더북에서 유실된 고아 예약을 안전하게 환불한다.
+   */
+  public async reconcileWithDatabase(db: MemoryDatabase): Promise<void> {
+    this.db = db;
+    if (this.reconciled) return;
+    this.reconciled = true;
+
+    this.engineEpoch = db.commodityNextEpoch;
+    db.commodityNextEpoch += 1;
+    this.currentTick = Math.max(this.currentTick, db.commodityCurrentTick);
+    this.userOrderSeq = Math.max(this.userOrderSeq, db.commodityUserOrderSeq);
+    this.tradeSeq = Math.max(this.tradeSeq, db.commodityTradeSeq);
+
+    // 1. 미체결 사용자 주문 오더북 복원
+    for (const book of this.orderBooks.values()) {
+      book.clear();
+    }
+    for (const [orderId, ord] of db.commodityOpenOrders.entries()) {
+      const res = db.commodityMarginReservations.get(orderId);
+      if (!res || (res.status !== 'open' && res.status !== 'partial') || ord.size - ord.filled <= 0) {
+        db.commodityOpenOrders.delete(orderId);
+        continue;
+      }
+      const book = this.orderBooks.get(ord.commodityId);
+      if (book) {
+        book.addOrder({ ...ord });
+      } else {
+        await releaseCommodityOrderMargin(db, orderId, 'cancelled');
+      }
+    }
+
+    // 2. 오더북에 없는 고아 예약(크래시/구버전 스냅샷) 안전 환불
+    for (const [orderId, res] of db.commodityMarginReservations.entries()) {
+      if ((res.status === 'open' || res.status === 'partial') && !db.commodityOpenOrders.has(orderId)) {
+        await releaseCommodityOrderMargin(db, orderId, 'cancelled');
+      }
+    }
+  }
+
+  /**
+   * 권위 런타임 틱: 오더북 매칭 후 비동기 정산·만료 환불·영속 저장을 모두 완료한 뒤 틱을 확정한다.
+   * 락 순서: tickLock -> withAccountLocks(후보 계좌 일체) -> commitGate
+   */
+  public async stepTickAsync(): Promise<TickSummary> {
+    return this.runWithTickLock(async () => {
+      const candidateUserSet = new Set<string>();
+      this.orderBooks.forEach((book) => {
+        for (const b of book.bids) if (b.userId) candidateUserSet.add(b.userId);
+        for (const a of book.asks) if (a.userId) candidateUserSet.add(a.userId);
+      });
+      if (this.db) {
+        for (const ord of this.db.commodityOpenOrders.values()) {
+          if (ord.userId) candidateUserSet.add(ord.userId);
+        }
+        for (const res of this.db.commodityMarginReservations.values()) {
+          if (res.status === 'open' || res.status === 'partial') {
+            candidateUserSet.add(res.user_id);
+          }
+        }
+      }
+      const candidateUserIds = Array.from(candidateUserSet);
+
+      return withAccountLocks(candidateUserIds, async () => {
+        const executeTick = async (): Promise<TickSummary> => {
+          const prevTick = this.currentTick;
+          const prevTradeSeq = this.tradeSeq;
+          const prevUserOrderSeq = this.userOrderSeq;
+          const prevDbTick = this.db?.commodityCurrentTick;
+          const prevDbTradeSeq = this.db?.commodityTradeSeq;
+
+          const bookSnapshots = new Map<string, { bids: CommodityOrder[]; asks: CommodityOrder[] }>();
+          this.orderBooks.forEach((book, cid) => {
+            bookSnapshots.set(cid, book.snapshotState());
+          });
+          const commoditySnapshots = new Map<string, CommodityState>();
+          this.commodities.forEach((c, cid) => {
+            commoditySnapshots.set(cid, {
+              ...c,
+              priceHistory: c.priceHistory.map((p) => ({ ...p })),
+            });
+          });
+          const tradesHistorySnapshot = this.tradesHistory.map((t) => ({ ...t }));
+          const botSnapshots = this.bots.map((b) => b.snapshotRuntimeState());
+          const eventSystemSnapshot = this.eventSystem.snapshotState();
+          const scenarioSnapshot = this.scenarioManager.snapshotState();
+          const priceRandSnap = this.priceRandom.snapshot ? this.priceRandom.snapshot() : null;
+          const eventRandSnap = this.eventRandom.snapshot ? this.eventRandom.snapshot() : null;
+          const engineRandSnap = this.engineRandom.snapshot ? this.engineRandom.snapshot() : null;
+
+          const userSnapshots = new Map<string, any>();
+          const posSnapshots = new Map<string, any>();
+          const resSnapshots = new Map<string, any>();
+          const openOrdSnapshots = new Map<string, any>();
+          const watermarkSnap = this.db ? new Map(this.db.commoditySettledEpochWatermarks) : null;
+          const evictedSnap = this.db ? new Set(this.db.commodityEvictedCustomTradeIds) : null;
+
+          if (this.db) {
+            for (const uid of candidateUserIds) {
+              const p = this.db.profiles.get(uid);
+              if (p) userSnapshots.set(uid, { ...p });
+              for (const cid of this.commodities.keys()) {
+                const pk = `${uid}_${cid}`;
+                const pos = this.db.commodityPositions.get(pk);
+                posSnapshots.set(pk, pos ? { ...pos } : null);
+              }
+            }
+            for (const [k, v] of this.db.commodityMarginReservations.entries()) {
+              if (v.status === 'open' || v.status === 'partial' || candidateUserSet.has(v.user_id)) {
+                resSnapshots.set(k, { ...v });
+              }
+            }
+            for (const [k, v] of this.db.commodityOpenOrders.entries()) {
+              openOrdSnapshots.set(k, { ...v });
+            }
+          }
+
+          let tickTrades: CommodityTrade[] = [];
+          try {
+            const summary = this.nextTick();
+            if (this.db) {
+              this.db.commodityCurrentTick = this.currentTick;
+              this.db.commodityTradeSeq = this.tradeSeq;
+            }
+
+            const botMap = new Map<string, CommodityBot>(this.bots.map((b) => [b.id, b]));
+            let userMutations = 0;
+
+            if (this.db) {
+              tickTrades = this.tradesHistory.filter((t) => t.tick === this.currentTick);
+
+              for (const trade of tickTrades) {
+                const buyerIsUser = Boolean(trade.buyerId && !botMap.has(trade.buyerId));
+                const sellerIsUser = Boolean(trade.sellerId && !botMap.has(trade.sellerId));
+                if (buyerIsUser || sellerIsUser) {
+                  const state = this.commodities.get(trade.commodityId);
+                  if (state) {
+                    await settleCommodityTradeForUsers(this.db, trade, state);
+                    userMutations += 1;
+                  }
+                }
+              }
+
+              const activeBookOrderIds = new Set<string>();
+              this.orderBooks.forEach((book) => {
+                for (const b of book.bids) activeBookOrderIds.add(b.id);
+                for (const a of book.asks) activeBookOrderIds.add(a.id);
+              });
+              for (const [orderId, res] of this.db.commodityMarginReservations.entries()) {
+                if ((res.status === 'open' || res.status === 'partial') && !activeBookOrderIds.has(orderId)) {
+                  const refunded = await releaseCommodityOrderMargin(this.db, orderId, 'expired');
+                  if (refunded) userMutations += 1;
+                }
+              }
+
+              if (userMutations > 0 && this.onPersist) {
+                const saved = await this.onPersist();
+                if (!saved) {
+                  throw new Error('원자재 틱 정산 영속 저장에 실패했습니다.');
+                }
+              }
+            }
+
+            return summary;
+          } catch (err) {
+            this.currentTick = prevTick;
+            this.tradeSeq = prevTradeSeq;
+            this.userOrderSeq = prevUserOrderSeq;
+            bookSnapshots.forEach((snap, cid) => {
+              this.orderBooks.get(cid)?.restoreState(snap);
+            });
+            commoditySnapshots.forEach((snap, cid) => {
+              const cur = this.commodities.get(cid);
+              if (cur) Object.assign(cur, snap);
+              else this.commodities.set(cid, snap);
+            });
+            this.tradesHistory = tradesHistorySnapshot;
+            this.bots.forEach((b, idx) => {
+              const snap = botSnapshots[idx];
+              if (snap) b.restoreRuntimeState(snap);
+            });
+            this.eventSystem.restoreState(eventSystemSnapshot);
+            this.scenarioManager.restoreState(scenarioSnapshot);
+            if (priceRandSnap && this.priceRandom.restore) this.priceRandom.restore(priceRandSnap);
+            if (eventRandSnap && this.eventRandom.restore) this.eventRandom.restore(eventRandSnap);
+            if (engineRandSnap && this.engineRandom.restore) this.engineRandom.restore(engineRandSnap);
+
+            if (this.db) {
+              if (prevDbTick !== undefined) this.db.commodityCurrentTick = prevDbTick;
+              if (prevDbTradeSeq !== undefined) this.db.commodityTradeSeq = prevDbTradeSeq;
+
+              for (const [uid, prevP] of userSnapshots.entries()) {
+                const curP = this.db.profiles.get(uid);
+                if (curP) Object.assign(curP, prevP);
+                else this.db.profiles.set(uid, prevP);
+              }
+              for (const [pk, prevPos] of posSnapshots.entries()) {
+                if (prevPos) this.db.commodityPositions.set(pk, prevPos);
+                else this.db.commodityPositions.delete(pk);
+              }
+              for (const [ok, prevRes] of resSnapshots.entries()) {
+                this.db.commodityMarginReservations.set(ok, prevRes);
+              }
+              for (const [ok, prevOrd] of openOrdSnapshots.entries()) {
+                if (prevOrd) this.db.commodityOpenOrders.set(ok, prevOrd);
+                else this.db.commodityOpenOrders.delete(ok);
+              }
+              for (const t of tickTrades) {
+                this.db.commoditySettlementLedger.delete(t.id);
+              }
+              if (watermarkSnap) this.db.commoditySettledEpochWatermarks = watermarkSnap;
+              if (evictedSnap) this.db.commodityEvictedCustomTradeIds = evictedSnap;
+            }
+            throw err;
+          }
+        };
+
+        return this.onPersist ? runWithCommitGate(this.onPersist, executeTick) : executeTick();
+      });
+    });
+  }
+
+  public removeUserOrder(commodityId: string, orderId: string): CommodityOrder | null {
+    const book = this.orderBooks.get(commodityId);
+    if (!book) return null;
+    return book.removeOrder(orderId);
+  }
+
+  /**
+   * 자동 타이머 시작 (DB 복원·조정 완료 후 호출해야 함)
+   */
+  public start(intervalMs: number = 1000, onPersist?: () => Promise<boolean>): void {
+    if (onPersist) this.onPersist = onPersist;
     if (this.isRunning) return;
     this.tickIntervalMs = intervalMs;
     this.isRunning = true;
     this.intervalTimer = setInterval(() => {
-      this.nextTick();
+      if (this.isTicking) return;
+      this.isTicking = true;
+      void this.stepTickAsync()
+        .catch((err) => {
+          console.error('[CommodityMarketEngine] Tick execution error:', err);
+        })
+        .finally(() => {
+          this.isTicking = false;
+        });
     }, this.tickIntervalMs);
   }
 

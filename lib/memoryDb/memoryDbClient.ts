@@ -10,6 +10,8 @@ import {
   StockPriceHistoryRecord,
   GUEST_USER_ID,
 } from './memoryStore';
+import { MEDIA_OUTLETS } from '../shop/catalog';
+import { executeCurrencyExchange } from '../exchange/exchangeService';
 
 
 type FilterOp = {
@@ -227,6 +229,9 @@ export class MemoryQueryBuilder {
             break;
           case 'bond_coupon_payments':
             targetList = [...db.bondCouponPayments];
+            break;
+          case 'media_outlets':
+            targetList = [...MEDIA_OUTLETS];
             break;
           default:
             targetList = [];
@@ -864,7 +869,49 @@ export class MemoryDbClient {
       };
     }
 
-    return { data: null, error: null };
+    if (fnName === 'exchange_currency') {
+      const userId = params?.p_user_id || params?.user_id;
+      if (!userId || typeof userId !== 'string') {
+        return { data: null, error: { message: '인증이 필요합니다.' } };
+      }
+      const exRes = await executeCurrencyExchange({
+        db,
+        userId,
+        fromCur: params?.p_from_cur ?? params?.from_cur,
+        toCur: params?.p_to_cur ?? params?.to_cur,
+        amount: Number(params?.p_amount ?? params?.amount),
+      });
+      return exRes.success
+        ? { data: exRes.data, error: null }
+        : { data: null, error: { message: exRes.message } };
+    }
+
+    if (fnName === 'get_my_recent_trades') {
+      const userId = params?.p_user_id;
+      if (!userId || typeof userId !== 'string') {
+        return { data: null, error: { message: '인증이 필요합니다.' } };
+      }
+      const afterIso = typeof params?.p_after === 'string' ? params.p_after : '';
+      const limit = Math.max(1, Math.min(100, Number(params?.p_limit || 20)));
+      const myTrades = db.trades
+        .filter((t) => (t.buyer_id === userId || t.seller_id === userId) && (!afterIso || t.created_at > afterIso))
+        .slice(-limit)
+        .map((t) => ({
+          id: t.id,
+          stock_id: t.stock_id,
+          is_buyer: t.buyer_id === userId,
+          is_seller: t.seller_id === userId,
+          price: Number(t.price),
+          size: Number(t.size),
+          created_at: t.created_at,
+        }));
+      return { data: myTrades, error: null };
+    }
+
+    return {
+      data: null,
+      error: { code: 'PGRST202', message: `알 수 없는 RPC 함수입니다: ${fnName}` },
+    };
   }
 
   public get auth(): any {

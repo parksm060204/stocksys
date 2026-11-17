@@ -2,6 +2,8 @@ import { ensureLocalStandaloneEngine } from './localStandaloneServer';
 import { createMemoryDbClient } from '../memoryDb/memoryDbClient';
 import { submitAndMatchOrder, MatchOrderResult } from './dbMatching';
 import { memoryDb, OrderRecord } from '../memoryDb/memoryStore';
+import { withAccountLocks } from '../memoryDb/accountLocks';
+import { runWithCommitGate } from '../memoryDb/PersistenceManager';
 
 export interface SubmitOrderParams {
   userId: string;
@@ -17,11 +19,14 @@ export interface SubmitOrderParams {
   participantType?: 'human' | 'bot' | 'lp';
   accountId?: string;
   agentId?: string;
+  onPersist?: () => Promise<boolean>;
+  persistOnlyOnFill?: boolean;
 }
 
 export interface CancelOrderParams {
   orderId: string;
   userId: string;
+  onPersist?: () => Promise<boolean>;
 }
 
 export interface CancelOrderResult {
@@ -115,6 +120,8 @@ export class LocalMarketService {
         participant_type: params.participantType,
         account_id: params.accountId,
         agent_id: params.agentId,
+        onPersist: params.onPersist,
+        persistOnlyOnFill: params.persistOnlyOnFill,
       });
     });
   }
@@ -142,39 +149,56 @@ export class LocalMarketService {
 
     const stockId = preliminaryOrder.stock_id;
 
-    // 2. 종목 락 내부에서 최신 주문 객체를 다시 조회하여 안전하게 취소 처리
+    // 2. 종목 락 + 계좌 락 내부에서 최신 주문 객체를 다시 조회하여 안전하게 취소 및 영속 저장 처리
     return await withStockLock(stockId, async () => {
-      const currentOrder = memoryDb.orders.get(orderId);
-      if (!currentOrder) {
-        return { success: false, statusCode: 404, message: '주문을 찾을 수 없습니다.' };
-      }
+      return await withAccountLocks([userId], async () => {
+        const currentOrder = memoryDb.orders.get(orderId);
+        if (!currentOrder) {
+          return { success: false, statusCode: 404, message: '주문을 찾을 수 없습니다.' };
+        }
 
-      if (currentOrder.user_id !== userId) {
-        return { success: false, statusCode: 403, message: '본인의 주문만 취소할 수 있습니다.' };
-      }
+        if (currentOrder.user_id !== userId) {
+          return { success: false, statusCode: 403, message: '본인의 주문만 취소할 수 있습니다.' };
+        }
 
-      if (currentOrder.stock_id !== stockId) {
-        return { success: false, statusCode: 400, message: '주문의 종목 정보가 일치하지 않습니다.' };
-      }
+        if (currentOrder.stock_id !== stockId) {
+          return { success: false, statusCode: 400, message: '주문의 종목 정보가 일치하지 않습니다.' };
+        }
 
-      if (currentOrder.status !== 'open' && currentOrder.status !== 'partial') {
-        return {
-          success: false,
-          statusCode: 400,
-          message: `이미 ${currentOrder.status} 상태인 주문은 취소할 수 없습니다.`,
-        };
-      }
+        if (currentOrder.status !== 'open' && currentOrder.status !== 'partial') {
+          return {
+            success: false,
+            statusCode: 400,
+            message: `이미 ${currentOrder.status} 상태인 주문은 취소할 수 없습니다.`,
+          };
+        }
 
-      // 현재 시점의 주문 상태를 cancelled로 변경
-      currentOrder.status = 'cancelled';
-      memoryDb.publish('orders_changes', { eventType: 'UPDATE', new: currentOrder });
+        const prevStatus = currentOrder.status;
+        return await runWithCommitGate(params.onPersist, async () => {
+          currentOrder.status = 'cancelled';
 
-      return {
-        success: true,
-        statusCode: 200,
-        message: '주문이 정상적으로 취소되었습니다.',
-        order: currentOrder,
-      };
+          if (params.onPersist) {
+            const saved = await params.onPersist();
+            if (!saved) {
+              currentOrder.status = prevStatus;
+              return {
+                success: false,
+                statusCode: 500,
+                message: '주문 취소 장부 영속 저장에 실패하여 취소를 롤백했습니다.',
+              };
+            }
+          }
+
+          memoryDb.publish('orders_changes', { eventType: 'UPDATE', new: currentOrder });
+
+          return {
+            success: true,
+            statusCode: 200,
+            message: '주문이 정상적으로 취소되었습니다.',
+            order: currentOrder,
+          };
+        });
+      });
     });
   }
 }

@@ -64,6 +64,8 @@ export interface CommodityOrder {
 export interface CommodityTrade {
   id: string;
   commodityId: string;
+  buyOrderId: string;
+  sellOrderId: string;
   buyerId?: string | undefined;
   sellerId?: string | undefined;
   price: number;

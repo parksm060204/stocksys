@@ -92,7 +92,7 @@ export class InMemorySettlementRepository implements SettlementRepository {
   /** Authoritative ledger 조회 (인스턴스가 재생성되어도 동일하게 동작) */
   public isTradeSettled(tradeId: string): boolean {
     if (!isNonEmptyId(tradeId)) return false;
-    return this.db.settlementLedger.has(tradeId);
+    return this.db.isTradeAlreadySettled(tradeId);
   }
 
   private lastSettlementError: string | null = null;
@@ -1309,7 +1309,7 @@ export class InMemorySettlementRepository implements SettlementRepository {
     writeHistory: () => void
   ): boolean {
     if (!isNonEmptyId(idempotencyKey)) return false;
-    if (this.db.settlementLedger.has(idempotencyKey)) return false; // Idempotently skipped
+    if (this.db.isTradeAlreadySettled(idempotencyKey)) return false; // Idempotently skipped
     if (typeof amount !== 'number' || !Number.isFinite(amount) || amount < 0) {
       // 금액이 유효하지 않으면 원장/현금을 전혀 변경하지 않는다.
       return false;
@@ -1370,7 +1370,7 @@ export class InMemorySettlementRepository implements SettlementRepository {
    */
   private closePosition(userId: string, stockId: string, closeKey: string): boolean {
     if (!isNonEmptyId(closeKey)) return false;
-    if (this.db.settlementLedger.has(closeKey)) return false;
+    if (this.db.isTradeAlreadySettled(closeKey)) return false;
     const hid = `${userId}_${stockId}`;
     const holding = this.db.holdings.get(hid);
     if (!holding) return false;
@@ -1457,7 +1457,7 @@ export class InMemorySettlementRepository implements SettlementRepository {
     if (!isNonEmptyId(params.idempotencyKey)) {
       return { success: false, errorCode: 'INVALID_IDEMPOTENCY_KEY', error: 'Invalid idempotency key' };
     }
-    if (this.db.settlementLedger.has(params.idempotencyKey)) {
+    if (this.db.isTradeAlreadySettled(params.idempotencyKey)) {
       return { success: true, errorCode: 'ALREADY_SETTLED' };
     }
 
@@ -1607,7 +1607,7 @@ export class InMemorySettlementRepository implements SettlementRepository {
     if (!isNonEmptyId(params.idempotencyKey)) {
       return { success: false, errorCode: 'INVALID_IDEMPOTENCY_KEY', error: 'Invalid idempotency key' };
     }
-    if (this.db.settlementLedger.has(params.idempotencyKey)) {
+    if (this.db.isTradeAlreadySettled(params.idempotencyKey)) {
       return { success: true, errorCode: 'ALREADY_SETTLED' };
     }
 

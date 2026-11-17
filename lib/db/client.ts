@@ -1,4 +1,5 @@
 import { GUEST_USER_ID } from "../memoryDb/memoryStore";
+import { isDevGuestAuthEnabled } from "../engine/localDevMode";
 
 let browserClient: any = null;
 
@@ -172,26 +173,39 @@ export class HttpMemoryClient {
 
   public get auth(): any {
     return {
-      getUser: async () => ({
-        data: {
-          user: {
-            id: GUEST_USER_ID,
-            email: 'guest@stocksys.local',
-            user_metadata: { nickname: '서학개미', username: '서학개미' },
+      getUser: async () => {
+        if (!isDevGuestAuthEnabled()) {
+          return { data: { user: null }, error: null };
+        }
+        return {
+          data: {
+            user: {
+              id: GUEST_USER_ID,
+              email: 'guest@stocksys.local',
+              user_metadata: { nickname: '서학개미', username: '서학개미' },
+            },
           },
-        },
-        error: null,
-      }),
-      getSession: async () => ({
-        data: {
-          session: {
-            access_token: 'mock_token',
-            user: { id: GUEST_USER_ID, email: 'guest@stocksys.local' },
+          error: null,
+        };
+      },
+      getSession: async () => {
+        if (!isDevGuestAuthEnabled()) {
+          return { data: { session: null }, error: null };
+        }
+        return {
+          data: {
+            session: {
+              access_token: 'mock_token',
+              user: { id: GUEST_USER_ID, email: 'guest@stocksys.local' },
+            },
           },
-        },
-        error: null,
-      }),
-      signInWithPassword: async () => ({ data: { user: { id: GUEST_USER_ID } }, error: null }),
+          error: null,
+        };
+      },
+      signInWithPassword: async () =>
+        isDevGuestAuthEnabled()
+          ? { data: { user: { id: GUEST_USER_ID } }, error: null }
+          : { data: { user: null }, error: { message: 'Guest auth disabled in production' } },
       signOut: async () => ({ error: null }),
     };
   }

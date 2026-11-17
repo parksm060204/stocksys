@@ -171,8 +171,9 @@ export default function CurrencyExchangePage() {
       if (error || !data) {
         setMessage({ text: `환전 실패: ${error?.message || "알 수 없는 오류"}`, type: "error" });
       } else {
+        const credited = Number(data.to_amount ?? toAmountVal);
         setMessage({
-          text: `환전 완료: ${amt.toLocaleString()} ${fromCur} ➔ ${toAmountVal.toLocaleString(undefined, { maximumFractionDigits: 4 })} ${toCur}`,
+          text: `환전 완료: ${Number(data.from_amount ?? amt).toLocaleString()} ${fromCur} ➔ ${credited.toLocaleString(undefined, { maximumFractionDigits: 4 })} ${toCur}`,
           type: "success",
         });
         setFromAmount("");

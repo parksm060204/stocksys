@@ -3,6 +3,7 @@ import type { SimulationTimeSource } from '../engine/simulation/runtime/simulati
 
 export interface MatchResult {
   trades: CommodityTrade[];
+  selfTradeCancelledOrders: CommodityOrder[];
   totalBuyVolume: number;
   totalSellVolume: number;
   netBuyVolume: number; // buyVolume - sellVolume
@@ -14,7 +15,6 @@ export class CommodityOrderBook {
   public readonly commodityId: string;
   public bids: CommodityOrder[] = [];
   public asks: CommodityOrder[] = [];
-  private tradeHistory: CommodityTrade[] = [];
   private readonly clock?: SimulationTimeSource;
 
   constructor(commodityId: string, clock?: SimulationTimeSource) {
@@ -25,8 +25,23 @@ export class CommodityOrderBook {
   /**
    * 주문 등록 (지정가 / 시장가)
    */
-  public addOrder(order: CommodityOrder): void {
-    if (order.size <= 0) return;
+  public addOrder(order: CommodityOrder): boolean {
+    if (!order || typeof order !== 'object') return false;
+    if (order.side !== 'buy' && order.side !== 'sell') return false;
+    if (order.type !== 'limit' && order.type !== 'market') return false;
+    if (typeof order.size !== 'number' || !Number.isFinite(order.size) || !Number.isInteger(order.size) || order.size <= 0) {
+      return false;
+    }
+    if (order.type === 'limit') {
+      if (typeof order.price !== 'number' || !Number.isFinite(order.price) || order.price <= 0) {
+        return false;
+      }
+    } else if (!Number.isFinite(order.price) || order.price < 0) {
+      order.price = 0;
+    }
+    if (typeof order.filled !== 'number' || !Number.isFinite(order.filled) || order.filled < 0) {
+      order.filled = 0;
+    }
 
     if (order.side === 'buy') {
       this.bids.push(order);
@@ -35,6 +50,7 @@ export class CommodityOrderBook {
       this.asks.push(order);
       this.sortAsks();
     }
+    return true;
   }
 
   /**
@@ -71,13 +87,30 @@ export class CommodityOrderBook {
     });
   }
 
+  public snapshotState(): { bids: CommodityOrder[]; asks: CommodityOrder[] } {
+    return {
+      bids: this.bids.map((o) => ({ ...o })),
+      asks: this.asks.map((o) => ({ ...o })),
+    };
+  }
+
+  public restoreState(snap: { bids: CommodityOrder[]; asks: CommodityOrder[] }): void {
+    this.bids = snap.bids.map((o) => ({ ...o }));
+    this.asks = snap.asks.map((o) => ({ ...o }));
+  }
+
   /**
    * 틱 종료 시점 오더북 매칭 및 체결
    * @param currentMarketPrice 현재 시장 기준가
    * @param currentTick 현재 틱 번호
    */
-  public matchOrders(currentMarketPrice: number, currentTick: number): MatchResult {
+  public matchOrders(
+    currentMarketPrice: number,
+    currentTick: number,
+    tradeIdGenerator?: () => string
+  ): MatchResult {
     const trades: CommodityTrade[] = [];
+    const selfTradeCancelledOrders: CommodityOrder[] = [];
     let totalBuyVolume = 0;
     let totalSellVolume = 0;
     let executedNotional = 0;
@@ -88,6 +121,21 @@ export class CommodityOrderBook {
       const topBid = this.bids[0];
       const topAsk = this.asks[0];
       if (!topBid || !topAsk) break;
+
+      // 자기 매매 방지: 동일 사용자 주문이 교차하면 나중 주문을 취소하고 증거금 환불 대상에 포함
+      if (topBid.userId && topAsk.userId && topBid.userId === topAsk.userId) {
+        const bidIsNewer =
+          topBid.createdAtTick > topAsk.createdAtTick ||
+          (topBid.createdAtTick === topAsk.createdAtTick && topBid.createdAtTime >= topAsk.createdAtTime);
+        if (bidIsNewer) {
+          this.bids.shift();
+          selfTradeCancelledOrders.push(topBid);
+        } else {
+          this.asks.shift();
+          selfTradeCancelledOrders.push(topAsk);
+        }
+        continue;
+      }
 
       // 시장가 주문 가격 치환 (매수는 최고가, 매도는 최저가로 간주)
       const bidEffectivePrice = topBid.type === 'market' ? Infinity : topBid.price;
@@ -113,12 +161,25 @@ export class CommodityOrderBook {
 
       const bidRemaining = topBid.size - topBid.filled;
       const askRemaining = topAsk.size - topAsk.filled;
-      const tradeSize = Math.min(bidRemaining, askRemaining);
 
-      if (tradeSize <= 0) {
-        if (bidRemaining <= 0) this.bids.shift();
-        if (askRemaining <= 0) this.asks.shift();
+      // 비정상 잔량(NaN/Infinity/0 이하) 방어: 루프가 반드시 진행하거나 종료되도록 제거
+      if (!Number.isFinite(bidRemaining) || bidRemaining <= 0) {
+        this.bids.shift();
         continue;
+      }
+      if (!Number.isFinite(askRemaining) || askRemaining <= 0) {
+        this.asks.shift();
+        continue;
+      }
+
+      const tradeSize = Math.min(bidRemaining, askRemaining);
+      if (!Number.isFinite(tradeSize) || tradeSize <= 0) {
+        this.bids.shift();
+        this.asks.shift();
+        continue;
+      }
+      if (!Number.isFinite(tradePrice) || tradePrice <= 0) {
+        break;
       }
 
       // 체결 처리
@@ -135,8 +196,10 @@ export class CommodityOrderBook {
       }
 
       const trade: CommodityTrade = {
-        id: `trade_${this.commodityId}_${currentTick}_${trades.length + 1}`,
+        id: tradeIdGenerator ? tradeIdGenerator() : `trade_${this.commodityId}_${currentTick}_${trades.length + 1}`,
         commodityId: this.commodityId,
+        buyOrderId: topBid.id,
+        sellOrderId: topAsk.id,
         buyerId: topBid.botId || topBid.userId,
         sellerId: topAsk.botId || topAsk.userId,
         price: tradePrice,
@@ -146,7 +209,6 @@ export class CommodityOrderBook {
       };
 
       trades.push(trade);
-      this.tradeHistory.push(trade);
 
       totalBuyVolume += tradeSize;
       totalSellVolume += tradeSize;
@@ -163,6 +225,7 @@ export class CommodityOrderBook {
 
     return {
       trades,
+      selfTradeCancelledOrders,
       totalBuyVolume,
       totalSellVolume,
       netBuyVolume: takerBuyVolume - takerSellVolume,
@@ -232,13 +295,50 @@ export class CommodityOrderBook {
   }
 
   /**
-   * 오래된 미체결 주문 청소 (선택적)
+   * 오래된 미체결 주문 청소 (만료된 주문 목록 반환)
    */
+  public extractExpiredOrders(maxAgeTicks: number, currentTick: number): CommodityOrder[] {
+    const expired: CommodityOrder[] = [];
+    const activeBids: CommodityOrder[] = [];
+    for (const o of this.bids) {
+      if (currentTick - o.createdAtTick <= maxAgeTicks) {
+        activeBids.push(o);
+      } else {
+        expired.push(o);
+      }
+    }
+    const activeAsks: CommodityOrder[] = [];
+    for (const o of this.asks) {
+      if (currentTick - o.createdAtTick <= maxAgeTicks) {
+        activeAsks.push(o);
+      } else {
+        expired.push(o);
+      }
+    }
+    this.bids = activeBids;
+    this.asks = activeAsks;
+    return expired;
+  }
+
   public clearExpiredOrders(maxAgeTicks: number, currentTick: number): number {
-    const prevCount = this.bids.length + this.asks.length;
-    this.bids = this.bids.filter((o) => currentTick - o.createdAtTick <= maxAgeTicks);
-    this.asks = this.asks.filter((o) => currentTick - o.createdAtTick <= maxAgeTicks);
-    return prevCount - (this.bids.length + this.asks.length);
+    return this.extractExpiredOrders(maxAgeTicks, currentTick).length;
+  }
+
+  /**
+   * 특정 주문 ID 취소/제거 (롤백 또는 사용자 취소용)
+   */
+  public removeOrder(orderId: string): CommodityOrder | null {
+    const bidIdx = this.bids.findIndex((o) => o.id === orderId);
+    if (bidIdx !== -1) {
+      const [removed] = this.bids.splice(bidIdx, 1);
+      return removed;
+    }
+    const askIdx = this.asks.findIndex((o) => o.id === orderId);
+    if (askIdx !== -1) {
+      const [removed] = this.asks.splice(askIdx, 1);
+      return removed;
+    }
+    return null;
   }
 
   /**

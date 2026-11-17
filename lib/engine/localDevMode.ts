@@ -12,6 +12,22 @@ export function isLocalStandaloneMode(): boolean {
   return true;
 }
 
+/**
+ * 개발 환경 게스트 자동 로그인 허용 여부.
+ * - 프로덕션(NODE_ENV === 'production')에서는 항상 false.
+ * - 명시적으로 NEXT_PUBLIC_DISABLE_GUEST_AUTH=true가 설정된 경우 false.
+ * - 서버와 클라이언트가 동일한 정책을 공유한다.
+ */
+export function isDevGuestAuthEnabled(): boolean {
+  if (process.env.NODE_ENV === 'production') {
+    return false;
+  }
+  if (process.env.NEXT_PUBLIC_DISABLE_GUEST_AUTH === 'true') {
+    return false;
+  }
+  return true;
+}
+
 export function printLocalBannerOnce(): void {
   if (hasPrintedBanner) return;
   hasPrintedBanner = true;

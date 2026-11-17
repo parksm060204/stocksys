@@ -1,8 +1,8 @@
 import { NextResponse } from 'next/server';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/app/api/auth/[...nextauth]/route';
 import { LocalMarketService } from '@/lib/engine/marketService';
-import { GUEST_USER_ID } from '@/lib/memoryDb/memoryStore';
+import { resolveAuthenticatedUserId } from '@/lib/auth/sessionAuth';
+import { ensureLocalStandaloneReady, persistConfirmedState } from '@/lib/engine/localStandaloneServer';
+import { memoryDb } from '@/lib/memoryDb/memoryStore';
 
 // 인메모리 슬라이딩 윈도우 Rate Limiter (유저당 1초 최대 15회 요청 허용)
 const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
@@ -26,16 +26,9 @@ function checkRateLimit(userId: string): boolean {
 
 export async function POST(request: Request) {
   try {
+    await ensureLocalStandaloneReady();
     // 1. 서버 세션 인증 (프로덕션 미인증은 거절, 개발 환경만 로컬 게스트 ID 허용)
-    let session: any = null;
-    try {
-      session = await getServerSession(authOptions);
-    } catch {
-      session = null;
-    }
-
-    const isProd = process.env.NODE_ENV === 'production';
-    const authenticatedUserId = session?.user?.id || (!isProd ? GUEST_USER_ID : null);
+    const authenticatedUserId = await resolveAuthenticatedUserId();
 
     if (!authenticatedUserId) {
       return NextResponse.json(
@@ -63,6 +56,27 @@ export async function POST(request: Request) {
       );
     }
 
+    if (memoryDb.optionsContracts.has(stock_id)) {
+      return NextResponse.json(
+        { success: false, filledQty: 0, message: '옵션 계약은 옵션 전용 주문 API(/api/options/order)를 이용해 주세요.' },
+        { status: 400 }
+      );
+    }
+
+    if (memoryDb.commodities.has(stock_id) || memoryDb.bonds.has(stock_id)) {
+      return NextResponse.json(
+        { success: false, filledQty: 0, message: '해당 자산군은 일반 주식 주문 경로로 거래할 수 없습니다.' },
+        { status: 400 }
+      );
+    }
+
+    if (!memoryDb.stocks.has(stock_id)) {
+      return NextResponse.json(
+        { success: false, filledQty: 0, message: '등록되지 않은 주식/ETF 종목입니다.' },
+        { status: 404 }
+      );
+    }
+
     if (side !== 'buy' && side !== 'sell') {
       return NextResponse.json(
         { success: false, filledQty: 0, message: 'side는 buy 또는 sell이어야 합니다.' },
@@ -87,19 +101,21 @@ export async function POST(request: Request) {
       );
     }
 
-    // 4. LocalMarketService를 통한 주문 검증, 매칭, 정산 처리
+    // 4. LocalMarketService를 통한 주문 검증, 매칭, 정산 및 락 내부 영속 저장 처리
     const result = await LocalMarketService.submitOrder({
       userId: authenticatedUserId,
       stockId: stock_id,
       side,
       price: numPrice,
       size: numSize,
+      onPersist: persistConfirmedState,
     });
 
     if (!result.success) {
+      const isSaveErr = String(result.message || '').includes('영속 저장');
       return NextResponse.json(
         { success: false, filledQty: 0, message: result.message },
-        { status: 400 }
+        { status: isSaveErr ? 500 : 400 }
       );
     }
 
@@ -125,15 +141,8 @@ export async function POST(request: Request) {
 
 export async function DELETE(request: Request) {
   try {
-    let session: any = null;
-    try {
-      session = await getServerSession(authOptions);
-    } catch {
-      session = null;
-    }
-
-    const isProd = process.env.NODE_ENV === 'production';
-    const authenticatedUserId = session?.user?.id || (!isProd ? GUEST_USER_ID : null);
+    await ensureLocalStandaloneReady();
+    const authenticatedUserId = await resolveAuthenticatedUserId();
 
     if (!authenticatedUserId) {
       return NextResponse.json(
@@ -155,6 +164,7 @@ export async function DELETE(request: Request) {
     const res = await LocalMarketService.cancelOrder({
       orderId,
       userId: authenticatedUserId,
+      onPersist: persistConfirmedState,
     });
 
     return NextResponse.json(

@@ -365,6 +365,27 @@ export class ScenarioManager {
       this.actionLogs = this.actionLogs.slice(-100);
     }
   }
+
+  public snapshotState(): {
+    currentTick: number;
+    idCounter: number;
+    activeScenarios: Array<[string, ManipulationScenario]>;
+    activeMacroShocks: Array<[string, MacroShockEvent]>;
+  } {
+    return {
+      currentTick: this.currentTick,
+      idCounter: this.idCounter,
+      activeScenarios: Array.from(this.activeScenarios.entries()).map(([k, v]) => [k, { ...v }]),
+      activeMacroShocks: Array.from(this.activeMacroShocks.entries()).map(([k, v]) => [k, { ...v }]),
+    };
+  }
+
+  public restoreState(snap: ReturnType<ScenarioManager['snapshotState']>): void {
+    this.currentTick = snap.currentTick;
+    this.idCounter = snap.idCounter;
+    this.activeScenarios = new Map(snap.activeScenarios.map(([k, v]) => [k, { ...v }]));
+    this.activeMacroShocks = new Map(snap.activeMacroShocks.map(([k, v]) => [k, { ...v }]));
+  }
 }
 
 // 글로벌 싱글톤 인스턴스 (Next.js HMR 안전)

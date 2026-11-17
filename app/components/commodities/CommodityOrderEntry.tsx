@@ -77,7 +77,7 @@ export default function CommodityOrderEntry({
 
     setLoading(true);
     try {
-      // 1. API 주문 제출
+      // 1. 서버 권위 API 주문 제출 (서버에서 계좌 잠금, 증거금 예약 및 정산 처리)
       const res = await fetch('/api/commodities', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -85,7 +85,6 @@ export default function CommodityOrderEntry({
           action: 'submit_order',
           order: {
             commodityId: commodity.id,
-            userId,
             side,
             type: orderType,
             price: numPrice,
@@ -95,21 +94,15 @@ export default function CommodityOrderEntry({
       });
 
       const data = await res.json();
-      if (!data.success) throw new Error(data.message || '주문 제출 실패');
+      if (!res.ok || !data.success) throw new Error(data.message || '주문 제출 실패');
 
-      // 2. 증거금 차감 반영
-      if (userCash !== null) {
-        await db
-          .from('profiles')
-          .update({ cash: Math.max(0, userCash - totalRequiredMarginKrw) })
-          .eq('id', userId);
-        fetchUserCash();
-      }
+      await fetchUserCash();
 
+      const confirmedMargin = Number(data.reservedMarginKrw ?? totalRequiredMarginKrw);
       showToast({
         type: side === 'buy' ? 'buy' : 'sell',
         title: `${commodity.nameKo} ${side === 'buy' ? '매수' : '매도'} 주문 접수`,
-        description: `${numContracts}계약 @ $${numPrice.toLocaleString()} (위탁증거금 ₩${totalRequiredMarginKrw.toLocaleString()} 납부)`,
+        description: `${numContracts}계약 @ $${numPrice.toLocaleString()} (위탁증거금 ₩${confirmedMargin.toLocaleString()} 예약 완료)`,
       });
 
       onOrderPlaced?.();

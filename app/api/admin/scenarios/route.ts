@@ -3,13 +3,14 @@ import { scenarioManager } from '@/lib/scenario/ScenarioManager';
 import { commodityEngineInstance } from '@/app/api/commodities/route';
 import { createMemoryDbClient } from '@/lib/memoryDb/memoryDbClient';
 import { verifyAdminSession } from '@/lib/auth/adminAuth';
-import { getLocalStandaloneEngine } from '@/lib/engine/localStandaloneServer';
+import { ensureLocalStandaloneReady, getLocalStandaloneEngine } from '@/lib/engine/localStandaloneServer';
 
 function getAuthoritativeScenarioManager() {
   return commodityEngineInstance?.scenarioManager ?? scenarioManager;
 }
 
 export async function GET(req: Request) {
+  await ensureLocalStandaloneReady();
   const auth = await verifyAdminSession(req);
   if (!auth.isAdmin) {
     return NextResponse.json({ success: false, message: '관리자 권한이 필요합니다.' }, { status: 403 });
@@ -34,6 +35,7 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
+    await ensureLocalStandaloneReady();
     const auth = await verifyAdminSession(req);
     if (!auth.isAdmin) {
       return NextResponse.json({ success: false, message: '관리자 권한이 필요합니다.' }, { status: 403 });

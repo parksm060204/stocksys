@@ -170,4 +170,33 @@ export abstract class CommodityBot {
       totalTrades: this.totalTradesCount,
     };
   }
+
+  public snapshotRuntimeState(): {
+    currentCapital: number;
+    realizedPnL: number;
+    totalTradesCount: number;
+    positions: Array<[string, { quantity: number; avgEntryPrice: number }]>;
+    snapshotHistory: BotMarketSnapshot[];
+    randomSnapshot: ReturnType<NonNullable<CommodityBot['random']>['snapshot']> | null;
+  } {
+    return {
+      currentCapital: this.currentCapital,
+      realizedPnL: this.realizedPnL,
+      totalTradesCount: this.totalTradesCount,
+      positions: Array.from(this.positions.entries()).map(([k, v]) => [k, { ...v }]),
+      snapshotHistory: [...this.snapshotHistory],
+      randomSnapshot: this.random?.snapshot ? this.random.snapshot() : null,
+    };
+  }
+
+  public restoreRuntimeState(snap: ReturnType<CommodityBot['snapshotRuntimeState']>): void {
+    this.currentCapital = snap.currentCapital;
+    this.realizedPnL = snap.realizedPnL;
+    this.totalTradesCount = snap.totalTradesCount;
+    this.positions = new Map(snap.positions.map(([k, v]) => [k, { ...v }]));
+    this.snapshotHistory = [...snap.snapshotHistory];
+    if (snap.randomSnapshot && this.random?.restore) {
+      this.random.restore(snap.randomSnapshot);
+    }
+  }
 }

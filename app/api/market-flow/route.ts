@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import {
-  ensureLocalStandaloneEngine,
+  ensureLocalStandaloneReady,
   getLocalStandaloneEngine,
 } from '@/lib/engine/localStandaloneServer';
 import { verifyAdminSession } from '@/lib/auth/adminAuth';
@@ -44,7 +44,7 @@ function parsePointsLimit(value: string | null): number {
 
 export async function GET(request: Request) {
   try {
-    ensureLocalStandaloneEngine();
+    await ensureLocalStandaloneReady();
     const engine = getLocalStandaloneEngine();
 
     if (!engine) {
@@ -117,7 +117,7 @@ export async function POST(request: Request) {
       );
     }
 
-    ensureLocalStandaloneEngine();
+    await ensureLocalStandaloneReady();
     const engine = getLocalStandaloneEngine();
 
     if (!engine) {

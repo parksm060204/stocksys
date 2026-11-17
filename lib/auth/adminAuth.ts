@@ -1,6 +1,7 @@
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/app/api/auth/[...nextauth]/route';
 import { memoryDb } from '@/lib/memoryDb/memoryStore';
+import { ensureMemoryDbReady } from '@/lib/engine/localStandaloneServer';
 
 export interface AdminAuthResult {
   isAdmin: boolean;
@@ -41,6 +42,11 @@ export async function verifyAdminSession(req?: Request): Promise<AdminAuthResult
 
   // 2. 서버 메모리 DB의 프로필 확인 (클라이언트에서 직접 수정 불가능한 서버 필드)
   if (userId) {
+    try {
+      await ensureMemoryDbReady();
+    } catch (err) {
+      console.error('[AdminAuth] Failed to restore memoryDb:', err);
+    }
     const profile = memoryDb.profiles.get(userId);
     if (profile?.is_admin) {
       return { isAdmin: true, adminUser: profile.email || userId };

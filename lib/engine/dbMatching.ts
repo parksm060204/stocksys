@@ -1,10 +1,10 @@
 export type DbClient = any;
-import { randomUUID } from 'node:crypto';
 import { validateOrderCapacity, OpenOrderForRisk } from '@/lib/engine/orderRisk';
 import { SettlementTrade, calculateTradeFees, executeSettlement } from '@/lib/engine/settlement';
 import { memoryDb, OrderRecord } from '@/lib/memoryDb/memoryStore';
 import { snapshotTradingState, rollbackTradingState, TradingSnapshot } from '@/lib/memoryDb/memoryTransaction';
 import { withAccountLocks } from '@/lib/memoryDb/accountLocks';
+import { runWithCommitGate } from '@/lib/memoryDb/PersistenceManager';
 
 export interface OrderInput {
   stock_id: string;
@@ -20,6 +20,8 @@ export interface OrderInput {
   participant_type?: 'human' | 'bot' | 'lp';
   account_id?: string;
   agent_id?: string;
+  onPersist?: () => Promise<boolean>;
+  persistOnlyOnFill?: boolean;
 }
 
 export interface MatchOrderResult {
@@ -86,6 +88,34 @@ export async function submitAndMatchOrder(
     return { success: false, filledQty: 0, message: '인증된 사용자 정보가 필요합니다.' };
   }
 
+  if (!stock_id || typeof stock_id !== 'string' || stock_id.trim() === '') {
+    return { success: false, filledQty: 0, message: '올바른 종목 식별자(stock_id)가 필요합니다.' };
+  }
+
+  if (memoryDb.optionsContracts.has(stock_id)) {
+    return {
+      success: false,
+      filledQty: 0,
+      message: '옵션 계약은 일반 주식 주문 경로로 거래할 수 없습니다. 옵션 전용 주문 API(/api/options/order)를 이용해 주세요.',
+    };
+  }
+
+  if (memoryDb.commodities.has(stock_id) || memoryDb.bonds.has(stock_id)) {
+    return {
+      success: false,
+      filledQty: 0,
+      message: '해당 자산군은 일반 주식 주문 경로로 거래할 수 없습니다.',
+    };
+  }
+
+  if (!memoryDb.stocks.has(stock_id)) {
+    return {
+      success: false,
+      filledQty: 0,
+      message: '등록되지 않은 주식/ETF 종목입니다.',
+    };
+  }
+
   if (incomingSize <= 0 || incomingPrice <= 0) {
     return { success: false, filledQty: 0, message: '올바르지 않은 주문 가격 또는 수량입니다.' };
   }
@@ -129,6 +159,7 @@ export async function submitAndMatchOrder(
         currentCash,
         currentHoldingQty,
         openOrders: (userOpenOrders as OpenOrderForRisk[]) || [],
+        optionsContracts: memoryDb.optionsContracts,
       });
 
       if (!capacityCheck.valid) {
@@ -243,14 +274,8 @@ export async function submitAndMatchOrder(
       }
     }
 
-    // ── 2. Generate orderId before any mutation ──
+    // ── 2. Generate orderId & check lock completeness before any mutation ──
     const orderId = `ord_${user_id.slice(0, 8)}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-    const tradeIds = tradesToSettle.map(() => `trade_${randomUUID()}`);
-    tradesToSettle.forEach((trade, index) => {
-      trade.id = tradeIds[index];
-    });
-
-    // ── 3. Take snapshot of all trading-relevant state ──
     const involvedAccountIds = Array.from(involvedUserIds);
     if (involvedAccountIds.some((id) => !accountIds.includes(id))) {
       // The first read only needs the incoming user's lock. If matching found
@@ -258,6 +283,17 @@ export async function submitAndMatchOrder(
       // validation is protected by the complete lock set.
       return { retryAccountIds: involvedAccountIds };
     }
+
+    const effectivePersist =
+      input.onPersist && (!input.persistOnlyOnFill || tradesToSettle.length > 0)
+        ? input.onPersist
+        : undefined;
+
+    return await runWithCommitGate(effectivePersist, async () => {
+      const tradeIds = tradesToSettle.map(() => memoryDb.nextMonotonicTradeId('tr'));
+      tradesToSettle.forEach((trade, index) => {
+        trade.id = tradeIds[index];
+      });
 
       const snap: TradingSnapshot = snapshotTradingState(stock_id, accountIds);
       snap.insertedOrderId = orderId;
@@ -348,6 +384,14 @@ export async function submitAndMatchOrder(
       memoryDb.orders.set(orderId, newOrder);
       memoryDb.addOrderToIndex(newOrder);
 
+      // ── 7.5. Durable commit boundary inside lock + commitGate (rollback this tx on save failure) ──
+      if (effectivePersist) {
+        const saved = await effectivePersist();
+        if (!saved) {
+          throw new Error('주문 장부 영속 저장에 실패하여 주문을 롤백했습니다.');
+        }
+      }
+
       // ── 8. Return result ──
       if (totalFilledQty > 0) {
         const iocNote = isIoc && remainingQty > 0 ? ` (미체결 ${remainingQty}주는 IOC 조건에 따라 취소되었습니다)` : '';
@@ -386,6 +430,7 @@ export async function submitAndMatchOrder(
       rollbackTradingState(snap);
       throw txErr; // re-throw so outer catch returns failure
     }
+    });
       });
       if ('retryAccountIds' in outcome && outcome.retryAccountIds) {
         accountIds = outcome.retryAccountIds;

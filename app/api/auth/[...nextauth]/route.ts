@@ -2,6 +2,35 @@ import NextAuth, { type NextAuthOptions } from "next-auth";
 import GoogleProvider from "next-auth/providers/google";
 
 import { memoryDb } from "@/lib/memoryDb/memoryStore";
+import { ensureMemoryDbReady, persistConfirmedState } from "@/lib/engine/localStandaloneServer";
+import { withAccountLocks } from "@/lib/memoryDb/accountLocks";
+import { runWithCommitGate } from "@/lib/memoryDb/PersistenceManager";
+
+async function ensureRestoredAndPersistUserProfile(
+  userId: string,
+  initialData: { username: string; nickname: string; email?: string }
+): Promise<void> {
+  await ensureMemoryDbReady();
+  await withAccountLocks([userId], async () => {
+    const existingId = memoryDb.profileUserIdIndex.get(userId) || userId;
+    if (memoryDb.profiles.has(existingId)) {
+      return;
+    }
+    await runWithCommitGate(persistConfirmedState, async () => {
+      const doubleCheckId = memoryDb.profileUserIdIndex.get(userId) || userId;
+      if (memoryDb.profiles.has(doubleCheckId)) {
+        return;
+      }
+      memoryDb.ensureUserProfile(userId, initialData);
+      const saved = await persistConfirmedState();
+      if (!saved) {
+        memoryDb.profiles.delete(userId);
+        memoryDb.profileUserIdIndex.delete(userId);
+        console.error('[Auth] Failed to persist newly created user profile; rolled back');
+      }
+    });
+  });
+}
 
 const providers = [];
 
@@ -21,7 +50,7 @@ export const authOptions: NextAuthOptions = {
       try {
         const userId = user?.id || (account?.providerAccountId as string) || (profile as any)?.sub;
         if (userId) {
-          memoryDb.ensureUserProfile(userId, {
+          await ensureRestoredAndPersistUserProfile(userId, {
             username: user.name || (user.email ? user.email.split('@')[0] : '익명 투자자'),
             nickname: user.name || '익명 투자자',
             email: user.email || undefined,
@@ -52,7 +81,7 @@ export const authOptions: NextAuthOptions = {
           const resolvedId = (token.userId as string) || token.sub || '';
           session.user.id = resolvedId;
           if (resolvedId) {
-            memoryDb.ensureUserProfile(resolvedId, {
+            await ensureRestoredAndPersistUserProfile(resolvedId, {
               username: session.user.name || (session.user.email ? session.user.email.split('@')[0] : '익명 투자자'),
               nickname: session.user.name || '익명 투자자',
               email: session.user.email || undefined,

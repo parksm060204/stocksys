@@ -212,7 +212,10 @@ export class InMemoryMarketRepository implements MarketRepository {
 
   public async upsertExchangeRates(rates: readonly any[]): Promise<void> {
     for (const r of rates) {
-      const idx = this.db.exchangeRates.findIndex((x) => x.currency === r.currency || x.id === r.id);
+      const code = String(r.currency_code || r.currency || '').toUpperCase();
+      const idx = this.db.exchangeRates.findIndex(
+        (x) => String(x.currency_code || '').toUpperCase() === code && code.length > 0
+      );
       if (idx >= 0) {
         this.db.exchangeRates[idx] = { ...this.db.exchangeRates[idx], ...r };
       } else {
@@ -266,6 +269,8 @@ export class InMemoryMarketRepository implements MarketRepository {
       historyTrimmed = this.db.stockPriceHistory.length - safeMaxHistory;
       this.db.stockPriceHistory = this.db.stockPriceHistory.slice(-safeMaxHistory);
     }
+
+    this.db.trimSettlementLedger(10000);
 
     return { tradesTrimmed, historyTrimmed };
   }

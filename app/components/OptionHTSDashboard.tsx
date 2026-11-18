@@ -19,16 +19,46 @@ export default function OptionHTSDashboard() {
   const [selectedMultiplier, setSelectedMultiplier] = useState<number>(250000);
   const [userBalance, setUserBalance] = useState<number | null>(null);
   const [accountRefreshKey, setAccountRefreshKey] = useState<number>(0);
+  const [futuresStats, setFuturesStats] = useState<{ price: number; change: number; changePct: number; volume: number }>({
+    price: 260.0,
+    change: 0,
+    changePct: 0,
+    volume: 0,
+  });
 
   const { userId, isLoggedIn } = useAuth();
   const db = useMemo(() => createClient(), []);
   const { trades, rolloverEvents } = useOptionMarketData(selectedTicker);
 
   const fetchAccountAndContracts = useCallback(async () => {
-    const [{ data: contractList }, accountRes] = await Promise.all([
+    const [{ data: contractList }, { data: stockList }, accountRes] = await Promise.all([
       db.from('options_contracts').select('*'),
+      db.from('stocks').select('market, current_price, previous_close, shares_outstanding, volume').eq('market', 'domestic'),
       isLoggedIn && userId ? fetch('/api/options/account', { cache: 'no-store' }).then((r) => r.json()).catch(() => null) : Promise.resolve(null),
     ]);
+
+    if (Array.isArray(stockList) && stockList.length > 0) {
+      let prevCap = 0;
+      let currCap = 0;
+      let totalVol = 0;
+      for (const s of stockList as any[]) {
+        const shares = Number(s.shares_outstanding || 1_000_000);
+        const cur = Number(s.current_price || 0);
+        const prev = Number(s.previous_close || cur);
+        totalVol += Number(s.volume || 0);
+        if (cur > 0 && prev > 0 && shares > 0) {
+          prevCap += prev * shares;
+          currCap += cur * shares;
+        }
+      }
+      if (prevCap > 0) {
+        const ratio = Math.max(0.5, Math.min(1.5, currCap / prevCap));
+        const liveIdx = Math.round(260.0 * ratio * 100) / 100;
+        const diff = Math.round((liveIdx - 260.0) * 100) / 100;
+        const pct = Math.round(((liveIdx - 260.0) / 260.0) * 10000) / 100;
+        setFuturesStats({ price: liveIdx, change: diff, changePct: pct, volume: totalVol });
+      }
+    }
 
     if (Array.isArray(contractList)) {
       const nowMs = Date.now();
@@ -167,6 +197,10 @@ export default function OptionHTSDashboard() {
             contracts={contracts}
             selectedContractId={selectedContractId}
             selectedTicker={selectedTicker}
+            futuresPrice={futuresStats.price}
+            futuresChange={futuresStats.change}
+            futuresChangePct={futuresStats.changePct}
+            futuresVolume={futuresStats.volume}
             onSelectContract={handleSelectContract}
           />
         </div>

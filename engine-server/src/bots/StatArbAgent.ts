@@ -69,7 +69,7 @@ export class StatArbAgent extends BaseAgent {
             price: pA - this.getTickSize(pA) * 3, // 시장가(공격적 매도)
             size: 500,
             status: 'open',
-            is_lp: true,
+            is_lp: false,
             _botId: this.botId
           });
           orders.push({
@@ -79,7 +79,7 @@ export class StatArbAgent extends BaseAgent {
             price: pB + this.getTickSize(pB) * 3,
             size: 500,
             status: 'open',
-            is_lp: true,
+            is_lp: false,
             _botId: this.botId
           });
           this.positions[pairKey] = 'SHORT_A';
@@ -98,7 +98,7 @@ export class StatArbAgent extends BaseAgent {
             price: sideA === 'buy' ? pA + this.getTickSize(pA) * 3 : pA - this.getTickSize(pA) * 3,
             size: 500,
             status: 'open',
-            is_lp: true,
+            is_lp: false,
             _botId: this.botId
           });
           orders.push({
@@ -108,7 +108,7 @@ export class StatArbAgent extends BaseAgent {
             price: sideB === 'buy' ? pB + this.getTickSize(pB) * 3 : pB - this.getTickSize(pB) * 3,
             size: 500,
             status: 'open',
-            is_lp: true,
+            is_lp: false,
             _botId: this.botId
           });
           this.positions[pairKey] = 'NONE';

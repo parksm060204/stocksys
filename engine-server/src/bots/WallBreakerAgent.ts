@@ -76,7 +76,8 @@ export class WallBreakerAgent extends BaseAgent {
           price: callWallStrike + tickSize * 5, // 호가창을 부수기 위해 엄청 높게 주문
           size: 50000, // 5만 주 초대형 스윕
           status: 'open',
-          is_lp: true,
+          is_lp: false,
+          orderType: 'CHILD_ORDER',
           _botId: this.botId
         });
       }

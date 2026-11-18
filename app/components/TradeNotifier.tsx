@@ -4,6 +4,8 @@ import { useEffect, useRef } from 'react';
 import { createClient } from '@/lib/db/client';
 import { useAuth } from '@/lib/auth/useAuth';
 import { useToast } from './ToastProvider';
+import { isUsdQuotedAsset } from '@/lib/engine/currency';
+import { fmtPrice } from '@/lib/format';
 
 export default function TradeNotifier() {
   const { userId, isLoggedIn } = useAuth();
@@ -58,9 +60,9 @@ export default function TradeNotifier() {
               const s = Number(t.size);
               const totalVal = p * s;
 
-              const isOverseas = stock.market === 'overseas' || stock.market === 'us';
-              const priceFmt = isOverseas ? `$${p.toLocaleString()}` : `₩${p.toLocaleString()}`;
-              const totalFmt = isOverseas ? `$${totalVal.toLocaleString()}` : `₩${totalVal.toLocaleString()}`;
+              const isUsd = isUsdQuotedAsset(stock);
+              const priceFmt = fmtPrice(p, stock.market, stock.ticker);
+              const totalFmt = isUsd ? `$${totalVal.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : `₩${Math.round(totalVal).toLocaleString()}`;
 
               if (isBuyer) {
                 showToast({

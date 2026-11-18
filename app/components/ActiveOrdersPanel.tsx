@@ -4,7 +4,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { createClient } from '@/lib/db/client';
 import { useAuth } from '@/lib/auth/useAuth';
 import { useToast } from './ToastProvider';
-import { fmtKSTTime } from '@/lib/format';
+import { fmtKSTTime, fmtPrice } from '@/lib/format';
 import Link from 'next/link';
 
 export interface OpenOrder {
@@ -105,8 +105,9 @@ export default function ActiveOrdersPanel({
       });
 
       // 낙관적 UI 갱신
-      setOrders((prev) => prev.filter((o) => o.id !== order.id));
-      onOrderCountChange?.(Math.max(0, orders.length - 1));
+      const remainingList = orders.filter((o) => o.id !== order.id);
+      setOrders(remainingList);
+      onOrderCountChange?.(remainingList.length);
     } catch (e: any) {
       showToast({
         type: 'error',
@@ -219,8 +220,7 @@ export default function ActiveOrdersPanel({
               const isBuy = o.side === 'buy';
               const stockName = o.stocks?.name || '종목';
               const ticker = o.stocks?.ticker || '';
-              const isOverseas = o.stocks?.market === 'overseas' || o.stocks?.market === 'us';
-              const priceFmt = isOverseas ? `$${Number(o.price).toLocaleString()}` : `₩${Number(o.price).toLocaleString()}`;
+              const priceFmt = fmtPrice(Number(o.price), o.stocks?.market as any, ticker);
 
               return (
                 <div

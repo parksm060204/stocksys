@@ -5,7 +5,12 @@ import { verifyAdminSession } from '@/lib/auth/adminAuth';
 import { resolveAuthenticatedUserId } from '@/lib/auth/sessionAuth';
 import { memoryDb } from '@/lib/memoryDb/memoryStore';
 import { ensureLocalStandaloneReady, persistConfirmedState } from '@/lib/engine/localStandaloneServer';
-import { reserveMarginAndSubmitCommodityOrder, releaseCommodityOrderMargin } from '@/lib/commodities/commodityLedger';
+import {
+  cancelCommodityOrders,
+  getUsdToKrwRate,
+  reserveMarginAndSubmitCommodityOrder,
+} from '@/lib/commodities/commodityLedger';
+import { getAvailableCashKrw } from '@/lib/engine/orderRisk';
 
 // 글로벌 싱글톤 인스턴스 (Next.js HMR 안전)
 const globalForCommodities = globalThis as unknown as {
@@ -40,6 +45,8 @@ export async function GET(req: Request) {
   const commodities = commodityEngineInstance.getAllCommodities();
   const activeEvents = commodityEngineInstance.getActiveEvents();
   const newsFeed = commodityEngineInstance.getNewsFeed();
+  const usdToKrwRate = getUsdToKrwRate(memoryDb);
+  const authenticatedUserId = await resolveAuthenticatedUserId();
 
   if (commodityId) {
     const commodity = commodityEngineInstance.getCommodity(commodityId);
@@ -47,20 +54,45 @@ export async function GET(req: Request) {
     const depth = orderBook ? orderBook.getDepth(10) : { bids: [], asks: [] };
     const spread = orderBook && commodity ? orderBook.getSpread(commodity.currentPrice) : null;
 
+    const myOrders: any[] = [];
+    let myPosition: any = null;
+    let availableCashKrw: number | null = null;
+    if (authenticatedUserId) {
+      for (const ord of memoryDb.commodityOpenOrders.values()) {
+        if (ord.userId === authenticatedUserId && ord.commodityId === commodityId) {
+          const res = memoryDb.commodityMarginReservations.get(ord.id);
+          myOrders.push({
+            ...ord,
+            status: res?.status ?? 'open',
+            reserved_krw: res?.reserved_krw ?? 0,
+            margin_per_contract_krw: res?.margin_per_contract_krw ?? 0,
+          });
+        }
+      }
+      myOrders.sort((a, b) => (b.createdAtTime || 0) - (a.createdAtTime || 0));
+      myPosition = memoryDb.commodityPositions.get(`${authenticatedUserId}_${commodityId}`) || null;
+      availableCashKrw = getAvailableCashKrw(memoryDb, authenticatedUserId).availableCash;
+    }
+
     return NextResponse.json({
       success: true,
       tick: commodityEngineInstance.currentTick,
+      usdToKrwRate,
       commodity,
       depth,
       spread,
       activeEvents,
       newsFeed: newsFeed.slice(0, 10),
+      myOrders,
+      myPosition,
+      availableCashKrw,
     });
   }
 
   return NextResponse.json({
     success: true,
     tick: commodityEngineInstance.currentTick,
+    usdToKrwRate,
     commodities,
     activeEvents,
     newsFeed: newsFeed.slice(0, 10),
@@ -178,6 +210,55 @@ export async function POST(req: Request) {
         order: reserveResult.order,
         reservedMarginKrw: reserveResult.reservation?.reserved_krw ?? 0,
         remainingCash: reserveResult.remainingCash,
+      });
+    }
+
+    if (action === 'cancel_order' || action === 'cancel_all_orders') {
+      const authenticatedUserId = await resolveAuthenticatedUserId();
+      if (!authenticatedUserId) {
+        return NextResponse.json(
+          { success: false, message: '로그인이 필요한 서비스입니다.' },
+          { status: 401 }
+        );
+      }
+
+      const orderIds =
+        action === 'cancel_order'
+          ? (typeof body.orderId === 'string'
+              ? [body.orderId]
+              : Array.isArray(body.orderIds)
+                ? body.orderIds.map(String)
+                : [])
+          : undefined;
+
+      if (action === 'cancel_order' && (!orderIds || orderIds.length === 0)) {
+        return NextResponse.json({ success: false, message: '취소할 주문 ID(orderId)가 필요합니다.' }, { status: 400 });
+      }
+
+      const cancelRes = await cancelCommodityOrders({
+        db: memoryDb,
+        userId: authenticatedUserId,
+        orderIds,
+        commodityId: typeof body.commodityId === 'string' ? body.commodityId : undefined,
+        removeFromBook: (cid, oid) => commodityEngineInstance.removeUserOrder(cid, oid),
+        restoreToBook: (cid, ord) => commodityEngineInstance.restoreUserOrder(cid, ord),
+        onPersist: persistConfirmedState,
+        runWithEngineLock: (fn) => commodityEngineInstance.runWithTickLock(fn),
+      });
+
+      if (!cancelRes.success) {
+        return NextResponse.json(
+          { success: false, message: cancelRes.message },
+          { status: cancelRes.statusCode }
+        );
+      }
+
+      return NextResponse.json({
+        success: true,
+        message: cancelRes.message,
+        cancelledOrderIds: cancelRes.cancelledOrderIds,
+        refundedKrw: cancelRes.refundedKrw,
+        remainingCash: cancelRes.remainingCash,
       });
     }
 

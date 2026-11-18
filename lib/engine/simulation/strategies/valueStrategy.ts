@@ -166,7 +166,11 @@ export function evaluateValueStrategy(
   }
 
   // Tick size calculation
-  const tickSize = midPrice < 2000 ? 1 : midPrice < 5000 ? 5 : midPrice < 20000 ? 10 : midPrice < 50000 ? 50 : midPrice < 200000 ? 100 : 500;
+  const isUsdAsset = Boolean(obs.isUsdAsset);
+  const fxRate = Number.isFinite(obs.fxRateToKrw) && (obs.fxRateToKrw as number) > 0 ? (obs.fxRateToKrw as number) : 1;
+  const tickSize = isUsdAsset
+    ? 0.01
+    : (midPrice < 2000 ? 1 : midPrice < 5000 ? 5 : midPrice < 20000 ? 10 : midPrice < 50000 ? 50 : midPrice < 200000 ? 100 : 500);
 
   // Participation rate limit based on recent volume (min floor 10 shares)
   const recentVol = obs.recentTrades.reduce((sum, t) => sum + t.size, 0);
@@ -213,10 +217,12 @@ export function evaluateValueStrategy(
           ? Math.min(obs.bestBid, Math.floor(estimatedValue / tickSize) * tickSize)
           : Math.floor((midPrice - tickSize) / tickSize) * tickSize);
 
-    const alignedPrice = Math.max(tickSize, Math.round(idealPrice / tickSize) * tickSize);
+    const alignedPrice = isUsdAsset
+      ? Math.max(0.01, Math.round(idealPrice * 100) / 100)
+      : Math.max(tickSize, Math.round(idealPrice / tickSize) * tickSize);
 
-    // Capital check
-    const costPerShare = alignedPrice * 1.0025;
+    // Capital check (KRW-converted cost per share)
+    const costPerShare = alignedPrice * fxRate * 1.0025;
     let maxAffordable: number;
     if (!effectParams || cashPreference <= 0) {
       // 효과 OFF 또는 cashPreference=0: 기존 가용 현금(availableCash) 기준 계산 보존

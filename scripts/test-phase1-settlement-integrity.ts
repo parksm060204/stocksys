@@ -600,7 +600,7 @@ async function main() {
       bond_type: 'TREASURY',
       maturity: '2026-01-01T00:00:00.000Z',
       maturity_date: '2026-01-01T00:00:00.000Z',
-      coupon_rate: 0.05,
+      coupon_rate: 5.0,
       face_value: 10000,
       current_price: 10000,
       ytm: 0.05,

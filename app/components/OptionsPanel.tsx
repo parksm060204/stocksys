@@ -103,21 +103,36 @@ export default function OptionsPanel({ stockId, ticker = "STOCK" }: OptionsPanel
     const qty = parseInt(qtyStr, 10);
     if (isNaN(qty) || qty <= 0) return;
 
-    const totalPrice = option.current_price * qty;
-    if (!confirm(`[${option.ticker}] ${option.option_type} 옵션 ${qty}계약 매수\n총 결제금액: ₩${totalPrice.toLocaleString()}`)) return;
+    const multiplier = Number(option.multiplier ?? 250000);
+    const totalNotional = Math.round(Number(option.current_price) * multiplier * qty);
+    const estimatedFee = Math.round(totalNotional * 0.001);
+    const totalWithFee = totalNotional + estimatedFee;
+    if (!confirm(`[${option.ticker}] ${option.option_type} 옵션 ${qty}계약 매수\n총 예상 결제금액(수수료 포함): ₩${totalWithFee.toLocaleString()}`)) return;
 
     try {
-      const { error } = await db.rpc('execute_option_order', {
-        p_user_id: userId,
-        p_option_id: option.id,
-        p_side: 'BUY',
-        p_quantity: qty,
-        p_price: option.current_price
+      const apiRes = await fetch('/api/options/order', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contractId: option.id,
+          side: 'BUY',
+          orderType: 'LIMIT',
+          price: Number(option.current_price),
+          qty,
+        }),
       });
+      const res = await apiRes.json();
+      if (!apiRes.ok || !res.success) {
+        throw new Error(res.message || '옵션 주문 실패');
+      }
 
-      if (error) throw error;
-      alert(`🎉 [${option.ticker}] ${qty}계약 매수 주문 체결 완료!`);
-      
+      const filledQty = Number(res.order?.filledQty ?? res.filledQty ?? 0);
+      alert(
+        filledQty > 0
+          ? `🎉 [${option.ticker}] ${qty}계약 주문 접수 완료 (체결: ${filledQty}계약)`
+          : `📋 [${option.ticker}] ${qty}계약 지정가 매수 주문 접수 완료 (대기 중)`
+      );
+
       const { data: refreshed } = await db
         .from('options_contracts')
         .select('*')
@@ -132,27 +147,110 @@ export default function OptionsPanel({ stockId, ticker = "STOCK" }: OptionsPanel
 
   const handleExecuteUserRollover = async () => {
     if (!userId || !hasLicense || options.length < 2) return;
-    const currOpt = options[0];
-    const nextOpt = options[1];
+    const nowMs = Date.now();
+    const sorted = [...options]
+      .filter((o) => {
+        const expMs = Date.parse(o.expiry_date || '');
+        return Number.isFinite(expMs) && expMs > nowMs;
+      })
+      .sort((a, b) => Date.parse(a.expiry_date) - Date.parse(b.expiry_date));
+
+    let currOpt: any = null;
+    let nextOpt: any = null;
+    for (const c of sorted) {
+      const cType = c.option_type || c.type;
+      const match = sorted.find(
+        (n) =>
+          n.id !== c.id &&
+          Date.parse(n.expiry_date) > Date.parse(c.expiry_date) &&
+          (n.option_type || n.type) === cType &&
+          Math.abs(Number(n.strike_price) - Number(c.strike_price)) < 0.01
+      );
+      if (match) {
+        currOpt = c;
+        nextOpt = match;
+        break;
+      }
+    }
+
+    if (!currOpt || !nextOpt) {
+      alert("동일 유형(콜/풋) 및 동일 행사가를 가진 근월물/차월물 페어를 찾을 수 없습니다.");
+      return;
+    }
+
     const qty = 5;
 
-    if (!confirm(`[롤오버 결합 주문 실행]\n근월물 [${currOpt.ticker}] ${qty}계약 청산 🔄 차월물 [${nextOpt.ticker}] ${qty}계약 원자적 이월 진입`)) return;
+    if (!confirm(`[롤오버 순차 주문 실행]\n1단계: 근월물 [${currOpt.ticker}] ${qty}계약 매도\n2단계: 차월물 [${nextOpt.ticker}] 매수\n(※ 2개 별도 주문으로 순차 실행되며 1단계 체결 수량에 맞춰 2단계가 실행됩니다)`)) return;
 
     try {
-      const { data, error } = await db.rpc('execute_rollover_combo', {
-        p_user_id: userId,
-        p_curr_option_id: currOpt.id,
-        p_next_option_id: nextOpt.id,
-        p_quantity: qty,
-        p_curr_price: currOpt.current_price,
-        p_next_price: nextOpt.current_price
+      const leg1Res = await fetch('/api/options/order', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contractId: currOpt.id,
+          side: 'SELL',
+          orderType: 'MARKET',
+          price: Number(currOpt.current_price),
+          qty,
+        }),
       });
+      const leg1Data = await leg1Res.json();
+      if (!leg1Res.ok || !leg1Data.success) {
+        throw new Error(`1단계 근월물 청산 실패: ${leg1Data.message || '요청 거부'}`);
+      }
 
-      if (error) throw error;
-      alert(`🎉 롤오버 결합 주문 체결 완료! 스프레드 차액: ₩${Number(data).toLocaleString()}`);
+      const leg1Filled = Number(leg1Data.order?.filledQty ?? leg1Data.filledQty ?? 0);
+      if (leg1Filled <= 0) {
+        alert(
+          `⚠️ 롤오버 1단계 미체결\n` +
+            `- 근월물(${currOpt.ticker}) 매도 체결 수량이 0계약이어서 2단계 차월물 매수를 진행하지 않았습니다.`
+        );
+        return;
+      }
+
+      const leg2TargetQty = leg1Filled;
+      const leg2Res = await fetch('/api/options/order', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contractId: nextOpt.id,
+          side: 'BUY',
+          orderType: 'MARKET',
+          price: Number(nextOpt.current_price),
+          qty: leg2TargetQty,
+        }),
+      });
+      const leg2Data = await leg2Res.json();
+      if (!leg2Res.ok || !leg2Data.success) {
+        alert(
+          `⚠️ 롤오버 부분 실행 주의\n` +
+            `- 1단계(근월물 ${currOpt.ticker} 매도): 성공 (체결 ${leg1Filled}/${qty}계약)\n` +
+            `- 2단계(차월물 ${nextOpt.ticker} 매수 ${leg2TargetQty}계약): 실패 (${leg2Data.message || '요청 거부'})\n` +
+            `전체 콤보가 완료되지 않았으니 보유 포지션을 확인해 주세요.`
+        );
+        return;
+      }
+
+      const leg2Filled = Number(leg2Data.order?.filledQty ?? leg2Data.filledQty ?? 0);
+      if (leg1Filled < qty || leg2Filled < leg2TargetQty) {
+        alert(
+          `⚠️ 롤오버 부분 체결\n` +
+            `- 1단계(${currOpt.ticker} 매도): 체결 ${leg1Filled}/${qty}계약\n` +
+            `- 2단계(${nextOpt.ticker} 매수): 체결 ${leg2Filled}/${leg2TargetQty}계약`
+        );
+        return;
+      }
+
+      const currMult = Number(currOpt.multiplier ?? 250000);
+      const nextMult = Number(nextOpt.multiplier ?? 250000);
+      const netCashDelta = Math.round(
+        Number(currOpt.current_price) * currMult * leg1Filled -
+          Number(nextOpt.current_price) * nextMult * leg2Filled
+      );
+      alert(`🎉 롤오버 양방향 주문 체결 완료! 추정 스프레드 차액: ₩${netCashDelta.toLocaleString()}`);
     } catch (e: any) {
       console.error(e);
-      alert("롤오버 결합 주문 실패: " + (e.message || e));
+      alert("롤오버 주문 실패: " + (e.message || e));
     }
   };
 

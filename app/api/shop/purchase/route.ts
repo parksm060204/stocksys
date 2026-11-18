@@ -43,6 +43,12 @@ export async function POST(req: Request) {
       }
 
       const product = SHOP_PRODUCTS[productId];
+      if (product.availableForPurchase === false) {
+        return NextResponse.json(
+          { success: false, message: `${product.name}은(는) 기능 개편으로 신규 판매가 일시 중단되었습니다.` },
+          { status: 410 }
+        );
+      }
       const result = await withAccountLocks([authenticatedUserId], async () => {
         return await runWithCommitGate(persistConfirmedState, async () => {
           const profile = memoryDb.profiles.get(authenticatedUserId);

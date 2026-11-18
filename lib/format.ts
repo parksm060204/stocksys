@@ -1,4 +1,5 @@
 import type { MarketId } from "./types";
+import { isUsdQuotedAsset } from "./engine/currency";
 
 export function change(current?: number | null, prev?: number | null) {
   if (current === undefined || current === null || prev === undefined || prev === null || prev <= 0 || isNaN(prev) || isNaN(current)) {
@@ -11,11 +12,18 @@ export function change(current?: number | null, prev?: number | null) {
   return { amount, percent, dir };
 }
 
-export function fmtPrice(price?: number | null, market?: MarketId): string {
+export function fmtPrice(price?: number | null, market?: MarketId, tickerOrCurrency?: string): string {
+  const isUsd =
+    tickerOrCurrency === "USD" ||
+    isUsdQuotedAsset({
+      market,
+      ticker: tickerOrCurrency && tickerOrCurrency !== "KRW" ? tickerOrCurrency : undefined,
+      currency: tickerOrCurrency === "KRW" || tickerOrCurrency === "USD" ? tickerOrCurrency : undefined,
+    });
   if (price === undefined || price === null || isNaN(price)) {
-    return market === "overseas" || market === "europe" || market === "commodities" ? "$0.00" : market === "options" ? "0.00P" : market === "bonds" ? "0.00" : "₩0";
+    return isUsd ? "$0.00" : market === "options" ? "0.00P" : market === "bonds" ? "0.00" : "₩0";
   }
-  if (market === "overseas" || market === "europe" || market === "commodities") {
+  if (isUsd) {
     return `$${price.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   }
   if (market === "options") {

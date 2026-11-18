@@ -681,8 +681,8 @@ async function runPart2_LpCancelDefenseTests() {
     // 평균단가 규칙 검증 (기존 보유 0 -> 70,000원)
     assert(midSnapE1!.buyerAvgPrice === 70000, 'LP 매입 평균단가가 정산 체결가(70,000원)와 정확히 일치');
 
-    // 예약 현금 검증 (잔여 800주에 대한 5,600만원)
-    const expectedReservedCashE1 = 800 * 70000;
+    // 예약 현금 검증 (잔여 800주에 대한 원금 5,600만원 + 0.25% 테이커 수수료)
+    const expectedReservedCashE1 = 800 * 70000 + Math.round(800 * 70000 * 0.0025);
     assert(midSnapE1!.buyerReservedCash === expectedReservedCashE1, `예약 현금은 잔여 800주에 해당하는 ${expectedReservedCashE1}원만 남음`);
 
     // 총주식 수량 보존 불변식
@@ -945,7 +945,7 @@ async function runPart2_LpCancelDefenseTests() {
 
     if (savedStockA) memoryDb.stocks.set(STOCK_A_ID, savedStockA);
     LocalMarketService.cancelOrder = origCancel;
-    resetLpAccountCash(2_000_000_000);
+    resetLpAccountCash(20_000_000_000);
     await mgr.step(1.0);
 
     assert(!mgr.lpDeferrals.has(STOCK_A_ID), '다음 스텝에서 조회가 복구되어 보류 상태 정상 해제');

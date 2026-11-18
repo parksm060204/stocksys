@@ -16,8 +16,26 @@ export default function V2StocksPage() {
       .from("stocks")
       .select("*")
       .order("market_cap", { ascending: false })
-      .then(({ data }: { data: Stock[] | null }) => {
-        if (data) setStocks(data);
+      .then(({ data }: { data: any[] | null }) => {
+        if (data) {
+          setStocks(
+            data.map((row) => ({
+              id: row.id,
+              name: row.name,
+              ticker: row.ticker,
+              market: row.market,
+              sector: row.sector,
+              currentPrice: Number(row.current_price ?? row.currentPrice ?? 0),
+              previousClose: Number(row.previous_close ?? row.previousClose ?? 0),
+              openPrice: Number(row.open_price ?? row.openPrice ?? row.previous_close ?? 0),
+              high: Number(row.high ?? row.current_price ?? 0),
+              low: Number(row.low ?? row.current_price ?? 0),
+              volume: Number(row.volume ?? 0),
+              marketCap: Number(row.market_cap ?? row.marketCap ?? 0),
+              isCore: Boolean(row.is_core ?? row.isCore ?? false),
+            })) as Stock[]
+          );
+        }
         setLoading(false);
       });
   }, []);

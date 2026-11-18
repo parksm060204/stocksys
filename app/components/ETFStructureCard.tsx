@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { ExtendedETFDefinition } from '@/lib/engine/etfDefinitions';
+import { ExtendedETFDefinition, isUsdEtf } from '@/lib/engine/etfDefinitions';
 
 interface ETFStructureCardProps {
   etf: ExtendedETFDefinition;
@@ -36,7 +36,7 @@ export const ETFStructureCard: React.FC<ETFStructureCardProps> = ({ etf, underly
 
   const cashWeightPercent = totalCUAssetValue > 0 ? (etf.cashComponent / totalCUAssetValue) * 100 : 0;
   const totalFundAUM = (totalCUAssetValue / etf.cuSize) * etf.totalOutstandingUnits;
-  const isUsOrGlobal = etf.category === 'US' || etf.category === 'GLOBAL';
+  const isUsOrGlobal = isUsdEtf(etf);
 
   return (
     <div className="bg-panel border border-border p-5 text-xs font-mono rounded-3xl select-none shadow-2xl space-y-4">

@@ -5,6 +5,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import { isDevGuestAuthEnabled } from "@/lib/engine/localDevMode";
 import { GUEST_USER_ID } from "@/lib/memoryDb/memoryStore";
+import { getUsdFxRateFromDb, isUsdQuotedAsset } from "@/lib/engine/currency";
 
 export const revalidate = 0; // Disable static caching to fetch live user data
 
@@ -42,10 +43,16 @@ export default async function MyPage() {
   // 2. 로그인 또는 로컬 게스트 상태: 해당 사용자의 실제 DB 프로필 및 보유 자산 조회
   const db = await createClient();
 
-  const [{ data: profile }, { data: holdingsData }, { data: ratesData }] = await Promise.all([
+  const [
+    { data: profile },
+    { data: holdingsData },
+    { data: ratesData },
+    { data: optionsContractsData },
+    { data: bondsData },
+  ] = await Promise.all([
     db
       .from("profiles")
-      .select("cash, usd_balance, eur_balance, jpy_balance, cny_balance, gbp_balance")
+      .select("cash, margin_debt_krw, usd_balance, eur_balance, jpy_balance, cny_balance, gbp_balance")
       .eq("id", userId)
       .single(),
     db
@@ -53,58 +60,131 @@ export default async function MyPage() {
       .select("stock_id, quantity, avg_price, stocks(id, ticker, name, market, current_price)")
       .eq("user_id", userId),
     db.from("exchange_rates").select("*"),
+    db.from("options_contracts").select("id, ticker, type, option_type, strike_price, current_price, multiplier, expiry_date"),
+    db.from("bonds").select("id, ticker, name, current_price, face_value"),
   ]);
 
   const cash = Number(profile?.cash || 0);
+  const marginDebtKrw = Math.max(0, Number(profile?.margin_debt_krw || 0));
   const usd = Number(profile?.usd_balance || 0);
   const eur = Number(profile?.eur_balance || 0);
   const jpy = Number(profile?.jpy_balance || 0);
   const cny = Number(profile?.cny_balance || 0);
   const gbp = Number(profile?.gbp_balance || 0);
 
-  // 보유 주식 실시간 손익 계산
+  const ratesMap = new Map((ratesData || []).map((r: any) => [r.currency_code, Number(r.rate_to_krw || 1)]));
+  const getRate = (code: string): number => Number(ratesMap.get(code) || 1);
+  const usdToKrw = getUsdFxRateFromDb(ratesData || []);
+
+  const optionById = new Map<string, any>((optionsContractsData || []).map((o: any) => [o.id, o]));
+  const bondById = new Map<string, any>((bondsData || []).map((b: any) => [b.id, b]));
+
+  // 보유 주식/ETF/옵션/채권 실시간 손익 계산 (원화 총합 + 표시 통화 일관 유지)
   const rows = (holdingsData || []).map((h: any) => {
     const stock = h.stocks;
-    const currentPrice = Number(stock?.current_price || h.avg_price);
+    const opt = !stock ? optionById.get(h.stock_id) : null;
+    const bond = !stock && !opt ? bondById.get(h.stock_id) : null;
     const quantity = Number(h.quantity || 0);
     const avgPrice = Number(h.avg_price || 0);
-    const market = stock?.market || "domestic";
 
-    const value = currentPrice * quantity;
-    const cost = avgPrice * quantity;
-    const pnl = value - cost;
-    const pnlPct = cost !== 0 ? (pnl / cost) * 100 : 0;
+    if (opt) {
+      const currentPrice = Number(opt.current_price ?? avgPrice);
+      const multiplier = Number(opt.multiplier ?? 250000);
+      const valueKrw = Math.round(currentPrice * quantity * multiplier);
+      const costKrw = Math.round(avgPrice * quantity * multiplier);
+      const pnlKrw = valueKrw - costKrw;
+      const pnlPct = costKrw !== 0 ? (pnlKrw / costKrw) * 100 : 0;
+      const optType = opt.option_type || opt.type || "OPTION";
+      return {
+        stockId: h.stock_id,
+        assetKind: "OPTION" as const,
+        href: "/options",
+        name: `${opt.ticker} (${optType})`,
+        ticker: `승수 ₩${multiplier.toLocaleString()} · 행사가 ${Number(opt.strike_price || 0).toLocaleString()}`,
+        market: "domestic",
+        quantity,
+        avgPrice,
+        currentPrice,
+        valueDisplay: valueKrw,
+        pnlDisplay: pnlKrw,
+        valueKrw,
+        costKrw,
+        pnlKrw,
+        pnlPct,
+      };
+    }
+
+    if (bond) {
+      const currentPrice = Number(bond.current_price ?? avgPrice);
+      const faceValue = Number(bond.face_value ?? 10000);
+      const unitFactor = faceValue / 100;
+      const valueKrw = Math.round(currentPrice * unitFactor * quantity);
+      const costKrw = Math.round(avgPrice * unitFactor * quantity);
+      const pnlKrw = valueKrw - costKrw;
+      const pnlPct = costKrw !== 0 ? (pnlKrw / costKrw) * 100 : 0;
+      return {
+        stockId: h.stock_id,
+        assetKind: "BOND" as const,
+        href: `/stocks/${h.stock_id}`,
+        name: bond.name || bond.ticker || "채권",
+        ticker: bond.ticker || "BOND",
+        market: "domestic",
+        quantity,
+        avgPrice,
+        currentPrice,
+        valueDisplay: valueKrw,
+        pnlDisplay: pnlKrw,
+        valueKrw,
+        costKrw,
+        pnlKrw,
+        pnlPct,
+      };
+    }
+
+    const currentPrice = Number(stock?.current_price || h.avg_price);
+    const market = stock?.market || "domestic";
+    const ticker = stock?.ticker || "UNKN";
+    const isUsd = Boolean(stock && isUsdQuotedAsset({ market, ticker }));
+    const fxRate = isUsd ? usdToKrw : 1;
+
+    const valueDisplay = currentPrice * quantity;
+    const costDisplay = avgPrice * quantity;
+    const pnlDisplay = valueDisplay - costDisplay;
+    const valueKrw = isUsd ? Math.round(valueDisplay * fxRate) : Math.round(valueDisplay);
+    const costKrw = isUsd ? Math.round(costDisplay * fxRate) : Math.round(costDisplay);
+    const pnlKrw = valueKrw - costKrw;
+    const pnlPct = costKrw !== 0 ? (pnlKrw / costKrw) * 100 : 0;
 
     return {
       stockId: h.stock_id,
+      assetKind: "STOCK" as const,
+      href: `/stocks/${h.stock_id}`,
       name: stock?.name || "알 수 없는 종목",
-      ticker: stock?.ticker || "UNKN",
+      ticker,
       market,
       quantity,
       avgPrice,
       currentPrice,
-      value,
-      cost,
-      pnl,
+      valueDisplay,
+      pnlDisplay,
+      valueKrw,
+      costKrw,
+      pnlKrw,
       pnlPct,
     };
   });
 
-  const totalValue = rows.reduce((a: number, r: any) => a + Number(r.value || 0), 0);
-  const totalCost = rows.reduce((a: number, r: any) => a + Number(r.cost || 0), 0);
+  const totalValue = rows.reduce((a: number, r: any) => a + Number(r.valueKrw || 0), 0);
+  const totalCost = rows.reduce((a: number, r: any) => a + Number(r.costKrw || 0), 0);
   const totalPnl = totalValue - totalCost;
   const totalPnlPct = totalCost !== 0 ? (totalPnl / totalCost) * 100 : 0;
-
-  // 환율 적용 총 자산 계산
-  const ratesMap = new Map((ratesData || []).map((r: any) => [r.currency_code, Number(r.rate_to_krw || 1)]));
-  const getRate = (code: string): number => Number(ratesMap.get(code) || 1);
 
   const usdInKrw = Number(usd || 0) * getRate("USD");
   const eurInKrw = Number(eur || 0) * getRate("EUR");
   const jpyInKrw = Number(jpy || 0) * getRate("JPY");
   const cnyInKrw = Number(cny || 0) * getRate("CNY");
   const gbpInKrw = Number(gbp || 0) * getRate("GBP");
-  const totalCurrenciesInKrw = Number(cash || 0) + usdInKrw + eurInKrw + jpyInKrw + cnyInKrw + gbpInKrw;
+  const totalCurrenciesInKrw = Number(cash || 0) + usdInKrw + eurInKrw + jpyInKrw + cnyInKrw + gbpInKrw - marginDebtKrw;
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-6 font-sans space-y-6">
@@ -163,17 +243,30 @@ export default async function MyPage() {
                   {rows.map((r: any) => (
                     <tr key={r.stockId} className="transition-colors hover:bg-black/[0.03] dark:hover:bg-white/[0.04] border-b border-border last:border-none">
                       <td className="px-5 py-4 border-none">
-                        <Link href={`/stocks/${r.stockId}`} className="font-extrabold text-white hover:text-up transition-colors">
+                        <Link href={r.href} className="font-extrabold text-white hover:text-up transition-colors">
                           {r.name}
                         </Link>
                         <div className="font-mono text-xs text-[#565A63] font-bold">{r.ticker}</div>
                       </td>
-                      <td className="px-5 py-4 text-right font-mono tabular-nums text-[#8E939D] font-medium">{r.quantity.toLocaleString()}</td>
-                      <td className="px-5 py-4 text-right font-mono tabular-nums text-[#8E939D] font-medium">{fmtPrice(r.avgPrice, r.market as any)}</td>
-                      <td className="px-5 py-4 text-right font-mono tabular-nums text-white font-bold">{fmtPrice(r.currentPrice, r.market as any)}</td>
-                      <td className="px-5 py-4 text-right font-mono tabular-nums text-white font-black">{fmtPrice(r.value, r.market as any)}</td>
-                      <td className={`px-5 py-4 text-right font-mono tabular-nums font-black ${r.pnl >= 0 ? "text-up" : "text-down"}`}>
-                        {r.pnl >= 0 ? "+" : ""}{fmtPrice(r.pnl, r.market as any)}
+                      <td className="px-5 py-4 text-right font-mono tabular-nums text-[#8E939D] font-medium">
+                        {r.quantity.toLocaleString()}{r.assetKind === "OPTION" ? "계약" : ""}
+                      </td>
+                      <td className="px-5 py-4 text-right font-mono tabular-nums text-[#8E939D] font-medium">
+                        {r.assetKind === "OPTION" ? `${Number(r.avgPrice).toFixed(2)}pt` : fmtPrice(r.avgPrice, r.market as any, r.ticker)}
+                      </td>
+                      <td className="px-5 py-4 text-right font-mono tabular-nums text-white font-bold">
+                        {r.assetKind === "OPTION" ? `${Number(r.currentPrice).toFixed(2)}pt` : fmtPrice(r.currentPrice, r.market as any, r.ticker)}
+                      </td>
+                      <td className="px-5 py-4 text-right font-mono tabular-nums text-white font-black">
+                        {r.assetKind === "OPTION" || r.assetKind === "BOND"
+                          ? fmtPrice(r.valueKrw, "domestic")
+                          : fmtPrice(r.valueDisplay, r.market as any, r.ticker)}
+                      </td>
+                      <td className={`px-5 py-4 text-right font-mono tabular-nums font-black ${r.pnlKrw >= 0 ? "text-up" : "text-down"}`}>
+                        {r.pnlKrw >= 0 ? "+" : ""}
+                        {r.assetKind === "OPTION" || r.assetKind === "BOND"
+                          ? fmtPrice(r.pnlKrw, "domestic")
+                          : fmtPrice(r.pnlDisplay, r.market as any, r.ticker)}
                       </td>
                       <td className={`px-5 py-4 text-right font-mono font-black tabular-nums ${r.pnlPct >= 0 ? "text-up" : "text-down"}`}>
                         <span className={`inline-block px-2 py-0.5 rounded-full border text-[11.5px] ${

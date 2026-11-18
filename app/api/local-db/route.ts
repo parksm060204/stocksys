@@ -44,6 +44,27 @@ function sanitizePublicTradeRecord(trade: any) {
   return safeTrade;
 }
 
+function authorizeNewsRecord(record: any, hasRumorAccess: boolean) {
+  const safe = sanitizePublicNewsRecord(record);
+  if (!safe || typeof safe !== 'object') return safe;
+  const cat = (safe as any).category || (safe as any).news_type || (safe as any).eventType;
+  const isRumor = cat === 'RUMOR';
+  if (isRumor && !hasRumorAccess) {
+    const masked = '[프리미엄 구독 필요] 언론사 구독 후 전체 찌라시 본문을 열람할 수 있습니다.';
+    return {
+      ...safe,
+      content: masked,
+      summary: (safe as any).summary ? masked : (safe as any).summary,
+      body: (safe as any).body ? masked : (safe as any).body,
+      locked: true,
+    };
+  }
+  return {
+    ...safe,
+    locked: false,
+  };
+}
+
 // 외부 클라이언트가 직접 호출할 수 없는 내부 정산/유지보수 RPC 목록
 const FORBIDDEN_INTERNAL_RPCS = new Set([
   'bulk_settle_trades',
@@ -244,11 +265,20 @@ export async function POST(request: Request) {
         applyQueryOptions(qb, query);
         const result = await qb.execute();
         if (NEWS_TABLES.has(tableName) && result.data) {
+          const viewerProfile = authenticatedUserId ? memoryDb.profiles.get(authenticatedUserId) : undefined;
+          const cleanedEntitlements = viewerProfile
+            ? pruneExpiredProfileEntitlements({ ...viewerProfile })
+            : undefined;
+          const hasRumorAccess = Boolean(
+            viewerProfile?.is_admin ||
+              (cleanedEntitlements?.news_subscriptions &&
+                Object.keys(cleanedEntitlements.news_subscriptions).length > 0)
+          );
           return NextResponse.json({
             ...result,
             data: Array.isArray(result.data)
-              ? result.data.map(sanitizePublicNewsRecord)
-              : sanitizePublicNewsRecord(result.data),
+              ? result.data.map((r: any) => authorizeNewsRecord(r, hasRumorAccess))
+              : authorizeNewsRecord(result.data, hasRumorAccess),
           });
         }
         if (tableName === 'trades' && result.data) {
@@ -334,13 +364,10 @@ export async function POST(request: Request) {
             return NextResponse.json({ data: null, error: null });
           }
 
-          // 본인이 아닌 경우 민감 자산 정보(cash 등) 보호
+          // 본인이 아닌 경우 민감 자산 정보(cash 등) 보호 및 SELECT 경로 무잠금 상태 변이 금지(복제본 기준 만료 정리)
           const isOwner = authenticatedUserId && targetId === authenticatedUserId;
-          if (isOwner) {
-            pruneExpiredProfileEntitlements(profile);
-          }
           const safeData = isOwner
-            ? profile
+            ? pruneExpiredProfileEntitlements({ ...profile })
             : {
                 id: profile.id,
                 user_id: profile.user_id,
@@ -458,6 +485,30 @@ export async function POST(request: Request) {
               { data: null, error: { message: '주문 상태는 취소(cancelled)로만 변경할 수 있습니다.' } },
               { status: 403 }
             );
+          }
+
+          const requestedUidFilter = query?.filters?.find((f: any) => (f.col === 'user_id' || f.col === 'userId') && f.op === 'eq')?.val;
+          if (requestedUidFilter !== undefined && String(requestedUidFilter) !== authenticatedUserId) {
+            return NextResponse.json(
+              { data: null, error: { message: '다른 사용자의 주문은 취소할 수 없습니다.' } },
+              { status: 403 }
+            );
+          }
+
+          const inOrderIds = query?.filters?.find((f: any) => f.col === 'id' && f.op === 'in')?.val;
+          if (Array.isArray(inOrderIds)) {
+            const batchRes = await LocalMarketService.cancelOrdersBatch({
+              orderIds: inOrderIds.map((v: any) => String(v)),
+              userId: authenticatedUserId,
+              onPersist: persistConfirmedState,
+            });
+            if (!batchRes.success) {
+              return NextResponse.json(
+                { data: null, error: { message: batchRes.message } },
+                { status: batchRes.statusCode }
+              );
+            }
+            return NextResponse.json({ data: batchRes.orders, error: null });
           }
 
           const targetOrderId = query?.filters?.find((f: any) => f.col === 'id' && f.op === 'eq')?.val;

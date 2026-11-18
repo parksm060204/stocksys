@@ -14,6 +14,7 @@ export interface ShopProductDefinition {
   name: string;
   price: number;
   durationDays: number | null; // null = 영구
+  availableForPurchase?: boolean;
 }
 
 export const MEDIA_OUTLETS: MediaOutletCatalogItem[] = [
@@ -69,20 +70,39 @@ export const SHOP_PRODUCTS: Record<string, ShopProductDefinition> = {
     name: '거래 수수료 50% 감면 부스터 (30일)',
     price: 1000000,
     durationDays: 30,
+    availableForPurchase: true,
   },
   scanner_item: {
     id: 'scanner_item',
     name: '기관 수급 실시간 스캐너 (30일)',
     price: 2000000,
     durationDays: 30,
+    availableForPurchase: false,
   },
   ai_predictor: {
     id: 'ai_predictor',
     name: 'AI 시황 예측 신호 부스터 (30일)',
     price: 1500000,
     durationDays: 30,
+    availableForPurchase: false,
   },
 };
+
+export function hasActiveFeeBooster(
+  profile?: Pick<ProfileRecord, 'unlocked_features' | 'feature_expiries' | 'acquired_passives'> | null,
+  nowMs: number = Date.now()
+): boolean {
+  if (!profile) return false;
+  if (Array.isArray(profile.acquired_passives) && profile.acquired_passives.includes('fee_booster')) {
+    return true;
+  }
+  if (!Array.isArray(profile.unlocked_features)) return false;
+  if (!profile.unlocked_features.includes('fee_booster')) return false;
+  const expiryIso = profile.feature_expiries?.fee_booster;
+  if (!expiryIso) return true;
+  const expMs = Date.parse(expiryIso);
+  return Number.isFinite(expMs) && expMs > nowMs;
+}
 
 export function calculateNewsSubscriptionPrice(monthlyFee: number, days: number): number | null {
   if (days === 30) return monthlyFee;

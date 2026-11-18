@@ -2,10 +2,12 @@ export interface OptionContract {
   id: string;
   underlying_stock_id: string;
   ticker?: string | undefined;
+  asset_class?: string | undefined;
   type?: 'CALL' | 'PUT' | undefined;
   option_type?: 'CALL' | 'PUT' | undefined;
   strike_price: number;
   current_price: number;
+  multiplier?: number | undefined;
   expiry_date: string;
   open_interest: number;
   volume: number;

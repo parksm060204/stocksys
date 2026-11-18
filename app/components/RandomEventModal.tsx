@@ -145,7 +145,11 @@ export default function RandomEventModal() {
                   </span>
                 )}
                 {eventData.choice_a_passive && (
-                  <span className="text-accent">보상: {eventData.choice_a_passive}</span>
+                  <span className="text-accent">
+                    {eventData.choice_a_passive === 'fee_booster'
+                      ? '패시브 효과: 수수료 50% 감면'
+                      : `프로필 배지(수치 효과 없음): ${eventData.choice_a_passive}`}
+                  </span>
                 )}
               </div>
             </button>
@@ -163,7 +167,11 @@ export default function RandomEventModal() {
                   </span>
                 )}
                 {eventData.choice_b_passive && (
-                  <span className="text-accent">보상: {eventData.choice_b_passive}</span>
+                  <span className="text-accent">
+                    {eventData.choice_b_passive === 'fee_booster'
+                      ? '패시브 효과: 수수료 50% 감면'
+                      : `프로필 배지(수치 효과 없음): ${eventData.choice_b_passive}`}
+                  </span>
                 )}
               </div>
             </button>

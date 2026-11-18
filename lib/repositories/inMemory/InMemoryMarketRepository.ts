@@ -3,7 +3,7 @@
  * Concrete in-memory implementation of MarketRepository backed by MemoryDatabase.
  */
 
-import { MemoryDatabase, OptionContractRecord } from '../../memoryDb/memoryStore';
+import { MemoryDatabase, OptionContractRecord, K200_INDEX_UNDERLYING_ID, computeK200IndexPrice } from '../../memoryDb/memoryStore';
 import type { MarketRepository } from '../marketRepository';
 import type {
   MarketSnapshot,
@@ -16,6 +16,10 @@ import type {
 
 export class InMemoryMarketRepository implements MarketRepository {
   constructor(private readonly db: MemoryDatabase) {}
+
+  public getDatabase(): MemoryDatabase {
+    return this.db;
+  }
 
   public async getMarketSnapshot(): Promise<MarketSnapshot> {
     return {
@@ -226,14 +230,22 @@ export class InMemoryMarketRepository implements MarketRepository {
 
   public async deleteOrders(orderIds: readonly string[]): Promise<void> {
     for (const id of orderIds) {
-      this.db.orders.delete(id);
+      const ord = this.db.orders.get(id);
+      if (ord) {
+        this.db.removeOrderFromIndex(ord);
+        this.db.orders.delete(id);
+      }
     }
   }
 
-  /** Option settlement: batch current prices for underlying stocks. */
+  /** Option settlement: batch current prices for underlying stocks and indices. */
   public getUnderlyingPrices(stockIds: readonly string[]): Record<string, number> {
     const prices: Record<string, number> = {};
     for (const id of stockIds) {
+      if (id === K200_INDEX_UNDERLYING_ID || id === 'IDX-K200') {
+        prices[id] = computeK200IndexPrice(this.db.stocks.values());
+        continue;
+      }
       const stock = this.db.stocks.get(id);
       if (stock && Number.isFinite(stock.current_price)) {
         prices[id] = stock.current_price;

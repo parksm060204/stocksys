@@ -133,6 +133,7 @@ export interface TickCommitPersistInfo {
   readonly tickCount: number;
   readonly partialFillSequence: number;
   readonly hadTrades: boolean;
+  readonly hasPersistentStateChanges?: boolean;
 }
 
 export interface MarketEngineDependencies {
@@ -608,12 +609,46 @@ export class MarketEngine {
     }
   }
 
+  private getAllBotAgents(): any[] {
+    return [
+      ...this.institutionalBots,
+      ...this.pensionFundAgents,
+      ...this.hedgeFundAgents,
+      ...this.statArbAgents,
+      ...this.commercialBankAgents,
+      ...this.propDeskAgents,
+      ...this.quantAgents,
+      ...this.commercialHedgerAgents,
+      ...this.optionsMMBots,
+      ...this.ctaBots,
+      ...this.retailSwarmAgents,
+    ];
+  }
+
   public async tick(): Promise<TickResult> {
+    const inMemoryDb = typeof (this.repositories.markets as any)?.getDatabase === 'function'
+      ? (this.repositories.markets as any).getDatabase()
+      : null;
+    const dbPreTickSnapshot = this.onTickCommitPersist && inMemoryDb
+      ? inMemoryDb.exportRollbackSnapshot()
+      : null;
+
+    const botPortfoliosSnapshot = new Map<any, any>();
+    for (const bot of this.getAllBotAgents()) {
+      if (bot?.currentPortfolio) {
+        botPortfoliosSnapshot.set(bot, structuredClone(bot.currentPortfolio));
+      }
+    }
+
     const runtimeSnapshot = {
       tickCount: this.tickCount,
       partialFillSequence: this.partialFillSequence,
       lpQuoteGeneration: this.lpQuoteGeneration,
       hawkesIntensity: this.hawkesIntensity,
+      lastExchangeRateUpdateMs: this.lastExchangeRateUpdateMs,
+      lastPortfolioUpsertMs: this.lastPortfolioUpsertMs,
+      lastMarketStateFetchMs: this.lastMarketStateFetchMs,
+      lastSettlementError: this.lastSettlementError,
       fundamentals: { ...this.fundamentals },
       activeEvents: this.activeEvents.map(e => ({ ...e })),
       randomSnapshot: (this.simulationContext.random as any)?.snapshot ? (this.simulationContext.random as any).snapshot() : null,
@@ -621,11 +656,54 @@ export class MarketEngine {
       mjdJumpSnapshot: (this.mjdJumpRandom as any)?.snapshot ? (this.mjdJumpRandom as any).snapshot() : null,
       eventRandomSnapshot: (this.eventRandom as any)?.snapshot ? (this.eventRandom as any).snapshot() : null,
       fxRandomSnapshot: (this.fxRandom as any)?.snapshot ? (this.fxRandom as any).snapshot() : null,
+      commodityRuntime: this.commodityEngine.snapshotRuntime(),
+      settlementPeriodKey: this.settlementService.getLastRunPeriodKey(),
+    };
+
+    const rollbackAll = () => {
+      if (inMemoryDb && dbPreTickSnapshot) {
+        inMemoryDb.restoreRollbackSnapshot(dbPreTickSnapshot);
+      }
+      this.tickCount = runtimeSnapshot.tickCount;
+      this.partialFillSequence = runtimeSnapshot.partialFillSequence;
+      this.lpQuoteGeneration = runtimeSnapshot.lpQuoteGeneration;
+      this.hawkesIntensity = runtimeSnapshot.hawkesIntensity;
+      this.lastExchangeRateUpdateMs = runtimeSnapshot.lastExchangeRateUpdateMs;
+      this.lastPortfolioUpsertMs = runtimeSnapshot.lastPortfolioUpsertMs;
+      this.lastMarketStateFetchMs = runtimeSnapshot.lastMarketStateFetchMs;
+      this.lastSettlementError = runtimeSnapshot.lastSettlementError;
+      this.fundamentals = { ...runtimeSnapshot.fundamentals };
+      this.activeEvents = runtimeSnapshot.activeEvents.map(e => ({ ...e }));
+      if (runtimeSnapshot.randomSnapshot && (this.simulationContext.random as any)?.restore) {
+        (this.simulationContext.random as any).restore(runtimeSnapshot.randomSnapshot);
+      }
+      if (runtimeSnapshot.mjdDiffusionSnapshot && (this.mjdDiffusionRandom as any)?.restore) {
+        (this.mjdDiffusionRandom as any).restore(runtimeSnapshot.mjdDiffusionSnapshot);
+      }
+      if (runtimeSnapshot.mjdJumpSnapshot && (this.mjdJumpRandom as any)?.restore) {
+        (this.mjdJumpRandom as any).restore(runtimeSnapshot.mjdJumpSnapshot);
+      }
+      if (runtimeSnapshot.eventRandomSnapshot && (this.eventRandom as any)?.restore) {
+        (this.eventRandom as any).restore(runtimeSnapshot.eventRandomSnapshot);
+      }
+      if (runtimeSnapshot.fxRandomSnapshot && (this.fxRandom as any)?.restore) {
+        (this.fxRandom as any).restore(runtimeSnapshot.fxRandomSnapshot);
+      }
+      this.commodityEngine.restoreRuntime(runtimeSnapshot.commodityRuntime);
+      this.settlementService.restoreLastRunPeriodKey(runtimeSnapshot.settlementPeriodKey);
+      for (const [bot, prevPortfolio] of botPortfoliosSnapshot.entries()) {
+        if (bot?.currentPortfolio) {
+          Object.assign(bot.currentPortfolio, structuredClone(prevPortfolio));
+        }
+      }
+      this.cachedMarketState = null;
+      this.currentTickCommitStatus = 'NOT_COMMITTED';
     };
 
     let commitStatus: 'NOT_COMMITTED' | 'COMMITTED' = 'NOT_COMMITTED';
     this.currentTickCommitStatus = 'NOT_COMMITTED';
     const postCommitWarnings: PostCommitWarning[] = [];
+    let hasPersistentStateChanges = false;
 
     try {
       this.tickCount++;
@@ -677,6 +755,7 @@ export class MarketEngine {
       if ((this.simClock.now() - this.lastExchangeRateUpdateMs) >= this.EXCHANGE_RATE_TTL_MS) {
         await this.updateExchangeRates();
         this.lastExchangeRateUpdateMs = this.simClock.now();
+        hasPersistentStateChanges = true;
       }
 
       const macroData = this.customDataSource?.fetchRealWorldData
@@ -772,7 +851,9 @@ export class MarketEngine {
       }
       
       // 4. 고도화된 마켓메이커 및 적대적 봇
-      allOrders.push(...this.asMarketMakerAgent.executeMarketMaking(marketState));
+      if (shouldRefreshLp) {
+        allOrders.push(...this.asMarketMakerAgent.executeMarketMaking(marketState));
+      }
       
       // Collect endogenous news reaction orders from all agents
       const allAgents = [
@@ -802,8 +883,26 @@ export class MarketEngine {
       const optionsData = marketState.options_contracts || [];
       allOrders.push(...this.wallBreakerAgent.executeGammaSqueezeHunt({ hour: currentHour }, currentPrices, optionsData));
       
+      // Drain bot-requested order cancellations (e.g. ASMarketMakerAgent / BaseAgent)
+      const botCancelIds = new Set<string>();
+      for (const bot of [this.asMarketMakerAgent, ...allAgents]) {
+        if (Array.isArray((bot as any).ordersToCancel) && (bot as any).ordersToCancel.length > 0) {
+          for (const cid of (bot as any).ordersToCancel) {
+            if (typeof cid === 'string' && cid.length > 0) botCancelIds.add(cid);
+          }
+          (bot as any).ordersToCancel.length = 0;
+        }
+      }
+      if (botCancelIds.size > 0) {
+        await this.repositories.markets.updateOrders(
+          Array.from(botCancelIds).map((id) => ({ id, status: 'cancelled' as const }))
+        );
+      }
+
       // Macro Linkage: WTI Inflation Shock
-      const wti = (marketState.commodities || []).find((c: any) => c.commodity_id === 'WTI_CRUDE');
+      const wti = (marketState.commodities || []).find(
+        (c: any) => c.commodity_id === 'CRUDE_OIL' || c.commodity_id === 'WTI_CRUDE' || c.id === 'CRUDE_OIL'
+      );
       if (wti && wti.current_price >= 83.0 && !this.activeEvents.find(e => e.id === 'INFLATION_SHOCK')) {
         console.log(`🛢️ [MACRO SHOCK] WTI crude oil surged to ${wti.current_price}! Triggering INFLATION_SHOCK!`);
         EventBus.publish('MARKET_SHOCK', { stockId: wti.id, volume: 0, pctChange: 0.1, marketState });
@@ -840,6 +939,7 @@ export class MarketEngine {
       if (this.eventRandom.nextBoolean(0.01)) {
         try {
           await this.triggerRandomEvents();
+          hasPersistentStateChanges = true;
         } catch (eventErr: any) {
           postCommitWarnings.push({
             stage: 'RANDOM_EVENTS',
@@ -853,6 +953,7 @@ export class MarketEngine {
       if (this.tickCount % 20 === 0) {
         try {
           await this.trimOldTrades();
+          hasPersistentStateChanges = true;
         } catch (trimErr: any) {
           postCommitWarnings.push({
             stage: 'TRIM_OLD_TRADES',
@@ -863,38 +964,53 @@ export class MarketEngine {
       }
 
       const hadTrades = Boolean((batchResult as any)?.settledTradesCount > 0);
+      if ((batchResult as any)?.hasPersistentStateChanges) {
+        hasPersistentStateChanges = true;
+      }
+
       if (this.onTickCommitPersist) {
         let persisted = false;
+        let persistError: any = null;
         try {
           persisted = await this.onTickCommitPersist({
             tickCount: this.tickCount,
             partialFillSequence: this.partialFillSequence,
             hadTrades,
+            hasPersistentStateChanges,
           });
-        } catch (persistErr: any) {
+        } catch (err: any) {
           persisted = false;
-          postCommitWarnings.push({
-            stage: 'DURABILITY_PERSIST',
-            message: persistErr instanceof Error ? persistErr.message : String(persistErr),
-            error: persistErr,
-          });
+          persistError = err;
         }
         if (!persisted) {
+          rollbackAll();
+          commitStatus = 'NOT_COMMITTED';
           this.lastPersistenceError = 'PERSISTENCE_FAILED';
-          postCommitWarnings.push({
-            stage: 'DURABILITY_PERSIST',
-            message: `Tick ${this.tickCount} snapshot persistence returned false.`,
-          });
           return {
             success: false,
-            commitStatus: 'COMMITTED',
+            commitStatus: 'NOT_COMMITTED',
             tickCount: this.tickCount,
             errorCode: 'PERSISTENCE_FAILED',
-            error: 'Tick snapshot persistence failed.',
-            postCommitWarnings,
+            error: persistError instanceof Error
+              ? persistError.message
+              : 'Tick snapshot persistence failed and all state was rolled back.',
           };
         }
         this.lastPersistenceError = null;
+      }
+
+      const committedEvent = (batchResult as any)?.committedSettlementEvent;
+      if (committedEvent) {
+        try {
+          await this.executionObserver?.onSettlementCommitted(committedEvent);
+        } catch (obsErr: any) {
+          console.warn('[MarketEngine] Execution observer post-commit warning:', obsErr);
+          postCommitWarnings.push({
+            stage: 'OBSERVER_POST_COMMIT',
+            message: obsErr instanceof Error ? obsErr.message : String(obsErr),
+            error: obsErr,
+          });
+        }
       }
 
       return {
@@ -904,7 +1020,7 @@ export class MarketEngine {
         postCommitWarnings: postCommitWarnings.length > 0 ? postCommitWarnings : undefined,
       };
     } catch (error: any) {
-      if ((this.currentTickCommitStatus as string) === 'COMMITTED' || commitStatus === 'COMMITTED') {
+      if (!this.onTickCommitPersist && ((this.currentTickCommitStatus as string) === 'COMMITTED' || commitStatus === 'COMMITTED')) {
         postCommitWarnings.push({
           stage: 'POST_COMMIT_UNHANDLED',
           message: error instanceof Error ? error.message : String(error),
@@ -918,29 +1034,7 @@ export class MarketEngine {
         };
       }
 
-      // Deterministic rollback of all engine runtime state
-      this.tickCount = runtimeSnapshot.tickCount;
-      this.partialFillSequence = runtimeSnapshot.partialFillSequence;
-      this.lpQuoteGeneration = runtimeSnapshot.lpQuoteGeneration;
-      this.hawkesIntensity = runtimeSnapshot.hawkesIntensity;
-      this.fundamentals = runtimeSnapshot.fundamentals;
-      this.activeEvents = runtimeSnapshot.activeEvents;
-      if (runtimeSnapshot.randomSnapshot && (this.simulationContext.random as any)?.restore) {
-        (this.simulationContext.random as any).restore(runtimeSnapshot.randomSnapshot);
-      }
-      if (runtimeSnapshot.mjdDiffusionSnapshot && (this.mjdDiffusionRandom as any)?.restore) {
-        (this.mjdDiffusionRandom as any).restore(runtimeSnapshot.mjdDiffusionSnapshot);
-      }
-      if (runtimeSnapshot.mjdJumpSnapshot && (this.mjdJumpRandom as any)?.restore) {
-        (this.mjdJumpRandom as any).restore(runtimeSnapshot.mjdJumpSnapshot);
-      }
-      if (runtimeSnapshot.eventRandomSnapshot && (this.eventRandom as any)?.restore) {
-        (this.eventRandom as any).restore(runtimeSnapshot.eventRandomSnapshot);
-      }
-      if (runtimeSnapshot.fxRandomSnapshot && (this.fxRandom as any)?.restore) {
-        (this.fxRandom as any).restore(runtimeSnapshot.fxRandomSnapshot);
-      }
-      this.cachedMarketState = null;
+      rollbackAll();
 
       console.error("Engine Tick Error:", error);
       const errorCode = this.lastSettlementError || (error?.code ?? 'TICK_EXECUTION_ERROR');
@@ -994,19 +1088,42 @@ export class MarketEngine {
     }
   }
 
+  private async buildOrderBookSnapshot(): Promise<Record<string, { bids: any[]; asks: any[] }>> {
+    const openOrders = await this.repositories.markets.getOpenOrders();
+    const orderBook: Record<string, { bids: any[]; asks: any[] }> = {};
+    for (const o of openOrders) {
+      if (!o || !o.stock_id) continue;
+      if (o.status !== 'open' && o.status !== 'partial') continue;
+      if (!orderBook[o.stock_id]) {
+        orderBook[o.stock_id] = { bids: [], asks: [] };
+      }
+      if (o.side === 'buy') orderBook[o.stock_id]!.bids.push(o);
+      else orderBook[o.stock_id]!.asks.push(o);
+    }
+    for (const book of Object.values(orderBook)) {
+      book.bids.sort((a, b) => b.price - a.price);
+      book.asks.sort((a, b) => a.price - b.price);
+    }
+    return orderBook;
+  }
+
   private async fetchMarketState(macroData: MacroData | null) {
-    // 캐시 활용: TTL 내이면 캐시된 marketState 반환 (단, activeEvents/fundamentals는 갱신)
+    // 캐시 활용: TTL 내이면 캐시된 marketState 반환 (단, activeEvents/fundamentals/orderBook은 최신화)
     const now = this.simClock.now();
     if (this.cachedMarketState && (now - this.lastMarketStateFetchMs) < this.MARKET_STATE_TTL_MS) {
-      // 실시간성이 필요한 필드만 갱신해서 반환 (캐시 오염 방지를 위해 shallow copy)
+      const orderBook = await this.buildOrderBookSnapshot();
       return {
         ...this.cachedMarketState,
+        orderBook,
         activeEvents: this.activeEvents,
         fundamentals: this.fundamentals
       };
     }
 
-    const snapshot = await this.repositories.markets.getMarketSnapshot();
+    const [snapshot, orderBook] = await Promise.all([
+      this.repositories.markets.getMarketSnapshot(),
+      this.buildOrderBookSnapshot(),
+    ]);
     const adminBaseRate = macroData
       ? macroData.us10yYield / 100
       : (snapshot.adminSettings?.base_rate ?? 0.025);
@@ -1019,7 +1136,7 @@ export class MarketEngine {
       options_contracts: snapshot.options_contracts || [],
       adminBaseRate,
       sentiment,
-      orderBook: {},
+      orderBook,
       realWorldMacro: macroData,
       activeEvents: this.activeEvents,
       fundamentals: this.fundamentals
@@ -1133,6 +1250,8 @@ export class MarketEngine {
   ): Promise<{
     commitStatus: 'NOT_COMMITTED' | 'COMMITTED';
     settledTradesCount?: number;
+    committedSettlementEvent?: SettlementCommittedEvent;
+    hasPersistentStateChanges?: boolean;
     postCommitWarnings?: PostCommitWarning[];
   }> {
     // 1. 저장소의 미체결(Open) 주문들을 가져옵니다.
@@ -1708,26 +1827,18 @@ export class MarketEngine {
       }
     }
 
-    // ── Phase 6: Post-Commit 작업 (Observer 및 외부 Persistence) ──
-    // 6.1 Observer 호출: authoritative 쓰기 성공 후에만 호출하며 실패해도 정산에 영향 없음
-    if (stagedTrades.length > 0) {
-      try {
-        await this.executionObserver?.onSettlementCommitted({
-          simulationTime: this.simClock.now(),
-          settledTradeIds: [...settlementResult.settledTradeIds],
-          settledTradesCount: settlementResult.settledTradesCount,
-          totalAmount: settlementResult.totalAmount,
-          totalFeeAmount: settlementResult.totalFeeAmount,
-        });
-      } catch (obsErr: any) {
-        console.warn('[MarketEngine] Execution observer post-commit warning:', obsErr);
-        postCommitWarnings.push({
-          stage: 'OBSERVER_POST_COMMIT',
-          message: obsErr instanceof Error ? obsErr.message : String(obsErr),
-          error: obsErr,
-        });
-      }
-    }
+    // ── Phase 6: Post-Commit 작업 (Observer는 tick() 영속 저장 성공 후 호출) ──
+    const committedSettlementEvent: SettlementCommittedEvent | undefined =
+      stagedTrades.length > 0
+        ? {
+            simulationTime: this.simClock.now(),
+            settledTradeIds: [...settlementResult.settledTradeIds],
+            settledTradesCount: settlementResult.settledTradesCount,
+            totalAmount: settlementResult.totalAmount,
+            totalFeeAmount: settlementResult.totalFeeAmount,
+          }
+        : undefined;
+    let hasPersistentStateChanges = stagedTrades.length > 0 || stagedStrategicOrderIds.length > 0;
 
     // 6.2 LP 호가 갱신: refreshLpQuotesAtomically 사용
     const lpOrdersToInsert: any[] = [];
@@ -1931,7 +2042,14 @@ export class MarketEngine {
     // 6.5 옵션 만기 정산 및 채권 쿠폰 지급 배치 실행 (50틱 주기)
     if (this.tickCount % 50 === 0) {
       try {
-        await this.settlementService.runDailySettlementBatch();
+        const batchSummary = await this.settlementService.runDailySettlementBatch();
+        if (
+          batchSummary.optionSettled > 0 ||
+          batchSummary.bondCouponsPaid > 0 ||
+          batchSummary.bondPrincipalRedeemed > 0
+        ) {
+          hasPersistentStateChanges = true;
+        }
       } catch (err: any) {
         console.error('[Engine] Settlement Batch Error:', err);
         postCommitWarnings.push({
@@ -1998,6 +2116,7 @@ export class MarketEngine {
           } else {
             await this.repositories.participants.upsertPortfolios(portfoliosToUpsert);
           }
+          hasPersistentStateChanges = true;
         } catch (portErr: any) {
           console.warn('[MarketEngine] Portfolio sync warning:', portErr);
           postCommitWarnings.push({
@@ -2013,6 +2132,8 @@ export class MarketEngine {
     return {
       commitStatus: 'COMMITTED',
       settledTradesCount: stagedTrades.length,
+      committedSettlementEvent,
+      hasPersistentStateChanges,
       postCommitWarnings: postCommitWarnings.length > 0 ? postCommitWarnings : undefined,
     };
   }

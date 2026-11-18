@@ -49,7 +49,7 @@ export default function MoverCard({ title, stocks }: { title: string; stocks: St
 
               <div className="flex flex-col items-end gap-0.5">
                 <span className={`font-mono text-[13.5px] font-black tabular-nums ${color}`}>
-                  {fmtPrice(currentPrice, s.market)}
+                  {fmtPrice(currentPrice, s.market, s.ticker)}
                 </span>
                 <span className={`inline-block font-mono text-[10.5px] font-bold tabular-nums px-2 py-0.5 rounded-full border ${badgeBg}`}>
                   {fmtSigned(percent)}%

@@ -123,7 +123,11 @@ export function evaluateTrendStrategy(
     else openSellQty += rem;
   }
 
-  const tickSize = currentPrice < 2000 ? 1 : currentPrice < 5000 ? 5 : currentPrice < 20000 ? 10 : currentPrice < 50000 ? 50 : currentPrice < 200000 ? 100 : 500;
+  const isUsdAsset = Boolean(obs.isUsdAsset);
+  const fxRate = Number.isFinite(obs.fxRateToKrw) && (obs.fxRateToKrw as number) > 0 ? (obs.fxRateToKrw as number) : 1;
+  const tickSize = isUsdAsset
+    ? 0.01
+    : (currentPrice < 2000 ? 1 : currentPrice < 5000 ? 5 : currentPrice < 20000 ? 10 : currentPrice < 50000 ? 50 : currentPrice < 200000 ? 100 : 500);
   const recentVol = obs.recentTrades.reduce((sum, t) => sum + t.size, 0);
   const participationCap = Math.max(10, Math.floor(recentVol * config.participationRate));
 
@@ -161,9 +165,11 @@ export function evaluateTrendStrategy(
       ? obs.bestAsk!
       : (obs.bestBid !== null ? obs.bestBid : currentPrice);
 
-    targetPrice = Math.max(tickSize, Math.round(targetPrice / tickSize) * tickSize);
+    targetPrice = isUsdAsset
+      ? Math.max(0.01, Math.round(targetPrice * 100) / 100)
+      : Math.max(tickSize, Math.round(targetPrice / tickSize) * tickSize);
 
-    const costPerShare = targetPrice * 1.0025;
+    const costPerShare = targetPrice * fxRate * 1.0025;
     let maxAffordable: number;
     if (!effectParams || cashPreference <= 0) {
       // 효과 OFF 또는 cashPreference=0: 기존 가용 현금(availableCash) 기준 계산 보존

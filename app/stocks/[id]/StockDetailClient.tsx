@@ -131,7 +131,7 @@ export default function StockDetailClient({
           <div className="text-center space-y-1 pt-2">
             <p className="text-[12px] text-white/30 font-mono tracking-wider uppercase">{stock.ticker} · {stock.sector}</p>
             <div className={`text-5xl font-bold tabular-nums font-mono ${changeColor}`}>
-              {fmtPrice(stock.currentPrice, stock.market)}
+              {fmtPrice(stock.currentPrice, stock.market, stock.ticker)}
             </div>
             <div className={`font-mono text-[15px] font-semibold tabular-nums ${changeColor}`}>
               {isUp ? "▲" : dir === "down" ? "▼" : "–"} {fmtSigned(percent)}%
@@ -155,9 +155,9 @@ export default function StockDetailClient({
 
           {/* 보조 지표 행 */}
           <div className="w-full max-w-2xl grid grid-cols-4 gap-3">
-            <MiniStat label="시가" value={fmtPrice(stock.openPrice, stock.market)} />
-            <MiniStat label="고가" value={fmtPrice(stock.high, stock.market)} color="text-up" />
-            <MiniStat label="저가" value={fmtPrice(stock.low, stock.market)} color="text-down" />
+            <MiniStat label="시가" value={fmtPrice(stock.openPrice, stock.market, stock.ticker)} />
+            <MiniStat label="고가" value={fmtPrice(stock.high, stock.market, stock.ticker)} color="text-up" />
+            <MiniStat label="저가" value={fmtPrice(stock.low, stock.market, stock.ticker)} color="text-down" />
             <MiniStat label="거래량" value={fmtVolume(stock.volume)} />
           </div>
 
@@ -302,7 +302,7 @@ export default function StockDetailClient({
                           {new Date(item.created_at).toLocaleString("ko-KR")}
                         </td>
                         <td className="py-3 px-5 text-right font-black text-tx border-none tabular-nums">
-                          {fmtPrice(Number(item.price), stock.market)}
+                          {fmtPrice(Number(item.price), stock.market, stock.ticker)}
                         </td>
                         <td className="py-3 px-5 text-right text-muted font-bold border-none tabular-nums">
                           {fmtVolume(Number(item.volume || 0))}
@@ -327,7 +327,7 @@ export default function StockDetailClient({
                   <Info label="거래대금" value={tradingValueStr} />
                   <Info label="거래량" value={fmtVolume(stock.volume)} />
                   <Info label="상장일" value={stock.listedAt} />
-                  <Info label="전일 종가" value={fmtPrice(stock.previousClose, stock.market)} />
+                  <Info label="전일 종가" value={fmtPrice(stock.previousClose, stock.market, stock.ticker)} />
                 </div>
               </div>
 

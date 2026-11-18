@@ -13,7 +13,7 @@ import { evaluateTrendStrategy } from '../lib/engine/simulation/strategies/trend
 import { evaluateLpStrategy } from '../lib/engine/simulation/strategies/lpStrategy';
 import { AgentAccount, ValueStrategyConfig, TrendStrategyConfig, LpStrategyConfig } from '../lib/engine/simulation/agentTypes';
 import { MarketObservation } from '../lib/engine/simulation/marketObservation';
-import { ensureLocalStandaloneEngine, getLocalStandaloneEngine } from '../lib/engine/localStandaloneServer';
+import { ensureLocalStandaloneEngine, getLocalStandaloneEngine, stopLocalStandaloneEngine } from '../lib/engine/localStandaloneServer';
 
 function assert(condition: boolean, message: string) {
   if (!condition) {
@@ -173,7 +173,7 @@ async function runAbmTests() {
   assert(remainingOrder.status === 'open' || remainingOrder.status === 'partial', 'Remaining buyer order is open/partial');
   const remainingQty = remainingOrder.size - remainingOrder.filled;
   assert(remainingQty === 50, `Buyer remaining qty is exactly 50 (got ${remainingQty})`);
-  const expectedReservedCash = 50 * 70_000;
+  const expectedReservedCash = 50 * 70_000 + Math.round(50 * 70_000 * 0.0025);
   assert(calculatedReservedCash === expectedReservedCash, `Calculated reserved cash matches single authority formula (${calculatedReservedCash} vs ${expectedReservedCash})`);
 
   // 잔여 주문 취소
@@ -679,7 +679,12 @@ async function runAbmTests() {
 }
 
 runAbmTests()
+  .then(() => {
+    stopLocalStandaloneEngine();
+    process.exit(0);
+  })
   .catch(err => {
+    stopLocalStandaloneEngine();
     console.error('Test run error:', err);
     process.exit(1);
   });

@@ -151,8 +151,6 @@ export default function Sidebar() {
   const isActive = (href: string) =>
     href === "/" ? pathname === "/" : pathname.startsWith(href);
 
-  const hasEcoCalendar = unlockedFeatures.includes("eco_calendar") || isAdmin;
-
   return (
     <aside className="flex w-56 shrink-0 flex-col border-r border-border bg-panel">
       {/* Robinhood Style Brand Header + Theme Toggle */}
@@ -206,10 +204,6 @@ export default function Sidebar() {
             active={isActive(e.href)}
           />
         ))}
-
-        {hasEcoCalendar && (
-          <NavItem href="/eco" label="경제지표 일정" icon="eco" active={isActive("/eco")} />
-        )}
 
         {(isAdmin || unlockedFeatures.includes("super_admin")) && (
           <NavItem href="/admin" label="관리자 센터" icon="admin" active={isActive("/admin")} />

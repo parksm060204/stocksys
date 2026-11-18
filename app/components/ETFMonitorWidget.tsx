@@ -6,11 +6,14 @@ import { iNAVData, LPQuote } from '@/lib/engine/etfTypes';
 interface ETFMonitorProps {
   navData: iNAVData;
   lpQuote: LPQuote;
+  isUsd?: boolean;
 }
 
-export const ETFMonitorWidget: React.FC<ETFMonitorProps> = ({ navData, lpQuote }) => {
+export const ETFMonitorWidget: React.FC<ETFMonitorProps> = ({ navData, lpQuote, isUsd = false }) => {
   const [showGuideModal, setShowGuideModal] = useState<boolean>(false);
   const isPremium = navData.discrepancyRate > 0;
+  const fmtMoney = (v: number) =>
+    isUsd ? `$${Number(v).toFixed(2)}` : `₩${Math.round(v).toLocaleString('ko-KR')}`;
 
   return (
     <div className="bg-panel border border-border p-5 text-xs font-mono rounded-3xl select-none shadow-xl space-y-3.5">
@@ -41,12 +44,12 @@ export const ETFMonitorWidget: React.FC<ETFMonitorProps> = ({ navData, lpQuote }
       <div className="grid grid-cols-2 gap-3 bg-panel2 p-3.5 rounded-2xl border border-border">
         <div>
           <span className="text-dim block text-[10.5px] font-bold mb-1 font-sans">실시간 iNAV (순자산가치)</span>
-          <span className="text-lg font-black text-tx tabular-nums">₩{Math.round(navData.iNAV).toLocaleString('ko-KR')}</span>
+          <span className="text-lg font-black text-tx tabular-nums">{fmtMoney(navData.iNAV)}</span>
         </div>
         <div>
           <span className="text-dim block text-[10.5px] font-bold mb-1 font-sans">현재 시장가</span>
           <span className={`text-lg font-black tabular-nums ${isPremium ? 'text-up' : 'text-down'}`}>
-            ₩{Math.round(navData.marketPrice).toLocaleString('ko-KR')}
+            {fmtMoney(navData.marketPrice)}
           </span>
         </div>
       </div>
@@ -64,9 +67,9 @@ export const ETFMonitorWidget: React.FC<ETFMonitorProps> = ({ navData, lpQuote }
       <div className="border-t border-border pt-2.5">
         <span className="text-[10.5px] text-dim block mb-1 font-bold font-sans">LP (유동성공급자) 주문 스프레드</span>
         <div className="flex justify-between items-center text-[11.5px] bg-panel2 px-3 py-2 rounded-xl border border-border">
-          <span className="text-up font-black">매수 ₩{Math.round(lpQuote.bid).toLocaleString('ko-KR')} ({lpQuote.bidQty.toLocaleString()}주)</span>
+          <span className="text-up font-black">매수 {fmtMoney(lpQuote.bid)} ({lpQuote.bidQty.toLocaleString()}주)</span>
           <span className="text-dim">|</span>
-          <span className="text-down font-black">매도 ₩{Math.round(lpQuote.ask).toLocaleString('ko-KR')} ({lpQuote.askQty.toLocaleString()}주)</span>
+          <span className="text-down font-black">매도 {fmtMoney(lpQuote.ask)} ({lpQuote.askQty.toLocaleString()}주)</span>
         </div>
       </div>
 

@@ -26,10 +26,10 @@ async function main() {
     repositories,
     initialTickCount: restartRuntime.initialTickCount,
     initialPartialFillSequence: restartRuntime.initialPartialFillSequence,
-    onTickCommitPersist: async ({ tickCount, partialFillSequence, hadTrades }) => {
+    onTickCommitPersist: async ({ tickCount, partialFillSequence, hadTrades, hasPersistentStateChanges }) => {
       memoryDb.engineTickCount = tickCount;
       memoryDb.enginePartialFillSequence = partialFillSequence;
-      if (hadTrades || tickCount % 20 === 0) {
+      if (hadTrades || hasPersistentStateChanges || tickCount % 20 === 0) {
         return await enginePersistence.saveSnapshot(memoryDb);
       }
       return true;

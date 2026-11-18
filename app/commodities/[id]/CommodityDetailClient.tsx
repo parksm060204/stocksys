@@ -12,7 +12,7 @@ import StrictWidget from '@/app/components/StrictWidget';
 import CommoditySeasonalityPanel from '@/app/components/commodities/CommoditySeasonalityPanel';
 import CommodityEventPanel from '@/app/components/commodities/CommodityEventPanel';
 import CommodityOrderEntry from '@/app/components/commodities/CommodityOrderEntry';
-import ActiveOrdersPanel from '@/app/components/ActiveOrdersPanel';
+import CommodityActiveOrdersPanel from '@/app/components/commodities/CommodityActiveOrdersPanel';
 
 type TabId = 'chart' | 'orderbook' | 'seasonality' | 'events' | 'orders';
 
@@ -39,6 +39,7 @@ export default function CommodityDetailClient({
   const [newsFeed, setNewsFeed] = useState<CommodityNewsItem[]>(initialNews);
   const [currentTick, setCurrentTick] = useState<number>(100);
   const [activeTab, setActiveTab] = useState<TabId>('chart');
+  const [ordersRefreshSignal, setOrdersRefreshSignal] = useState<number>(0);
 
   // 실시간 1.5초 주기 폴링
   useEffect(() => {
@@ -187,7 +188,10 @@ export default function CommodityDetailClient({
 
             {/* 우측 (4) - 원자재 선물 주문 패널 */}
             <div className="col-span-12 lg:col-span-4 h-full overflow-hidden">
-              <CommodityOrderEntry commodity={commodity} />
+              <CommodityOrderEntry
+                commodity={commodity}
+                onOrderPlaced={() => setOrdersRefreshSignal((n) => n + 1)}
+              />
             </div>
           </div>
         )}
@@ -239,7 +243,12 @@ export default function CommodityDetailClient({
         {/* ⑤ 내 미체결 탭 */}
         {activeTab === 'orders' && (
           <div className="h-full overflow-hidden flex flex-col border border-border bg-[#0E1117] rounded-2xl shadow-xl">
-            <ActiveOrdersPanel />
+            <CommodityActiveOrdersPanel
+              commodityId={commodity.id}
+              commodityName={commodity.nameKo}
+              refreshSignal={ordersRefreshSignal}
+              onOrdersChanged={() => setOrdersRefreshSignal((n) => n + 1)}
+            />
           </div>
         )}
       </div>

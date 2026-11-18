@@ -80,6 +80,14 @@ function setupTestEnvironment(botInitialCash: number = 20_000_000) {
       current_cash: botInitialCash, // static config
       total_capital: botInitialCash,
     },
+    {
+      id: 'lp_1',
+      bot_id: 'lp_1',
+      participant_kind: 'LIQUIDITY_PROVIDER',
+      type: 'MARKET_MAKER',
+      current_cash: 100_000_000,
+      total_capital: 100_000_000,
+    },
   ];
 
   return { db, stock };

@@ -165,6 +165,8 @@ async signIn({ user }) {
 
 ## ✅ VM DB 운영 체크리스트
 
+> **참고 (활성 저장 경로):** 현재 저장소에서 `vm-db/`(PostgreSQL/Docker)는 `archive/legacy-postgres/`로 아카이브된 비활성 경로이며, 실제 활성 로컬/단독 실행 영속화 경로는 `lib/memoryDb/`(`PersistenceManager`, `trimOldData()`, `trimSettlementLedger()`) 및 `engine-server/`입니다. 레거시 VM DB 환경을 재구성할 때에만 아래 체크리스트를 적용합니다.
+
 새로 DB를 초기화(`bash setup.sh`)하거나 `docker-compose.yml`을 수정할 때 아래 사항을 반드시 확인한다:
 
 - [ ] `docker-compose.yml` Postgres에 `max_wal_size=1GB` 플래그가 있는가?

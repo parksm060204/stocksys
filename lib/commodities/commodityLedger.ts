@@ -7,7 +7,7 @@ import type {
 } from '@/lib/memoryDb/memoryStore';
 import { withAccountLocks } from '@/lib/memoryDb/accountLocks';
 import { runWithCommitGate } from '@/lib/memoryDb/PersistenceManager';
-import { getAvailableCashKrw } from '@/lib/engine/orderRisk';
+import { getAvailableCashKrw, calculateUserReservedCashKrw } from '@/lib/engine/orderRisk';
 import { getCurrencyRateToKrw } from '@/lib/exchange/exchangeService';
 import type { CommodityDefinition, CommodityOrder, CommodityTrade } from './types';
 
@@ -312,6 +312,47 @@ function applyUserFillToPosition(
   return cashCreditKrw;
 }
 
+/**
+ * 계좌 현금 증감을 회계적으로 일관되게 반영한다.
+ * - 손실(cashDelta < 0) 시 타 자산(주식/옵션) 예약금과 0원 하한을 침범하지 않고,
+ *   부족분은 profile.margin_debt_krw(미수금/부채)로 정확히 기록하여 손실을 삭제하지 않는다.
+ * - 입금/수익(cashDelta > 0) 시 기존 margin_debt_krw를 우선 상환한 뒤 잔여분만 profile.cash에 가산한다.
+ */
+export function applyCashDeltaWithMarginDebt(
+  db: MemoryDatabase,
+  profile: ProfileRecord,
+  cashDelta: number
+): void {
+  if (!Number.isFinite(cashDelta) || cashDelta === 0) return;
+
+  const currentDebt = Math.max(0, roundMoney(Number(profile.margin_debt_krw ?? 0)));
+  if (cashDelta > 0) {
+    if (currentDebt > 0) {
+      const repay = Math.min(cashDelta, currentDebt);
+      const nextDebt = roundMoney(currentDebt - repay);
+      if (nextDebt > 0) profile.margin_debt_krw = nextDebt;
+      else delete profile.margin_debt_krw;
+      const remainder = roundMoney(cashDelta - repay);
+      if (remainder > 0) {
+        profile.cash = roundMoney(profile.cash + remainder);
+      }
+    } else {
+      profile.cash = roundMoney(profile.cash + cashDelta);
+    }
+    return;
+  }
+
+  const loss = Math.abs(cashDelta);
+  const reservedCash = calculateUserReservedCashKrw(db, profile.id);
+  const unencumberedCash = Math.max(0, roundMoney(profile.cash - reservedCash));
+  const cashDeduct = Math.min(loss, unencumberedCash);
+  const shortfall = roundMoney(loss - cashDeduct);
+  profile.cash = roundMoney(profile.cash - cashDeduct);
+  if (shortfall > 0) {
+    profile.margin_debt_krw = roundMoney(currentDebt + shortfall);
+  }
+}
+
 export interface CommoditySettlementOptions {
   faultInjection?: 'FAIL_AFTER_BUYER_SETTLED';
 }
@@ -445,9 +486,9 @@ export async function settleCommodityTradeForUsers(
           reservation.margin_per_contract_krw
         );
 
-        // 손실 보존: Math.max(0, ...)로 손실을 소멸시키지 않음
+        // 손실 보존 + 타 자산 예약금 보호 + 부채(margin_debt_krw) 회계 반영
         if (cashDelta !== 0) {
-          profile.cash = roundMoney(profile.cash + cashDelta);
+          applyCashDeltaWithMarginDebt(db, profile, cashDelta);
         }
       };
 
@@ -497,7 +538,7 @@ export async function releaseCommodityOrderMargin(
 
     const profile = db.profiles.get(current.user_id);
     if (profile && current.reserved_krw > 0) {
-      profile.cash = roundMoney(profile.cash + current.reserved_krw);
+      applyCashDeltaWithMarginDebt(db, profile, current.reserved_krw);
     }
 
     current.reserved_krw = 0;
@@ -506,4 +547,224 @@ export async function releaseCommodityOrderMargin(
     db.commodityOpenOrders.delete(orderId);
     return true;
   });
+}
+
+/**
+ * 유지증거금(초기 증거금의 50%) 미달 원자재 포지션을 강제 청산한다.
+ * - 해당 종목의 미체결 주문 예약을 먼저 취소·환불한 뒤 현재가로 포지션을 청산 정산한다.
+ * - 갭 손실로 예치 증거금 및 가용 현금을 초과하는 손실이 발생하면 profile.margin_debt_krw에 부채로 기록한다.
+ */
+export async function evaluateAndLiquidateCommodityMaintenanceMargin(
+  db: MemoryDatabase,
+  commoditiesMap: ReadonlyMap<string, CommodityDefinition & { currentPrice: number }>,
+  removeFromBook?: (commodityId: string, orderId: string) => unknown
+): Promise<number> {
+  const MAINTENANCE_RATIO = 0.5;
+  const usdToKrw = getUsdToKrwRate(db);
+  let liquidatedCount = 0;
+
+  for (const [posKey, pos] of Array.from(db.commodityPositions.entries())) {
+    if (!pos || pos.side === 'flat' || pos.quantity <= 0) continue;
+    const commodity = commoditiesMap.get(pos.commodity_id);
+    if (!commodity || !Number.isFinite(commodity.currentPrice) || commodity.currentPrice <= 0) continue;
+
+    const multiplier = getCommodityContractMultiplier(commodity);
+    const priceDiff =
+      pos.side === 'long'
+        ? commodity.currentPrice - pos.avg_entry_price
+        : pos.avg_entry_price - commodity.currentPrice;
+    const unrealizedPnlKrw = roundMoney(priceDiff * pos.quantity * multiplier * usdToKrw);
+    const equityKrw = roundMoney(pos.reserved_margin_krw + unrealizedPnlKrw);
+    const maintenanceMarginKrw = roundMoney(pos.reserved_margin_krw * MAINTENANCE_RATIO);
+
+    if (equityKrw >= maintenanceMarginKrw) continue;
+
+    // 1. 동일 종목 미체결 예약 취소 및 환불
+    for (const [oid, res] of Array.from(db.commodityMarginReservations.entries())) {
+      if (
+        res.user_id === pos.user_id &&
+        res.commodity_id === pos.commodity_id &&
+        (res.status === 'open' || res.status === 'partial')
+      ) {
+        removeFromBook?.(pos.commodity_id, oid);
+        await releaseCommodityOrderMargin(db, oid, 'cancelled');
+      }
+    }
+
+    // 2. 강제 청산 정산
+    const profile = db.profiles.get(pos.user_id);
+    if (profile) {
+      const cashDelta = roundMoney(pos.reserved_margin_krw + unrealizedPnlKrw);
+      applyCashDeltaWithMarginDebt(db, profile, cashDelta);
+    }
+
+    db.commodityPositions.delete(posKey);
+    liquidatedCount++;
+  }
+
+  return liquidatedCount;
+}
+
+export interface CancelCommodityOrdersParams {
+  db: MemoryDatabase;
+  userId: string;
+  orderIds?: string[];
+  commodityId?: string;
+  removeFromBook: (commodityId: string, orderId: string) => CommodityOrder | null;
+  restoreToBook: (commodityId: string, order: CommodityOrder) => void;
+  onPersist?: () => Promise<boolean>;
+  runWithEngineLock?: <T>(fn: () => Promise<T>) => Promise<T>;
+}
+
+export interface CancelCommodityOrdersResult {
+  success: boolean;
+  statusCode: number;
+  message?: string;
+  cancelledOrderIds: string[];
+  refundedKrw: number;
+  remainingCash?: number;
+}
+
+/**
+ * 원자재 미체결 주문 단건/일괄 취소 (락 순서: engineTickLock -> accountLock -> commitGate).
+ * 소유권 검증 + 오더북 제거 + 증거금 환불 + 영속 저장 실패 시 원자적 롤백을 보장한다.
+ */
+export async function cancelCommodityOrders(
+  params: CancelCommodityOrdersParams
+): Promise<CancelCommodityOrdersResult> {
+  const { db, userId, orderIds, commodityId } = params;
+  if (!userId) {
+    return { success: false, statusCode: 401, message: '인증된 사용자가 필요합니다.', cancelledOrderIds: [], refundedKrw: 0 };
+  }
+
+  const executeLocked = async (): Promise<CancelCommodityOrdersResult> => {
+    return withAccountLocks([userId], async () => {
+      const targetIds: string[] = [];
+
+      if (Array.isArray(orderIds) && orderIds.length > 0) {
+        const uniqueIds = Array.from(new Set(orderIds.filter((id): id is string => typeof id === 'string' && id.trim() !== '')));
+        if (uniqueIds.length === 0) {
+          return { success: false, statusCode: 400, message: '유효한 주문 ID가 필요합니다.', cancelledOrderIds: [], refundedKrw: 0 };
+        }
+        for (const oid of uniqueIds) {
+          const openOrd = db.commodityOpenOrders.get(oid);
+          const res = db.commodityMarginReservations.get(oid);
+          if (!openOrd && !res) {
+            return { success: false, statusCode: 404, message: `원자재 주문을 찾을 수 없습니다: ${oid}`, cancelledOrderIds: [], refundedKrw: 0 };
+          }
+          const ownerId = openOrd?.userId || res?.user_id;
+          if (ownerId !== userId) {
+            return { success: false, statusCode: 403, message: '본인의 원자재 주문만 취소할 수 있습니다.', cancelledOrderIds: [], refundedKrw: 0 };
+          }
+          const status = res?.status ?? 'open';
+          if (status === 'open' || status === 'partial') {
+            targetIds.push(oid);
+          }
+        }
+      } else {
+        for (const [oid, res] of db.commodityMarginReservations.entries()) {
+          if (res.user_id !== userId) continue;
+          if (res.status !== 'open' && res.status !== 'partial') continue;
+          if (commodityId && res.commodity_id !== commodityId) continue;
+          targetIds.push(oid);
+        }
+      }
+
+      if (targetIds.length === 0) {
+        return { success: false, statusCode: 400, message: '취소할 미체결 원자재 주문이 없습니다.', cancelledOrderIds: [], refundedKrw: 0 };
+      }
+
+      return runWithCommitGate(params.onPersist, async () => {
+        const profile = db.profiles.get(userId);
+        const prevCash = profile ? profile.cash : undefined;
+        const resSnapshots = new Map<string, CommodityMarginReservation>();
+        const openOrdSnapshots = new Map<string, PersistedCommodityOrder>();
+        const removedBookOrders: Array<{ commodityId: string; order: CommodityOrder }> = [];
+
+        for (const oid of targetIds) {
+          const res = db.commodityMarginReservations.get(oid);
+          if (res) resSnapshots.set(oid, { ...res });
+          const openOrd = db.commodityOpenOrders.get(oid);
+          if (openOrd) openOrdSnapshots.set(oid, { ...openOrd });
+        }
+
+        const rollbackCancel = () => {
+          if (profile && prevCash !== undefined) {
+            profile.cash = prevCash;
+          }
+          for (const [oid, prevRes] of resSnapshots.entries()) {
+            db.commodityMarginReservations.set(oid, prevRes);
+          }
+          for (const [oid, prevOrd] of openOrdSnapshots.entries()) {
+            db.commodityOpenOrders.set(oid, prevOrd);
+          }
+          for (const { commodityId: cid, order } of removedBookOrders) {
+            params.restoreToBook(cid, order);
+          }
+        };
+
+        try {
+          let totalRefunded = 0;
+          const cancelledOrderIds: string[] = [];
+
+          for (const oid of targetIds) {
+            const res = db.commodityMarginReservations.get(oid);
+            const openOrd = db.commodityOpenOrders.get(oid);
+            const cid = res?.commodity_id || openOrd?.commodityId;
+            const prevReserved = res?.reserved_krw ?? 0;
+
+            if (cid) {
+              const removed = params.removeFromBook(cid, oid);
+              if (removed) {
+                removedBookOrders.push({ commodityId: cid, order: removed });
+              }
+            }
+
+            const released = await releaseCommodityOrderMargin(db, oid, 'cancelled');
+            if (released) {
+              totalRefunded = roundMoney(totalRefunded + prevReserved);
+              cancelledOrderIds.push(oid);
+            }
+          }
+
+          if (params.onPersist) {
+            const saved = await params.onPersist();
+            if (!saved) {
+              rollbackCancel();
+              return {
+                success: false,
+                statusCode: 500,
+                message: '원자재 주문 취소 영속 저장 실패로 취소를 롤백했습니다.',
+                cancelledOrderIds: [],
+                refundedKrw: 0,
+              };
+            }
+          }
+
+          return {
+            success: true,
+            statusCode: 200,
+            message: `${cancelledOrderIds.length}건의 원자재 주문이 취소되었습니다.`,
+            cancelledOrderIds,
+            refundedKrw: totalRefunded,
+            remainingCash: profile?.cash,
+          };
+        } catch (err: any) {
+          rollbackCancel();
+          return {
+            success: false,
+            statusCode: 500,
+            message: err?.message || '원자재 주문 취소 처리 중 오류가 발생했습니다.',
+            cancelledOrderIds: [],
+            refundedKrw: 0,
+          };
+        }
+      });
+    });
+  };
+
+  if (params.runWithEngineLock) {
+    return params.runWithEngineLock(executeLocked);
+  }
+  return executeLocked();
 }

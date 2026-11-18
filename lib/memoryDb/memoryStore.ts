@@ -1,8 +1,33 @@
 import { COMMODITY_DEFINITIONS } from '../commodities/definitions';
+import { isUsdQuotedAsset } from '../engine/currency';
 import type { ExchangeRateRecord } from '../repositories/types';
 
 // ── 고정 UUID 규격 (Production 스키마 완벽 호환) ──
 export const GUEST_USER_ID = '00000000-0000-4000-8000-000000000001';
+export const K200_INDEX_UNDERLYING_ID = 'idx_k200';
+export const K200_INDEX_BASE_VALUE = 260.0;
+
+/**
+ * 국내 주식(domestic) 시가총액 가중 변동률 기반 KOSPI200 기준 지수(260.0 기준) 산출.
+ */
+export function computeK200IndexPrice(stocks: Iterable<StockRecord>): number {
+  let prevCapSum = 0;
+  let currCapSum = 0;
+  for (const s of stocks) {
+    if (s.market !== 'domestic') continue;
+    const shares = Number(s.shares_outstanding || 1_000_000);
+    const cur = Number(s.current_price);
+    const prev = Number(s.previous_close || cur);
+    if (!Number.isFinite(cur) || cur <= 0 || !Number.isFinite(prev) || prev <= 0 || !Number.isFinite(shares) || shares <= 0) {
+      continue;
+    }
+    prevCapSum += prev * shares;
+    currCapSum += cur * shares;
+  }
+  if (prevCapSum <= 0) return K200_INDEX_BASE_VALUE;
+  const ratio = Math.max(0.5, Math.min(1.5, currCapSum / prevCapSum));
+  return Math.round(K200_INDEX_BASE_VALUE * ratio * 100) / 100;
+}
 
 export const STOCK_UUID_MAP: Record<string, string> = {
   '0010': '00000000-0000-4000-8000-000000000101', // 오성전자
@@ -45,6 +70,7 @@ export interface StockRecord {
   ticker: string;
   name: string;
   market: string;
+  currency?: 'KRW' | 'USD';
   current_price: number;
   previous_close: number;
   open_price: number;
@@ -111,6 +137,7 @@ export interface ProfileRecord {
   gbp_balance?: number;
   is_admin?: boolean;
   has_options_license?: boolean;
+  margin_debt_krw?: number;
   unlocked_features?: string[];
   feature_expiries?: Record<string, string>;
   news_subscriptions?: Record<string, string>;
@@ -353,8 +380,16 @@ export class MemoryDatabase {
   public settlementLedger: Map<string, SettlementLedgerEntry> = new Map();
   public settlementLedgerCutoffMs: number = 0;
   public settledEpochWatermarks: Map<number, number> = new Map();
+  public settledEpochIntervals: Map<number, Array<[number, number]>> = new Map();
   public settledOptionEpochWatermarks: Map<number, number> = new Map();
+  public settledOptionEpochIntervals: Map<number, Array<[number, number]>> = new Map();
   public settledDeterministicWatermarks: Map<string, number> = new Map();
+  public settledDeterministicIntervals: Map<string, Array<[number, number]>> = new Map();
+  public settledBondCouponIntervals: Map<string, Array<[string, string]>> = new Map();
+  public settledBondRedemptions: Set<string> = new Set();
+  public settledBondRedemptionWatermarkYm: string = '';
+  public settledOptionExpiryKeys: Set<string> = new Set();
+  public settledOptionExpiryWatermarkYmd: string = '';
   public evictedCustomTradeIds: Set<string> = new Set();
   public tradeEpoch: number = 1;
   public tradeSeq: number = 0;
@@ -367,6 +402,7 @@ export class MemoryDatabase {
   public commoditySettlementLedger: Map<string, CommoditySettlementEntry> = new Map();
   public commodityOpenOrders: Map<string, PersistedCommodityOrder> = new Map();
   public commoditySettledEpochWatermarks: Map<number, number> = new Map();
+  public commoditySettledEpochIntervals: Map<number, Array<[number, number]>> = new Map();
   public commodityEvictedCustomTradeIds: Set<string> = new Set();
   public commodityNextEpoch: number = 1;
   public commodityCurrentTick: number = 0;
@@ -601,29 +637,25 @@ export class MemoryDatabase {
     return currentPromise;
   }
 
-  /**
-   * 기본 시드 데이터 로드 (고정 UUID 규격 적용)
-   */
-  public seedDefaultData(): void {
-    // 가상 금융 시장 시뮬레이션 종목 메타데이터 (단일 권위: market_cap = current_price * shares_outstanding)
-    const stockList: {
-      ticker: string;
-      name: string;
-      market: string;
-      current_price: number;
-      previous_close: number;
-      sector: string;
-      sector_id: string;
-      theme_ids: string[];
-      is_core?: boolean;
-      shares_outstanding: number;
-      floating_shares: number;
-      base_liquidity: number;
-      base_spread_bps: number;
-      base_depth_shares: number;
-      institutional_fit: number;
-      macro_exposure: Record<string, number>;
-    }[] = [
+  private getDefaultStockDefinitions(): {
+    ticker: string;
+    name: string;
+    market: string;
+    current_price: number;
+    previous_close: number;
+    sector: string;
+    sector_id: string;
+    theme_ids: string[];
+    is_core?: boolean;
+    shares_outstanding: number;
+    floating_shares: number;
+    base_liquidity: number;
+    base_spread_bps: number;
+    base_depth_shares: number;
+    institutional_fit: number;
+    macro_exposure: Record<string, number>;
+  }[] {
+    return [
       // 국내 주요 종목
       { ticker: '0010', name: '오성전자', market: 'domestic', current_price: 72000, previous_close: 71500, sector: '반도체', sector_id: 'semiconductor', theme_ids: ['tech', 'ai', 'hardware'], is_core: true, shares_outstanding: 5969000000, floating_shares: 4500000000, base_liquidity: 0.95, base_spread_bps: 10, base_depth_shares: 1000, institutional_fit: 0.95, macro_exposure: { interest_rate: -0.3, growth: 1.2 } },
       { ticker: '0015', name: '미래자동차', market: 'domestic', current_price: 210000, previous_close: 209000, sector: '자동차', sector_id: 'auto', theme_ids: ['mobility', 'ev'], is_core: true, shares_outstanding: 213000000, floating_shares: 150000000, base_liquidity: 0.85, base_spread_bps: 15, base_depth_shares: 400, institutional_fit: 0.85, macro_exposure: { interest_rate: -0.5, growth: 0.9 } },
@@ -662,58 +694,179 @@ export class MemoryDatabase {
       { ticker: 'EWJ', name: 'iShares MSCI Japan ETF (일본)', market: 'etf', current_price: 70.0, previous_close: 70.0, sector: 'Index ETF', sector_id: 'index', theme_ids: ['global', 'japan'], is_core: false, shares_outstanding: 200000000, floating_shares: 200000000, base_liquidity: 0.92, base_spread_bps: 5, base_depth_shares: 2000, institutional_fit: 0.90, macro_exposure: { market_beta: 0.9 } },
       { ticker: 'FXI', name: 'iShares China Large-Cap ETF (중국)', market: 'etf', current_price: 25.0, previous_close: 25.0, sector: 'Index ETF', sector_id: 'index', theme_ids: ['global', 'china'], is_core: false, shares_outstanding: 240000000, floating_shares: 240000000, base_liquidity: 0.91, base_spread_bps: 6, base_depth_shares: 2000, institutional_fit: 0.85, macro_exposure: { market_beta: 0.95 } },
     ];
+  }
 
+  private buildDefaultStockRecord(
+    s: ReturnType<MemoryDatabase['getDefaultStockDefinitions']>[number],
+    idx: number
+  ): StockRecord {
+    const id = STOCK_UUID_MAP[s.ticker] || `00000000-0000-4000-8000-${(1000 + idx).toString().padStart(12, '0')}`;
+    const cp = s.current_price;
+    const pc = s.previous_close;
+    const cr = parseFloat((((cp - pc) / pc) * 100).toFixed(2));
+    return {
+      id,
+      ticker: s.ticker,
+      name: s.name,
+      market: s.market,
+      currency: isUsdQuotedAsset({ market: s.market, ticker: s.ticker }) ? 'USD' : 'KRW',
+      current_price: cp,
+      previous_close: pc,
+      open_price: pc,
+      high: Math.max(cp, pc) * 1.015,
+      low: Math.min(cp, pc) * 0.985,
+      high_price: Math.max(cp, pc) * 1.015,
+      low_price: Math.min(cp, pc) * 0.985,
+      volume: 154000 + idx * 12000,
+      change_rate: cr,
+      market_cap: Math.round(cp * s.shares_outstanding),
+      pe_ratio: 15.4,
+      dividend_yield: 2.1,
+      sector: s.sector,
+      sector_id: s.sector_id,
+      theme_ids: s.theme_ids,
+      is_core: s.is_core ?? false,
+      shares_outstanding: s.shares_outstanding,
+      floating_shares: s.floating_shares,
+      base_liquidity: s.base_liquidity,
+      base_spread_bps: s.base_spread_bps,
+      base_depth_shares: s.base_depth_shares,
+      institutional_fit: s.institutional_fit,
+      macro_exposure: s.macro_exposure,
+    };
+  }
+
+  private seedInitialStockHistory(record: StockRecord, idx: number, nowMs: number): void {
+    const cp = record.current_price;
+    const isUsd = isUsdQuotedAsset(record);
+    for (let h = 20; h >= 0; h--) {
+      const randJitter = Math.sin(h * 0.5 + idx) * 0.008;
+      const raw = cp * (1 + randJitter);
+      const p = isUsd ? Math.round(raw * 100) / 100 : Math.round(raw);
+      this.stockPriceHistory.push({
+        id: `hist_${record.id}_${h}`,
+        stock_id: record.id,
+        price: p,
+        recorded_at: new Date(nowMs - h * 60000).toISOString(),
+      });
+    }
+  }
+
+  private getK200ChainTemplates(): Array<[number, number, number]> {
+    return [
+      [290.0, 0.01, 30.90], [287.5, 0.01, 28.35], [285.0, 0.01, 25.35], [282.5, 0.01, 23.40],
+      [280.0, 0.02, 20.85], [277.5, 0.02, 17.90], [275.0, 0.05, 16.10], [272.5, 0.09, 13.00],
+      [270.0, 0.16, 10.50], [267.5, 0.31, 8.30], [265.0, 0.60, 5.90], [262.5, 1.18, 4.05],
+      [260.0, 2.15, 2.57],
+      [257.5, 3.60, 1.51], [255.0, 5.45, 0.85], [252.5, 7.50, 0.43], [250.0, 9.80, 0.23],
+      [247.5, 12.10, 0.14], [245.0, 13.85, 0.09], [242.5, 16.65, 0.07], [240.0, 19.15, 0.05],
+    ];
+  }
+
+  private buildFutureOptionContractsForMonth(
+    optBaseMs: number,
+    mOffset: number,
+    cycleIdx: number
+  ): { yymm: string; contracts: OptionContractRecord[] } {
+    const k200Chain = this.getK200ChainTemplates();
+    const baseUtcDate = new Date(optBaseMs);
+    const createdIso = new Date(optBaseMs).toISOString();
+    const mDate = new Date(Date.UTC(baseUtcDate.getUTCFullYear(), baseUtcDate.getUTCMonth() + mOffset, 15, 6, 30, 0));
+    const yyyy = String(mDate.getUTCFullYear());
+    const mm = String(mDate.getUTCMonth() + 1).padStart(2, '0');
+    const yymm = `${yyyy.slice(2)}${mm}`;
+    const monthExpiryIso = mDate.toISOString();
+    const timeScale = 1 + cycleIdx * 0.18;
+    const contracts: OptionContractRecord[] = [];
+    for (const [strike, callPx, putPx] of k200Chain) {
+      const sLabel = strike.toFixed(1);
+      const scaledCall = Math.max(0.01, Math.round(callPx * timeScale * 100) / 100);
+      const scaledPut = Math.max(0.01, Math.round(putPx * timeScale * 100) / 100);
+      contracts.push(
+        { id: `opt_k200_${yymm}_c_${sLabel}`, underlying_stock_id: K200_INDEX_UNDERLYING_ID, ticker: `IDX-K200-${yymm}-C${sLabel}`, asset_class: 'IDX', type: 'CALL', option_type: 'CALL', strike_price: strike, current_price: scaledCall, multiplier: 250000, expiry_date: monthExpiryIso, open_interest: 1000 + cycleIdx * 200, volume: 100 + Math.max(0, 2 - cycleIdx) * 40, created_at: createdIso },
+        { id: `opt_k200_${yymm}_p_${sLabel}`, underlying_stock_id: K200_INDEX_UNDERLYING_ID, ticker: `IDX-K200-${yymm}-P${sLabel}`, asset_class: 'IDX', type: 'PUT', option_type: 'PUT', strike_price: strike, current_price: scaledPut, multiplier: 250000, expiry_date: monthExpiryIso, open_interest: 1000 + cycleIdx * 200, volume: 100 + Math.max(0, 2 - cycleIdx) * 40, created_at: createdIso },
+      );
+    }
+    return { yymm, contracts };
+  }
+
+  private buildFutureOptionContracts(optBaseMs: number): OptionContractRecord[] {
+    const list: OptionContractRecord[] = [];
+    for (let mOffset = 1; mOffset <= 3; mOffset++) {
+      list.push(...this.buildFutureOptionContractsForMonth(optBaseMs, mOffset, mOffset - 1).contracts);
+    }
+    return list;
+  }
+
+  /**
+   * 비파괴 카탈로그 보충: 구버전 스냅샷 복원 시 누락된 신규 종목/ETF만 추가한다.
+   * 기존 종목의 가격/상태/주문/잔고는 절대 수정하지 않는다.
+   */
+  public supplementMissingCatalogStocks(): number {
+    const stockList = this.getDefaultStockDefinitions();
+    const now = this.getNowMs();
+    let added = 0;
+    stockList.forEach((s, idx) => {
+      const id = STOCK_UUID_MAP[s.ticker] || `00000000-0000-4000-8000-${(1000 + idx).toString().padStart(12, '0')}`;
+      if (this.stocks.has(id) || this.tickerIndex.has(s.ticker.toUpperCase())) {
+        return;
+      }
+      const record = this.buildDefaultStockRecord(s, idx);
+      this.stocks.set(record.id, record);
+      this.addStockToIndex(record);
+      this.seedInitialStockHistory(record, idx, now);
+      added++;
+    });
+    return added;
+  }
+
+  /**
+   * 비파괴 미래 옵션 월물 보충: 유효한 미래 만기 옵션 계약이 0건일 때만 향후 3개 월물을 추가한다.
+   * 기존 과거 계약의 expiry_date나 기존 포지션/가격은 절대 변경하지 않으며,
+   * 이미 만기된 동일 월물 ID가 존재할 경우 다음 유효 미래 월물로 자동 이월 생성한다.
+   */
+  public supplementFutureOptionContracts(nowMs?: number): number {
+    const checkNowMs = nowMs ?? (this.executionContext ? this.getNowMs() : Date.now());
+    let hasUnexpired = false;
+    for (const c of this.optionsContracts.values()) {
+      const expMs = Date.parse(c.expiry_date || '');
+      if (Number.isFinite(expMs) && expMs > checkNowMs) {
+        hasUnexpired = true;
+        break;
+      }
+    }
+    if (hasUnexpired) return 0;
+
+    let added = 0;
+    let monthsAdded = 0;
+    for (let mOffset = 1; mOffset <= 24 && monthsAdded < 3; mOffset++) {
+      const { contracts } = this.buildFutureOptionContractsForMonth(checkNowMs, mOffset, monthsAdded);
+      const hasAnyCollision = contracts.some((c) => this.optionsContracts.has(c.id));
+      if (hasAnyCollision) {
+        continue;
+      }
+      for (const c of contracts) {
+        this.optionsContracts.set(c.id, c);
+        added++;
+      }
+      monthsAdded++;
+    }
+    return added;
+  }
+
+  /**
+   * 기본 시드 데이터 로드 (고정 UUID 규격 적용)
+   */
+  public seedDefaultData(): void {
+    // 가상 금융 시장 시뮬레이션 종목 메타데이터 (단일 권위: market_cap = current_price * shares_outstanding)
+    const stockList = this.getDefaultStockDefinitions();
     const now = this.getNowMs();
 
     stockList.forEach((s, idx) => {
-      // 고정 UUID 사용 (매핑 없으면 결정론적 UUID 생성)
-      const id = STOCK_UUID_MAP[s.ticker] || `00000000-0000-4000-8000-${(1000 + idx).toString().padStart(12, '0')}`;
-      const cp = s.current_price;
-      const pc = s.previous_close;
-      const cr = parseFloat((((cp - pc) / pc) * 100).toFixed(2));
-      const record: StockRecord = {
-        id,
-        ticker: s.ticker,
-        name: s.name,
-        market: s.market,
-        current_price: cp,
-        previous_close: pc,
-        open_price: pc,
-        high: Math.max(cp, pc) * 1.015,
-        low: Math.min(cp, pc) * 0.985,
-        high_price: Math.max(cp, pc) * 1.015,
-        low_price: Math.min(cp, pc) * 0.985,
-        volume: 154000 + idx * 12000,
-        change_rate: cr,
-        market_cap: Math.round(cp * s.shares_outstanding),
-        pe_ratio: 15.4,
-        dividend_yield: 2.1,
-        sector: s.sector,
-        sector_id: s.sector_id,
-        theme_ids: s.theme_ids,
-        is_core: s.is_core ?? false,
-        shares_outstanding: s.shares_outstanding,
-        floating_shares: s.floating_shares,
-        base_liquidity: s.base_liquidity,
-        base_spread_bps: s.base_spread_bps,
-        base_depth_shares: s.base_depth_shares,
-        institutional_fit: s.institutional_fit,
-        macro_exposure: s.macro_exposure,
-      };
-      this.stocks.set(id, record);
+      const record = this.buildDefaultStockRecord(s, idx);
+      this.stocks.set(record.id, record);
       this.addStockToIndex(record);
-
-      // 초기 가격 이력 20건 생성
-      for (let h = 20; h >= 0; h--) {
-        const randJitter = (Math.sin(h * 0.5 + idx) * 0.008);
-        const p = Math.round(cp * (1 + randJitter));
-        this.stockPriceHistory.push({
-          id: `hist_${id}_${h}`,
-          stock_id: id,
-          price: p,
-          recorded_at: new Date(now - h * 60000).toISOString(),
-        });
-      }
+      this.seedInitialStockHistory(record, idx, now);
     });
 
     // ── 원자재 시드 ──
@@ -756,33 +909,8 @@ export class MemoryDatabase {
     const optList: OptionContractRecord[] = [
       { id: 'opt_c_720', underlying_stock_id: osId, ticker: 'IDX-K200-2608-C260.0', asset_class: 'STK', type: 'CALL', option_type: 'CALL', strike_price: 72000, current_price: 2.15, multiplier: 250000, expiry_date: expDate, open_interest: 450, volume: 120, delta: 0.65, gamma: 0.04, theta: -0.15, implied_volatility: 0.22, created_at: this.getIsoTimestamp() },
       { id: 'opt_p_720', underlying_stock_id: osId, ticker: 'IDX-K200-2608-P260.0', asset_class: 'STK', type: 'PUT', option_type: 'PUT', strike_price: 72000, current_price: 1.85, multiplier: 250000, expiry_date: expDate, open_interest: 380, volume: 95, delta: -0.35, gamma: 0.04, theta: -0.12, implied_volatility: 0.21, created_at: this.getIsoTimestamp() },
+      ...this.buildFutureOptionContracts(optBaseMs),
     ];
-    const k200Chain: Array<[number, number, number]> = [
-      [290.0, 0.01, 30.90], [287.5, 0.01, 28.35], [285.0, 0.01, 25.35], [282.5, 0.01, 23.40],
-      [280.0, 0.02, 20.85], [277.5, 0.02, 17.90], [275.0, 0.05, 16.10], [272.5, 0.09, 13.00],
-      [270.0, 0.16, 10.50], [267.5, 0.31, 8.30], [265.0, 0.60, 5.90], [262.5, 1.18, 4.05],
-      [260.0, 2.15, 2.57],
-      [257.5, 3.60, 1.51], [255.0, 5.45, 0.85], [252.5, 7.50, 0.43], [250.0, 9.80, 0.23],
-      [247.5, 12.10, 0.14], [245.0, 13.85, 0.09], [242.5, 16.65, 0.07], [240.0, 19.15, 0.05],
-    ];
-    const baseUtcDate = new Date(optBaseMs);
-    for (let mOffset = 1; mOffset <= 3; mOffset++) {
-      const mDate = new Date(Date.UTC(baseUtcDate.getUTCFullYear(), baseUtcDate.getUTCMonth() + mOffset, 15, 6, 30, 0));
-      const yyyy = String(mDate.getUTCFullYear());
-      const mm = String(mDate.getUTCMonth() + 1).padStart(2, '0');
-      const yymm = `${yyyy.slice(2)}${mm}`;
-      const monthExpiryIso = mDate.toISOString();
-      const timeScale = 1 + (mOffset - 1) * 0.18;
-      for (const [strike, callPx, putPx] of k200Chain) {
-        const sLabel = strike.toFixed(1);
-        const scaledCall = Math.max(0.01, Math.round(callPx * timeScale * 100) / 100);
-        const scaledPut = Math.max(0.01, Math.round(putPx * timeScale * 100) / 100);
-        optList.push(
-          { id: `opt_k200_${yymm}_c_${sLabel}`, underlying_stock_id: osId, ticker: `IDX-K200-${yymm}-C${sLabel}`, asset_class: 'IDX', type: 'CALL', option_type: 'CALL', strike_price: strike, current_price: scaledCall, multiplier: 250000, expiry_date: monthExpiryIso, open_interest: 1000 + (mOffset - 1) * 200, volume: 100 + (3 - mOffset) * 40, created_at: this.getIsoTimestamp() },
-          { id: `opt_k200_${yymm}_p_${sLabel}`, underlying_stock_id: osId, ticker: `IDX-K200-${yymm}-P${sLabel}`, asset_class: 'IDX', type: 'PUT', option_type: 'PUT', strike_price: strike, current_price: scaledPut, multiplier: 250000, expiry_date: monthExpiryIso, open_interest: 1000 + (mOffset - 1) * 200, volume: 100 + (3 - mOffset) * 40, created_at: this.getIsoTimestamp() },
-        );
-      }
-    }
     optList.forEach((o) => this.optionsContracts.set(o.id, o));
 
     // ── 환율 시드 ──
@@ -999,8 +1127,16 @@ export class MemoryDatabase {
     this.settlementLedger.clear();
     this.settlementLedgerCutoffMs = 0;
     this.settledEpochWatermarks.clear();
+    this.settledEpochIntervals.clear();
     this.settledOptionEpochWatermarks.clear();
+    this.settledOptionEpochIntervals.clear();
     this.settledDeterministicWatermarks.clear();
+    this.settledDeterministicIntervals.clear();
+    this.settledBondCouponIntervals.clear();
+    this.settledBondRedemptions.clear();
+    this.settledBondRedemptionWatermarkYm = '';
+    this.settledOptionExpiryKeys.clear();
+    this.settledOptionExpiryWatermarkYmd = '';
     this.evictedCustomTradeIds.clear();
     this.tradeEpoch += 1;
     this.tradeSeq = 0;
@@ -1017,6 +1153,7 @@ export class MemoryDatabase {
     this.commoditySettlementLedger.clear();
     this.commodityOpenOrders.clear();
     this.commoditySettledEpochWatermarks.clear();
+    this.commoditySettledEpochIntervals.clear();
     this.commodityEvictedCustomTradeIds.clear();
     this.commodityNextEpoch += 1;
     this.commodityCurrentTick = 0;
@@ -1029,11 +1166,201 @@ export class MemoryDatabase {
     this.publish('market_reset', { timestamp: this.getNowMs() });
   }
 
+  private recordContiguousSeq<K>(
+    watermarks: Map<K, number>,
+    intervalsMap: Map<K, Array<[number, number]>>,
+    key: K,
+    seq: number,
+    defaultWatermark: number
+  ): void {
+    let wm = watermarks.get(key) ?? defaultWatermark;
+    if (seq <= wm) return;
+
+    const intervals = intervalsMap.get(key) ? [...intervalsMap.get(key)!] : [];
+    intervals.push([seq, seq]);
+    intervals.sort((a, b) => a[0] - b[0]);
+
+    const merged: Array<[number, number]> = [];
+    for (const cur of intervals) {
+      const last = merged[merged.length - 1];
+      if (last && last[1] + 1 >= cur[0]) {
+        last[1] = Math.max(last[1], cur[1]);
+      } else {
+        merged.push([cur[0], cur[1]]);
+      }
+    }
+
+    if (merged.length > 0 && merged[0][0] <= wm + 1) {
+      wm = Math.max(wm, merged[0][1]);
+      watermarks.set(key, wm);
+      merged.shift();
+    } else if (!watermarks.has(key)) {
+      watermarks.set(key, wm);
+    }
+
+    if (merged.length === 0) {
+      intervalsMap.delete(key);
+    } else {
+      intervalsMap.set(key, merged);
+    }
+  }
+
+  private isContiguousSeqSettled<K>(
+    watermarks: Map<K, number>,
+    intervalsMap: Map<K, Array<[number, number]>>,
+    key: K,
+    seq: number,
+    defaultWatermark: number
+  ): boolean {
+    const wm = watermarks.get(key) ?? defaultWatermark;
+    if (seq <= wm) return true;
+    const intervals = intervalsMap.get(key);
+    if (!intervals) return false;
+    for (const [s, e] of intervals) {
+      if (seq >= s && seq <= e) return true;
+      if (seq < s) break;
+    }
+    return false;
+  }
+
+  private nextYearMonth(ym: string): string {
+    const [yStr, mStr] = ym.split('-');
+    let y = Number(yStr);
+    let m = Number(mStr) + 1;
+    if (m > 12) {
+      y += 1;
+      m = 1;
+    }
+    return `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}`;
+  }
+
+  private recordBondCouponInterval(bondUserKey: string, ym: string): void {
+    const existing = this.settledBondCouponIntervals.get(bondUserKey)
+      ? [...this.settledBondCouponIntervals.get(bondUserKey)!]
+      : [];
+    existing.push([ym, ym]);
+    existing.sort((a, b) => a[0].localeCompare(b[0]));
+
+    const merged: Array<[string, string]> = [];
+    for (const cur of existing) {
+      const last = merged[merged.length - 1];
+      if (last && this.nextYearMonth(last[1]) >= cur[0]) {
+        if (cur[1] > last[1]) last[1] = cur[1];
+      } else {
+        merged.push([cur[0], cur[1]]);
+      }
+    }
+    this.settledBondCouponIntervals.set(bondUserKey, merged);
+  }
+
+  private isBondCouponSettledInIntervals(bondUserKey: string, ym: string): boolean {
+    const intervals = this.settledBondCouponIntervals.get(bondUserKey);
+    if (!intervals) return false;
+    for (const [start, end] of intervals) {
+      if (ym >= start && ym <= end) return true;
+      if (ym < start) break;
+    }
+    return false;
+  }
+
+  private compactSettledOptionExpiryKeys(): void {
+    if (this.settledOptionExpiryKeys.size <= 2000) return;
+
+    // 보유 잔고가 남아있는 옵션 계약(또는 전체 미결제/존재 계약)의 최소 만기일 이전만 안전하게 날짜 워터마크로 압축한다.
+    let minProtectedYmd = '9999-12-31';
+    for (const h of this.holdings.values()) {
+      if (Number(h.quantity || 0) <= 0) continue;
+      const opt = this.optionsContracts.get(h.stock_id);
+      if (opt?.expiry_date) {
+        const ymd = opt.expiry_date.split('T')[0];
+        if (ymd && ymd < minProtectedYmd) {
+          minProtectedYmd = ymd;
+        }
+      }
+    }
+    for (const opt of this.optionsContracts.values()) {
+      const expMs = Date.parse(opt.expiry_date || '');
+      if (Number.isFinite(expMs) && expMs > this.getNowMs()) {
+        const ymd = opt.expiry_date.split('T')[0];
+        if (ymd && ymd < minProtectedYmd) {
+          minProtectedYmd = ymd;
+        }
+      }
+    }
+
+    const optYmdRe = /^opt_settle_.+_(\d{4}-\d{2}-\d{2})$/;
+    const candidateYmds: string[] = [];
+    for (const key of this.settledOptionExpiryKeys) {
+      const m = optYmdRe.exec(key);
+      if (m && m[1] < minProtectedYmd) {
+        candidateYmds.push(m[1]);
+      }
+    }
+    if (candidateYmds.length === 0) return;
+    candidateYmds.sort();
+    // 오래된 완료 만기일들을 날짜 워터마크로 압축 (동일 만기 내 신규 미정산 계약이 없도록 minProtectedYmd 미만만 대상)
+    const compactCutoffYmd = candidateYmds[Math.min(candidateYmds.length - 1, Math.floor(candidateYmds.length * 0.75))];
+    if (compactCutoffYmd > this.settledOptionExpiryWatermarkYmd) {
+      this.settledOptionExpiryWatermarkYmd = compactCutoffYmd;
+    }
+    for (const key of Array.from(this.settledOptionExpiryKeys)) {
+      const m = optYmdRe.exec(key);
+      if (m && m[1] <= this.settledOptionExpiryWatermarkYmd) {
+        this.settledOptionExpiryKeys.delete(key);
+      }
+    }
+  }
+
+  private compactSettledBondRedemptionKeys(): void {
+    if (this.settledBondRedemptions.size <= 2000) return;
+
+    let minProtectedYm = '9999-12';
+    for (const h of this.holdings.values()) {
+      if (Number(h.quantity || 0) <= 0) continue;
+      const bond = this.bonds.get(h.stock_id);
+      const mat = bond?.maturity_date || bond?.maturity;
+      if (mat && /^\d{4}-\d{2}/.test(mat)) {
+        const ym = mat.slice(0, 7);
+        if (ym < minProtectedYm) minProtectedYm = ym;
+      }
+    }
+    for (const bond of this.bonds.values()) {
+      const mat = bond.maturity_date || bond.maturity;
+      const matMs = Date.parse(mat || '');
+      if (Number.isFinite(matMs) && matMs > this.getNowMs() && /^\d{4}-\d{2}/.test(mat || '')) {
+        const ym = mat.slice(0, 7);
+        if (ym < minProtectedYm) minProtectedYm = ym;
+      }
+    }
+
+    const bondYmRe = /^bond_maturity_redemption_.+_period_(\d{4}-\d{2})$/;
+    const candidateYms: string[] = [];
+    for (const key of this.settledBondRedemptions) {
+      const m = bondYmRe.exec(key);
+      if (m && m[1] < minProtectedYm) {
+        candidateYms.push(m[1]);
+      }
+    }
+    if (candidateYms.length === 0) return;
+    candidateYms.sort();
+    const compactCutoffYm = candidateYms[Math.min(candidateYms.length - 1, Math.floor(candidateYms.length * 0.75))];
+    if (compactCutoffYm > this.settledBondRedemptionWatermarkYm) {
+      this.settledBondRedemptionWatermarkYm = compactCutoffYm;
+    }
+    for (const key of Array.from(this.settledBondRedemptions)) {
+      const m = bondYmRe.exec(key);
+      if (m && m[1] <= this.settledBondRedemptionWatermarkYm) {
+        this.settledBondRedemptions.delete(key);
+      }
+    }
+  }
+
   /**
    * 정산 원장(settlementLedger)의 메모리 상한을 유지하되,
    * 단조 증가 ID(tr_e<epoch>_<seq>, opt_tr_e<epoch>_<seq>) 및
-   * 결정론적 엔진 체결 ID(trade_<runId>_t<tick>_s..._f<seq>)는 에포크/runId 워터마크로 O(1) 압축하고,
-   * 임의 ID만 evictedCustomTradeIds에 보존하여 타임스탬프 누락/변조 재실행도 차단한다.
+   * 결정론적 엔진 체결 ID(trade_<runId>_t<tick>_s..._f<seq>)는 연속 확인(contiguous) 워터마크 + 비연속 구간(interval)으로 압축해
+   * 비순차 삽입/퇴거 시에도 미처리 거래를 기처리로 오인하지 않는다.
+   * 또한 opt_settle_* / bond_* ID는 전용 압축 구조(월별 구간 병합·만기 날짜 워터마크)로 분리한다.
    */
   public trimSettlementLedger(maxEntries: number = 10000): number {
     if (this.settlementLedger.size <= maxEntries) return 0;
@@ -1043,6 +1370,7 @@ export class MemoryDatabase {
     const monotonicRe = /^tr_e(\d+)_(\d+)$/;
     const optionMonotonicRe = /^opt_tr_e(\d+)_(\d+)$/;
     const deterministicTradeRe = /^trade_(.+?)_t\d+_s.+~.+_f(\d+)$/;
+    const bondCouponPeriodRe = /^bond_coupon_(.+)_period_(\d{4}-\d{2})$/;
 
     for (let i = 0; i < removeCount; i++) {
       const [key, val] = entries[i];
@@ -1054,29 +1382,37 @@ export class MemoryDatabase {
       if (match) {
         const epoch = Number(match[1]);
         const seq = Number(match[2]);
-        const cur = this.settledEpochWatermarks.get(epoch) ?? 0;
-        if (seq > cur) this.settledEpochWatermarks.set(epoch, seq);
+        this.recordContiguousSeq(this.settledEpochWatermarks, this.settledEpochIntervals, epoch, seq, 0);
       } else {
         const optMatch = optionMonotonicRe.exec(key);
         if (optMatch) {
           const epoch = Number(optMatch[1]);
           const seq = Number(optMatch[2]);
-          const cur = this.settledOptionEpochWatermarks.get(epoch) ?? 0;
-          if (seq > cur) this.settledOptionEpochWatermarks.set(epoch, seq);
+          this.recordContiguousSeq(this.settledOptionEpochWatermarks, this.settledOptionEpochIntervals, epoch, seq, 0);
         } else {
           const detMatch = deterministicTradeRe.exec(key);
           if (detMatch) {
             const runId = detMatch[1];
             const fillSeq = Number(detMatch[2]);
-            const cur = this.settledDeterministicWatermarks.get(runId) ?? -1;
-            if (fillSeq > cur) this.settledDeterministicWatermarks.set(runId, fillSeq);
+            this.recordContiguousSeq(this.settledDeterministicWatermarks, this.settledDeterministicIntervals, runId, fillSeq, -1);
           } else {
-            this.evictedCustomTradeIds.add(key);
+            const couponMatch = bondCouponPeriodRe.exec(key);
+            if (couponMatch) {
+              this.recordBondCouponInterval(couponMatch[1], couponMatch[2]);
+            } else if (key.startsWith('bond_')) {
+              this.settledBondRedemptions.add(key);
+            } else if (key.startsWith('opt_settle_')) {
+              this.settledOptionExpiryKeys.add(key);
+            } else {
+              this.evictedCustomTradeIds.add(key);
+            }
           }
         }
       }
       this.settlementLedger.delete(key);
     }
+    this.compactSettledOptionExpiryKeys();
+    this.compactSettledBondRedemptionKeys();
     this.settlementLedgerCutoffMs = maxRemovedMs;
     return removeCount;
   }
@@ -1087,30 +1423,58 @@ export class MemoryDatabase {
     if (match) {
       const epoch = Number(match[1]);
       const seq = Number(match[2]);
-      const wm = this.settledEpochWatermarks.get(epoch) ?? 0;
-      if (seq <= wm) return true;
+      if (this.isContiguousSeqSettled(this.settledEpochWatermarks, this.settledEpochIntervals, epoch, seq, 0)) {
+        return true;
+      }
     }
     const optMatch = /^opt_tr_e(\d+)_(\d+)$/.exec(tradeId);
     if (optMatch) {
       const epoch = Number(optMatch[1]);
       const seq = Number(optMatch[2]);
-      const wm = this.settledOptionEpochWatermarks.get(epoch) ?? 0;
-      if (seq <= wm) return true;
+      if (this.isContiguousSeqSettled(this.settledOptionEpochWatermarks, this.settledOptionEpochIntervals, epoch, seq, 0)) {
+        return true;
+      }
     }
     const detMatch = /^trade_(.+?)_t\d+_s.+~.+_f(\d+)$/.exec(tradeId);
     if (detMatch) {
       const runId = detMatch[1];
       const fillSeq = Number(detMatch[2]);
-      const wm = this.settledDeterministicWatermarks.get(runId);
-      if (wm !== undefined && fillSeq <= wm) return true;
+      if (this.isContiguousSeqSettled(this.settledDeterministicWatermarks, this.settledDeterministicIntervals, runId, fillSeq, -1)) {
+        return true;
+      }
+    }
+    const couponMatch = /^bond_coupon_(.+)_period_(\d{4}-\d{2})$/.exec(tradeId);
+    if (couponMatch) {
+      if (this.isBondCouponSettledInIntervals(couponMatch[1], couponMatch[2])) {
+        return true;
+      }
+    }
+    if (tradeId.startsWith('bond_')) {
+      if (this.settledBondRedemptions.has(tradeId)) return true;
+      if (this.settledBondRedemptionWatermarkYm) {
+        const ymMatch = /^bond_maturity_redemption_.+_period_(\d{4}-\d{2})$/.exec(tradeId);
+        if (ymMatch && ymMatch[1] <= this.settledBondRedemptionWatermarkYm) {
+          return true;
+        }
+      }
+      return this.evictedCustomTradeIds.has(tradeId);
+    }
+    if (tradeId.startsWith('opt_settle_')) {
+      if (this.settledOptionExpiryKeys.has(tradeId)) return true;
+      if (this.settledOptionExpiryWatermarkYmd) {
+        const ymdMatch = /^opt_settle_.+_(\d{4}-\d{2}-\d{2})$/.exec(tradeId);
+        if (ymdMatch && ymdMatch[1] <= this.settledOptionExpiryWatermarkYmd) {
+          return true;
+        }
+      }
+      return this.evictedCustomTradeIds.has(tradeId);
     }
     return this.evictedCustomTradeIds.has(tradeId);
   }
 
   /**
    * 원자재 정산 원장(commoditySettlementLedger) 트리밍:
-   * 단조 ID(cm_trade_e<epoch>_t<tick>_s<seq>)는 에포크 워터마크로 압축하고,
-   * 비단조 커스텀 ID는 commodityEvictedCustomTradeIds에 보존하여 단순 cap 삭제를 방지한다.
+   * 단조 ID(cm_trade_e<epoch>_t<tick>_s<seq>)는 연속 확인 워터마크 + 비연속 구간으로 압축한다.
    */
   public trimCommoditySettlementLedger(maxEntries: number = 5000): number {
     if (this.commoditySettlementLedger.size <= maxEntries) return 0;
@@ -1124,8 +1488,7 @@ export class MemoryDatabase {
       if (match) {
         const epoch = Number(match[1]);
         const seq = Number(match[2]);
-        const cur = this.commoditySettledEpochWatermarks.get(epoch) ?? 0;
-        if (seq > cur) this.commoditySettledEpochWatermarks.set(epoch, seq);
+        this.recordContiguousSeq(this.commoditySettledEpochWatermarks, this.commoditySettledEpochIntervals, epoch, seq, 0);
       } else {
         this.commodityEvictedCustomTradeIds.add(key);
       }
@@ -1140,8 +1503,9 @@ export class MemoryDatabase {
     if (match) {
       const epoch = Number(match[1]);
       const seq = Number(match[2]);
-      const wm = this.commoditySettledEpochWatermarks.get(epoch) ?? 0;
-      if (seq <= wm) return true;
+      if (this.isContiguousSeqSettled(this.commoditySettledEpochWatermarks, this.commoditySettledEpochIntervals, epoch, seq, 0)) {
+        return true;
+      }
     }
     return this.commodityEvictedCustomTradeIds.has(tradeId);
   }
@@ -1169,8 +1533,16 @@ export class MemoryDatabase {
       settlementLedger: Array.from(this.settlementLedger.entries()),
       settlementLedgerCutoffMs: this.settlementLedgerCutoffMs,
       settledEpochWatermarks: Array.from(this.settledEpochWatermarks.entries()),
+      settledEpochIntervals: Array.from(this.settledEpochIntervals.entries()),
       settledOptionEpochWatermarks: Array.from(this.settledOptionEpochWatermarks.entries()),
+      settledOptionEpochIntervals: Array.from(this.settledOptionEpochIntervals.entries()),
       settledDeterministicWatermarks: Array.from(this.settledDeterministicWatermarks.entries()),
+      settledDeterministicIntervals: Array.from(this.settledDeterministicIntervals.entries()),
+      settledBondCouponIntervals: Array.from(this.settledBondCouponIntervals.entries()),
+      settledBondRedemptions: Array.from(this.settledBondRedemptions.values()),
+      settledBondRedemptionWatermarkYm: this.settledBondRedemptionWatermarkYm,
+      settledOptionExpiryKeys: Array.from(this.settledOptionExpiryKeys.values()),
+      settledOptionExpiryWatermarkYmd: this.settledOptionExpiryWatermarkYmd,
       evictedCustomTradeIds: Array.from(this.evictedCustomTradeIds.values()),
       tradeEpoch: this.tradeEpoch,
       tradeSeq: this.tradeSeq,
@@ -1188,6 +1560,7 @@ export class MemoryDatabase {
       commoditySettlementLedger: Array.from(this.commoditySettlementLedger.entries()),
       commodityOpenOrders: Array.from(this.commodityOpenOrders.entries()),
       commoditySettledEpochWatermarks: Array.from(this.commoditySettledEpochWatermarks.entries()),
+      commoditySettledEpochIntervals: Array.from(this.commoditySettledEpochIntervals.entries()),
       commodityEvictedCustomTradeIds: Array.from(this.commodityEvictedCustomTradeIds.values()),
       commodityNextEpoch: this.commodityNextEpoch,
       commodityCurrentTick: this.commodityCurrentTick,
@@ -1197,7 +1570,40 @@ export class MemoryDatabase {
     };
   }
 
-  public importSnapshot(data: any): void {
+  /**
+   * 트랜잭션/틱 롤백 전용 심층 스냅샷 생성 (구조적 복제로 중첩 레코드 앨리어싱 차단).
+   */
+  public exportRollbackSnapshot(): any {
+    return structuredClone(this.exportSnapshot());
+  }
+
+  /**
+   * 트랜잭션/틱 롤백 전용 복원: tradeEpoch 증가 및 부팅 카탈로그 보충을 수행하지 않고 원상태로 되돌린다.
+   */
+  public restoreRollbackSnapshot(data: any): void {
+    const cloned = structuredClone(data);
+    const prevProfiles = this.profiles;
+    this.applySnapshotData(cloned, { bumpTradeEpoch: false, migrateCatalog: false });
+    // 기존에 캐시된 ProfileRecord 참조가 있더라도 롤백된 잔고/상태가 일관되게 보이도록 동기화한다.
+    // 틱 중 추가된 프로퍼티(예: has_options_license, news_subscriptions 등)도 정확히 제거한다.
+    for (const [id, restored] of this.profiles.entries()) {
+      const existingObj = prevProfiles.get(id);
+      if (existingObj && existingObj !== restored) {
+        for (const k of Object.keys(existingObj)) {
+          if (!(k in restored)) {
+            delete (existingObj as any)[k];
+          }
+        }
+        Object.assign(existingObj, restored);
+        this.profiles.set(id, existingObj);
+      }
+    }
+  }
+
+  private applySnapshotData(
+    data: any,
+    options: { bumpTradeEpoch: boolean; migrateCatalog: boolean }
+  ): void {
     if (!data || typeof data !== 'object' || Array.isArray(data)) {
       throw new Error('유효하지 않은 스냅샷 형식입니다.');
     }
@@ -1257,12 +1663,38 @@ export class MemoryDatabase {
     this.settledEpochWatermarks = Array.isArray(data.settledEpochWatermarks)
       ? new Map(data.settledEpochWatermarks)
       : new Map();
+    this.settledEpochIntervals = Array.isArray(data.settledEpochIntervals)
+      ? new Map(data.settledEpochIntervals)
+      : new Map();
     this.settledOptionEpochWatermarks = Array.isArray(data.settledOptionEpochWatermarks)
       ? new Map(data.settledOptionEpochWatermarks)
+      : new Map();
+    this.settledOptionEpochIntervals = Array.isArray(data.settledOptionEpochIntervals)
+      ? new Map(data.settledOptionEpochIntervals)
       : new Map();
     this.settledDeterministicWatermarks = Array.isArray(data.settledDeterministicWatermarks)
       ? new Map(data.settledDeterministicWatermarks)
       : new Map();
+    this.settledDeterministicIntervals = Array.isArray(data.settledDeterministicIntervals)
+      ? new Map(data.settledDeterministicIntervals)
+      : new Map();
+    this.settledBondCouponIntervals = Array.isArray(data.settledBondCouponIntervals)
+      ? new Map(data.settledBondCouponIntervals)
+      : new Map();
+    this.settledBondRedemptions = Array.isArray(data.settledBondRedemptions)
+      ? new Set(data.settledBondRedemptions)
+      : new Set();
+    this.settledBondRedemptionWatermarkYm =
+      typeof data.settledBondRedemptionWatermarkYm === 'string'
+        ? data.settledBondRedemptionWatermarkYm
+        : '';
+    this.settledOptionExpiryKeys = Array.isArray(data.settledOptionExpiryKeys)
+      ? new Set(data.settledOptionExpiryKeys)
+      : new Set();
+    this.settledOptionExpiryWatermarkYmd =
+      typeof data.settledOptionExpiryWatermarkYmd === 'string'
+        ? data.settledOptionExpiryWatermarkYmd
+        : '';
     this.evictedCustomTradeIds = Array.isArray(data.evictedCustomTradeIds)
       ? new Set(data.evictedCustomTradeIds)
       : new Set();
@@ -1270,10 +1702,16 @@ export class MemoryDatabase {
       typeof data.tradeEpoch === 'number' && Number.isFinite(data.tradeEpoch) && data.tradeEpoch >= 1
         ? data.tradeEpoch
         : 1;
-    // 재시작 시 항상 새 tradeEpoch로 진입해 스냅샷 직전 미저장 구간과의 ID 충돌을 원천 차단한다.
-    this.tradeEpoch = restoredEpoch + 1;
-    this.tradeSeq = 0;
-    this.optionTradeSeq = 0;
+    if (options.bumpTradeEpoch) {
+      // 재시작 시 항상 새 tradeEpoch로 진입해 스냅샷 직전 미저장 구간과의 ID 충돌을 원천 차단한다.
+      this.tradeEpoch = restoredEpoch + 1;
+      this.tradeSeq = 0;
+      this.optionTradeSeq = 0;
+    } else {
+      this.tradeEpoch = restoredEpoch;
+      this.tradeSeq = typeof data.tradeSeq === 'number' && Number.isFinite(data.tradeSeq) ? data.tradeSeq : 0;
+      this.optionTradeSeq = typeof data.optionTradeSeq === 'number' && Number.isFinite(data.optionTradeSeq) ? data.optionTradeSeq : 0;
+    }
     this.engineNextEpoch =
       typeof data.engineNextEpoch === 'number' && Number.isFinite(data.engineNextEpoch) && data.engineNextEpoch >= 1
         ? data.engineNextEpoch
@@ -1310,6 +1748,9 @@ export class MemoryDatabase {
       : new Map();
     this.commoditySettledEpochWatermarks = Array.isArray(data.commoditySettledEpochWatermarks)
       ? new Map(data.commoditySettledEpochWatermarks)
+      : new Map();
+    this.commoditySettledEpochIntervals = Array.isArray(data.commoditySettledEpochIntervals)
+      ? new Map(data.commoditySettledEpochIntervals)
       : new Map();
     this.commodityEvictedCustomTradeIds = Array.isArray(data.commodityEvictedCustomTradeIds)
       ? new Set(data.commodityEvictedCustomTradeIds)
@@ -1348,6 +1789,42 @@ export class MemoryDatabase {
     }
 
     this.rebuildIndexes();
+
+    if (options.migrateCatalog) {
+      this.migrateLegacyIdxOptionUnderlyings();
+      this.supplementMissingCatalogStocks();
+      this.supplementFutureOptionContracts();
+    }
+  }
+
+  /**
+   * 구버전 스냅샷 마이그레이션: asset_class === 'IDX'이면서 지수형 행사가(< 1000)인데
+   * underlying_stock_id가 개별 주식(예: 0010 오성전자)을 가리키는 계약만 지수 기준 ID('idx_k200')로 교정한다.
+   * 기존 계약의 행사가·만기일·승수는 절대 변경하지 않는다.
+   */
+  public migrateLegacyIdxOptionUnderlyings(): number {
+    let migrated = 0;
+    for (const opt of this.optionsContracts.values()) {
+      if (
+        opt.asset_class === 'IDX' &&
+        typeof opt.strike_price === 'number' &&
+        opt.strike_price > 0 &&
+        opt.strike_price < 1000 &&
+        opt.underlying_stock_id !== K200_INDEX_UNDERLYING_ID &&
+        this.stocks.has(opt.underlying_stock_id)
+      ) {
+        opt.underlying_stock_id = K200_INDEX_UNDERLYING_ID;
+        migrated++;
+      }
+    }
+    return migrated;
+  }
+
+  public importSnapshot(data: any, options?: { migrateCatalog?: boolean }): void {
+    this.applySnapshotData(data, {
+      bumpTradeEpoch: true,
+      migrateCatalog: options?.migrateCatalog !== false,
+    });
   }
 
   // ── Pub/Sub 리스너 ──

@@ -23,7 +23,9 @@ import {
   OrderRecord,
   StockRecord
 } from '../../memoryDb/memoryStore';
+import { applyCashCreditWithMarginDebt } from '../../engine/orderRisk';
 import type { SettlementRepository } from '../settlementRepository';
+import { getStockFxRateToKrw } from '../../engine/currency';
 import type {
   TradeSettlementInput,
   SettlementBatchResult,
@@ -285,6 +287,7 @@ export class InMemorySettlementRepository implements SettlementRepository {
       }
       // Restore previous order state
       for (const [id, snap] of ordersSnapshot.entries()) {
+        if (newlyInsertedIds.has(id)) continue;
         this.db.orders.set(id, snap);
       }
       (this.db as any).lpQuoteGeneration = generationBefore;
@@ -901,23 +904,27 @@ export class InMemorySettlementRepository implements SettlementRepository {
       const trade = pendingInputs[i];
       const buyerId = isNonEmptyId(trade.buyer_id) ? trade.buyer_id : null;
       const sellerId = isNonEmptyId(trade.seller_id) ? trade.seller_id : null;
+      const fxRate = getStockFxRateToKrw(this.db, this.db.stocks.get(trade.stock_id));
+      const tradeAmountKrw = fxRate === 1 ? v.tradeAmount : roundMoney(trade.price * trade.size * fxRate);
+      const buyerFeeKrw = fxRate === 1 ? v.fees.buyerFeeAmount : roundMoney(tradeAmountKrw * v.feeRates.buyerFeeRate);
+      const sellerFeeKrw = fxRate === 1 ? v.fees.sellerFeeAmount : roundMoney(tradeAmountKrw * v.feeRates.sellerFeeRate);
 
       totalVolume += trade.size;
-      totalAmount += v.tradeAmount;
-      totalFeeAmount += v.fees.buyerFeeAmount + v.fees.sellerFeeAmount;
+      totalAmount += tradeAmountKrw;
+      totalFeeAmount += buyerFeeKrw + sellerFeeKrw;
 
-      // Buyer: pays tradeAmount + buyerFeeAmount
+      // Buyer: pays tradeAmountKrw + buyerFeeKrw
       if (buyerId !== null) {
-        netCashDeltas.set(buyerId, (netCashDeltas.get(buyerId) || 0) - (v.tradeAmount + v.fees.buyerFeeAmount));
+        netCashDeltas.set(buyerId, (netCashDeltas.get(buyerId) || 0) - (tradeAmountKrw + buyerFeeKrw));
         const key = `${buyerId}::${trade.stock_id}`;
         const existing = netHoldingDeltas.get(key) || { userId: buyerId, stockId: trade.stock_id, delta: 0 };
         existing.delta += trade.size;
         netHoldingDeltas.set(key, existing);
       }
 
-      // Seller: receives tradeAmount - sellerFeeAmount
+      // Seller: receives tradeAmountKrw - sellerFeeKrw
       if (sellerId !== null) {
-        netCashDeltas.set(sellerId, (netCashDeltas.get(sellerId) || 0) + (v.tradeAmount - v.fees.sellerFeeAmount));
+        netCashDeltas.set(sellerId, (netCashDeltas.get(sellerId) || 0) + (tradeAmountKrw - sellerFeeKrw));
         const sellOrder = this.db.orders.get(trade.sell_order_id);
         const isLp = Boolean(sellOrder?.is_lp || (sellOrder as any)?.participantKind === 'LIQUIDITY_PROVIDER');
         const key = `${sellerId}::${trade.stock_id}`;
@@ -1001,6 +1008,7 @@ export class InMemorySettlementRepository implements SettlementRepository {
     }
 
     for (const orderId of allocatedPerOrder.keys()) {
+      if (newlyInsertedOrderIds.has(orderId)) continue;
       const ord = this.db.orders.get(orderId);
       if (ord) ordersSnapshot.set(orderId, { ...ord });
     }
@@ -1056,6 +1064,10 @@ export class InMemorySettlementRepository implements SettlementRepository {
         const trade = pendingInputs[i];
         const buyerId = isNonEmptyId(trade.buyer_id) ? trade.buyer_id : null;
         const sellerId = isNonEmptyId(trade.seller_id) ? trade.seller_id : null;
+        const fxRate = getStockFxRateToKrw(this.db, this.db.stocks.get(trade.stock_id));
+        const tradeAmountKrw = fxRate === 1 ? v.tradeAmount : roundMoney(trade.price * trade.size * fxRate);
+        const buyerFeeKrw = fxRate === 1 ? v.fees.buyerFeeAmount : roundMoney(tradeAmountKrw * v.feeRates.buyerFeeRate);
+        const sellerFeeKrw = fxRate === 1 ? v.fees.sellerFeeAmount : roundMoney(tradeAmountKrw * v.feeRates.sellerFeeRate);
 
         if (buyerId !== null) {
           const hid = `${buyerId}_${trade.stock_id}`;
@@ -1073,7 +1085,7 @@ export class InMemorySettlementRepository implements SettlementRepository {
             this.db.addHoldingToIndex(h);
           }
           const prevCost = h.quantity * h.avg_price;
-          const newCost = v.tradeAmount;
+          const newCost = trade.price * trade.size;
           const totalQty = h.quantity + trade.size;
           h.avg_price = totalQty > 0 ? (prevCost + newCost) / totalQty : trade.price;
           h.quantity = totalQty;
@@ -1116,8 +1128,8 @@ export class InMemorySettlementRepository implements SettlementRepository {
           seller_is_bot: trade.seller_is_bot,
           price: trade.price,
           size: trade.size,
-          buyer_fee: v.fees.buyerFeeAmount,
-          seller_fee: v.fees.sellerFeeAmount,
+          buyer_fee: buyerFeeKrw,
+          seller_fee: sellerFeeKrw,
           created_at: trade.created_at || this.db.getIsoTimestamp(),
           sequence: trade.sequence,
           simulation_time: trade.simulation_time,
@@ -1130,11 +1142,11 @@ export class InMemorySettlementRepository implements SettlementRepository {
           stock_id: trade.stock_id,
           price: trade.price,
           size: trade.size,
-          total_amount: v.tradeAmount,
+          total_amount: tradeAmountKrw,
           buyer_fee_rate: v.feeRates.buyerFeeRate,
           seller_fee_rate: v.feeRates.sellerFeeRate,
-          buyer_fee_amount: v.fees.buyerFeeAmount,
-          seller_fee_amount: v.fees.sellerFeeAmount,
+          buyer_fee_amount: buyerFeeKrw,
+          seller_fee_amount: sellerFeeKrw,
           settled_at: this.db.getIsoTimestamp(),
           simulation_time: trade.simulation_time,
           sequence: trade.sequence,
@@ -1280,6 +1292,7 @@ export class InMemorySettlementRepository implements SettlementRepository {
         this.db.orders.set(id, snap);
       }
       for (const [id, snap] of ordersSnapshot.entries()) {
+        if (newlyInsertedOrderIds.has(id)) continue;
         this.db.orders.set(id, snap);
       }
       for (const [id, snap] of stocksSnapshot.entries()) {
@@ -1318,10 +1331,12 @@ export class InMemorySettlementRepository implements SettlementRepository {
     const profile = this.db.profiles.get(pid);
     if (!profile) return false;
 
-    const nextCash = roundMoney(profile.cash + amount);
-    if (!Number.isFinite(nextCash) || nextCash < 0) return false;
-
-    profile.cash = nextCash;
+    const prevCash = profile.cash;
+    applyCashCreditWithMarginDebt(profile, amount);
+    if (!Number.isFinite(profile.cash) || profile.cash < 0) {
+      profile.cash = prevCash;
+      return false;
+    }
     writeHistory();
     // authoritative ledger에 멱등성 기록 (인스턴스 재생성 후에도 중복 차단)
     this.db.settlementLedger.set(idempotencyKey, {
@@ -1522,6 +1537,22 @@ export class InMemorySettlementRepository implements SettlementRepository {
       return { success: false, errorCode: 'HELD_INVALID_PRICE', error: `Invalid underlying close price: ${closePrice}` };
     }
 
+    const isIdxContract = contract.asset_class === 'IDX' || underlyingId === 'idx_k200';
+    if (isIdxContract && contract.strike_price < 1000 && closePrice > contract.strike_price * 20) {
+      return {
+        success: false,
+        errorCode: 'HELD_UNDERLYING_UNIT_MISMATCH',
+        error: `IDX option unit mismatch: closePrice=${closePrice} vs strike=${contract.strike_price}`,
+      };
+    }
+    if (contract.asset_class === 'STK' && contract.strike_price >= 1000 && closePrice < contract.strike_price / 20) {
+      return {
+        success: false,
+        errorCode: 'HELD_UNDERLYING_UNIT_MISMATCH',
+        error: `STK option unit mismatch: closePrice=${closePrice} vs strike=${contract.strike_price}`,
+      };
+    }
+
     const pid = this.db.profileUserIdIndex.get(params.userId) || params.userId;
     const profile = this.db.profiles.get(pid);
     if (!profile) {
@@ -1651,7 +1682,7 @@ export class InMemorySettlementRepository implements SettlementRepository {
     }
 
     const couponRate = bond.coupon_rate ?? 0;
-    if (typeof couponRate !== 'number' || !Number.isFinite(couponRate) || couponRate < 0 || couponRate > 1.0) {
+    if (typeof couponRate !== 'number' || !Number.isFinite(couponRate) || couponRate < 0 || couponRate > 100) {
       return { success: false, errorCode: 'INVALID_COUPON_RATE', error: `Invalid bond coupon rate: ${couponRate}` };
     }
 
@@ -1662,7 +1693,7 @@ export class InMemorySettlementRepository implements SettlementRepository {
     }
 
     const authoritativePrincipal = roundMoney(bond.face_value * holding.quantity);
-    const authoritativeCoupon = roundMoney(bond.face_value * couponRate * holding.quantity);
+    const authoritativeCoupon = roundMoney(bond.face_value * (couponRate / 100) * holding.quantity);
 
     if (params.principalAmount !== undefined && Math.abs(params.principalAmount - authoritativePrincipal) > 0.01) {
       return {

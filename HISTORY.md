@@ -5319,3 +5319,66 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 **수행 결과:**
 - 리뷰 16건 관련 애플리케이션·엔진·저장 계층 수정, 회귀 검증 스크립트 및 보고서를 main 브랜치의 커밋 대상으로 정리했다.
 - 기존 검증 보고의 타입 검사·프로덕션 빌드·회귀/HTTP 검사 통과를 확인하고 변경분의 git diff --check를 통과했다. 원격 대상은 origin(parksm060204/stocksys)이다.
+
+---
+## 2026-11-17 16:47
+**요청 요약:** 수정 후 전체 코드를 워커를 통해 다시 리뷰.
+**수행 결과:**
+- docs/post-fix-full-review-worker-plan.md에 커밋 4c1b394 기준 독립 리뷰 범위, 이전 16건 재판정, 동시성·저장 실패·멱등성·UI 연결 검증 요건을 작성했다.
+- AGY Antigravity / gemini-4-hydrogen-high / effort high 리뷰 워커의 시작 상태 ready를 확인했다(run_6ebd723fc07d, task_603a26c66b72, dispatch ctx_2bd0b3e45c88).
+- 리뷰는 진행 중이며 애플리케이션 수정 없이 docs/post-fix-full-review-findings.md에 근거와 재현 결과를 보고하도록 지시했다.
+
+---
+## 2026-11-17 17:05
+
+**요청 요약:** 커밋 4c1b394 기준 수정 후 전체 코드 독립 재리뷰 및 이전 16건 재판정 보고.
+**수행 결과:**
+- 애플리케이션·테스트·설정을 수정하지 않고 전체 API, 저장 계층, 엔진(`MarketEngine`, `localStandaloneServer`, `CommodityMarketEngine`), 파생/환전/상점/이벤트, UI/훅을 재점검해 [post-fix-full-review-findings.md](file:///C:/Users/abcde/Desktop/웹소설/stock-sys/docs/post-fix-full-review-findings.md)에 P1 2건, P2 6건, P3 1건 및 이전 16건 재판정 표(해결 9건, 부분 해결 7건)를 기록했다.
+- 옵션 상대 매수자 수수료 누락(`buyerCash=-500`)·누적 현금 미검증(`buyerCash=-401000`), `MarketEngine.tick()` 영속 실패 시 인메모리 롤백 없는 `COMMITTED`+`PERSISTENCE_FAILED` Split-Brain, 구 스냅샷 `importSnapshot` 신설 ETF/미래 옵션 미공급, `ActiveOrdersPanel` 일괄 취소 400 오류, `validateOrderCapacity` 테이커 수수료 누락, `CommodityMarketEngine.reconcileWithDatabase` 조기 플래그 경쟁, `InMemoryMarketRepository.deleteOrders` 인덱스 누수, `trimSettlementLedger` 비순차 워터마크 과상승을 격리 환경에서 재현했다.
+- 루트/`engine-server` `tsc --noEmit`, `test-codex-review-16-fixes.ts`, `test-review-fixes-verification.ts`, `test-followup-a-to-f.ts`, `test-phase1-suite.ts`, Phase 2~4 4종 테스트를 모두 통과(exit 0)했으나 `scripts/test-route-handlers-e2e.ts`는 36행 `TypeError`로 실패(exit 1)했으며, 프로덕션 빌드·브라우저 E2E·실 OAuth·프로세스 강제 종료 실험은 미실행으로 명시했다.
+
+---
+## 2026-11-18 00:11
+
+**요청 요약:** 독립 재리뷰 보고서(docs/post-fix-full-review-findings.md)의 P1 2건, P2 6그룹, P3 1그룹 전체 수정 및 검증
+**수행 결과:**
+- P1-1·P1-2 수정: `lib/options/optionOrderService.ts`에 상대방 매수 수수료 및 계좌별 누적 체결/예약 현금·수량 검증을 추가했고, `engine-server/src/MarketEngine.ts`·`SettlementBatchService.ts`·`index.ts`에 저장 실패 시 `rollbackAll()` 및 `NOT_COMMITTED` 반환, 영속 성공 후 후처리(observer) 지연, 비거래 영구 상태 변경 즉시 저장을 구현했다.
+- P2-1~P2-4 수정: `lib/memoryDb/memoryStore.ts`에 누락 ETF/미래 옵션 비파괴 보충(`importSnapshot` vs 롤백용 `restoreRollbackSnapshot`)과 연속 워터마크/구간 압축·옵션/채권 정산 키 분리를 적용했고, `lib/engine/orderRisk.ts`·`dbMatching.ts`·`simulation/*`에 주식 0.25% 테이커 수수료를 일관 적용했으며, `lib/engine/marketService.ts`·`app/api/local-db/route.ts`·`ActiveOrdersPanel.tsx`에 소유권 검증 및 락·영속화 기반 일괄 취소를 구현했다.
+- P2-5·P2-6·P3-1 수정: `lib/engine/currency.ts`·`memoryDbClient.ts`·`InMemorySettlementRepository.ts`·`/etf`·`OrderEntry`에 USD 종목/ETF 원화 환율 정산과 서버 시세 연동을 적용했고, `CommodityMarketEngine.ts`·`commodityLedger.ts`·`/api/commodities`·`CommodityOrderEntry`·`CommodityActiveOrdersPanel`에 동적 환율·`reduce-only` UI 예외·취소 API·공유 `reconcilePromise`·DB 시세 동기화/롤백을 구현했으며, `mypage` 옵션/환율 평가, `OptionsPanel` `/api/options/order` 전환, `lib/db/client.ts` JSON 에러 보존, `InMemoryMarketRepository.deleteOrders` 인덱스 정리, `localStandaloneServer` 20틱 트리밍 락/게이트 경계, `/api/local-db` `profiles` 무변이 SELECT 및 `RUMOR` 구독 서버 게이팅, `news/page.tsx`·`scripts/test-route-handlers-e2e.ts` 복구를 완료했다.
+- 검증 결과 및 보고서: 루트/`engine-server` `tsc --noEmit`(exit 0), `npm run build`(exit 0), 신규 `scripts/test-post-fix-remediation.ts` 포함 14개 회귀/Phase 1~4/Stage 2/ABM/라우트 E2E 스위트 전부 exit 0, 격리 `next start` 프로덕션 HTTP 스모크 통과를 확인했고 상세 내역을 [post-fix-review-remediation-results.md](file:///C:/Users/abcde/Desktop/웹소설/stock-sys/docs/post-fix-review-remediation-results.md)에 기록했다.
+
+---
+## 2026-11-18 12:52
+
+**요청 요약:** 현재 HEAD 및 미커밋 수정·신규 파일을 포함한 전체 코드 독립 리뷰, 격리 반례 검증, `docs/post-fix-review-remediation-results.md` 주장 재검증.
+**수행 결과:**
+- 애플리케이션·테스트·설정 코드를 수정하지 않고 전체 백엔드, 인메모리 저장소, `engine-server` 및 봇, 상품별 엔진, 프론트엔드/v2 페이지·컴포넌트를 점검해 [full-code-review-2026-11-18-findings.md](/C:/Users/abcde/Desktop/웹소설/stock-sys/docs/full-code-review-2026-11-18-findings.md:1)에 총 25건(P0 3건, P1 7건, P2 11건, P3 4건)을 기록함.
+- 격리 `STOCKSYS_DATA_DIR` 및 메모리 반례 재현을 통해 IDX K200 옵션 단위 불일치(179.35억 원 과지급), 채권 만기 `coupon_rate` 단위 오류(`INVALID_COUPON_RATE`·100배 쿠폰), 배치 롤백 시 `newOrders` 재삽입, 원자재 음수 현금(`-31,830,000`원), ABM `:` 키 불일치·USD 환율 미반영, 비-LP 봇 `REJECTED_UNAUTHORIZED_LP`, `restoreRollbackSnapshot` 잔존 키를 직접 재현함.
+- 루트/`engine-server` `tsc --noEmit`(exit 0) 및 34개 테스트 통과를 확인하는 한편, `npm run lint` 실패(exit 1, 5 errors/146 warnings)와 3개 테스트 실패(`test-phase2-bot-portfolio-authority.ts`, `test-phase3-atomic-lp-quote-refresh.ts`, `test-order-security-and-atomic.ts`), `OptionsPanel` `quantity`/`qty` 미해결 잔존(`P2-5.4` 재판정)을 보고서에 반영함.
+
+---
+## 2026-11-18 14:15
+
+**요청 요약:** 전체 코드 리뷰 발견 사항(`docs/full-code-review-2026-11-18-findings.md` F1~F25) 구현 수정 및 검증.
+**수행 결과:**
+- F1~F7, F19~F21, F24 수정: `lib/memoryDb/memoryStore.ts`, `InMemoryMarketRepository.ts`, `InMemorySettlementRepository.ts`, `OptionSettlementEngine.ts`, `SettlementBatchService.ts`에 K200 지수 옵션 단위 분리(`idx_k200`) 및 레거시 마이그레이션·fail-closed 가드, 채권 만기 퍼센트 쿠폰 정합화, 배치 롤백 신규 주문 제거, `restoreRollbackSnapshot` 추가 키 제거, `settledBondRedemptions` 컴팩션 및 에포크/비표준 ID 보존을 적용했고, `commodityLedger.ts`·`CommodityMarketEngine.ts`·`orderRisk.ts`에 `margin_debt_krw` 기반 예약 현금 보호·50% 유지증거금 강제청산·STP `'cancelled'` 구분을 구현했으며, `agentManager.ts`·`marketObservation.ts`·`valueStrategy.ts`·`trendStrategy.ts`·`engine-server/src/MarketEngine.ts` 및 9개 비-LP 봇의 보유량 키·USD FX 환산·`is_lp: false`·`orderBook` 스냅샷·`CRUDE_OIL` 트리거를 교정했다.
+- F8~F18, F22~F23, F25 수정: `/v2/stocks` 스키마 정규화, `PriceHeroV2` 폴링 및 USD 포맷팅, `OptionsPanel` `qty`/롤오버 교정, `memoryDbClient` `orders->stocks` 조인, `OrderEntry` 채권 거래 차단, `/admin` 바이패스 제거 및 `list_stock`/`trigger_ai_event`/`NaN` 방어, `/api/market-flow` `marketState` 관리자 제한, 상점 `scanner_item`/`ai_predictor` 신규 판매 중단(`410`) 및 `fee_booster` 50% 할인 연결, `OptionHTSDashboard`/`OptionMonthChainGrid` 실시간 K200 지수 연동, `mypage`/`Sidebar`/`TopBar` UI 교정 및 ESLint·기존 3개 실패 테스트 복구를 완료했다.
+- 검증 결과 및 보고서: 루트/`engine-server` `tsc --noEmit`(exit 0), `npm run lint`(exit 0), `npm run build`(exit 0), `scripts/test-full-review-2026-11-18-fixes.ts`(exit 0), `test-followup-a-to-f.ts`(exit 0), 전체 75개 테스트 스위트(65 PASS / 7 기존 노후 FAIL / 3 >60s TIMEOUT), 격리 `next start -p 3199` HTTP 스모크 통과를 확인하고 [full-code-review-2026-11-18-fix-results.md](/C:/Users/abcde/Desktop/웹소설/stock-sys/docs/full-code-review-2026-11-18-fix-results.md)에 기록했다.
+
+---
+## 2026-11-18 14:37
+
+**요청 요약:** 미완료 항목 보완(F20 도달성·유한성 반증, F17 `acquired_passives` 정책·연동, `margin_debt_krw > 0` 전 경로 차단·상환·NAV 일관성, 7 FAIL/3 TIMEOUT 증거 구분, 보고서 원본 번호·심각도 정합화).
+**수행 결과:**
+- `lib/engine/orderRisk.ts`, `lib/engine/dbMatching.ts`, `lib/memoryDb/memoryDbClient.ts`, `lib/repositories/inMemory/InMemorySettlementRepository.ts`, `lib/options/optionOrderService.ts`, `lib/exchange/exchangeService.ts`, `lib/engine/simulation/marketObservation.ts`, `app/mypage/page.tsx`를 수정해 `margin_debt_krw > 0` 상태에서 주식/ETF 매수·옵션 매수·KRW→외화·외화→외화 환전을 차단하고, 매도 대금·배당/만기 지급·외화→KRW 환전 시 부채를 우선 상환하며, `marketObservation` NAV 및 마이페이지 총자산에서 `margin_debt_krw`를 차감하도록 일관화했다.
+- `lib/shop/catalog.ts`의 `hasActiveFeeBooster`가 `acquired_passives`의 `'fee_booster'`도 인식하도록 연동하고, `app/components/RandomEventModal.tsx`에서 기타 이벤트 패시브를 `프로필 배지(수치 효과 없음)`으로 명시했다.
+- `scripts/test-full-review-2026-11-18-fixes.ts` `[8]`, `test-codex-review-16-fixes.ts`, 루트/`engine-server` `tsc --noEmit`, `npm run lint`, `npm run build` 모두 `EXIT=0`을 확인했으며, `test-regime-effects-stage2.ts`/`test-market-regime-long-run.ts` 통과 및 7 FAIL/3 TIMEOUT의 구체적 원인·F20 `evictedCustomTradeIds` 도달성 및 비둘기집 원리 반증을 [full-code-review-2026-11-18-fix-results.md](/C:/Users/abcde/Desktop/웹소설/stock-sys/docs/full-code-review-2026-11-18-fix-results.md)에 원본 F1~F25 번호·심각도 순으로 반영했다.
+
+---
+## 2026-11-18 14:39
+
+**요청 요약:** 전체 리뷰 후 수정한 코드와 보고서를 Git에 커밋하고 원격 저장소에 푸시.
+**수행 결과:**
+- 금전 정산·부채 계좌 보호·저장/롤백·상품 통화·봇·API 권한·화면 연결 수정 및 회귀 테스트·리뷰 보고서를 커밋 대상으로 정리했다.
+- 작업자 보고의 타입 검사·lint·빌드·주요 회귀 검사 통과와 남은 F20 부분 해결·테스트 실패/종료 대기 한계를 확인했다. 커밋 전 git diff --check를 통과했다.
+- 기존 로컬 훅 설정과 debug.log는 커밋 대상에서 제외했다. 원격 대상은 origin(parksm060204/stocksys), 브랜치는 main이다.

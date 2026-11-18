@@ -55,7 +55,7 @@ export class CommercialBankAgent extends BaseAgent {
           price: boundedPrice,
           size: executionVolume,
           status: 'open',
-          is_lp: true,
+          is_lp: false,
           _botId: this.botId,
           _assetClass: 'bond'
         });

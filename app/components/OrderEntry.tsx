@@ -6,6 +6,9 @@ import { fmtPrice } from "@/lib/format";
 import { createClient } from "@/lib/db/client";
 import { useAuth } from "@/lib/auth/useAuth";
 import { useToast } from "@/app/components/ToastProvider";
+import { DEFAULT_USD_TO_KRW_RATE, isUsdQuotedAsset } from "@/lib/engine/currency";
+
+const STOCK_TAKER_FEE_RATE = 0.0025;
 
 export default function OrderEntry({ stock }: { stock: Stock }) {
   const [side, setSide] = useState<"buy" | "sell">("buy");
@@ -15,12 +18,26 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
   const [loading, setLoading] = useState(false);
   const [userCash, setUserCash] = useState<number | null>(null);
   const [userHoldingQty, setUserHoldingQty] = useState<number | null>(null);
+  const [usdToKrwRate, setUsdToKrwRate] = useState<number>(DEFAULT_USD_TO_KRW_RATE);
 
   const db = createClient();
   const { userId, isLoggedIn } = useAuth();
   const { showToast } = useToast();
 
+  const isBondAsset = stock.market === "bonds";
+  const isUsdAsset = isUsdQuotedAsset({ market: stock.market, ticker: stock.ticker });
+  const fxRate = isUsdAsset ? usdToKrwRate : 1;
+
   const refreshUserBalances = useCallback(async (sId: string) => {
+    const { data: fxData } = await db
+      .from('exchange_rates')
+      .select('rate_to_krw')
+      .eq('currency_code', 'USD')
+      .maybeSingle();
+    if (fxData && Number(fxData.rate_to_krw) > 0) {
+      setUsdToKrwRate(Number(fxData.rate_to_krw));
+    }
+
     if (!isLoggedIn || !userId) return;
     const { data: profile } = await db.from('profiles').select('cash').eq('id', userId).single();
     if (profile) setUserCash(Number(profile.cash || 0));
@@ -31,6 +48,15 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
 
   useEffect(() => {
     const initData = async () => {
+      const { data: fxData } = await db
+        .from('exchange_rates')
+        .select('rate_to_krw')
+        .eq('currency_code', 'USD')
+        .maybeSingle();
+      if (fxData && Number(fxData.rate_to_krw) > 0) {
+        setUsdToKrwRate(Number(fxData.rate_to_krw));
+      }
+
       const { data: stockData } = await db.from('stocks').select('id').eq('ticker', stock.ticker).single();
       if (stockData) {
         setStockId(stockData.id);
@@ -43,12 +69,16 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
   }, [stock.ticker, db, isLoggedIn, userId, refreshUserBalances]);
 
   const total = (Number(price) || 0) * (Number(qty) || 0);
+  const notionalKrw = fxRate === 1 ? Math.round(total) : Math.round(total * fxRate);
+  const estimatedFeeKrw = Math.round(notionalKrw * STOCK_TAKER_FEE_RATE);
+  const requiredBuyCashKrw = notionalKrw + estimatedFeeKrw;
 
   const handleQuickBuy = (pct: number) => {
     setSide("buy");
     const targetPrice = Number(price) || stock.currentPrice;
     if (userCash && targetPrice > 0) {
-      const maxAffordableQty = Math.floor((userCash * (pct / 100)) / targetPrice);
+      const unitCashCost = Math.max(1, targetPrice * fxRate * (1 + STOCK_TAKER_FEE_RATE));
+      const maxAffordableQty = Math.floor((userCash * (pct / 100)) / unitCashCost);
       setQty(String(Math.max(1, maxAffordableQty)));
     } else {
       setQty("10");
@@ -66,6 +96,14 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
   };
 
   const handleOrder = async () => {
+    if (isBondAsset) {
+      showToast({
+        type: 'warn',
+        title: '채권 매매 미지원',
+        description: '채권은 현재 시세 및 YTM 분석 전용이며 직접 주문을 지원하지 않습니다.',
+      });
+      return;
+    }
     if (!stockId || loading) return;
     setLoading(true);
     try {
@@ -80,11 +118,11 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
 
       if (side === 'buy') {
         const { data: profile } = await db.from('profiles').select('cash').eq('id', userId).single();
-        if (!profile || Number(profile.cash || 0) < total) {
+        if (!profile || Number(profile.cash || 0) < requiredBuyCashKrw) {
           showToast({
             type: 'error',
             title: '예수금 부족',
-            description: `주문 금액(₩${total.toLocaleString()})이 현재 예수금보다 큽니다.`,
+            description: `예상 필요 예수금(₩${requiredBuyCashKrw.toLocaleString()}, 수수료 포함)이 현재 예수금보다 큽니다.`,
           });
           return;
         }
@@ -245,23 +283,37 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
 
         <div className="font-sans">
           {/* 예상 금액 요약 */}
-          <div className="flex items-center justify-between bg-panel2 px-3.5 py-2.5 mb-3 border border-border rounded-xl">
-            <span className="text-[11.5px] text-muted font-medium font-sans">총 주문 예상금액</span>
-            <span className="font-mono text-[14.5px] font-black tabular-nums text-tx">
-              {fmtPrice(total, stock.market)}
-            </span>
+          <div className="bg-panel2 px-3.5 py-2.5 mb-3 border border-border rounded-xl space-y-1">
+            <div className="flex items-center justify-between">
+              <span className="text-[11.5px] text-muted font-medium font-sans">총 주문 예상금액</span>
+              <span className="font-mono text-[14.5px] font-black tabular-nums text-tx">
+                {fmtPrice(total, stock.market, stock.ticker)}
+              </span>
+            </div>
+            <div className="flex items-center justify-between text-[11px] font-mono text-muted">
+              <span>{isUsdAsset ? `원화 환산 (1 USD = ₩${usdToKrwRate.toLocaleString()}) + 수수료` : '최대 테이커 수수료(0.25%) 포함'}</span>
+              <span className="font-bold text-tx">₩{(side === 'buy' ? requiredBuyCashKrw : notionalKrw).toLocaleString()}</span>
+            </div>
           </div>
+
+          {isBondAsset && (
+            <div className="mb-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11.5px] text-amber-300 font-medium">
+              채권은 현재 시세·YTM 분석 전용이며 직접 주문을 지원하지 않습니다.
+            </div>
+          )}
 
           <button
             onClick={handleOrder}
-            disabled={loading}
-            className={`w-full py-3 text-[13.5px] font-bold transition-all rounded-xl cursor-pointer shadow-lg active:scale-[0.98] font-sans ${
-              side === "buy" 
-                ? "bg-up text-white hover:bg-[#ff5252] shadow-[0_0_20px_rgba(240,68,82,0.35)]" 
-                : "bg-down text-white hover:bg-[#4092ff] shadow-[0_0_20px_rgba(49,130,246,0.35)]"
+            disabled={loading || isBondAsset}
+            className={`w-full py-3 text-[13.5px] font-bold transition-all rounded-xl shadow-lg font-sans ${
+              isBondAsset
+                ? "bg-panel2 text-muted border border-border cursor-not-allowed opacity-60"
+                : side === "buy"
+                ? "bg-up text-white hover:bg-[#ff5252] shadow-[0_0_20px_rgba(240,68,82,0.35)] cursor-pointer active:scale-[0.98]"
+                : "bg-down text-white hover:bg-[#4092ff] shadow-[0_0_20px_rgba(49,130,246,0.35)] cursor-pointer active:scale-[0.98]"
             }`}
           >
-            {loading ? "주문 처리 중..." : side === "buy" ? "매수 주문 제출" : "매도 주문 제출"}
+            {isBondAsset ? "채권 직접 주문 미지원" : loading ? "주문 처리 중..." : side === "buy" ? "매수 주문 제출" : "매도 주문 제출"}
           </button>
         </div>
       </div>

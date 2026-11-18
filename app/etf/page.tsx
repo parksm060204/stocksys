@@ -3,7 +3,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { createClient } from '@/lib/db/client';
-import { ETF_CATALOG } from '@/lib/engine/etfDefinitions';
+import { ETF_CATALOG, isUsdEtf } from '@/lib/engine/etfDefinitions';
+import { DEFAULT_USD_TO_KRW_RATE } from '@/lib/engine/currency';
 import { ETFPortfolio } from '@/lib/engine/etfTypes';
 import { iNAVEngine } from '@/lib/engine/iNAVEngine';
 import { APArbitrageEngine } from '@/lib/engine/APArbitrageEngine';
@@ -23,9 +24,9 @@ export default function ETFPage() {
   const [userEtfShares, setUserEtfShares] = useState<number>(0);
   const [serverStockId, setServerStockId] = useState<string | null>(null);
   const [serverStockPrice, setServerStockPrice] = useState<number | null>(null);
+  const [usdToKrwRate, setUsdToKrwRate] = useState<number>(DEFAULT_USD_TO_KRW_RATE);
   const [tradeSubmitting, setTradeSubmitting] = useState<boolean>(false);
   const [tradeFeedback, setTradeFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
-  const [eventBanner, setEventBanner] = useState<{ title: string; shockPercent: number } | null>(null);
 
   const selectedEtf = ETF_CATALOG.find(e => e.etfTicker === selectedTicker) || ETF_CATALOG[0];
 
@@ -77,7 +78,7 @@ export default function ETFPage() {
 
   const navData = inavEngine.calculateiNAV(underlyingPrices, currentMarketPrice);
   const apDecision = apEngine.evaluateArbitrageOpportunity(navData);
-  const isUsOrGlobal = selectedEtf.category === 'US' || selectedEtf.category === 'GLOBAL';
+  const isUsOrGlobal = isUsdEtf(selectedEtf);
   const lpQuote = apEngine.generateLPQuote(navData.iNAV, isUsOrGlobal);
 
   const futuresPrice = isUsOrGlobal 
@@ -88,16 +89,62 @@ export default function ETFPage() {
 
   const { userId, isLoggedIn } = useAuth();
 
+  const syncServerMarketData = useCallback(async () => {
+    const [{ data: allStocks }, { data: fxRow }] = await Promise.all([
+      db.from('stocks').select('id, ticker, current_price'),
+      db.from('exchange_rates').select('rate_to_krw').eq('currency_code', 'USD').maybeSingle(),
+    ]);
+
+    if (fxRow && Number(fxRow.rate_to_krw) > 0) {
+      setUsdToKrwRate(Number(fxRow.rate_to_krw));
+    }
+
+    if (Array.isArray(allStocks) && allStocks.length > 0) {
+      setMarketPrices((prev) => {
+        const next = new Map(prev);
+        for (const s of allStocks) {
+          if (s?.ticker && Number(s.current_price) > 0) {
+            next.set(s.ticker, Number(s.current_price));
+          }
+        }
+        return next;
+      });
+
+      const underlyingAlias: Record<string, string> = {
+        '005930': 'SAMSUNG_ELEC',
+        '000660': 'SK_HYNIX',
+        '005380': 'HYUNDAI_MOTOR',
+        'AAPL': 'AAPL',
+        'MSFT': 'MSFT',
+        'NVDA': 'NVDA',
+        'TSLA': 'TSLA',
+      };
+      setUnderlyingPrices((prev) => {
+        const next = new Map(prev);
+        for (const s of allStocks) {
+          const alias = underlyingAlias[String(s?.ticker || '')];
+          if (alias && Number(s.current_price) > 0) {
+            next.set(alias, Number(s.current_price));
+          }
+        }
+        return next;
+      });
+    }
+  }, []);
+
+  const targetEtfTicker = selectedEtf.etfTicker;
+  const targetBasePrice = selectedEtf.basePrice;
+
   const fetchUserAndEtf = useCallback(async () => {
     const { data: stockData } = await db
       .from('stocks')
       .select('id, current_price')
-      .eq('ticker', selectedEtf.etfTicker)
+      .eq('ticker', targetEtfTicker)
       .maybeSingle();
 
     if (stockData) {
       setServerStockId(stockData.id);
-      setServerStockPrice(Number(stockData.current_price ?? selectedEtf.basePrice));
+      setServerStockPrice(Number(stockData.current_price ?? targetBasePrice));
     } else {
       setServerStockId(null);
       setServerStockPrice(null);
@@ -122,7 +169,7 @@ export default function ETFPage() {
       setUserBalance(null);
       setUserEtfShares(0);
     }
-  }, [isLoggedIn, userId, selectedEtf.etfTicker, selectedEtf.basePrice]);
+  }, [isLoggedIn, userId, targetEtfTicker, targetBasePrice]);
 
   // Fetch logged-in user portfolio balance and ETF holdings
   useEffect(() => {
@@ -141,27 +188,6 @@ export default function ETFPage() {
       currentExposure: 10_000_000_000 * target.leverageFactor,
       totalUnits: 1_000_000
     });
-  };
-
-  // Manual 4%+ event shock trigger helper
-  const triggerMarketEvent = (isUp: boolean) => {
-    const shock = (isUp ? 1 : -1) * (0.045 + Math.random() * 0.025); // 4.5% ~ 7.0% shock
-    const shockPct = Number((shock * 100).toFixed(1));
-    const title = isUp
-      ? `🔥 [대형 호재 이벤트 발동] 글로벌 기술주 실적 어닝 서프라이즈! (iNAV ${shockPct > 0 ? '+' : ''}${shockPct}% 급등)`
-      : `⚠️ [대형 악재 이벤트 발동] 연준 기준금리 기습 인상 발표! (iNAV ${shockPct}% 급락)`;
-
-    setEventBanner({ title, shockPercent: shockPct });
-    setUnderlyingPrices(prev => {
-      const next = new Map(prev);
-      prev.forEach((price, ticker) => {
-        const newPrice = Math.max(10, Math.round(price * (1 + shock)));
-        next.set(ticker, newPrice);
-      });
-      return next;
-    });
-
-    setTimeout(() => setEventBanner(null), 4500);
   };
 
   // Authoritative Server Order Execution Handler
@@ -246,51 +272,23 @@ export default function ETFPage() {
     }
   };
 
-  // Live simulation tick
+  // Authoritative Server Live Sync (stocks & exchange_rates)
   useEffect(() => {
+    void syncServerMarketData();
     const interval = setInterval(() => {
-      // Fluctuate market prices (LP iNAV Anchor Mean-Reversion & KRX ETF 5-won tick rounding)
-      setMarketPrices(prev => {
-        const next = new Map(prev);
-        prev.forEach((price, ticker) => {
-          const etfDef = ETF_CATALOG.find(e => e.etfTicker === ticker);
-          if (!etfDef) return;
-          const isUsGlobal = etfDef.category === 'US' || etfDef.category === 'GLOBAL';
-          const etfInavEngine = new iNAVEngine(etfDef);
-          const navRes = etfInavEngine.calculateiNAV(underlyingPrices, price);
-
-          // LP 유동성공급자 iNAV 앵커링 평균회귀 수식 적용
-          const nextPrice = apEngine.calculateLPAntichamberPrice(price, navRes.iNAV, isUsGlobal);
-          next.set(ticker, nextPrice);
-        });
-        return next;
-      });
-
-      // Fluctuate underlying prices (Normal ±0.5% max daily band vs Event 4%+ shock)
-      setUnderlyingPrices(prev => {
-        const next = new Map(prev);
-        // 평상시: 틱당 ±0.05% 내외 소폭 변동하여 일일 ±0.5% 범주 내 안정적 주행
-        const indexReturn = (Math.random() - 0.49) * 0.001;
-
-        prev.forEach((price, ticker) => {
-          const newPrice = Math.max(10, Math.round(price * (1 + indexReturn)));
-          next.set(ticker, newPrice);
-        });
-
-        // Update Leverage NAV
-        setPortfolio(prevPort => {
-          const newPort = { ...prevPort };
-          leverageEngine.updateNAV(newPort, indexReturn);
-          return newPort;
-        });
-
-        return next;
-      });
-    }, 1000);
+      void syncServerMarketData();
+      void fetchUserAndEtf();
+    }, 2500);
 
     return () => clearInterval(interval);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedTicker]);
+  }, [syncServerMarketData, fetchUserAndEtf]);
+
+  const activeServerPrice = serverStockPrice ?? currentMarketPrice;
+  const orderNotionalQuote = activeServerPrice * orderQty;
+  const orderNotionalKrw = isUsOrGlobal
+    ? Math.round(orderNotionalQuote * usdToKrwRate)
+    : Math.round(orderNotionalQuote);
+  const orderFeeKrw = Math.round(orderNotionalKrw * 0.0025);
 
   const filteredEtfs = ETF_CATALOG.filter(e => {
     if (activeCategory === 'ALL') return true;
@@ -308,55 +306,32 @@ export default function ETFPage() {
         <span className="text-white font-bold">상장지수펀드 (ETF)</span>
       </nav>
 
-      {/* 4%+ 대형 이벤트 발생 라이브 배너 */}
-      {eventBanner && (
-        <div className={`p-4 rounded-2xl border font-mono text-xs shadow-2xl flex items-center justify-between animate-bounce ${
-          eventBanner.shockPercent > 0
-            ? 'bg-up/20 border-[#F04452] text-up'
-            : 'bg-down/20 border-[#3182F6] text-down'
-        }`}>
-          <div className="flex items-center gap-2">
-            <span className="text-base">⚡</span>
-            <span className="font-extrabold text-[13px]">{eventBanner.title}</span>
-          </div>
-          <span className="text-xs font-bold bg-black/40 px-3 py-1 rounded-full border border-white/20">
-            변동폭: {eventBanner.shockPercent > 0 ? '+' : ''}{eventBanner.shockPercent}%
-          </span>
-        </div>
-      )}
-
       {/* Header Banner */}
       <div className="bg-[#0E1117] border border-border p-6 rounded-3xl flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shadow-2xl">
         <div>
           <div className="inline-flex items-center gap-2 rounded-full border border-[#F04452]/40 bg-up/10 px-3.5 py-1 text-xs font-bold text-up mb-2 font-mono">
             <span className="inline-block h-2 w-2 rounded-full bg-up animate-pulse" />
-            LIVE ETF TERMINAL · 상장지수펀드
+            LIVE ETF TERMINAL · 서버 실시간 시세 연동
           </div>
           <h1 className="text-xl md:text-2xl font-black text-white tracking-tight">
             ETF 실시간 트레이딩 & PDF 상품구조 터미널
           </h1>
           <p className="text-[12.5px] text-[#8E939D] mt-1 font-medium">
-            평상시 ±0.5% 안정 수렴 vs 대형 이벤트 발동 시 4%+ iNAV 급변 연동 알고리즘 가동
+            서버 권위 시세와 USD/KRW 환율(1 USD = ₩{usdToKrwRate.toLocaleString()})을 기준으로 iNAV 및 원화 정산이 처리됩니다.
           </p>
         </div>
 
-        {/* 이벤트 발동 버튼 & 유저 예수금 정보 */}
+        {/* 시세 새로고침 & 유저 예수금 정보 */}
         <div className="flex flex-col sm:flex-row items-end sm:items-center gap-3">
-          {/* 4%+ 이벤트 테스트 발동 버튼 */}
-          <div className="flex gap-2">
-            <button
-              onClick={() => triggerMarketEvent(true)}
-              className="bg-up/15 hover:bg-up/30 text-up border border-[#F04452]/40 px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1 active:scale-95"
-            >
-              <span>🔥 4%+ 호재 충격</span>
-            </button>
-            <button
-              onClick={() => triggerMarketEvent(false)}
-              className="bg-down/15 hover:bg-down/30 text-down border border-[#3182F6]/40 px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1 active:scale-95"
-            >
-              <span>⚠️ 4%+ 악재 충격</span>
-            </button>
-          </div>
+          <button
+            onClick={() => {
+              void syncServerMarketData();
+              void fetchUserAndEtf();
+            }}
+            className="bg-[#161B22] hover:bg-[#212631] text-white border border-border px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5"
+          >
+            <span>🔄 서버 시세 동기화</span>
+          </button>
 
           {/* User Balance Display */}
           {userId && userBalance !== null ? (
@@ -435,7 +410,7 @@ export default function ETFPage() {
         {/* Selected ETF Detailed Terminal (Right 6 Columns) */}
         <div className="md:col-span-6 space-y-4">
           {/* ETF iNAV Monitor & LP Quote Widget */}
-          <ETFMonitorWidget navData={navData} lpQuote={lpQuote} />
+          <ETFMonitorWidget navData={navData} lpQuote={lpQuote} isUsd={isUsOrGlobal} />
 
           {/* User Portfolio Underlying Physical Holdings */}
           <ETFUserUnderlyingHoldings
@@ -494,7 +469,7 @@ export default function ETFPage() {
             <h3 className="text-xs font-bold text-[#8E939D] flex items-center justify-between">
               <span>실시간 ETF 매수 / 매도 주문</span>
               <span className="text-xs text-white font-mono font-bold">
-                현재가: {isUsOrGlobal ? `$${currentMarketPrice.toFixed(2)}` : `₩${Math.round(currentMarketPrice).toLocaleString('ko-KR')}`}
+                서버 현재가: {isUsOrGlobal ? `$${activeServerPrice.toFixed(2)}` : `₩${Math.round(activeServerPrice).toLocaleString('ko-KR')}`}
               </span>
             </h3>
 
@@ -511,11 +486,19 @@ export default function ETFPage() {
               <span className="text-xs text-[#8E939D] font-bold">주</span>
             </div>
 
-            <div className="text-[12px] text-[#8E939D] flex justify-between px-1 bg-[#161B22] p-2.5 rounded-xl border border-border">
-              <span className="font-medium">총 주문 금액:</span>
-              <span className="font-black text-white tabular-nums">
-                {isUsOrGlobal ? `$${(currentMarketPrice * orderQty).toFixed(2)}` : `₩${Math.round(currentMarketPrice * orderQty).toLocaleString('ko-KR')}`}
-              </span>
+            <div className="text-[12px] text-[#8E939D] space-y-1 bg-[#161B22] p-2.5 rounded-xl border border-border">
+              <div className="flex justify-between">
+                <span className="font-medium">총 주문 금액:</span>
+                <span className="font-black text-white tabular-nums">
+                  {isUsOrGlobal ? `$${orderNotionalQuote.toFixed(2)}` : `₩${orderNotionalKrw.toLocaleString('ko-KR')}`}
+                </span>
+              </div>
+              <div className="flex justify-between text-[11px]">
+                <span>{isUsOrGlobal ? `원화 환산 + 테이커 수수료(0.25%)` : '매수 최대 필요 예수금 (수수료 포함)'}:</span>
+                <span className="font-bold text-amber-300 tabular-nums">
+                  ₩{(orderNotionalKrw + orderFeeKrw).toLocaleString('ko-KR')}
+                </span>
+              </div>
             </div>
 
             {tradeFeedback && (

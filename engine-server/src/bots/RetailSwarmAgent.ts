@@ -180,7 +180,7 @@ export class RetailSwarmAgent extends BaseAgent {
           price: executionPrice,
           size: tinyQty,
           status: 'open',
-          is_lp: true,
+          is_lp: false,
           _botId: this.botId
         });
       }

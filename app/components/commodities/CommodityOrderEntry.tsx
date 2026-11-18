@@ -4,8 +4,8 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { CommodityDefinition } from '@/lib/commodities/types';
 import { fmtPrice } from '@/lib/format';
 import { useAuth } from '@/lib/auth/useAuth';
-import { createClient } from '@/lib/db/client';
 import { useToast } from '@/app/components/ToastProvider';
+import { DEFAULT_USD_TO_KRW_RATE } from '@/lib/engine/currency';
 
 interface CommodityOrderEntryProps {
   commodity: CommodityDefinition & { currentPrice: number };
@@ -21,35 +21,62 @@ export default function CommodityOrderEntry({
   const [price, setPrice] = useState<string>(String(commodity.currentPrice));
   const [contracts, setContracts] = useState<string>('1');
   const [userCash, setUserCash] = useState<number | null>(null);
+  const [usdToKrwRate, setUsdToKrwRate] = useState<number>(DEFAULT_USD_TO_KRW_RATE);
+  const [positionQty, setPositionQty] = useState<number>(0);
+  const [pendingOrders, setPendingOrders] = useState<Array<{ side: 'buy' | 'sell'; size: number; filled: number }>>([]);
   const [loading, setLoading] = useState<boolean>(false);
 
   const { userId, isLoggedIn } = useAuth();
   const { showToast } = useToast();
-  const db = createClient();
 
-  const fetchUserCash = useCallback(async () => {
-    if (!isLoggedIn || !userId) return;
-    const { data } = await db.from('profiles').select('cash').eq('id', userId).single();
-    if (data) setUserCash(Number(data.cash || 0));
-  }, [isLoggedIn, userId, db]);
+  const fetchAccountState = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/commodities?id=${encodeURIComponent(commodity.id)}`);
+      const data = await res.json();
+      if (!data?.success) return;
+      if (Number(data.usdToKrwRate) > 0) {
+        setUsdToKrwRate(Number(data.usdToKrwRate));
+      }
+      if (isLoggedIn && userId) {
+        setUserCash(data.availableCashKrw !== null && data.availableCashKrw !== undefined ? Number(data.availableCashKrw) : null);
+        setPositionQty(Number(data.myPosition?.quantity ?? 0));
+        setPendingOrders(Array.isArray(data.myOrders) ? data.myOrders : []);
+      } else {
+        setUserCash(null);
+        setPositionQty(0);
+        setPendingOrders([]);
+      }
+    } catch {
+      // 조회 실패 시 기존 상태 유지
+    }
+  }, [commodity.id, isLoggedIn, userId]);
 
   useEffect(() => {
-    fetchUserCash();
-  }, [fetchUserCash]);
+    void fetchAccountState();
+  }, [fetchAccountState]);
 
   const numContracts = Math.max(1, parseInt(contracts, 10) || 1);
   const numPrice = orderType === 'market' ? commodity.currentPrice : parseFloat(price) || commodity.currentPrice;
 
-  // 계약당 필요 증거금 (원화 환산 환율 1,350원 기준 계산)
-  const usdToKrwRate = 1350;
+  // 서버 권위 환율 기반 계약당 필요 위탁증거금 & reduce-only 청산 면제 수량 계산
   const marginPerContractUsd = commodity.marginRequirement || 3000;
-  const marginPerContractKrw = marginPerContractUsd * usdToKrwRate;
-  const totalRequiredMarginKrw = marginPerContractKrw * numContracts;
+  const marginPerContractKrw = Math.max(1, Math.round(marginPerContractUsd * usdToKrwRate));
+  const pendingSameSideQty = pendingOrders
+    .filter((o) => o.side === side)
+    .reduce((acc, o) => acc + Math.max(0, Number(o.size) - Number(o.filled || 0)), 0);
+  const reduceOnlyCapacity =
+    side === 'sell' && positionQty > 0
+      ? Math.max(0, positionQty - pendingSameSideQty)
+      : side === 'buy' && positionQty < 0
+        ? Math.max(0, Math.abs(positionQty) - pendingSameSideQty)
+        : 0;
+  const additionalExposureContracts = Math.max(0, numContracts - reduceOnlyCapacity);
+  const totalRequiredMarginKrw = marginPerContractKrw * additionalExposureContracts;
 
-  // 최대 주문 가능 계약수
-  const maxContracts = userCash && marginPerContractKrw > 0
-    ? Math.max(0, Math.floor(userCash / marginPerContractKrw))
-    : 0;
+  // 최대 주문 가능 계약수 (청산 가능 수량 + 신규 증거금 여력)
+  const maxContracts =
+    reduceOnlyCapacity +
+    (userCash && marginPerContractKrw > 0 ? Math.max(0, Math.floor(userCash / marginPerContractKrw)) : 0);
 
   const handleSetMax = () => {
     setContracts(String(Math.max(1, maxContracts)));
@@ -66,11 +93,11 @@ export default function CommodityOrderEntry({
       return;
     }
 
-    if (userCash !== null && userCash < totalRequiredMarginKrw) {
+    if (totalRequiredMarginKrw > 0 && userCash !== null && userCash < totalRequiredMarginKrw) {
       showToast({
         type: 'error',
         title: '증거금 부족',
-        description: `필요 증거금(₩${totalRequiredMarginKrw.toLocaleString()})이 현재 보유 예수금(₩${userCash.toLocaleString()})을 초과합니다.`,
+        description: `필요 추가 위탁증거금(₩${totalRequiredMarginKrw.toLocaleString()})이 가용 예수금(₩${userCash.toLocaleString()})을 초과합니다.`,
       });
       return;
     }
@@ -96,7 +123,7 @@ export default function CommodityOrderEntry({
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.message || '주문 제출 실패');
 
-      await fetchUserCash();
+      await fetchAccountState();
 
       const confirmedMargin = Number(data.reservedMarginKrw ?? totalRequiredMarginKrw);
       showToast({
@@ -224,17 +251,25 @@ export default function CommodityOrderEntry({
         <div className="space-y-3 pt-2">
           <div className="p-3 bg-[#05070A] rounded-xl border border-border space-y-1.5 font-mono">
             <div className="flex justify-between text-xs text-[#8E939D]">
-              <span>계약당 위탁증거금</span>
+              <span>계약당 위탁증거금 (₩{usdToKrwRate.toLocaleString()}/USD)</span>
               <span className="text-white font-bold">{fmtPrice(marginPerContractUsd, 'overseas')}</span>
             </div>
             <div className="flex justify-between text-[11.5px]">
-              <span className="text-[#8E939D] font-bold">총 필요 위탁증거금</span>
+              <span className="text-[#8E939D] font-bold">
+                {additionalExposureContracts === 0 ? '청산(Reduce-Only) 주문' : '총 필요 추가 위탁증거금'}
+              </span>
               <span className="text-up font-black tabular-nums text-[13px]">
-                ₩{totalRequiredMarginKrw.toLocaleString()}
+                {additionalExposureContracts === 0 ? '₩0 (증거금 면제)' : `₩${totalRequiredMarginKrw.toLocaleString()}`}
               </span>
             </div>
+            {positionQty !== 0 && (
+              <div className="flex justify-between text-[10.5px] text-amber-400">
+                <span>현재 보유 포지션</span>
+                <span>{positionQty > 0 ? `롱 +${positionQty}` : `숏 ${positionQty}`}계약</span>
+              </div>
+            )}
             <div className="flex justify-between text-[10.5px] text-[#565A63] pt-1 border-t border-border/50">
-              <span>내 보유 예수금</span>
+              <span>내 가용 예수금</span>
               <span className="text-[#8E939D]">
                 {userCash !== null ? `₩${userCash.toLocaleString()}` : '로그인 필요'}
               </span>

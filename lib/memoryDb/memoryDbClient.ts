@@ -11,7 +11,9 @@ import {
   GUEST_USER_ID,
 } from './memoryStore';
 import { MEDIA_OUTLETS } from '../shop/catalog';
+import { getStockFxRateToKrw } from '../engine/currency';
 import { executeCurrencyExchange } from '../exchange/exchangeService';
+import { applyCashCreditWithMarginDebt } from '../engine/orderRisk';
 
 
 type FilterOp = {
@@ -376,8 +378,8 @@ export class MemoryQueryBuilder {
         result = result.slice(0, this.limitCount);
       }
 
-      // holdings 테이블의 경우 관계형 stocks 데이터 주입 지원
-      if (this.tableName === 'holdings') {
+      // holdings 및 orders 테이블의 경우 관계형 stocks 데이터 주입 지원
+      if (this.tableName === 'holdings' || this.tableName === 'orders') {
         result = result.map((h) => {
           const s = db.stocks.get(h.stock_id);
           return {
@@ -528,12 +530,16 @@ export class MemoryDbClient {
       const sellerRequiredQty = new Map();
 
       for (const t of trades) {
-        const tradeAmount = Number(t.price) * Number(t.size);
-        const buyerFee = Number(t.buyer_fee ?? 0);
+        const stock = db.stocks.get(t.stock_id);
+        const fxRate = stock ? getStockFxRateToKrw(db, stock) : 1;
+        const quoteAmount = Number(t.price) * Number(t.size);
+        const tradeAmountKrw = fxRate === 1 ? quoteAmount : Math.round(quoteAmount * fxRate);
+        const buyerFeeRate = Number(t.buyer_fee ?? 0);
+        const buyerFeeKrw = Math.round(tradeAmountKrw * buyerFeeRate);
 
         if (t.buyer_id && db.profiles.has(t.buyer_id)) {
           const prev = buyerRequiredCash.get(t.buyer_id) ?? 0;
-          buyerRequiredCash.set(t.buyer_id, prev + tradeAmount * (1 + buyerFee));
+          buyerRequiredCash.set(t.buyer_id, prev + tradeAmountKrw + buyerFeeKrw);
         }
         if (t.seller_id && db.profiles.has(t.seller_id)) {
           const key = `${t.seller_id}_${t.stock_id}`;
@@ -597,15 +603,20 @@ export class MemoryDbClient {
       for (const t of trades) {
         const buyerId = t.buyer_id;
         const sellerId = t.seller_id;
-        const tradeAmount = Number(t.price) * Number(t.size);
+        const stock = db.stocks.get(t.stock_id);
+        const fxRate = stock ? getStockFxRateToKrw(db, stock) : 1;
+        const quoteAmount = Number(t.price) * Number(t.size);
+        const tradeAmountKrw = fxRate === 1 ? quoteAmount : Math.round(quoteAmount * fxRate);
         const buyerFee = Number(t.buyer_fee ?? 0);
         const sellerFee = Number(t.seller_fee ?? 0);
+        const buyerFeeKrw = Math.round(tradeAmountKrw * buyerFee);
+        const sellerFeeKrw = Math.round(tradeAmountKrw * sellerFee);
 
         if (buyerId && db.profiles.has(buyerId)) {
           const buyer = getProfile(buyerId);
           if (buyer) {
-            buyer.cash -= tradeAmount * (1 + buyerFee);
-            buyer.net_worth -= tradeAmount * buyerFee;
+            buyer.cash -= tradeAmountKrw + buyerFeeKrw;
+            buyer.net_worth -= buyerFeeKrw;
           }
 
           const holdingId = `${buyerId}_${t.stock_id}`;
@@ -613,7 +624,7 @@ export class MemoryDbClient {
           if (holding) {
             const previousQuantity = holding.quantity;
             holding.quantity += Number(t.size);
-            holding.avg_price = (previousQuantity * holding.avg_price + tradeAmount) / holding.quantity;
+            holding.avg_price = (previousQuantity * holding.avg_price + quoteAmount) / holding.quantity;
           } else {
             holdingUpdates.set(holdingId, {
               id: holdingId,
@@ -629,8 +640,13 @@ export class MemoryDbClient {
         if (sellerId && db.profiles.has(sellerId)) {
           const seller = getProfile(sellerId);
           if (seller) {
-            seller.cash += tradeAmount * (1 - sellerFee);
-            seller.net_worth -= tradeAmount * sellerFee;
+            const netProceeds = tradeAmountKrw - sellerFeeKrw;
+            if (netProceeds >= 0) {
+              applyCashCreditWithMarginDebt(seller, netProceeds);
+            } else {
+              seller.cash += netProceeds;
+            }
+            seller.net_worth -= sellerFeeKrw;
           }
 
           const holdingId = `${sellerId}_${t.stock_id}`;

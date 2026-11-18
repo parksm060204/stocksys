@@ -200,8 +200,9 @@ async function runSecurityAndSafetyTests() {
   }
 
   console.log(`  -> Accepted: ${buyAccepted}, Rejected: ${buyRejected}`);
-  assert(buyAccepted === 10, `Exactly 10 buy orders must be accepted (actual: ${buyAccepted})`);
-  assert(buyRejected === 10, `Exactly 10 buy orders must be rejected (actual: ${buyRejected})`);
+  // 0.25% taker fee reservation: 100,000 * 1.0025 = 100,250 KRW per order -> 9 orders fit in 1,000,000 KRW (902,250 <= 1,000,000 < 1,002,500)
+  assert(buyAccepted === 9, `Exactly 9 buy orders must be accepted with 0.25% fee reservation (actual: ${buyAccepted})`);
+  assert(buyRejected === 11, `Exactly 11 buy orders must be rejected (actual: ${buyRejected})`);
 
   // ----------------------------------------------------
   // TEST 6: Concurrent SELL Race Condition (Overselling 차단)

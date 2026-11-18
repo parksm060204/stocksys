@@ -170,45 +170,58 @@ export class LocalMarketEngineInstance {
 
     // ── 2. 오래된 봇 주문 및 종료된 LP 주문 메모리 정리 (Memory Leak 방지) ──
     if (this.tickCount % 20 === 0) {
-      const nowMs = Date.now();
-      for (const [id, order] of Array.from(memoryDb.orders.entries())) {
-        // 사용자 미체결/보유 주문은 보존
-        if (order.user_id) continue;
-
-        // 일반 봇 주문 정리: 60초 초과 또는 체결/취소 완료
-        if (!order.is_lp) {
-          if (
-            order.status === 'filled' ||
-            order.status === 'cancelled' ||
-            nowMs - new Date(order.created_at).getTime() > 60_000
-          ) {
-            memoryDb.orders.delete(id);
-            memoryDb.removeOrderFromIndex(order);
-          }
-        } else {
-          // 종료된 LP 주문(filled / cancelled) 30초 초과 시 정리
-          if (
-            (order.status === 'filled' || order.status === 'cancelled') &&
-            nowMs - new Date(order.created_at).getTime() > 30_000
-          ) {
-            memoryDb.orders.delete(id);
-            memoryDb.removeOrderFromIndex(order);
-          }
-        }
-      }
-
-      await this.client.rpc('trim_old_market_data', { p_max_trades: 5000, p_max_history: 3000 });
-      memoryDb.trimSettlementLedger(10000);
       const persistFn = this.onPersist || (() => persistenceManager.saveSnapshot(memoryDb));
-      const saved = await persistFn();
-      if (!saved) {
-        this.lastPersistOk = false;
-        this.lastPersistError = `Periodic snapshot save failed at tick ${this.tickCount}`;
-        console.error(`❌ [LocalMarketEngine] ${this.lastPersistError}`);
-      } else {
-        this.lastPersistOk = true;
-        this.lastPersistError = null;
-      }
+      await withAllStockLocks(Array.from(memoryDb.stocks.keys()), async () => {
+        await runWithCommitGate(persistFn, async () => {
+          const nowMs = Date.now();
+          for (const [id, order] of Array.from(memoryDb.orders.entries())) {
+            // 사용자 미체결/보유 주문은 보존
+            if (order.user_id) continue;
+
+            // 일반 봇 주문 정리: 60초 초과 또는 체결/취소 완료
+            if (!order.is_lp) {
+              if (
+                order.status === 'filled' ||
+                order.status === 'cancelled' ||
+                nowMs - new Date(order.created_at).getTime() > 60_000
+              ) {
+                memoryDb.orders.delete(id);
+                memoryDb.removeOrderFromIndex(order);
+              }
+            } else {
+              // 종료된 LP 주문(filled / cancelled) 30초 초과 시 정리
+              if (
+                (order.status === 'filled' || order.status === 'cancelled') &&
+                nowMs - new Date(order.created_at).getTime() > 30_000
+              ) {
+                memoryDb.orders.delete(id);
+                memoryDb.removeOrderFromIndex(order);
+              }
+            }
+          }
+
+          await this.client.rpc('trim_old_market_data', { p_max_trades: 5000, p_max_history: 3000 });
+          memoryDb.trimSettlementLedger(10000);
+          let saved = false;
+          try {
+            saved = await persistFn();
+          } catch (err: any) {
+            saved = false;
+            this.lastPersistOk = false;
+            this.lastPersistError = `Periodic snapshot save threw at tick ${this.tickCount}: ${err?.message || String(err)}`;
+            console.error(`❌ [LocalMarketEngine] ${this.lastPersistError}`);
+            return;
+          }
+          if (!saved) {
+            this.lastPersistOk = false;
+            this.lastPersistError = `Periodic snapshot save failed at tick ${this.tickCount}`;
+            console.error(`❌ [LocalMarketEngine] ${this.lastPersistError}`);
+          } else {
+            this.lastPersistOk = true;
+            this.lastPersistError = null;
+          }
+        });
+      });
     }
   }
 

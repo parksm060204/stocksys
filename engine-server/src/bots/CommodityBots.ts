@@ -30,7 +30,7 @@ export class CommercialHedgerAgent extends BaseAgent {
         price: supportLevel,
         size: qty,
         status: 'open',
-        is_lp: true,
+        is_lp: false,
         _botId: this.botId
       });
     } else if (commodityPrice >= resistanceLevel * (1 - thresholdPct)) {
@@ -43,7 +43,7 @@ export class CommercialHedgerAgent extends BaseAgent {
         price: resistanceLevel,
         size: qty,
         status: 'open',
-        is_lp: true,
+        is_lp: false,
         _botId: this.botId
       });
     }

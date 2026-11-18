@@ -36,6 +36,19 @@ export interface CancelOrderResult {
   order?: OrderRecord;
 }
 
+export interface CancelOrdersBatchParams {
+  orderIds: string[];
+  userId: string;
+  onPersist?: () => Promise<boolean>;
+}
+
+export interface CancelOrdersBatchResult {
+  success: boolean;
+  statusCode: number;
+  message?: string;
+  orders: OrderRecord[];
+}
+
 /**
  * Per-stock async mutex (직렬화 큐)
  *
@@ -196,6 +209,92 @@ export class LocalMarketService {
             statusCode: 200,
             message: '주문이 정상적으로 취소되었습니다.',
             order: currentOrder,
+          };
+        });
+      });
+    });
+  }
+
+  /**
+   * 다건 주문 일괄 취소 (전체 종목 락 + 계좌 락 + 커밋 게이트 내에서 소유권 검증 및 원자적 롤백 보장)
+   */
+  public static async cancelOrdersBatch(params: CancelOrdersBatchParams): Promise<CancelOrdersBatchResult> {
+    ensureLocalStandaloneEngine();
+
+    const { orderIds, userId } = params;
+    const uniqueIds = Array.from(
+      new Set((orderIds || []).filter((id): id is string => typeof id === 'string' && id.trim() !== ''))
+    );
+
+    if (!userId || uniqueIds.length === 0) {
+      return { success: false, statusCode: 400, message: '취소할 주문 ID 목록과 사용자 정보가 필요합니다.', orders: [] };
+    }
+
+    const preliminaryStockIds = new Set<string>();
+    for (const id of uniqueIds) {
+      const ord = memoryDb.orders.get(id);
+      if (ord?.stock_id) {
+        preliminaryStockIds.add(ord.stock_id);
+      }
+    }
+
+    if (preliminaryStockIds.size === 0) {
+      return { success: false, statusCode: 404, message: '취소할 주문을 찾을 수 없습니다.', orders: [] };
+    }
+
+    return await withAllStockLocks(Array.from(preliminaryStockIds), async () => {
+      return await withAccountLocks([userId], async () => {
+        const targetOrders: OrderRecord[] = [];
+        for (const id of uniqueIds) {
+          const ord = memoryDb.orders.get(id);
+          if (!ord) {
+            return { success: false, statusCode: 404, message: `주문을 찾을 수 없습니다: ${id}`, orders: [] };
+          }
+          if (ord.user_id !== userId) {
+            return { success: false, statusCode: 403, message: '본인의 주문만 일괄 취소할 수 있습니다.', orders: [] };
+          }
+          if (!preliminaryStockIds.has(ord.stock_id)) {
+            return { success: false, statusCode: 400, message: '주문의 종목 정보가 일관되지 않습니다.', orders: [] };
+          }
+          if (ord.status === 'open' || ord.status === 'partial') {
+            targetOrders.push(ord);
+          }
+        }
+
+        if (targetOrders.length === 0) {
+          return { success: false, statusCode: 400, message: '취소 가능한 미체결 주문이 없습니다.', orders: [] };
+        }
+
+        const snapshots = targetOrders.map((ord) => ({ ord, prevStatus: ord.status }));
+        return await runWithCommitGate(params.onPersist, async () => {
+          for (const { ord } of snapshots) {
+            ord.status = 'cancelled';
+          }
+
+          if (params.onPersist) {
+            const saved = await params.onPersist();
+            if (!saved) {
+              for (const { ord, prevStatus } of snapshots) {
+                ord.status = prevStatus;
+              }
+              return {
+                success: false,
+                statusCode: 500,
+                message: '일괄 취소 장부 영속 저장에 실패하여 전체 취소를 롤백했습니다.',
+                orders: [],
+              };
+            }
+          }
+
+          for (const { ord } of snapshots) {
+            memoryDb.publish('orders_changes', { eventType: 'UPDATE', new: ord });
+          }
+
+          return {
+            success: true,
+            statusCode: 200,
+            message: `${targetOrders.length}건의 주문이 일괄 취소되었습니다.`,
+            orders: targetOrders,
           };
         });
       });

@@ -132,7 +132,7 @@ export class BaseAgent {
             price: q.side === 'buy' ? price * 1.01 : price * 0.99,
             size: qty,
             status: 'open',
-            is_lp: true,
+            is_lp: false,
             _botId: this.botId
           });
         }
@@ -617,7 +617,7 @@ export class BaseAgent {
       price: spoofPrice,
       size: spoofQty,
       status: 'open',
-      is_lp: true,
+      is_lp: false,
       is_spoof: true,
       _botId: this.botId
     }, stock.current_price);

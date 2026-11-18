@@ -2,7 +2,7 @@ import type { MemoryDatabase, ProfileRecord } from '@/lib/memoryDb/memoryStore';
 import type { ExchangeRateRecord } from '@/lib/repositories/types';
 import { withAccountLocks } from '@/lib/memoryDb/accountLocks';
 import { runWithCommitGate } from '@/lib/memoryDb/PersistenceManager';
-import { getAvailableCashKrw } from '@/lib/engine/orderRisk';
+import { getAvailableCashKrw, applyCashCreditWithMarginDebt } from '@/lib/engine/orderRisk';
 
 export type SupportedCurrency = 'KRW' | 'USD' | 'EUR' | 'JPY' | 'CNY' | 'GBP';
 
@@ -152,6 +152,7 @@ export async function executeCurrencyExchange(params: {
       const currentFromBal = Number(profile[fromField] ?? 0);
       const currentToBal = Number(profile[toField] ?? 0);
 
+      const marginDebt = Math.max(0, Number(profile.margin_debt_krw ?? 0));
       if (fromCur === 'KRW') {
         const { availableCash, reservedCash } = getAvailableCashKrw(db, userId);
         if (!Number.isFinite(availableCash) || availableCash < normalizedFromAmount) {
@@ -161,25 +162,40 @@ export async function executeCurrencyExchange(params: {
             message: `가용 KRW 잔액이 부족합니다. (가용: ${availableCash.toLocaleString()}, 주문 예약: ${reservedCash.toLocaleString()}, 요청: ${normalizedFromAmount.toLocaleString()})`,
           };
         }
-      } else if (!Number.isFinite(currentFromBal) || currentFromBal < normalizedFromAmount) {
-        return {
-          success: false,
-          statusCode: 400,
-          message: `보유 ${fromCur} 잔액이 부족합니다. (보유: ${currentFromBal.toLocaleString()}, 요청: ${normalizedFromAmount.toLocaleString()})`,
-        };
+      } else {
+        if (marginDebt > 0 && toCur !== 'KRW') {
+          return {
+            success: false,
+            statusCode: 400,
+            message: `미수금(마진 부채 ₩${Math.round(marginDebt).toLocaleString()}) 상환 전에는 KRW 외 통화 간 환전을 할 수 없습니다.`,
+          };
+        }
+        if (!Number.isFinite(currentFromBal) || currentFromBal < normalizedFromAmount) {
+          return {
+            success: false,
+            statusCode: 400,
+            message: `보유 ${fromCur} 잔액이 부족합니다. (보유: ${currentFromBal.toLocaleString()}, 요청: ${normalizedFromAmount.toLocaleString()})`,
+          };
+        }
       }
 
+      const prevDebt = profile.margin_debt_krw;
       const nextFromBal = roundCurrency(fromCur, currentFromBal - normalizedFromAmount);
-      const nextToBal = roundCurrency(toCur, currentToBal + toAmount);
-
       (profile as any)[fromField] = nextFromBal;
-      (profile as any)[toField] = nextToBal;
+      if (toCur === 'KRW') {
+        applyCashCreditWithMarginDebt(profile, toAmount);
+      } else {
+        (profile as any)[toField] = roundCurrency(toCur, currentToBal + toAmount);
+      }
+      const nextToBal = Number((profile as any)[toField] ?? 0);
 
       if (onPersist) {
         const saved = await onPersist();
         if (!saved) {
           (profile as any)[fromField] = currentFromBal;
           (profile as any)[toField] = currentToBal;
+          if (prevDebt !== undefined) profile.margin_debt_krw = prevDebt;
+          else delete profile.margin_debt_krw;
           return {
             success: false,
             statusCode: 500,

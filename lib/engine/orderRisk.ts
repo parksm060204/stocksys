@@ -2,9 +2,25 @@
  * MUMYEONG: Order Risk & Balance Reservation System
  * 미체결(open, partial) 주문에 대한 예수금 및 보유 주식 예약(Reservation) 동적 계산
  */
-import type { MemoryDatabase } from '../memoryDb/memoryStore';
+import type { MemoryDatabase, ProfileRecord } from '../memoryDb/memoryStore';
+import { getStockFxRateToKrw, getUsdFxRateFromDb, isUsdQuotedAsset } from './currency';
+import { hasActiveFeeBooster } from '../shop/catalog';
 
 export const OPTION_RESERVATION_FEE_RATE = 0.001;
+export const STOCK_TAKER_FEE_RATE = 0.0025;
+
+export function getEffectiveStockTakerFeeRate(
+  profile?: Pick<ProfileRecord, 'unlocked_features' | 'feature_expiries'> | null,
+  nowMs: number = Date.now()
+): number {
+  return hasActiveFeeBooster(profile, nowMs) ? STOCK_TAKER_FEE_RATE * 0.5 : STOCK_TAKER_FEE_RATE;
+}
+
+export interface CurrencyReservationContext {
+  stocks?: ReadonlyMap<string, { market?: string; ticker?: string; currency?: 'KRW' | 'USD' }>;
+  exchangeRates?: ReadonlyArray<{ currency_code: string; rate_to_krw: number }>;
+  usdToKrwRate?: number;
+}
 
 export interface OpenOrderForRisk {
   id?: string;
@@ -22,12 +38,26 @@ export interface OptionContractMultiplierLookup {
   get(id: string): { multiplier?: number } | undefined;
 }
 
+function getOrderFxRateToKrw(stockId: string, currencyContext?: CurrencyReservationContext): number {
+  if (!currencyContext?.stocks) return 1;
+  const stock = currencyContext.stocks.get(stockId);
+  if (!stock || !isUsdQuotedAsset(stock)) return 1;
+  if (typeof currencyContext.usdToKrwRate === 'number' && Number.isFinite(currencyContext.usdToKrwRate) && currencyContext.usdToKrwRate > 0) {
+    return currencyContext.usdToKrwRate;
+  }
+  return getUsdFxRateFromDb({ exchangeRates: currencyContext.exchangeRates });
+}
+
 /**
- * 단일 매수 주문의 잔여 예약 예수금(옵션인 경우 계약별 승수 및 0.1% 수수료 포함) 계산
+ * 단일 매수 주문의 잔여 예약 예수금(KRW 환산 + 정산 수수료 포함) 계산
+ * - 옵션: 계약별 승수 + 0.1% 수수료
+ * - 일반 주식/ETF: KRW 환산(해외/USD ETF는 환율 적용) + 최대 테이커 수수료(0.25%)
  */
 export function calculateSingleBuyOrderReservedCash(
   order: OpenOrderForRisk,
-  optionsContracts?: OptionContractMultiplierLookup
+  optionsContracts?: OptionContractMultiplierLookup,
+  currencyContext?: CurrencyReservationContext,
+  stockTakerFeeRate: number = STOCK_TAKER_FEE_RATE
 ): number {
   if (order.side !== 'buy' || (order.status !== 'open' && order.status !== 'partial')) {
     return 0;
@@ -43,7 +73,11 @@ export function calculateSingleBuyOrderReservedCash(
     return notional + fee;
   }
 
-  return remainingQty * Number(order.price);
+  const fxRate = getOrderFxRateToKrw(order.stock_id, currencyContext);
+  const quoteNotional = remainingQty * Number(order.price);
+  const notionalKrw = fxRate === 1 ? Math.round(quoteNotional) : Math.round(quoteNotional * fxRate);
+  const feeKrw = Math.round(notionalKrw * stockTakerFeeRate);
+  return notionalKrw + feeKrw;
 }
 
 /**
@@ -52,16 +86,19 @@ export function calculateSingleBuyOrderReservedCash(
  * @param orders 유저의 open/partial 주문 목록
  * @param excludeOrderId 수정/취소 대상인 경우 제외할 주문 ID
  * @param optionsContracts 옵션 계약 승수 조회 맵 (지정 시 옵션 계약별 승수·수수료 반영)
+ * @param currencyContext USD 종목/ETF 환율 변환용 컨텍스트
  */
 export function calculateReservedCash(
   orders: OpenOrderForRisk[],
   excludeOrderId?: string,
-  optionsContracts?: OptionContractMultiplierLookup
+  optionsContracts?: OptionContractMultiplierLookup,
+  currencyContext?: CurrencyReservationContext,
+  stockTakerFeeRate: number = STOCK_TAKER_FEE_RATE
 ): number {
   let reserved = 0;
   for (const o of orders) {
     if (excludeOrderId && o.id === excludeOrderId) continue;
-    reserved += calculateSingleBuyOrderReservedCash(o, optionsContracts);
+    reserved += calculateSingleBuyOrderReservedCash(o, optionsContracts, currencyContext, stockTakerFeeRate);
   }
   return reserved;
 }
@@ -85,7 +122,11 @@ export function calculateUserReservedCashKrw(
       openOrders.push(ord);
     }
   }
-  return calculateReservedCash(openOrders, excludeOrderId, db.optionsContracts);
+  const stockFeeRate = getEffectiveStockTakerFeeRate(db.profiles.get(userId), db.getNowMs());
+  return calculateReservedCash(openOrders, excludeOrderId, db.optionsContracts, {
+    stocks: db.stocks,
+    exchangeRates: db.exchangeRates,
+  }, stockFeeRate);
 }
 
 /**
@@ -98,11 +139,12 @@ export function getAvailableCashKrw(
 ): { cash: number; reservedCash: number; availableCash: number } {
   const profile = db.profiles.get(userId);
   const cash = Number(profile?.cash ?? 0);
+  const marginDebt = Math.max(0, Number(profile?.margin_debt_krw ?? 0));
   const reservedCash = calculateUserReservedCashKrw(db, userId, excludeOrderId);
   return {
     cash,
     reservedCash,
-    availableCash: Number.isFinite(cash) ? Math.max(0, cash - reservedCash) : 0,
+    availableCash: Number.isFinite(cash) && marginDebt <= 0 ? Math.max(0, cash - reservedCash) : 0,
   };
 }
 
@@ -128,6 +170,27 @@ export function calculateReservedQty(
   return reserved;
 }
 
+export function applyCashCreditWithMarginDebt(
+  profile: { cash: number; margin_debt_krw?: number },
+  creditAmount: number
+): void {
+  if (!Number.isFinite(creditAmount) || creditAmount <= 0) return;
+  const round2 = (v: number) => Math.round(v * 100) / 100;
+  const currentDebt = Math.max(0, round2(Number(profile.margin_debt_krw ?? 0)));
+  if (currentDebt > 0) {
+    const repay = Math.min(creditAmount, currentDebt);
+    const nextDebt = round2(currentDebt - repay);
+    if (nextDebt > 0) profile.margin_debt_krw = nextDebt;
+    else delete profile.margin_debt_krw;
+    const remainder = round2(creditAmount - repay);
+    if (remainder > 0) {
+      profile.cash = round2(profile.cash + remainder);
+    }
+  } else {
+    profile.cash = round2(profile.cash + creditAmount);
+  }
+}
+
 export interface ValidateOrderCapacityParams {
   userId: string;
   stockId: string;
@@ -139,6 +202,9 @@ export interface ValidateOrderCapacityParams {
   openOrders: OpenOrderForRisk[];
   excludeOrderId?: string;
   optionsContracts?: OptionContractMultiplierLookup;
+  currencyContext?: CurrencyReservationContext;
+  stockTakerFeeRate?: number;
+  marginDebtKrw?: number;
 }
 
 export interface OrderCapacityResult {
@@ -165,6 +231,9 @@ export function validateOrderCapacity(
     stockId,
     excludeOrderId,
     optionsContracts,
+    currencyContext,
+    stockTakerFeeRate = STOCK_TAKER_FEE_RATE,
+    marginDebtKrw = 0,
   } = params;
 
   if (incomingPrice <= 0 || incomingSize <= 0) {
@@ -178,9 +247,31 @@ export function validateOrderCapacity(
   }
 
   if (side === 'buy') {
-    const reservedCash = calculateReservedCash(openOrders, excludeOrderId, optionsContracts);
-    const availableCash = Math.max(0, currentCash - reservedCash);
-    const requiredCash = incomingPrice * incomingSize;
+    const reservedCash = calculateReservedCash(openOrders, excludeOrderId, optionsContracts, currencyContext, stockTakerFeeRate);
+    const marginDebt = Math.max(0, Number(marginDebtKrw ?? 0));
+    const availableCash = marginDebt > 0 ? 0 : Math.max(0, currentCash - reservedCash);
+    const requiredCash = calculateSingleBuyOrderReservedCash(
+      {
+        stock_id: stockId,
+        side: 'buy',
+        price: incomingPrice,
+        size: incomingSize,
+        filled: 0,
+        status: 'open',
+      },
+      optionsContracts,
+      currencyContext,
+      stockTakerFeeRate
+    );
+    if (marginDebt > 0) {
+      return {
+        valid: false,
+        availableBalance: 0,
+        required: requiredCash,
+        reserved: reservedCash,
+        message: `미수금(마진 부채 ₩${Math.round(marginDebt).toLocaleString()}) 상환 전에는 신규 매수 주문을 제출할 수 없습니다.`,
+      };
+    }
 
     if (availableCash < requiredCash) {
       return {

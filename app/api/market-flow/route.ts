@@ -59,6 +59,7 @@ export async function GET(request: Request) {
 
     const { searchParams } = new URL(request.url);
     const pointsLimit = parsePointsLimit(searchParams.get('points'));
+    const auth = await verifyAdminSession(request);
 
     const flowData = engine.getMarketFlowData(pointsLimit);
 
@@ -69,7 +70,7 @@ export async function GET(request: Request) {
           ...flowData,
           engineRunning: engine.isEngineRunning(),
           activeAgentsCount: engine.getActiveAgentsCount(),
-          marketState: engine.getMarketStateSnapshot(),
+          ...(auth.isAdmin ? { marketState: engine.getMarketStateSnapshot() } : {}),
         },
       },
       {

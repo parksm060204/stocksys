@@ -604,9 +604,13 @@ async function main() {
       repositories: createInMemoryRepositoryBundle(db),
       onTickCommitPersist: async () => false,
     });
+    const tradesBeforeEng = db.trades.length;
     const tickRes = await eng.tick();
     assert.equal(tickRes.success, false);
+    assert.equal(tickRes.commitStatus, 'NOT_COMMITTED');
     assert.equal(tickRes.errorCode, 'PERSISTENCE_FAILED');
+    assert.equal(eng.getRuntimeCounters().tickCount, 0);
+    assert.equal(db.trades.length, tradesBeforeEng);
 
     const stockId = STOCK_UUID_MAP['0010'];
     const buyer = seedProfile(memoryDb, 'auto_dur_buyer', 1_000_000);

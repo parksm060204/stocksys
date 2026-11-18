@@ -7,6 +7,7 @@
  */
 
 import { memoryDb, OrderRecord, TradeRecord } from '../../memoryDb/memoryStore';
+import { getStockFxRateToKrw, isUsdQuotedAsset } from '../currency';
 import { calculateReservedCash, calculateReservedQty, OpenOrderForRisk } from '../orderRisk';
 import { ObservableMarketEvent, getEffectiveMarketEvents } from './marketEventTypes';
 import { WindowStatistics } from './marketDiagnostics';
@@ -31,6 +32,7 @@ export interface StructuralLiquidity {
 export interface MarketObservation {
   stockId: string;
   ticker: string;
+  isUsdAsset?: boolean;
   bestBid: number | null;
   bestAsk: number | null;
   midPrice: number;            // If one-sided/empty, falls back to reference price (for observation only)
@@ -46,6 +48,7 @@ export interface MarketObservation {
   volatility: number;          // Standard deviation of returns
   isWarmup: boolean;
   simulationTime: number;
+  fxRateToKrw?: number;
   // 구조적 유동성 메타데이터 (하위 호환 및 fallback 지원)
   structural?: StructuralLiquidity;
   // 뉴스 및 동적 시장 상태
@@ -119,7 +122,8 @@ export function calculateAuthoritativePortfolioValuation(
         }
 
         if (validPrice !== null) {
-          totalHoldingsValue += qty * validPrice;
+          const fxRate = getStockFxRateToKrw(memoryDb, hStock);
+          totalHoldingsValue += qty * validPrice * fxRate;
         } else {
           isComplete = false;
           incompleteReasons.push(
@@ -130,7 +134,8 @@ export function calculateAuthoritativePortfolioValuation(
     }
   }
 
-  const nav = rawCash + totalHoldingsValue;
+  const marginDebt = Math.max(0, Number(memoryDb.profiles.get(accountId)?.margin_debt_krw ?? 0));
+  const nav = rawCash + totalHoldingsValue - marginDebt;
   return {
     totalHoldingsValue,
     nav,
@@ -256,7 +261,15 @@ export function buildMarketObservation(
     }
   }
 
-  const reservedCash = calculateReservedCash(userOpenOrders);
+  const reservedCash = calculateReservedCash(
+    userOpenOrders,
+    undefined,
+    memoryDb.optionsContracts,
+    {
+      stocks: memoryDb.stocks,
+      exchangeRates: memoryDb.exchangeRates,
+    }
+  );
   const reservedHolding = calculateReservedQty(userOpenOrders, stockId);
   const availableCash = Math.max(0, rawCash - reservedCash);
   const availableHolding = Math.max(0, rawHolding - reservedHolding);
@@ -272,6 +285,7 @@ export function buildMarketObservation(
   return {
     stockId,
     ticker: stock.ticker,
+    fxRateToKrw: getStockFxRateToKrw(memoryDb, stock),
     bestBid,
     bestAsk,
     midPrice,
@@ -303,6 +317,7 @@ export function buildMarketObservation(
     recentEvents: visibleEvents || [],
     effectiveEvents: getEffectiveMarketEvents(visibleEvents || [], simulationTime),
     windowStats,
+    isUsdAsset: isUsdQuotedAsset(stock),
     account: {
       cash: rawCash,
       holdingQty: rawHolding,

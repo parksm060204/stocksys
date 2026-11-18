@@ -377,7 +377,10 @@ async function testC_D_E_CommodityLedgerOrderAttributionRecovery() {
       id: 'cm_loss_close', commodityId: 'CRUDE_OIL', buyOrderId: 'bot_buy', sellOrderId: ls.order!.id,
       buyerId: 'bot_1', sellerId: lossUser.id, price: 10, size: 1, tick: 3, timestamp: Date.now(),
     }, commodity);
-    assert.ok(lossUser.cash < 0, `Realized loss exceeding margin must preserve negative balance, got ${lossUser.cash}`);
+    assert.ok(
+      lossUser.cash >= 0 && (lossUser.margin_debt_krw ?? 0) > 0,
+      `Realized loss exceeding margin must clamp cash >= 0 and record margin_debt_krw, got cash=${lossUser.cash}, debt=${lossUser.margin_debt_krw}`
+    );
 
     // [E] Save snapshot with unfilled b1 (size=3) -> restore into fresh DB & engine -> b1 restored in book + new epoch IDs don't collide!
     assert.equal(await pm.saveSnapshot(db), true);

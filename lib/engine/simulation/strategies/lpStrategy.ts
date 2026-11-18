@@ -32,6 +32,7 @@ export function evaluateLpStrategy(
   effectParams?: LpEffectParams
 ): LpQuotePlan {
   const effects = effectParams ?? NEUTRAL_LP_EFFECT_PARAMS;
+  const fxRate = obs.fxRateToKrw ?? 1;
   const cancels: OrderRecord[] = [];
   const newOrders: { side: 'buy' | 'sell'; price: number; size: number; replacesOrderId?: string }[] = [];
 
@@ -119,7 +120,7 @@ export function evaluateLpStrategy(
         retainedOrderIds.add(matchingResting.id);
         continue;
       }
-      const costPerShare = des.price * 1.0025;
+      const costPerShare = des.price * fxRate * 1.0025;
       const maxAffordable = Math.floor(remainingNewOrderCash / costPerShare);
       if (maxAffordable <= 0) {
         break;
@@ -175,7 +176,7 @@ export function evaluateLpStrategy(
   let unallocatedCash = Math.max(0, obs.account.availableCash);
 
   for (const des of desiredBids) {
-    const costPerShare = des.price * 1.0025;
+    const costPerShare = des.price * fxRate * 1.0025;
     const matchingResting = existingBids.find(
       (o) =>
         !retainedOrderIds.has(o.id) &&

@@ -17,13 +17,13 @@ export default function RealtimePriceHeader({ stock }: { stock: Stock }) {
 
   return (
     <div className="text-right">
-      <PriceTag current={currentPrice} prev={stock.previousClose} market={stock.market} size="lg" />
+      <PriceTag current={currentPrice} prev={stock.previousClose} market={stock.market} ticker={stock.ticker} size="lg" />
       <div className="mt-1 transition-colors duration-300">
         <span className={`font-mono text-[14px] font-semibold tabular-nums ${color}`}>
           {dir === "up" ? "▲" : dir === "down" ? "▼" : "–"} {fmtSigned(percent)}%
         </span>
         <span className={`ml-2 font-mono text-[12px] tabular-nums ${color}`}>
-          {fmtPrice(Math.abs(amount), stock.market)}
+          {fmtPrice(Math.abs(amount), stock.market, stock.ticker)}
         </span>
       </div>
     </div>

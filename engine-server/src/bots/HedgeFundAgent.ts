@@ -116,7 +116,7 @@ export class HedgeFundAgent extends BaseAgent {
               price: stock.current_price - (tickSize * 10), 
               size: qtyToSell,
               status: 'open',
-              is_lp: true,
+              is_lp: false,
               _botId: this.botId
             }, stock.current_price));
             
@@ -139,7 +139,7 @@ export class HedgeFundAgent extends BaseAgent {
               price: stock.current_price + (tickSize * 10), 
               size: qtyToCover,
               status: 'open',
-              is_lp: true, // MarketEngine이 매칭
+              is_lp: false, // MarketEngine이 매칭
               _botId: this.botId
             }, stock.current_price));
             
@@ -238,7 +238,7 @@ export class HedgeFundAgent extends BaseAgent {
               price: targetPrice,
               size: qtyToShort,
               status: 'open',
-              is_lp: true,
+              is_lp: false,
               _botId: this.botId
             }, stock.current_price));
 

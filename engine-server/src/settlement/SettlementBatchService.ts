@@ -74,24 +74,29 @@ export class SettlementBatchService {
         avgPrice: Number(h.avg_price || 0),
       }));
 
-      const stockIds = Array.from(
-        new Set(expiredOptions.map((o) => o.underlying_stock_id).filter((id): id is string => !!id))
-      );
-      const underlyingPrices = this.repositories.market.getUnderlyingPrices(stockIds);
-      const contracts: OptionContract[] = this.repositories.market
-        .getOptionContracts(expiredOptions.map((o) => o.id))
-        .map((o) => ({
+      const rawContracts = this.repositories.market.getOptionContracts(expiredOptions.map((o) => o.id));
+      const contracts: OptionContract[] = rawContracts.map((o) => {
+        const isLegacyUnmigratedIdx =
+          o.asset_class === 'IDX' && Number(o.strike_price || 0) > 0 && Number(o.strike_price || 0) < 1000;
+        return {
           id: o.id,
-          underlying_stock_id: o.underlying_stock_id,
+          underlying_stock_id: isLegacyUnmigratedIdx ? 'idx_k200' : o.underlying_stock_id,
           ticker: o.ticker,
+          asset_class: o.asset_class,
           type: o.type,
           option_type: o.option_type,
           strike_price: Number(o.strike_price || 0),
           current_price: Number(o.current_price || 0),
+          multiplier: Number(o.multiplier ?? 250000),
           expiry_date: o.expiry_date,
           open_interest: Number(o.open_interest || 0),
           volume: Number(o.volume || 0),
-        }));
+        } as OptionContract;
+      });
+      const stockIds = Array.from(
+        new Set(contracts.map((o) => o.underlying_stock_id).filter((id): id is string => !!id))
+      );
+      const underlyingPrices = this.repositories.market.getUnderlyingPrices(stockIds);
 
       const optRes = await this.optionEngine.executeSettlementBatch({
         contracts,
@@ -143,5 +148,9 @@ export class SettlementBatchService {
 
   public getLastRunPeriodKey(): string {
     return this.lastRunPeriodKey;
+  }
+
+  public restoreLastRunPeriodKey(periodKey: string): void {
+    this.lastRunPeriodKey = periodKey;
   }
 }

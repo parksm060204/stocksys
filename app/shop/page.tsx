@@ -452,32 +452,34 @@ export default function ShopPage() {
                 />
 
                 <PricingCard
-                  badge="30일 부스터"
+                  badge="준비 중"
                   title="기관 수급 실시간 스캐너"
-                  desc="세력/기관 순매수 포트폴리오 실시간 스캔"
+                  desc="기능 개편으로 신규 판매가 일시 중단되었습니다 (기존 보유 권리 유지)"
                   price={2000000}
                   isUnlocked={hasScanner}
                   onPurchase={handleScannerPurchase}
-                  loading={loading}
+                  loading={true}
+                  buttonText={hasScanner ? "보유 중" : "판매 일시 중단"}
                   features={[
                     "연기금/헤지펀드 수급 흐름 실시간 포착",
                     "스마트머니 순매수 순위 대시보드 제공",
-                    "30일간 모니터링 라이선스"
+                    "기능 연동 완료 후 재오픈 예정"
                   ]}
                 />
 
                 <PricingCard
-                  badge="30일 부스터"
+                  badge="준비 중"
                   title="AI 시황 예측기"
-                  desc="AI 호재/악재 사건 예측 타겟 신호 포착"
+                  desc="기능 개편으로 신규 판매가 일시 중단되었습니다 (기존 보유 권리 유지)"
                   price={1500000}
                   isUnlocked={hasAiPredictor}
                   onPurchase={handleAiPredictorPurchase}
-                  loading={loading}
+                  loading={true}
+                  buttonText={hasAiPredictor ? "보유 중" : "판매 일시 중단"}
                   features={[
                     "Gemini AI 호재/악재 수치화 타겟 신호",
                     "변동성 이벤트 사전 감지 레이더",
-                    "30일간 예측 신호 활성화"
+                    "기능 연동 완료 후 재오픈 예정"
                   ]}
                 />
               </>

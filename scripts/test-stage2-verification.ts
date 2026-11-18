@@ -419,7 +419,7 @@ async function runStage2Verification() {
     // 관측 조회: 100주에 대한 현금이 예약되어 availableCash 감소
     const obsAfterSubmit = buildMarketObservation(stock.id, accountId, startMs);
     assert(obsAfterSubmit !== null, '관측 생성 성공');
-    const reservedExpected = 100 * 10000; // calculateReservedCash는 remainingQty * price
+    const reservedExpected = 100 * 10000 + Math.round(100 * 10000 * 0.0025); // calculateReservedCash는 remainingQty * price + 0.25% 테이커 수수료
     assert(
       obsAfterSubmit!.account.reservedCash === reservedExpected,
       `주문 예약금 정확히 반영 (${obsAfterSubmit!.account.reservedCash} === ${reservedExpected})`

@@ -17,11 +17,13 @@ export type CombinedNews = {
   target_sector?: string | null;
   target_ticker?: string | null;
   impact_score?: number;
+  locked?: boolean;
 };
 
 export default function NewsPage() {
   const [newsList, setNewsList] = useState<CombinedNews[]>([]);
   const [isAdmin, setIsAdmin] = useState<boolean>(false);
+  const [hasActiveSub, setHasActiveSub] = useState<boolean>(false);
 
   const db = createClient();
   const { userId, isLoggedIn } = useAuth();
@@ -36,18 +38,29 @@ export default function NewsPage() {
           .select('is_admin, news_subscriptions')
           .eq('id', userId)
           .single();
-          
+
         if (!cancelled && profile) {
-          setIsAdmin(profile.is_admin || false);
+          setIsAdmin(Boolean(profile.is_admin));
+          const subs = profile.news_subscriptions && typeof profile.news_subscriptions === 'object'
+            ? Object.values(profile.news_subscriptions as Record<string, string>)
+            : [];
+          const nowMs = Date.now();
+          setHasActiveSub(subs.some((exp) => {
+            const expMs = Date.parse(String(exp || ''));
+            return Number.isFinite(expMs) && expMs > nowMs;
+          }));
         }
+      } else if (!cancelled) {
+        setIsAdmin(false);
+        setHasActiveSub(false);
       }
 
-      // Fetch news in parallel via Promise.all
-      const [{ data: mNews }, { data: pNews }] = await Promise.all([
-        db.from('market_news').select('*').order('created_at', { ascending: false }).limit(50),
-        db.from('premium_news').select('*, media_outlets(*)').order('created_at', { ascending: false }).limit(50),
-      ]);
-      
+      const { data: mNews } = await db
+        .from('market_news')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(50);
+
       if (cancelled) return;
 
       const combined: CombinedNews[] = [];
@@ -58,30 +71,14 @@ export default function NewsPage() {
             id: row.id,
             created_at: row.created_at,
             type: 'MARKET',
-            category: row.category || (row.sentiment === 'positive' ? 'OFFICIAL' : row.sentiment === 'negative' ? 'RUMOR' : 'CORRECTION'),
+            category: row.category || row.news_type || (row.sentiment === 'positive' ? 'OFFICIAL' : row.sentiment === 'negative' ? 'RUMOR' : 'CORRECTION'),
             publisher: row.publisher || 'AI 터미널',
             title: row.title || row.headline,
             content: row.content || row.summary || row.title || row.headline,
             target_sector: row.target_sector || row.related_sector,
             target_ticker: row.target_ticker || row.related_ticker,
             impact_score: row.impact_score || 5,
-          });
-        });
-      }
-
-      if (pNews) {
-        pNews.forEach((row: any) => {
-          combined.push({
-            id: row.id,
-            created_at: row.created_at,
-            type: 'PREMIUM',
-            category: row.category || 'OFFICIAL',
-            publisher: row.media_outlets?.name || '프리미엄 언론',
-            title: row.title,
-            content: row.content,
-            target_sector: row.target_sector,
-            target_ticker: row.target_ticker,
-            impact_score: row.impact_score || 5,
+            locked: Boolean(row.locked),
           });
         });
       }
@@ -133,7 +130,7 @@ export default function NewsPage() {
           const isOfficial = n.category === 'OFFICIAL';
           const isCorrection = n.category === 'CORRECTION';
           const isRumor = n.category === 'RUMOR';
-          const isSubscribed = isAdmin || isOfficial || isCorrection;
+          const isSubscribed = !n.locked && (isAdmin || isOfficial || isCorrection || hasActiveSub);
 
           const impactColor = (n.impact_score || 0) > 0 ? "text-up" : (n.impact_score || 0) < 0 ? "text-down" : "text-[#8E939D]";
 
@@ -224,4 +221,3 @@ export default function NewsPage() {
     </div>
   );
 }
-

@@ -136,7 +136,13 @@ export class HttpQueryBuilder {
 
       if (!res.ok) {
         const text = await res.text();
-        return { data: null, error: { message: `Local DB API error: ${text}` } };
+        try {
+          const parsed = JSON.parse(text);
+          const msg = parsed?.error?.message || parsed?.message || parsed?.error || `Local DB API error: ${text}`;
+          return { data: null, error: { message: String(msg), status: res.status } };
+        } catch {
+          return { data: null, error: { message: `Local DB API error: ${text}`, status: res.status } };
+        }
       }
 
       return await res.json();
@@ -163,7 +169,14 @@ export class HttpMemoryClient {
         body: JSON.stringify({ action: 'rpc', fnName, params }),
       });
       if (!res.ok) {
-        return { data: null, error: { message: `Local RPC Error: ${res.statusText}` } };
+        const text = await res.text().catch(() => '');
+        try {
+          const parsed = JSON.parse(text);
+          const msg = parsed?.error?.message || parsed?.message || parsed?.error || `Local RPC Error: ${res.statusText}`;
+          return { data: null, error: { message: String(msg), status: res.status } };
+        } catch {
+          return { data: null, error: { message: text || `Local RPC Error: ${res.statusText}`, status: res.status } };
+        }
       }
       return await res.json();
     } catch (err: any) {

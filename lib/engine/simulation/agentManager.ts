@@ -14,6 +14,7 @@
 
 import { memoryDb, StockRecord, MarketNewsRecord, OrderRecord } from '../../memoryDb/memoryStore';
 import { LocalMarketService } from '../marketService';
+import { getStockFxRateToKrw } from '../currency';
 import { calculateReservedCash, calculateReservedQty, OpenOrderForRisk } from '../orderRisk';
 import { SimulationClock, SimPrng } from './simClock';
 import {
@@ -641,9 +642,18 @@ export class AgentManager {
       }
       const userProfile = memoryDb.profiles.get(agent.accountId);
       const openOrders = this.getUserOpenOrders(agent.accountId);
-      const reservedBuyCash = calculateReservedCash(openOrders);
+      const reservedBuyCash = calculateReservedCash(
+        openOrders,
+        undefined,
+        memoryDb.optionsContracts,
+        {
+          stocks: memoryDb.stocks,
+          exchangeRates: memoryDb.exchangeRates,
+        }
+      );
       const availCash = Math.max(0, (userProfile?.cash ?? 0) - reservedBuyCash);
-      const maxBuyAffordable = Math.floor(availCash / (intent.price! * 1.0025));
+      const fxRateToKrw = getStockFxRateToKrw(memoryDb, stock);
+      const maxBuyAffordable = Math.floor(availCash / (intent.price! * fxRateToKrw * 1.0025));
       const finalBuySize = Math.min(intent.size!, targetAlloc.deltaQuantity, maxBuyAffordable);
       if (finalBuySize <= 0) {
         this.crossAssetDiagnostics.recordOrderGateHold({
@@ -669,7 +679,7 @@ export class AgentManager {
         });
         return { allowed: false, heldReason: 'RISK_CONSTRAINT_UNSATISFIED' };
       }
-      const userHolding = memoryDb.holdings.get(`${agent.accountId}:${stock.id}`);
+      const userHolding = memoryDb.holdings.get(`${agent.accountId}_${stock.id}`);
       const holdingQty = userHolding?.quantity ?? 0;
       const openOrders = this.getUserOpenOrders(agent.accountId);
       const reservedSellQty = calculateReservedQty(openOrders, stock.id);
@@ -1111,7 +1121,15 @@ export class AgentManager {
         const rawCash = userProfile?.cash ?? 50_000_000;
         const userOpenOrders = this.getUserOpenOrders(accId);
         // 미체결 매수 주문 예약금 차감 (실제 가용 현금)
-        const reservedBuyCash = calculateReservedCash(userOpenOrders);
+        const reservedBuyCash = calculateReservedCash(
+          userOpenOrders,
+          undefined,
+          memoryDb.optionsContracts,
+          {
+            stocks: memoryDb.stocks,
+            exchangeRates: memoryDb.exchangeRates,
+          }
+        );
         const availableCash = Math.max(0, rawCash - reservedBuyCash);
 
         // 현재 보유 자산 집계 (미체결 매도 예약 수량 반영)
@@ -1120,7 +1138,9 @@ export class AgentManager {
         for (const h of memoryDb.holdings.values()) {
           if (h.user_id === accId && h.quantity > 0) {
             const price = currentPriceMap.get(h.stock_id) || h.avg_price;
-            totalHoldingsValue += h.quantity * price;
+            const hStock = memoryDb.stocks.get(h.stock_id);
+            const fxRate = getStockFxRateToKrw(memoryDb, hStock);
+            totalHoldingsValue += h.quantity * price * fxRate;
             const reservedSellQty = calculateReservedQty(userOpenOrders, h.stock_id);
             const availableHolding = Math.max(0, h.quantity - reservedSellQty);
             currentHoldings.push({
@@ -2321,7 +2341,15 @@ export class AgentManager {
             userOrders.push(ord as OpenOrderForRisk);
           }
         }
-        const resCash = calculateReservedCash(userOrders);
+        const resCash = calculateReservedCash(
+          userOrders,
+          undefined,
+          memoryDb.optionsContracts,
+          {
+            stocks: memoryDb.stocks,
+            exchangeRates: memoryDb.exchangeRates,
+          }
+        );
         if (!Number.isFinite(resCash) || resCash < 0) {
           reportViolation(
             'INVALID_RESERVED_CASH',

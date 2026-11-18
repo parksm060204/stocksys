@@ -80,7 +80,7 @@ export class AdversarialAgent extends BaseAgent {
           price: frontRunPrice,
           size: 1000, // 가로채기 물량
           status: 'open',
-          is_lp: true,
+          is_lp: false,
           _botId: this.botId
         });
         

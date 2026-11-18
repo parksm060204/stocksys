@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { ExtendedETFDefinition } from '@/lib/engine/etfDefinitions';
+import { ExtendedETFDefinition, isUsdEtf } from '@/lib/engine/etfDefinitions';
 
 interface ETFUserUnderlyingHoldingsProps {
   etf: ExtendedETFDefinition;
@@ -22,7 +22,7 @@ export const ETFUserUnderlyingHoldings: React.FC<ETFUserUnderlyingHoldingsProps>
     totalCUAssetValue += price * item.sharesPerCU;
   });
 
-  const isUsOrGlobal = etf.category === 'US' || etf.category === 'GLOBAL';
+  const isUsOrGlobal = isUsdEtf(etf);
 
   const underlyingSharesBreakdown = etf.pdf.map((item) => {
     // 1 CU당 편입 주식 수에 비례하여 유저가 실물로 보유하게 되는 개별 주식 수 산출

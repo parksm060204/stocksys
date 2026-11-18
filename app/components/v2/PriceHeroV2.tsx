@@ -12,23 +12,38 @@ export default function PriceHeroV2({ stock }: { stock: Stock }) {
   const db = createClient();
 
   useEffect(() => {
-    const ch = db
-      .channel(`price_hero_v2_${stock.id}`)
-      .on(
-        "postgres_changes",
-        { event: "UPDATE", schema: "public", table: "stocks", filter: `id=eq.${stock.id}` },
-        (payload: { new: Record<string, unknown> }) => {
-          const p = payload.new.current_price as number;
-          if (p !== prevRef.current) {
-            setFlash(p > prevRef.current ? "up" : "down");
-            setPrice(p);
-            prevRef.current = p;
-            setTimeout(() => setFlash(null), 350);
-          }
+    let active = true;
+    let flashTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const pollPrice = async () => {
+      try {
+        const { data } = await db
+          .from("stocks")
+          .select("current_price")
+          .eq("id", stock.id)
+          .maybeSingle();
+        if (!active || !data) return;
+        const p = Number(data.current_price);
+        if (Number.isFinite(p) && p > 0 && p !== prevRef.current) {
+          setFlash(p > prevRef.current ? "up" : "down");
+          setPrice(p);
+          prevRef.current = p;
+          if (flashTimer) clearTimeout(flashTimer);
+          flashTimer = setTimeout(() => {
+            if (active) setFlash(null);
+          }, 350);
         }
-      )
-      .subscribe();
-    return () => { db.removeChannel(ch); };
+      } catch {
+        // ignore transient poll errors
+      }
+    };
+
+    const interval = setInterval(pollPrice, 1500);
+    return () => {
+      active = false;
+      clearInterval(interval);
+      if (flashTimer) clearTimeout(flashTimer);
+    };
   }, [stock.id, db]);
 
   const { percent, amount, dir } = change(price, stock.previousClose);
@@ -36,10 +51,7 @@ export default function PriceHeroV2({ stock }: { stock: Stock }) {
   const flashBg =
     flash === "up" ? "bg-bid/8" : flash === "down" ? "bg-ask/8" : "";
 
-  const isUSD = stock.market === "overseas" || stock.market === "europe" || stock.market === "commodities";
-  const priceFormatted = isUSD
-    ? `$${price.toFixed(2)}`
-    : `₩${Math.round(price).toLocaleString("ko-KR")}`;
+  const priceFormatted = fmtPrice(price, stock.market, stock.ticker);
 
   return (
     <div

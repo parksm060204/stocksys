@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { ExtendedETFDefinition, roundToETFTick } from '@/lib/engine/etfDefinitions';
+import { ExtendedETFDefinition, isUsdEtf, roundToETFTick } from '@/lib/engine/etfDefinitions';
 
 interface ETFItemCardProps {
   etf: ExtendedETFDefinition;
@@ -22,7 +22,7 @@ export const ETFItemCard: React.FC<ETFItemCardProps> = ({
 }) => {
   const isPremium = discrepancyRate > 0;
   const isLeverage = etf.leverageFactor !== 1;
-  const isUsOrGlobal = etf.category === 'US' || etf.category === 'GLOBAL';
+  const isUsOrGlobal = isUsdEtf(etf);
   const currencySymbol = isUsOrGlobal ? '$' : '₩';
 
   // KRX ETF 호가단위 (2,000원 이상 ~ 50,000원 미만 5원 단위) 적용

@@ -7,7 +7,7 @@ import type {
 import { withStockLock, withAllStockLocks } from '@/lib/engine/marketService';
 import { withAccountLocks } from '@/lib/memoryDb/accountLocks';
 import { runWithCommitGate } from '@/lib/memoryDb/PersistenceManager';
-import { getAvailableCashKrw } from '@/lib/engine/orderRisk';
+import { calculateSingleBuyOrderReservedCash, getAvailableCashKrw, applyCashCreditWithMarginDebt } from '@/lib/engine/orderRisk';
 import { pruneExpiredProfileEntitlements } from '@/lib/shop/catalog';
 
 export const OPTIONS_LP_ID = 'bot_options_mm_001';
@@ -239,14 +239,48 @@ export async function submitAuthoritativeOptionOrder(
 
       const filledQty = qty - remaining;
       let totalFillNotional = 0;
+      let totalFillBuyerFeeKrw = 0;
+      let totalFillUserFeeKrw = 0;
+      const cpCumulativeBuyCash = new Map<string, number>();
+      const cpCumulativeSellQty = new Map<string, number>();
+      const cpMatchedOrderIds = new Map<string, Set<string>>();
+
       for (const f of fills) {
         const n = safeMulInt(f.price * multiplier, f.qty);
         if (n === null) {
           return { success: false, statusCode: 400, message: '체결 금액이 안전한 정수 범위를 초과했습니다.' };
         }
-        totalFillNotional += n;
+        const fillNotional = Math.round(n);
+        totalFillNotional += fillNotional;
         if (!Number.isSafeInteger(totalFillNotional)) {
           return { success: false, statusCode: 400, message: '총 체결 금액이 안전한 정수 범위를 초과했습니다.' };
+        }
+
+        const buyerId = side === 'BUY' ? userId : f.counterpartyId;
+        const fillBuyerFee = buyerId === OPTIONS_LP_ID ? 0 : Math.round(fillNotional * OPTION_FEE_RATE);
+        const userFillFee = userId === OPTIONS_LP_ID ? 0 : Math.round(fillNotional * OPTION_FEE_RATE);
+        totalFillUserFeeKrw += userFillFee;
+        if (side === 'BUY') {
+          totalFillBuyerFeeKrw += fillBuyerFee;
+        } else {
+          cpCumulativeBuyCash.set(
+            f.counterpartyId,
+            (cpCumulativeBuyCash.get(f.counterpartyId) ?? 0) + fillNotional + fillBuyerFee
+          );
+        }
+        if (side === 'BUY') {
+          cpCumulativeSellQty.set(
+            f.counterpartyId,
+            (cpCumulativeSellQty.get(f.counterpartyId) ?? 0) + f.qty
+          );
+        }
+        if (f.restingOrder?.id) {
+          let ids = cpMatchedOrderIds.get(f.counterpartyId);
+          if (!ids) {
+            ids = new Set<string>();
+            cpMatchedOrderIds.set(f.counterpartyId, ids);
+          }
+          ids.add(f.restingOrder.id);
         }
       }
 
@@ -258,14 +292,13 @@ export async function submitAuthoritativeOptionOrder(
         return { success: false, statusCode: 400, message: '미체결 주문 금액이 안전한 정수 범위를 초과했습니다.' };
       }
 
-      const totalFeeKrw = Math.round(totalFillNotional * OPTION_FEE_RATE);
       const restingFeeKrw = Math.round(restingNotional * OPTION_FEE_RATE);
 
       const userHoldingKey = `${userId}_${contract.id}`;
       const userHolding = db.holdings.get(userHoldingKey);
 
       if (side === 'BUY') {
-        const requiredCash = totalFillNotional + totalFeeKrw + restingNotional + restingFeeKrw;
+        const requiredCash = totalFillNotional + totalFillBuyerFeeKrw + restingNotional + restingFeeKrw;
         if (!Number.isSafeInteger(requiredCash)) {
           return { success: false, statusCode: 400, message: '필요 예수금 계산이 안전 범위를 초과했습니다.' };
         }
@@ -288,15 +321,57 @@ export async function submitAuthoritativeOptionOrder(
         }
       }
 
-      // 상대방(휴면/LP) 계좌 검증
+      // 상대방(휴면/LP) 계좌 존재·누적 예수금(수수료 포함)·누적 보유수량 사전 검증
       for (const f of fills) {
         const cp = db.profiles.get(f.counterpartyId);
         if (!cp) {
           return { success: false, statusCode: 500, message: `상대방 계좌(${f.counterpartyId})를 찾을 수 없습니다.` };
         }
-        const fillNotional = Math.round(f.price * f.qty * multiplier);
-        if (side === 'SELL' && (!Number.isFinite(cp.cash) || cp.cash < fillNotional)) {
-          return { success: false, statusCode: 400, message: '상대방 매수자의 예수금이 부족하여 체결할 수 없습니다.' };
+      }
+      if (side === 'SELL') {
+        for (const [cpId, requiredTotalCash] of cpCumulativeBuyCash.entries()) {
+          const cp = db.profiles.get(cpId)!;
+          if (!Number.isFinite(cp.cash) || cp.cash < requiredTotalCash) {
+            return { success: false, statusCode: 400, message: '상대방 매수자의 예수금(수수료 포함)이 부족하여 체결할 수 없습니다.' };
+          }
+          if (cpId !== OPTIONS_LP_ID) {
+            const matchedIds = cpMatchedOrderIds.get(cpId);
+            let otherReservedCash = 0;
+            const cpOrderIds = db.orderUserIndex.get(cpId);
+            if (cpOrderIds) {
+              for (const oid of cpOrderIds) {
+                if (matchedIds?.has(oid)) continue;
+                const ord = db.orders.get(oid);
+                if (!ord || ord.side !== 'buy' || (ord.status !== 'open' && ord.status !== 'partial')) continue;
+                otherReservedCash += calculateSingleBuyOrderReservedCash(ord, db.optionsContracts, {
+                  stocks: db.stocks,
+                  exchangeRates: db.exchangeRates,
+                });
+              }
+            }
+            if (cp.cash - otherReservedCash < requiredTotalCash) {
+              return { success: false, statusCode: 400, message: '상대방 매수자의 타 미체결 예약금을 제외한 가용 예수금이 부족하여 체결할 수 없습니다.' };
+            }
+          }
+        }
+      } else {
+        for (const [cpId, requiredSellQty] of cpCumulativeSellQty.entries()) {
+          if (cpId === OPTIONS_LP_ID) continue;
+          const cpHoldingQty = db.holdings.get(`${cpId}_${contract.id}`)?.quantity ?? 0;
+          const matchedIds = cpMatchedOrderIds.get(cpId);
+          let otherReservedSell = 0;
+          const cpOrderIds = db.orderUserIndex.get(cpId);
+          if (cpOrderIds) {
+            for (const oid of cpOrderIds) {
+              if (matchedIds?.has(oid)) continue;
+              const ord = db.orders.get(oid);
+              if (!ord || ord.stock_id !== contract.id || ord.side !== 'sell' || (ord.status !== 'open' && ord.status !== 'partial')) continue;
+              otherReservedSell += Math.max(0, ord.size - (ord.filled || 0));
+            }
+          }
+          if (cpHoldingQty - otherReservedSell < requiredSellQty) {
+            return { success: false, statusCode: 400, message: '상대방 매도자의 보유 옵션 수량이 부족하여 체결할 수 없습니다.' };
+          }
         }
       }
 
@@ -378,7 +453,12 @@ export async function submitAuthoritativeOptionOrder(
           const sellerProfile = db.profiles.get(sellerId)!;
 
           buyerProfile.cash = round2(buyerProfile.cash - (fillNotional + buyerFee));
-          sellerProfile.cash = round2(sellerProfile.cash + (fillNotional - sellerFee));
+          const sellerNet = fillNotional - sellerFee;
+          if (sellerNet >= 0) {
+            applyCashCreditWithMarginDebt(sellerProfile, sellerNet);
+          } else {
+            sellerProfile.cash = round2(sellerProfile.cash + sellerNet);
+          }
 
           // 매수자 보유량 증가
           const buyerHKey = `${buyerId}_${contract.id}`;
@@ -519,7 +599,7 @@ export async function submitAuthoritativeOptionOrder(
             avgExecPrice,
             multiplier,
             totalNotionalKrw: totalFillNotional,
-            feeKrw: totalFeeKrw,
+            feeKrw: totalFillUserFeeKrw,
             remainingCash: profile.cash,
           },
         };

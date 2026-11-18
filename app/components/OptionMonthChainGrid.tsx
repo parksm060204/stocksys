@@ -37,6 +37,10 @@ interface OptionMonthChainGridProps {
   contracts: OptionContractItem[];
   selectedContractId?: string;
   selectedTicker: string;
+  futuresPrice?: number;
+  futuresChange?: number;
+  futuresChangePct?: number;
+  futuresVolume?: number;
   onSelectContract: (contract: OptionContractItem) => void;
 }
 
@@ -53,13 +57,13 @@ export const OptionMonthChainGrid: React.FC<OptionMonthChainGridProps> = ({
   contracts,
   selectedContractId,
   selectedTicker,
+  futuresPrice = 260.0,
+  futuresChange = 0.0,
+  futuresChangePct = 0.0,
+  futuresVolume = 0,
   onSelectContract,
 }) => {
   const [selectedMonth, setSelectedMonth] = useState<string>('');
-  const futuresPrice = 260.45;
-  const futuresChange = 0.20;
-  const futuresChangePct = 0.08;
-  const futuresVolume = 126293;
 
   const availableMonths = useMemo(() => {
     const monthSet = new Set<string>();

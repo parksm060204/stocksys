@@ -71,14 +71,14 @@ async function runTests() {
   // }
   // If insertOrders fails or throws:
   // Chunk 1 has already been written, chunk 2 fails, leaving the LP order book in a half-updated corrupted state!
-  console.log('Testing fault injection on LP insertOrders...');
+  console.log('Testing fault injection on atomic LP quote refresh...');
   let shouldFailLpInsert = true;
-  const origInsertOrders = bundle.market.insertOrders.bind(bundle.market);
-  bundle.market.insertOrders = async (orders) => {
+  const origRefreshLp = bundle.settlement.refreshLpQuotesAtomically!.bind(bundle.settlement);
+  bundle.settlement.refreshLpQuotesAtomically = async (params) => {
     if (shouldFailLpInsert) {
       throw new Error('FAULT_INJECTION_LP_INSERT_ORDERS_FAILED');
     }
-    return origInsertOrders(orders);
+    return origRefreshLp(params);
   };
 
   // Run tick 5 (when shouldRefreshLp is true)
@@ -99,9 +99,9 @@ async function runTests() {
   );
   console.log('✅ [PASS] Fault injection during LP refresh preserves previous LP orderbook');
 
-  // Restore insertOrders
+  // Restore refreshLpQuotesAtomically
   shouldFailLpInsert = false;
-  bundle.market.insertOrders = origInsertOrders;
+  bundle.settlement.refreshLpQuotesAtomically = origRefreshLp;
 
   // Test 2: Bounded LP orders over 100 ticks
   console.log('Testing bounded LP order count across 100 ticks...');

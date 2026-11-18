@@ -50,12 +50,13 @@ export default function AdminPage() {
         .single();
 
       if (profile) {
-        setIsAdmin(profile.is_admin || false);
+        setIsAdmin(Boolean(profile.is_admin));
         setUnlockedFeatures((profile.unlocked_features as string[]) || []);
+      } else {
+        setIsAdmin(false);
       }
     } else {
-      // 로컬 개발 환경 편의상 기본 관리자 활성화
-      setIsAdmin(true);
+      setIsAdmin(false);
     }
   }, [db, isLoggedIn, userId]);
 
@@ -83,17 +84,19 @@ export default function AdminPage() {
     }
     setLoading(true);
     try {
-      const { error } = await db.from("novel_events").insert({
-        title: eventTitle,
-        raw_text: eventRawText,
-        impact_summary: "관리자에 의해 시스템에 강제 적용된 이벤트입니다.",
-        sector_impacts: [
-          { sector: "반도체", impact: "positive", score: 0.8 },
-          { sector: "2차전지", impact: "negative", score: -0.5 },
-        ],
+      const res = await fetch('/api/admin/scenarios', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'trigger_ai_event',
+          title: eventTitle,
+          rawText: eventRawText,
+        }),
       });
-
-      if (error) throw error;
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.message || '이벤트 등록 실패');
+      }
 
       alert(`📰 AI 시황/웹소설 이벤트 [${eventTitle}] 강제 등록 완료!`);
       setEventTitle("");
@@ -115,21 +118,22 @@ export default function AdminPage() {
     setLoading(true);
     try {
       const initPrice = Number(newPrice) || 50000;
-      const { error } = await db.from("stocks").insert({
-        ticker: newTicker.toUpperCase(),
-        name: newName,
-        market: newMarket,
-        sector: newSector,
-        current_price: initPrice,
-        open_price: initPrice,
-        previous_close: initPrice,
-        high: initPrice,
-        low: initPrice,
-        target_price: initPrice * 1.2,
-        is_listed: true,
+      const res = await fetch('/api/admin/scenarios', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'list_stock',
+          ticker: newTicker.toUpperCase(),
+          name: newName,
+          market: newMarket,
+          sector: newSector,
+          initialPrice: initPrice,
+        }),
       });
-
-      if (error) throw error;
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.message || '신규 종목 상장 실패');
+      }
 
       alert(`🎉 신규 종목 [${newTicker.toUpperCase()}] ${newName} 상장 완료!`);
       setNewTicker("");

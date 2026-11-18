@@ -52,7 +52,7 @@ export default function StockTable({ stocks }: { stocks: Stock[] }) {
                 {/* 현재가 */}
                 <td className="px-5 py-4 border-none text-right">
                   <span className={`font-mono font-black text-[14.5px] tabular-nums ${pColor}`}>
-                    {fmtPrice(currentPrice, s.market)}
+                    {fmtPrice(currentPrice, s.market, s.ticker)}
                   </span>
                 </td>
 

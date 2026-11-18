@@ -14,7 +14,7 @@ import type { OptionContract, OptionPosition, OptionSettlementResult } from './t
 export interface HeldOptionResult {
   readonly optionId: string;
   readonly userId: string;
-  readonly reason: 'HELD_MISSING_UNDERLYING_PRICE' | 'HELD_INVALID_PRICE';
+  readonly reason: 'HELD_MISSING_UNDERLYING_PRICE' | 'HELD_INVALID_PRICE' | 'HELD_UNDERLYING_UNIT_MISMATCH';
   readonly underlyingPrice?: number;
 }
 
@@ -152,6 +152,23 @@ export class OptionSettlementEngine {
       }
 
       const underlyingPrice = rawUnderlyingPrice;
+      const isIdx = contract.asset_class === 'IDX' || contract.underlying_stock_id === 'idx_k200';
+      if (
+        (isIdx && contract.strike_price < 1000 && underlyingPrice > contract.strike_price * 20) ||
+        (contract.asset_class === 'STK' && contract.strike_price >= 1000 && underlyingPrice < contract.strike_price / 20)
+      ) {
+        for (const pos of params.positions) {
+          if (pos.optionId === contract.id && pos.quantity > 0) {
+            heldResults.push({
+              optionId: contract.id,
+              userId: pos.userId,
+              reason: 'HELD_UNDERLYING_UNIT_MISMATCH',
+              underlyingPrice,
+            });
+          }
+        }
+        continue;
+      }
 
       for (const pos of params.positions) {
         if (pos.optionId !== contract.id || pos.quantity <= 0) continue;
@@ -164,6 +181,7 @@ export class OptionSettlementEngine {
           contract,
           position: pos,
           underlyingClosePrice: underlyingPrice,
+          multiplier: contract.multiplier,
         });
 
         const settlementRes = await this.repositories.settlement.settleOptionExpiryAtomically({

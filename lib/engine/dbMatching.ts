@@ -1,5 +1,6 @@
 export type DbClient = any;
-import { validateOrderCapacity, OpenOrderForRisk } from '@/lib/engine/orderRisk';
+import { validateOrderCapacity, getEffectiveStockTakerFeeRate, OpenOrderForRisk } from '@/lib/engine/orderRisk';
+import { hasActiveFeeBooster } from '@/lib/shop/catalog';
 import { SettlementTrade, calculateTradeFees, executeSettlement } from '@/lib/engine/settlement';
 import { memoryDb, OrderRecord } from '@/lib/memoryDb/memoryStore';
 import { snapshotTradingState, rollbackTradingState, TradingSnapshot } from '@/lib/memoryDb/memoryTransaction';
@@ -150,6 +151,8 @@ export async function submitAndMatchOrder(
         .maybeSingle();
       const currentHoldingQty = Number(holding?.quantity || 0);
 
+      const userProfile = memoryDb.profiles.get(user_id);
+      const stockTakerFeeRate = getEffectiveStockTakerFeeRate(userProfile, memoryDb.getNowMs());
       const capacityCheck = validateOrderCapacity({
         userId: user_id,
         stockId: stock_id,
@@ -160,6 +163,12 @@ export async function submitAndMatchOrder(
         currentHoldingQty,
         openOrders: (userOpenOrders as OpenOrderForRisk[]) || [],
         optionsContracts: memoryDb.optionsContracts,
+        currencyContext: {
+          stocks: memoryDb.stocks,
+          exchangeRates: memoryDb.exchangeRates,
+        },
+        stockTakerFeeRate,
+        marginDebtKrw: Number(userProfile?.margin_debt_krw ?? 0),
       });
 
       if (!capacityCheck.valid) {
@@ -239,7 +248,14 @@ export async function submitAndMatchOrder(
         // Maker-Taker: opp is the resting maker, incoming is taker
         const buyerIsMaker = side === 'sell';
         const sellerIsMaker = side === 'buy';
-        const { buyer_fee, seller_fee } = calculateTradeFees(buyerIsMaker, sellerIsMaker);
+        let { buyer_fee, seller_fee } = calculateTradeFees(buyerIsMaker, sellerIsMaker);
+        const nowMs = memoryDb.getNowMs();
+        if (!buyerIsMaker && buyer_fee > 0 && buyerId && hasActiveFeeBooster(memoryDb.profiles.get(buyerId), nowMs)) {
+          buyer_fee *= 0.5;
+        }
+        if (!sellerIsMaker && seller_fee > 0 && sellerId && hasActiveFeeBooster(memoryDb.profiles.get(sellerId), nowMs)) {
+          seller_fee *= 0.5;
+        }
 
         tradesToSettle.push({
           stock_id,

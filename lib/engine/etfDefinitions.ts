@@ -1,9 +1,17 @@
 import { createClient } from '@/lib/db/client';
 import { ETFDefinition } from './etfTypes';
+import { USD_ETF_TICKERS } from './currency';
 
 export interface ExtendedETFDefinition extends ETFDefinition {
   category: 'KOREA' | 'US' | 'GLOBAL' | 'LEVERAGE' | 'SECTOR';
   basePrice: number;
+  currency?: 'KRW' | 'USD';
+}
+
+export function isUsdEtf(etf: Pick<ExtendedETFDefinition, 'etfTicker' | 'category' | 'currency'>): boolean {
+  if (etf.currency === 'USD') return true;
+  if (etf.currency === 'KRW') return false;
+  return etf.category === 'US' || etf.category === 'GLOBAL' || USD_ETF_TICKERS.has(etf.etfTicker.toUpperCase());
 }
 
 /**

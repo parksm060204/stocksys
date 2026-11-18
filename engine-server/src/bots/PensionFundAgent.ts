@@ -50,7 +50,7 @@ export class PensionFundAgent extends BaseAgent {
           price: adjustedBuyPrice,
           size: orderVolume,
           status: 'open',
-          is_lp: true,
+          is_lp: false,
           _botId: this.botId,
           _assetClass: 'bond'
         });

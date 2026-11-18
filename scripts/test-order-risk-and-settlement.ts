@@ -51,14 +51,14 @@ async function runAllTests() {
   };
 
   const reservedA = calculateReservedCash([buyOrder1]);
-  assert(reservedA === 1_000_000, `Reserved cash should be 1,000,000 (actual: ${reservedA})`);
+  assert(reservedA === 1_002_500, `Reserved cash should be 1,002,500 incl. 0.25% taker fee (actual: ${reservedA})`);
 
   const checkA = validateOrderCapacity({
     userId: 'user_a',
     stockId: 'stock_1',
     side: 'buy',
     incomingPrice: 10_000,
-    incomingSize: 1, // 추가 10,000원 필요
+    incomingSize: 1, // 추가 10,000원 주문 (+수수료)
     currentCash: userCash,
     currentHoldingQty: 0,
     openOrders: [buyOrder1],
@@ -117,8 +117,8 @@ async function runAllTests() {
 
   const reservedC = calculateReservedCash([partialBuyOrder]);
   assert(
-    reservedC === 500_000,
-    `Partial buy reserved cash must be 500,000 (actual: ${reservedC})`
+    reservedC === 501_250,
+    `Partial buy reserved cash must be 501,250 incl. 0.25% taker fee (actual: ${reservedC})`
   );
 
   const partialSellOrder: OpenOrderForRisk = {
@@ -334,12 +334,12 @@ async function runAllTests() {
 
   console.log(`  -> Accepted orders: ${acceptedCount}, Rejected orders: ${rejectedCount}`);
   assert(
-    acceptedCount === 10,
-    `Exactly 10 orders of 10,000 won should be accepted with 100,000 won cash (actual: ${acceptedCount})`
+    acceptedCount === 9,
+    `Exactly 9 orders of 10,000 won (+0.25% fee = 10,025) should be accepted with 100,000 won cash (actual: ${acceptedCount})`
   );
   assert(
-    rejectedCount === 10,
-    `Remaining 10 orders must be rejected (actual: ${rejectedCount})`
+    rejectedCount === 11,
+    `Remaining 11 orders must be rejected (actual: ${rejectedCount})`
   );
 
   // ----------------------------------------------------

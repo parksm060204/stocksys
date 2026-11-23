@@ -14,7 +14,7 @@ import { computeNextPrice } from './priceEngine';
 import { CommodityOrderBook, MatchResult } from './CommodityOrderBook';
 import { CommodityEventSystem } from './eventSystem';
 import { CommodityBot, createBotSwarm, BotRatios } from './bots';
-import { ScenarioManager } from '../scenario/ScenarioManager';
+import { ScenarioManager, syncScenarioManagerFromDatabase } from '../scenario/ScenarioManager';
 import type { SimulationContext } from '../engine/simulation/runtime/simulationContext';
 import { createSimulationContext } from '../engine/simulation/runtime/simulationContext';
 import type { SimulationTimeSource } from '../engine/simulation/runtime/simulationTimeSource';
@@ -22,7 +22,7 @@ import type { SimulationRandomSource } from '../engine/simulation/runtime/simula
 import { SIMULATION_NAMESPACES } from '../engine/simulation/runtime/simulationNamespaces';
 import type { MemoryDatabase } from '../memoryDb/memoryStore';
 import { withAccountLocks } from '../memoryDb/accountLocks';
-import { runWithCommitGate } from '../memoryDb/PersistenceManager';
+import { runWithCommitGate, persistenceManager } from '../memoryDb/PersistenceManager';
 import {
   settleCommodityTradeForUsers,
   releaseCommodityOrderMargin,
@@ -53,6 +53,40 @@ export interface CommodityEngineOptions {
   onPersist?: () => Promise<boolean>;
 }
 
+const dbCommodityEngines = new WeakMap<MemoryDatabase, Set<WeakRef<CommodityMarketEngine>>>();
+
+function registerCommodityEngineForDb(db: MemoryDatabase, engine: CommodityMarketEngine): void {
+  let set = dbCommodityEngines.get(db);
+  if (!set) {
+    set = new Set();
+    dbCommodityEngines.set(db, set);
+  }
+  for (const ref of set) {
+    const existing = ref.deref();
+    if (!existing) {
+      set.delete(ref);
+    } else if (existing === engine) {
+      return;
+    }
+  }
+  set.add(new WeakRef(engine));
+}
+
+export function getAttachedCommodityEngines(db: MemoryDatabase): CommodityMarketEngine[] {
+  const set = dbCommodityEngines.get(db);
+  if (!set) return [];
+  const active: CommodityMarketEngine[] = [];
+  for (const ref of set) {
+    const eng = ref.deref();
+    if (!eng) {
+      set.delete(ref);
+    } else if (eng.getAttachedDatabase() === db) {
+      active.push(eng);
+    }
+  }
+  return active;
+}
+
 export class CommodityMarketEngine {
   public currentTick: number = 0;
   public commodities: Map<string, CommodityState> = new Map();
@@ -74,6 +108,9 @@ export class CommodityMarketEngine {
   private isTicking: boolean = false;
   private reconciled: boolean = false;
   private reconciledDb: MemoryDatabase | null = null;
+  private reconciledResetVersion: number = -1;
+  private reconciledSnapshotVersion: number = -1;
+  private initialRuntimeSnapshot!: ReturnType<CommodityMarketEngine['snapshotRuntime']>;
   private reconcilePromise: Promise<void> | null = null;
   private tickTail: Promise<void> = Promise.resolve();
   private tickLockStorage = new AsyncLocalStorage<symbol>();
@@ -130,12 +167,29 @@ export class CommodityMarketEngine {
       clock: this.clock,
       seed: options?.simulationContext ? (options.simulationContext.seed ?? 42) : 42,
     });
+    this.initialRuntimeSnapshot = this.snapshotRuntime();
+    if (this.db) {
+      registerCommodityEngineForDb(this.db, this);
+    }
   }
 
   /**
    * [게임 루프 메인 함수] 1틱 진행
    */
   public nextTick(): TickSummary {
+    if (this.db?.isTradingHalted?.()) {
+      return {
+        tick: this.currentTick,
+        timestamp: this.clock.now(),
+        prices: {},
+        tradesCount: 0,
+        totalNotional: 0,
+        activeEventsCount: this.eventSystem.activeEvents.length,
+        newEvents: [],
+        newNews: [],
+        selfTradeCancelledOrders: [],
+      };
+    }
     this.currentTick += 1;
     const tick = this.currentTick;
     const now = this.clock.now();
@@ -218,7 +272,7 @@ export class CommodityMarketEngine {
     }
 
     // ── 5. 가격 갱신 (수학 공식 적용 + 시나리오 Bias 주입) ──
-    this.scenarioManager.stepTick();
+    this.scenarioManager.stepTick('commodity');
     const priceSummaries: Record<string, { price: number; changePct: number; volume: number }> = {};
 
     this.commodities.forEach((state, commodityId) => {
@@ -378,6 +432,37 @@ export class CommodityMarketEngine {
 
   public attachDatabase(db: MemoryDatabase): void {
     this.db = db;
+    registerCommodityEngineForDb(db, this);
+  }
+
+  public getAttachedDatabase(): MemoryDatabase | undefined {
+    return this.db;
+  }
+
+  public getReconcileMetadata(): {
+    reconciled: boolean;
+    reconciledDb: MemoryDatabase | null;
+    reconciledResetVersion: number;
+    reconciledSnapshotVersion: number;
+  } {
+    return {
+      reconciled: this.reconciled,
+      reconciledDb: this.reconciledDb,
+      reconciledResetVersion: this.reconciledResetVersion,
+      reconciledSnapshotVersion: this.reconciledSnapshotVersion,
+    };
+  }
+
+  public restoreReconcileMetadata(meta: {
+    reconciled: boolean;
+    reconciledDb: MemoryDatabase | null;
+    reconciledResetVersion: number;
+    reconciledSnapshotVersion: number;
+  }): void {
+    this.reconciled = meta.reconciled;
+    this.reconciledDb = meta.reconciledDb;
+    this.reconciledResetVersion = meta.reconciledResetVersion;
+    this.reconciledSnapshotVersion = meta.reconciledSnapshotVersion;
   }
 
   /**
@@ -521,16 +606,42 @@ export class CommodityMarketEngine {
    * 동시 호출 시 공유 in-flight Promise를 대기하며 실패 시 다음 호출에서 재시도 가능하다.
    */
   public async reconcileWithDatabase(db: MemoryDatabase): Promise<void> {
-    if (this.reconciled && this.reconciledDb === db) return;
+    if (
+      this.reconciled &&
+      this.reconciledDb === db &&
+      this.reconciledResetVersion === db.commodityResetVersion &&
+      this.reconciledSnapshotVersion === db.commoditySnapshotVersion
+    ) {
+      return;
+    }
     if (this.reconcilePromise) {
-      return this.reconcilePromise;
+      await this.reconcilePromise;
+      if (
+        this.reconciled &&
+        this.reconciledDb === db &&
+        this.reconciledResetVersion === db.commodityResetVersion &&
+        this.reconciledSnapshotVersion === db.commoditySnapshotVersion
+      ) {
+        return;
+      }
     }
 
     this.reconcilePromise = (async () => {
       try {
         await this.runWithTickLock(async () => {
-          if (this.reconciled && this.reconciledDb === db) return;
-          this.db = db;
+          if (
+            this.reconciled &&
+            this.reconciledDb === db &&
+            this.reconciledResetVersion === db.commodityResetVersion &&
+            this.reconciledSnapshotVersion === db.commoditySnapshotVersion
+          ) {
+            return;
+          }
+          this.attachDatabase(db);
+
+          const isSeedReset =
+            this.reconciledResetVersion !== -1 &&
+            this.reconciledResetVersion !== db.commodityResetVersion;
 
           const candidateUserSet = new Set<string>();
           for (const ord of db.commodityOpenOrders.values()) {
@@ -542,14 +653,35 @@ export class CommodityMarketEngine {
             }
           }
 
-          await withAccountLocks(Array.from(candidateUserSet), async () => {
+          const candidateLockKeys = Array.from(candidateUserSet).map((uid) => db.resolveAccountLockKey(uid));
+
+          await withAccountLocks(candidateLockKeys, async () => {
+            if (isSeedReset) {
+              this.restoreRuntime(this.initialRuntimeSnapshot);
+              this.eventSystem.clear();
+              this.scenarioManager.resetEmpty(true);
+            }
+
             this.engineEpoch = db.commodityNextEpoch;
             db.commodityNextEpoch += 1;
-            this.currentTick = Math.max(this.currentTick, db.commodityCurrentTick);
-            this.userOrderSeq = Math.max(this.userOrderSeq, db.commodityUserOrderSeq);
-            this.tradeSeq = Math.max(this.tradeSeq, db.commodityTradeSeq);
+            if (this.reconciled) {
+              this.currentTick = db.commodityCurrentTick;
+              this.userOrderSeq = db.commodityUserOrderSeq;
+              this.tradeSeq = db.commodityTradeSeq;
+            } else {
+              this.currentTick = Math.max(this.currentTick, db.commodityCurrentTick);
+              this.userOrderSeq = Math.max(this.userOrderSeq, db.commodityUserOrderSeq);
+              this.tradeSeq = Math.max(this.tradeSeq, db.commodityTradeSeq);
+            }
 
-            // 스냅샷에 저장된 원자재 가격 복원 (초기 부팅 시)
+            syncScenarioManagerFromDatabase(db, this.scenarioManager, { clearOnDbNull: true });
+            if (db.commodityEventRuntimeState) {
+              try {
+                this.eventSystem.restoreState(db.commodityEventRuntimeState);
+              } catch { /* ignore invalid snapshot */ }
+            }
+
+            // 스냅샷에 저장된 원자재 가격 복원 (초기 부팅 또는 스냅샷 import 시)
             if (db.commodityCurrentTick > 0) {
               this.commodities.forEach((state, cid) => {
                 const dbRec = db.commodities.get(cid);
@@ -574,7 +706,7 @@ export class CommodityMarketEngine {
               });
             }
 
-            // 1. 미체결 사용자 주문 오더북 복원
+            // 1. 미체결 사용자 주문 오더북 복원 (구세대 잔여 주문 완전 제거)
             for (const book of this.orderBooks.values()) {
               book.clear();
             }
@@ -601,6 +733,8 @@ export class CommodityMarketEngine {
 
             this.reconciledDb = db;
             this.reconciled = true;
+            this.reconciledResetVersion = db.commodityResetVersion;
+            this.reconciledSnapshotVersion = db.commoditySnapshotVersion;
           });
         });
       } finally {
@@ -617,6 +751,15 @@ export class CommodityMarketEngine {
    */
   public async stepTickAsync(): Promise<TickSummary> {
     return this.runWithTickLock(async () => {
+      if (
+        this.db &&
+        this.reconciled &&
+        (this.reconciledDb !== this.db ||
+          this.reconciledResetVersion !== this.db.commodityResetVersion ||
+          this.reconciledSnapshotVersion !== this.db.commoditySnapshotVersion)
+      ) {
+        await this.reconcileWithDatabase(this.db);
+      }
       const candidateUserSet = new Set<string>();
       this.orderBooks.forEach((book) => {
         for (const b of book.bids) if (b.userId) candidateUserSet.add(b.userId);
@@ -638,9 +781,19 @@ export class CommodityMarketEngine {
         }
       }
       const candidateUserIds = Array.from(candidateUserSet);
+      const candidateLockKeys = this.db
+        ? candidateUserIds.map((uid) => this.db!.resolveAccountLockKey(uid))
+        : candidateUserIds;
 
-      return withAccountLocks(candidateUserIds, async () => {
+      return withAccountLocks(candidateLockKeys, async () => {
         const executeTick = async (): Promise<TickSummary> => {
+          const prevDbScenarioSnap = this.db?.scenarioRuntimeState
+            ? structuredClone(this.db.scenarioRuntimeState)
+            : null;
+          if (this.db) {
+            syncScenarioManagerFromDatabase(this.db, this.scenarioManager);
+          }
+          const scenarioSnapBeforeTick = JSON.stringify(this.scenarioManager.snapshotState());
           const runtimeSnap = this.snapshotRuntime();
           const prevDbTick = this.db?.commodityCurrentTick;
           const prevDbTradeSeq = this.db?.commodityTradeSeq;
@@ -665,8 +818,8 @@ export class CommodityMarketEngine {
 
           if (this.db) {
             for (const uid of candidateUserIds) {
-              const p = this.db.profiles.get(uid);
-              if (p) userSnapshots.set(uid, { ...p });
+              const p = this.db.resolveProfileByUserId(uid);
+              if (p) userSnapshots.set(p.id, { ...p });
               for (const cid of this.commodities.keys()) {
                 const pk = `${uid}_${cid}`;
                 const pos = this.db.commodityPositions.get(pk);
@@ -693,6 +846,19 @@ export class CommodityMarketEngine {
               this.db.commodityCurrentTick = this.currentTick;
               this.db.commodityTradeSeq = this.tradeSeq;
               dbPricesSynced = this.syncPricesToDatabase(this.db);
+
+              const nextScenarioSnap = this.scenarioManager.snapshotState();
+              const scenarioChanged =
+                JSON.stringify(nextScenarioSnap) !== scenarioSnapBeforeTick ||
+                (prevDbScenarioSnap === null &&
+                  (nextScenarioSnap.activeScenarios.length > 0 || nextScenarioSnap.activeMacroShocks.length > 0));
+              if (
+                prevDbScenarioSnap !== null ||
+                nextScenarioSnap.activeScenarios.length > 0 ||
+                nextScenarioSnap.activeMacroShocks.length > 0
+              ) {
+                this.db.scenarioRuntimeState = nextScenarioSnap;
+              }
 
               tickTrades = this.tradesHistory.filter((t) => t.tick === this.currentTick);
 
@@ -733,7 +899,7 @@ export class CommodityMarketEngine {
                 userMutations += liquidatedCount;
               }
 
-              if ((userMutations > 0 || dbPricesSynced) && this.onPersist) {
+              if ((userMutations > 0 || dbPricesSynced || scenarioChanged) && this.onPersist) {
                 const saved = await this.onPersist();
                 if (!saved) {
                   throw new Error('원자재 틱 정산 영속 저장에 실패했습니다.');
@@ -746,6 +912,7 @@ export class CommodityMarketEngine {
             this.restoreRuntime(runtimeSnap);
 
             if (this.db) {
+              this.db.scenarioRuntimeState = prevDbScenarioSnap;
               if (prevDbTick !== undefined) this.db.commodityCurrentTick = prevDbTick;
               if (prevDbTradeSeq !== undefined) this.db.commodityTradeSeq = prevDbTradeSeq;
 
@@ -786,7 +953,11 @@ export class CommodityMarketEngine {
           }
         };
 
-        return this.onPersist ? runWithCommitGate(this.onPersist, executeTick) : executeTick();
+        return runWithCommitGate(
+          this.onPersist,
+          executeTick,
+          this.onPersist ? undefined : persistenceManager
+        );
       });
     });
   }

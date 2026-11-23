@@ -281,6 +281,8 @@ export interface BondMaturitySettlementParams {
   readonly expectedQuantity?: number;
   readonly principalAmount?: number;
   readonly couponAmount?: number;
+  readonly couponIdempotencyKey?: string;
+  readonly paymentsPerYear?: number;
   readonly idempotencyKey: string;
   readonly faultInjection?: 'FAIL_AT_CLOSE' | 'FAIL_AT_LEDGER';
 }
@@ -290,5 +292,6 @@ export interface NonTradeSettlementResult {
   readonly errorCode?: string;
   readonly error?: string;
   readonly rollbackOccurred?: boolean;
+  readonly lpLiabilitiesCleared?: number;
 }
 

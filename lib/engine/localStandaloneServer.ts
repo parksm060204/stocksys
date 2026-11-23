@@ -1,4 +1,4 @@
-import { memoryDb, StockRecord, TradeRecord, OrderRecord } from '../memoryDb/memoryStore';
+import { memoryDb, StockRecord, TradeRecord, OrderRecord, ProfileRecord, HoldingRecord } from '../memoryDb/memoryStore';
 import { createMemoryDbClient } from '../memoryDb/memoryDbClient';
 import { persistenceManager, runWithCommitGate } from '../memoryDb/PersistenceManager';
 import { printLocalBannerOnce } from './localDevMode';
@@ -6,8 +6,85 @@ import { withStockLock, withAllStockLocks } from './marketService';
 import { withAccountLocks } from '../memoryDb/accountLocks';
 import { snapshotTradingState, rollbackTradingState, TradingSnapshot } from '../memoryDb/memoryTransaction';
 import { calculateTradeFees, executeSettlement, SettlementTrade } from './settlement';
+import { getEffectiveStockTakerFeeRate } from './orderRisk';
 import { AgentManager, AgentManagerOptions } from './simulation/agentManager';
 import { SerialExecutionQueue } from './simulation/executionQueue';
+import { createInMemoryRepositoryBundle } from '../repositories/inMemory';
+import { SettlementBatchService } from '../../engine-server/src/settlement/SettlementBatchService';
+import { ScenarioManager } from '../scenario/ScenarioManager';
+import { CommodityMarketEngine, getAttachedCommodityEngines } from '../commodities/CommodityMarketEngine';
+
+async function runWithCommodityEngineTickLocks<T>(
+  engines: CommodityMarketEngine[],
+  fn: () => Promise<T>,
+  idx: number = 0
+): Promise<T> {
+  if (idx >= engines.length) {
+    return await fn();
+  }
+  return await engines[idx].runWithTickLock(() => runWithCommodityEngineTickLocks(engines, fn, idx + 1));
+}
+
+export async function resetStandaloneMarketAtomically(
+  persistFn?: () => Promise<boolean>
+): Promise<boolean> {
+  const commodityEngines = getAttachedCommodityEngines(memoryDb);
+  return await runWithCommodityEngineTickLocks(commodityEngines, async () => {
+    const allAssetIds = Array.from(
+      new Set([
+        ...memoryDb.stocks.keys(),
+        ...memoryDb.optionsContracts.keys(),
+        ...memoryDb.bonds.keys(),
+      ])
+    );
+    return await withAllStockLocks(allAssetIds, async () => {
+      return await runWithCommitGate(
+        persistFn,
+        async () => {
+          const dbRollbackSnap = memoryDb.exportRollbackSnapshot();
+          const prevCommodityResetVersion = memoryDb.commodityResetVersion;
+          const prevCommoditySnapshotVersion = memoryDb.commoditySnapshotVersion;
+          const prevScenarioResetVersion = memoryDb.scenarioResetVersion;
+          const commSnapshots = commodityEngines.map((eng) => ({
+            eng,
+            runtimeSnap: eng.snapshotRuntime(),
+            recMeta: eng.getReconcileMetadata(),
+          }));
+          const rollbackResetState = () => {
+            memoryDb.restoreRollbackSnapshot(dbRollbackSnap);
+            memoryDb.commodityResetVersion = prevCommodityResetVersion;
+            memoryDb.commoditySnapshotVersion = prevCommoditySnapshotVersion;
+            memoryDb.scenarioResetVersion = prevScenarioResetVersion;
+            for (const { eng, runtimeSnap, recMeta } of commSnapshots) {
+              eng.restoreRuntime(runtimeSnap);
+              eng.restoreReconcileMetadata(recMeta);
+            }
+          };
+
+          try {
+            memoryDb.resetToSeedData({ suppressPublish: true });
+            for (const eng of commodityEngines) {
+              await eng.reconcileWithDatabase(memoryDb);
+            }
+            if (persistFn) {
+              const saved = await persistFn();
+              if (!saved) {
+                rollbackResetState();
+                return false;
+              }
+            }
+            memoryDb.publish('market_reset', { timestamp: memoryDb.getNowMs() });
+            return true;
+          } catch (err) {
+            rollbackResetState();
+            throw err;
+          }
+        },
+        persistFn ? undefined : persistenceManager
+      );
+    });
+  });
+}
 
 interface GlobalWithEngine {
   __STOCKSYS_ENGINE__?: LocalMarketEngineInstance;
@@ -40,6 +117,12 @@ export class LocalMarketEngineInstance {
   private onPersist?: () => Promise<boolean>;
   public lastPersistOk: boolean = true;
   public lastPersistError: string | null = null;
+  private readonly SETTLEMENT_INTERVAL_TICKS: number = 50;
+  private readonly MAX_RETAINED_TERMINATED_LP_ORDERS: number = 200;
+  private settlementService: SettlementBatchService = new SettlementBatchService(
+    createInMemoryRepositoryBundle(memoryDb),
+    { now: () => memoryDb.getNowMs() }
+  );
 
   // 국면 효과(Stage 2) 운용 모드는 안전 기본값 'OFF'로 시작.
   private agentManager: AgentManager = new AgentManager(42, 1773500000000);
@@ -112,14 +195,24 @@ export class LocalMarketEngineInstance {
     return this.enqueueSimulation(() => Promise.resolve(this.agentManager.publishEvent(event)));
   }
 
-  public async resetSimulation(): Promise<void> {
-    await this.enqueueSimulation(async () => {
-      const stockIds = Array.from(memoryDb.stocks.keys());
-      await withAllStockLocks(stockIds, async () => {
-        memoryDb.resetToSeedData();
-        this.agentManager.reset();
-        this.tickCount = 0;
-      });
+  public async resetSimulation(persistFn?: () => Promise<boolean>): Promise<boolean> {
+    return await this.enqueueSimulation(async () => {
+      const effectivePersist = persistFn ?? this.onPersist;
+      const ok = await resetStandaloneMarketAtomically(effectivePersist);
+      if (!ok) {
+        this.lastPersistOk = false;
+        this.lastPersistError = 'Market reset snapshot save failed';
+        return false;
+      }
+      this.agentManager.reset();
+      this.settlementService = new SettlementBatchService(
+        createInMemoryRepositoryBundle(memoryDb),
+        { now: () => memoryDb.getNowMs() }
+      );
+      this.tickCount = 0;
+      this.lastPersistOk = true;
+      this.lastPersistError = null;
+      return true;
     });
   }
 
@@ -161,42 +254,264 @@ export class LocalMarketEngineInstance {
     return this.simulationQueue.run(task);
   }
 
+  private isBotOrLpOrder(order: OrderRecord): boolean {
+    if (!order.user_id) return true;
+    if (order.is_lp === true) return true;
+    if (order.participant_type === 'bot' || order.participant_type === 'lp') return true;
+    if (typeof order.agent_id === 'string' && order.agent_id.length > 0) return true;
+    if (this.agentManager.agents.has(order.user_id)) return true;
+    return false;
+  }
+
+  private prepareActiveStockScenarios(): boolean {
+    const snap = memoryDb.scenarioRuntimeState;
+    if (!snap || !Array.isArray(snap.activeScenarios) || snap.activeScenarios.length === 0) {
+      this.agentManager.scenarioBiases.clear();
+      return false;
+    }
+    const stockScenarios = snap.activeScenarios.filter(([, s]: [string, any]) => s?.assetType === 'stock' && s?.status === 'active');
+    if (stockScenarios.length === 0) {
+      this.agentManager.scenarioBiases.clear();
+      return false;
+    }
+    const mgr = new ScenarioManager();
+    mgr.restoreState(snap);
+    this.agentManager.scenarioBiases.clear();
+    for (const [, s] of stockScenarios) {
+      if (s?.assetId) {
+        this.agentManager.scenarioBiases.set(s.assetId, mgr.getAssetBias(s.assetId));
+      }
+    }
+    return true;
+  }
+
+  private async commitStockScenarioStep(): Promise<void> {
+    const activePersist = this.onPersist;
+    await runWithCommitGate(
+      activePersist,
+      async () => {
+        if (memoryDb.isTradingHalted()) return;
+        const prevDbSnap = memoryDb.scenarioRuntimeState
+          ? structuredClone(memoryDb.scenarioRuntimeState)
+          : null;
+        if (!prevDbSnap || !Array.isArray(prevDbSnap.activeScenarios)) return;
+        const hasActiveStock = prevDbSnap.activeScenarios.some(
+          ([, s]: [string, any]) => s?.assetType === 'stock' && s?.status === 'active'
+        );
+        if (!hasActiveStock) return;
+
+        const mgr = new ScenarioManager();
+        mgr.restoreState(prevDbSnap);
+        mgr.stepTick('stock');
+        memoryDb.scenarioRuntimeState = mgr.snapshotState();
+
+        if (activePersist) {
+          let saved = false;
+          try {
+            saved = await activePersist();
+          } catch (err: any) {
+            saved = false;
+            this.lastPersistOk = false;
+            this.lastPersistError = `Scenario step snapshot save threw at tick ${this.tickCount}: ${err?.message || String(err)}`;
+          }
+          if (!saved) {
+            memoryDb.scenarioRuntimeState = prevDbSnap;
+            this.lastPersistOk = false;
+            if (!this.lastPersistError) {
+              this.lastPersistError = `Scenario step snapshot save failed at tick ${this.tickCount}`;
+            }
+            return;
+          }
+          this.lastPersistOk = true;
+          this.lastPersistError = null;
+        }
+      },
+      activePersist ? undefined : persistenceManager
+    );
+  }
+
+  private async runPeriodicSettlementBatch(persistFn: () => Promise<boolean>): Promise<void> {
+    const allAssetIds = Array.from(
+      new Set([
+        ...memoryDb.stocks.keys(),
+        ...memoryDb.optionsContracts.keys(),
+        ...memoryDb.bonds.keys(),
+      ])
+    );
+
+    await withAllStockLocks(allAssetIds, async () => {
+      const now = memoryDb.getNowMs();
+      const repo = this.settlementService.getRepositories();
+      const expiredOptions = repo.settlement.getExpiredOptionContracts(now);
+      const bonds = repo.settlement.getBonds(now);
+      const targetAssetIds = [
+        ...expiredOptions.map((o) => o.id),
+        ...bonds.map((b) => b.id),
+      ];
+      const targetHoldings = repo.settlement.getPositionsForAssetIds(targetAssetIds);
+      const openOrderAccountIds =
+        repo.settlement.getOpenOptionOrderAccountIds?.(expiredOptions.map((o) => o.id)) ?? [];
+      const accountIds = Array.from(
+        new Set([
+          ...targetHoldings.map((h) => memoryDb.profileUserIdIndex.get(h.user_id) || h.user_id),
+          ...openOrderAccountIds.map((uid) => memoryDb.profileUserIdIndex.get(uid) || uid),
+        ])
+      ).sort();
+
+      await withAccountLocks(accountIds, async () => {
+        await runWithCommitGate(persistFn, async () => {
+          const profileSnaps = new Map<string, ProfileRecord>();
+          for (const pid of accountIds) {
+            const p = memoryDb.profiles.get(pid);
+            if (p) profileSnaps.set(pid, { ...p });
+          }
+          const holdingSnaps = new Map<string, HoldingRecord>();
+          for (const h of targetHoldings) {
+            const hid = `${h.user_id}_${h.stock_id}`;
+            const cur = memoryDb.holdings.get(hid);
+            if (cur) holdingSnaps.set(hid, { ...cur });
+          }
+          const orderSnaps = new Map<string, OrderRecord>();
+          for (const opt of expiredOptions) {
+            const orderIds = memoryDb.orderStockIndex.get(opt.id);
+            if (orderIds) {
+              for (const oid of orderIds) {
+                const ord = memoryDb.orders.get(oid);
+                if (ord) orderSnaps.set(oid, { ...ord });
+              }
+            }
+          }
+          const optCountBefore = memoryDb.optionSettlements.length;
+          const bondCountBefore = memoryDb.bondCouponPayments.length;
+          const ledgerKeysBefore = new Set(memoryDb.settlementLedger.keys());
+          const lpLiabilitiesSnap = new Map(memoryDb.lpLiabilities);
+          const lastPeriodKeyBefore = this.settlementService.getLastRunPeriodKey();
+
+          const rollbackSettlement = () => {
+            for (const [pid, pSnap] of profileSnaps.entries()) {
+              const live = memoryDb.profiles.get(pid);
+              if (live) {
+                for (const k of Object.keys(live)) {
+                  if (!(k in pSnap)) delete (live as any)[k];
+                }
+                Object.assign(live, pSnap);
+              } else {
+                memoryDb.profiles.set(pid, { ...pSnap });
+              }
+            }
+            for (const [hid, hSnap] of holdingSnaps.entries()) {
+              memoryDb.holdings.set(hid, { ...hSnap });
+              memoryDb.addHoldingToIndex(hSnap);
+            }
+            for (const [oid, oSnap] of orderSnaps.entries()) {
+              memoryDb.orders.set(oid, { ...oSnap });
+              memoryDb.addOrderToIndex(oSnap);
+            }
+            memoryDb.optionSettlements = memoryDb.optionSettlements.slice(0, optCountBefore);
+            memoryDb.bondCouponPayments = memoryDb.bondCouponPayments.slice(0, bondCountBefore);
+            for (const k of Array.from(memoryDb.settlementLedger.keys())) {
+              if (!ledgerKeysBefore.has(k)) {
+                memoryDb.settlementLedger.delete(k);
+              }
+            }
+            memoryDb.lpLiabilities = new Map(lpLiabilitiesSnap);
+            this.settlementService.restoreLastRunPeriodKey(lastPeriodKeyBefore);
+          };
+
+          try {
+            const summary = await this.settlementService.runDailySettlementBatch();
+            const hasChanges =
+              summary.optionSettled > 0 ||
+              summary.optionOrdersExpired > 0 ||
+              (summary.optionLpLiabilitiesCleared ?? 0) > 0 ||
+              summary.bondCouponsPaid > 0 ||
+              summary.bondPrincipalRedeemed > 0;
+            if (!hasChanges) return;
+
+            const saved = await persistFn();
+            if (!saved) {
+              rollbackSettlement();
+              this.lastPersistOk = false;
+              this.lastPersistError = `Settlement batch snapshot save failed at tick ${this.tickCount}`;
+              console.error(`❌ [LocalMarketEngine] ${this.lastPersistError}`);
+            } else {
+              this.lastPersistOk = true;
+              this.lastPersistError = null;
+            }
+          } catch (err: any) {
+            rollbackSettlement();
+            this.lastPersistOk = false;
+            this.lastPersistError = `Settlement batch failed at tick ${this.tickCount}: ${err?.message || String(err)}`;
+            console.error(`❌ [LocalMarketEngine] ${this.lastPersistError}`);
+          }
+        });
+      });
+    });
+  }
+
   private async runTick(): Promise<void> {
     this.tickCount++;
+    const persistFn = this.onPersist || (() => persistenceManager.saveSnapshot(memoryDb));
 
-    // ── 1. 에이전트 기반 시장(ABM) 1스텝 실행 ──
-    // MJD SDE, 재고 기반 LP 호가 갱신, 가치 투자자 및 추세 추종자 의사결정 및 즉시 매칭
-    await this.agentManager.step(1.0);
+    // ── 1. 에이전트 기반 시장(ABM) 1스텝 실행 (긴급 거래 동결 시 거래 중지) ──
+    if (!memoryDb.isTradingHalted()) {
+      const hadActiveStockScenarios = this.prepareActiveStockScenarios();
+      try {
+        await this.agentManager.step(1.0);
+      } finally {
+        this.agentManager.scenarioBiases.clear();
+      }
+      if (hadActiveStockScenarios) {
+        await this.commitStockScenarioStep();
+      }
+    }
 
     // ── 2. 오래된 봇 주문 및 종료된 LP 주문 메모리 정리 (Memory Leak 방지) ──
     if (this.tickCount % 20 === 0) {
-      const persistFn = this.onPersist || (() => persistenceManager.saveSnapshot(memoryDb));
       await withAllStockLocks(Array.from(memoryDb.stocks.keys()), async () => {
         await runWithCommitGate(persistFn, async () => {
-          const nowMs = Date.now();
-          for (const [id, order] of Array.from(memoryDb.orders.entries())) {
-            // 사용자 미체결/보유 주문은 보존
-            if (order.user_id) continue;
+          const nowMs = memoryDb.getNowMs();
+          const simTime = this.agentManager.clock.simulationTime;
+          const terminatedLpOrders: OrderRecord[] = [];
 
-            // 일반 봇 주문 정리: 60초 초과 또는 체결/취소 완료
+          for (const [id, order] of Array.from(memoryDb.orders.entries())) {
+            // 실제 사용자 주문은 절대 삭제하지 않음
+            if (!this.isBotOrLpOrder(order)) continue;
+
+            const ageMs =
+              typeof order.simulation_time === 'number' && Number.isFinite(order.simulation_time)
+                ? Math.max(0, simTime - order.simulation_time)
+                : Math.max(0, nowMs - new Date(order.created_at).getTime());
+
+            const isTerminated =
+              order.status === 'filled' ||
+              order.status === 'cancelled' ||
+              order.status === 'expired';
+
             if (!order.is_lp) {
-              if (
-                order.status === 'filled' ||
-                order.status === 'cancelled' ||
-                nowMs - new Date(order.created_at).getTime() > 60_000
-              ) {
+              // 일반 봇 주문 정리: 체결/취소/만료 완료 또는 60초 초과
+              if (isTerminated || ageMs > 60_000) {
                 memoryDb.orders.delete(id);
                 memoryDb.removeOrderFromIndex(order);
               }
             } else {
-              // 종료된 LP 주문(filled / cancelled) 30초 초과 시 정리
-              if (
-                (order.status === 'filled' || order.status === 'cancelled') &&
-                nowMs - new Date(order.created_at).getTime() > 30_000
-              ) {
+              // 종료된 LP 주문(filled / cancelled / expired) 30초 초과 시 정리
+              if (isTerminated && ageMs > 30_000) {
                 memoryDb.orders.delete(id);
                 memoryDb.removeOrderFromIndex(order);
+              } else if (isTerminated) {
+                terminatedLpOrders.push(order);
               }
+            }
+          }
+
+          if (terminatedLpOrders.length > this.MAX_RETAINED_TERMINATED_LP_ORDERS) {
+            terminatedLpOrders.sort((a, b) => a.created_at.localeCompare(b.created_at));
+            const excess = terminatedLpOrders.length - this.MAX_RETAINED_TERMINATED_LP_ORDERS;
+            for (let i = 0; i < excess; i++) {
+              const ord = terminatedLpOrders[i];
+              memoryDb.orders.delete(ord.id);
+              memoryDb.removeOrderFromIndex(ord);
             }
           }
 
@@ -223,6 +538,11 @@ export class LocalMarketEngineInstance {
         });
       });
     }
+
+    // ── 3. 만기 옵션/채권 정기 정산 (50틱 주기, 락·커밋게이트·영속 경계 내 원자적 실행) ──
+    if (this.tickCount % this.SETTLEMENT_INTERVAL_TICKS === 0) {
+      await this.runPeriodicSettlementBatch(persistFn);
+    }
   }
 
   /**
@@ -230,7 +550,7 @@ export class LocalMarketEngineInstance {
    * 종료된 LP 주문 누적을 방지하고, 호가 점멸을 최소화하며, 사용자 주문은 완전 보존.
    */
   public async refreshLpOrders(): Promise<void> {
-    const now = Date.now();
+    const now = memoryDb.getNowMs();
     const stockIds = Array.from(memoryDb.stocks.keys());
 
     for (const stockId of stockIds) {
@@ -361,7 +681,7 @@ export class LocalMarketEngineInstance {
         // 2. 해당 종목의 봇 주문 등록
         const pendingBots = botOrdersByStock.get(stockId) || [];
         for (const b of pendingBots) {
-          const id = `bot_ord_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+          const id = memoryDb.generateId('bot_ord');
           const oRec: OrderRecord = { ...b, id };
           memoryDb.orders.set(id, oRec);
           memoryDb.addOrderToIndex(oRec);
@@ -398,7 +718,8 @@ export class LocalMarketEngineInstance {
         let executionLow = Infinity;
         let lastExecPrice: number | null = null;
         let matchedVol = 0;
-        const now = new Date().toISOString();
+        const nowMs = memoryDb.getNowMs();
+        const now = new Date(nowMs).toISOString();
 
         let bidIdx = 0;
         let askIdx = 0;
@@ -419,6 +740,15 @@ export class LocalMarketEngineInstance {
               askIdx++;
             }
             continue;
+          }
+
+          // 미수 부채가 있는 매수 계좌의 대기 매수 주문은 체결 차단
+          if (topBid.user_id) {
+            const bidBuyerDebt = Math.max(0, Number(memoryDb.resolveProfileByUserId(topBid.user_id)?.margin_debt_krw ?? 0));
+            if (bidBuyerDebt > 0) {
+              bidIdx++;
+              continue;
+            }
           }
 
           const curBidFilled = localFilledMap.get(topBid.id) ?? (topBid.filled || 0);
@@ -453,8 +783,12 @@ export class LocalMarketEngineInstance {
           orderUpdates.push({ orderId: topBid.id, newFilled: newBidFilled, newStatus: newBidStatus });
           orderUpdates.push({ orderId: topAsk.id, newFilled: newAskFilled, newStatus: newAskStatus });
 
-          // 수수료 계산
-          const { buyer_fee, seller_fee } = calculateTradeFees(isBidMaker, !isBidMaker);
+          // 수수료 계산 (테이커 측 fee_booster 50% 할인 반영)
+          const baseFees = calculateTradeFees(isBidMaker, !isBidMaker);
+          const buyerProfile = topBid.user_id ? memoryDb.resolveProfileByUserId(topBid.user_id) : undefined;
+          const sellerProfile = topAsk.user_id ? memoryDb.resolveProfileByUserId(topAsk.user_id) : undefined;
+          const buyer_fee = isBidMaker ? baseFees.buyer_fee : getEffectiveStockTakerFeeRate(buyerProfile, nowMs);
+          const seller_fee = !isBidMaker ? baseFees.seller_fee : getEffectiveStockTakerFeeRate(sellerProfile, nowMs);
           const tradeId = memoryDb.nextMonotonicTradeId('tr');
 
           tradesToSettle.push({
@@ -482,7 +816,8 @@ export class LocalMarketEngineInstance {
 
         // 실제 사용자 계정 락 획득 후 원자적 정산 및 영속 저장 실행
         const userIdsArray = Array.from(involvedUserIds);
-        await withAccountLocks(userIdsArray, async () => {
+        const lockKeys = userIdsArray.map((id) => memoryDb.resolveAccountLockKey(id));
+        await withAccountLocks(lockKeys, async () => {
           await runWithCommitGate(this.onPersist, async () => {
             const snap: TradingSnapshot = snapshotTradingState(stockId, userIdsArray);
             for (const t of tradesToSettle) {
@@ -536,7 +871,7 @@ export class LocalMarketEngineInstance {
                 liveStock.change_rate = parseFloat((((lastExecPrice - liveStock.previous_close) / liveStock.previous_close) * 100).toFixed(2));
 
                 // 주가 히스토리 추가
-                const histId = `hist_${stockId}_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`;
+                const histId = memoryDb.generateId(`hist_${stockId}`);
                 snap.createdHistoryIds.add(histId);
                 memoryDb.stockPriceHistory.push({
                   id: histId,

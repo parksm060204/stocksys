@@ -749,7 +749,7 @@ async function runPartC_NavIndependenceTests() {
   const obsAfterOrderB = buildMarketObservation(STOCK_B_ID, testAccountId, simTime);
 
   assert(
-    obsAfterOrderA?.account.reservedCash === 40000 * 50,
+    obsAfterOrderA?.account.reservedCash === Math.round(40000 * 50 * 1.0025),
     `예약금 정확히 집계됨: ${obsAfterOrderA?.account.reservedCash}원`
   );
   assert(

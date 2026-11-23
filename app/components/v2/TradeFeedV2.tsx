@@ -15,7 +15,7 @@ import { useOrderbookData } from "@/lib/hooks/useOrderbookData";
 import type { TradeRecord } from "@/lib/hooks/useOrderbookData";
 import type { SimTrade } from "@/lib/hooks/useStockBotSimulation";
 import type { Stock } from "@/lib/types";
-import { fmtKSTTime } from "@/lib/format";
+import { fmtKSTTime, fmtPrice as fmtAssetPrice } from "@/lib/format";
 
 interface TradeFeedV2Props {
   stock?: Stock;
@@ -43,13 +43,7 @@ export default function TradeFeedV2({ stock, trades: externalTrades }: TradeFeed
   const trades =
     externalMapped.length > 0 ? externalMapped : stock ? dbTrades : [];
 
-  const isUSD =
-    stock?.market === "overseas" ||
-    stock?.market === "europe" ||
-    stock?.market === "commodities";
-
-  const fmtPrice = (p: number) =>
-    isUSD ? `$${p.toFixed(2)}` : `₩${Math.round(p).toLocaleString()}`;
+  const fmtPrice = (p: number) => fmtAssetPrice(p, stock?.market, stock?.ticker);
 
   return (
     <div className="flex flex-col h-full bg-panel">

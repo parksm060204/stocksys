@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import Link from 'next/link';
 import { OptionMonthChainGrid, OptionContractItem } from './OptionMonthChainGrid';
 import { OptionOrderEntry, OrderType } from './OptionOrderEntry';
@@ -18,6 +18,8 @@ export default function OptionHTSDashboard() {
   const [selectedType, setSelectedType] = useState<'CALL' | 'PUT'>('CALL');
   const [selectedMultiplier, setSelectedMultiplier] = useState<number>(250000);
   const [userBalance, setUserBalance] = useState<number | null>(null);
+  const [accountPositions, setAccountPositions] = useState<Array<{ contractId: string; qty: number }>>([]);
+  const [accountUnfilled, setAccountUnfilled] = useState<Array<{ contractId: string; side: 'BUY' | 'SELL'; remaining: number }>>([]);
   const [accountRefreshKey, setAccountRefreshKey] = useState<number>(0);
   const [futuresStats, setFuturesStats] = useState<{ price: number; change: number; changePct: number; volume: number }>({
     price: 260.0,
@@ -29,13 +31,18 @@ export default function OptionHTSDashboard() {
   const { userId, isLoggedIn } = useAuth();
   const db = useMemo(() => createClient(), []);
   const { trades, rolloverEvents } = useOptionMarketData(selectedTicker);
+  const selectedContractIdRef = useRef<string | undefined>(selectedContractId);
+  const fetchSeqRef = useRef<number>(0);
 
   const fetchAccountAndContracts = useCallback(async () => {
+    const reqSeq = ++fetchSeqRef.current;
+    const reqAccount = isLoggedIn && userId ? userId : null;
     const [{ data: contractList }, { data: stockList }, accountRes] = await Promise.all([
       db.from('options_contracts').select('*'),
       db.from('stocks').select('market, current_price, previous_close, shares_outstanding, volume').eq('market', 'domestic'),
-      isLoggedIn && userId ? fetch('/api/options/account', { cache: 'no-store' }).then((r) => r.json()).catch(() => null) : Promise.resolve(null),
+      reqAccount ? fetch('/api/options/account', { cache: 'no-store' }).then((r) => r.json()).catch(() => null) : Promise.resolve(null),
     ]);
+    if (reqSeq !== fetchSeqRef.current) return;
 
     if (Array.isArray(stockList) && stockList.length > 0) {
       let prevCap = 0;
@@ -71,48 +78,52 @@ export default function OptionHTSDashboard() {
       setContracts(gridContracts);
 
       if (gridContracts.length > 0) {
-        setSelectedContractId((prevId) => {
-          const existing = prevId ? gridContracts.find((c) => c.id === prevId) : undefined;
-          if (existing) {
-            setSelectedTicker(existing.ticker);
-            setSelectedPrice(Number(existing.current_price || 0));
-            setSelectedType((existing.option_type || existing.type) === 'PUT' ? 'PUT' : 'CALL');
-            setSelectedMultiplier(Number(existing.multiplier || 250000));
-            return existing.id;
-          }
+        const curId = selectedContractIdRef.current;
+        const existing = curId ? gridContracts.find((c) => c.id === curId) : undefined;
+        let chosen = existing;
+        if (!chosen) {
           const sortedByExpiry = [...gridContracts].sort(
             (a, b) => Date.parse(a.expiry_date) - Date.parse(b.expiry_date)
           );
           const frontExpiry = sortedByExpiry[0].expiry_date;
-          const frontCall =
+          chosen =
             sortedByExpiry.find(
               (c) =>
                 c.expiry_date === frontExpiry &&
                 (c.option_type || c.type) === 'CALL' &&
                 Math.abs(Number(c.strike_price) - 260) < 0.01
             ) || sortedByExpiry[0];
-          setSelectedTicker(frontCall.ticker);
-          setSelectedPrice(Number(frontCall.current_price || 0));
-          setSelectedType((frontCall.option_type || frontCall.type) === 'PUT' ? 'PUT' : 'CALL');
-          setSelectedMultiplier(Number(frontCall.multiplier || 250000));
-          return frontCall.id;
-        });
+        }
+        selectedContractIdRef.current = chosen.id;
+        setSelectedContractId(chosen.id);
+        setSelectedTicker(chosen.ticker);
+        setSelectedPrice(Number(chosen.current_price || 0));
+        setSelectedType((chosen.option_type || chosen.type) === 'PUT' ? 'PUT' : 'CALL');
+        setSelectedMultiplier(Number(chosen.multiplier || 250000));
       }
     }
 
-    if (accountRes?.success && accountRes.account) {
+    if (reqAccount && accountRes?.success && accountRes.account) {
       setUserBalance(Number(accountRes.account.availableCash ?? accountRes.account.cash ?? 0));
-    } else if (!isLoggedIn || !userId) {
+      setAccountPositions(Array.isArray(accountRes.account.positions) ? accountRes.account.positions : []);
+      setAccountUnfilled(Array.isArray(accountRes.account.unfilled) ? accountRes.account.unfilled : []);
+    } else if (!reqAccount) {
       setUserBalance(null);
+      setAccountPositions([]);
+      setAccountUnfilled([]);
     }
   }, [db, isLoggedIn, userId]);
 
   useEffect(() => {
     void fetchAccountAndContracts();
+    return () => {
+      fetchSeqRef.current += 1;
+    };
   }, [fetchAccountAndContracts]);
 
   const handleSelectContract = useCallback((contract: OptionContractItem) => {
     const optType = (contract.option_type || contract.type) === 'PUT' ? 'PUT' : 'CALL';
+    selectedContractIdRef.current = contract.id;
     setSelectedContractId(contract.id);
     setSelectedTicker(contract.ticker);
     setSelectedPrice(Number(contract.current_price || 0));
@@ -149,6 +160,17 @@ export default function OptionHTSDashboard() {
     return data;
   };
 
+  const availableSellQty = useMemo(() => {
+    if (!isLoggedIn || !selectedContractId) return null;
+    const owned = accountPositions
+      .filter((p) => p.contractId === selectedContractId)
+      .reduce((acc, p) => acc + Math.max(0, Number(p.qty || 0)), 0);
+    const reservedSell = accountUnfilled
+      .filter((o) => o.contractId === selectedContractId && o.side === 'SELL')
+      .reduce((acc, o) => acc + Math.max(0, Number(o.remaining || 0)), 0);
+    return Math.max(0, owned - reservedSell);
+  }, [isLoggedIn, selectedContractId, accountPositions, accountUnfilled]);
+
   return (
     <div className="mx-auto max-w-7xl px-6 py-6 space-y-6 select-none">
       {/* Breadcrumb Navigation */}
@@ -184,7 +206,12 @@ export default function OptionHTSDashboard() {
           </div>
           <div>
             <div className="text-[10px] uppercase font-bold tracking-wider text-[#8E939D]">선택가</div>
-            <div className="text-[14px] font-black text-white tabular-nums">₩{selectedPrice.toFixed(2)}</div>
+            <div className="text-[14px] font-black text-white tabular-nums">
+              {selectedPrice.toFixed(2)} pt
+              <span className="ml-1.5 text-[11px] font-normal text-[#8E939D]">
+                (₩{Math.round(selectedPrice * selectedMultiplier).toLocaleString()})
+              </span>
+            </div>
           </div>
         </div>
       </div>
@@ -213,6 +240,7 @@ export default function OptionHTSDashboard() {
             currentPrice={selectedPrice}
             multiplier={selectedMultiplier}
             userBalance={userBalance}
+            availableSellQty={availableSellQty}
             onOrderSubmit={handleOrderSubmit}
           />
 

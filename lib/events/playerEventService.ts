@@ -1,7 +1,7 @@
 import type { MemoryDatabase } from '@/lib/memoryDb/memoryStore';
 import { withAccountLocks } from '@/lib/memoryDb/accountLocks';
 import { runWithCommitGate } from '@/lib/memoryDb/PersistenceManager';
-import { getAvailableCashKrw } from '@/lib/engine/orderRisk';
+import { getAvailableCashKrw, applyCashCreditWithMarginDebt } from '@/lib/engine/orderRisk';
 
 export interface ResolvePlayerEventInput {
   db: MemoryDatabase;
@@ -35,7 +35,7 @@ export async function resolvePlayerEventChoice(
     return { success: false, statusCode: 400, message: '선택지(choice)는 A 또는 B여야 합니다.' };
   }
 
-  return withAccountLocks([userId], async () => {
+  return withAccountLocks([db.resolveAccountLockKey(userId)], async () => {
     return runWithCommitGate(onPersist, async () => {
       const activeEvent = db.activePlayerEvents.find((e: any) => e?.id === activeEventId);
       if (!activeEvent) {
@@ -55,7 +55,7 @@ export async function resolvePlayerEventChoice(
         return { success: false, statusCode: 404, message: '이벤트 마스터 데이터를 찾을 수 없습니다.' };
       }
 
-      const profile = db.profiles.get(userId);
+      const profile = db.resolveProfileByUserId(userId);
       if (!profile) {
         return { success: false, statusCode: 404, message: '사용자 계좌 프로필을 찾을 수 없습니다.' };
       }
@@ -81,13 +81,29 @@ export async function resolvePlayerEventChoice(
       }
 
       const prevCash = profile.cash;
+      const prevMarginDebt = profile.margin_debt_krw;
       const prevPassives = Array.isArray(profile.acquired_passives) ? [...profile.acquired_passives] : undefined;
       const prevStatus = activeEvent.status;
       const prevChoice = activeEvent.resolved_choice;
       const prevResolvedAt = activeEvent.resolved_at;
 
+      const rollbackEvent = () => {
+        profile.cash = prevCash;
+        if (prevMarginDebt !== undefined) profile.margin_debt_krw = prevMarginDebt;
+        else delete profile.margin_debt_krw;
+        if (prevPassives !== undefined) profile.acquired_passives = prevPassives;
+        else delete profile.acquired_passives;
+        activeEvent.status = prevStatus;
+        activeEvent.resolved_choice = prevChoice;
+        activeEvent.resolved_at = prevResolvedAt;
+      };
+
       try {
-        profile.cash = Math.round((profile.cash - cost) * 100) / 100;
+        if (cost < 0) {
+          applyCashCreditWithMarginDebt(profile, -cost);
+        } else if (cost > 0) {
+          profile.cash = Math.round((profile.cash - cost) * 100) / 100;
+        }
         const nextPassives = prevPassives ? [...prevPassives] : [];
         if (passive && !nextPassives.includes(passive)) {
           nextPassives.push(passive);
@@ -101,11 +117,7 @@ export async function resolvePlayerEventChoice(
         if (onPersist) {
           const saved = await onPersist();
           if (!saved) {
-            profile.cash = prevCash;
-            profile.acquired_passives = prevPassives;
-            activeEvent.status = prevStatus;
-            activeEvent.resolved_choice = prevChoice;
-            activeEvent.resolved_at = prevResolvedAt;
+            rollbackEvent();
             return {
               success: false,
               statusCode: 500,
@@ -123,11 +135,7 @@ export async function resolvePlayerEventChoice(
           resolved_choice: choice,
         };
       } catch (err: any) {
-        profile.cash = prevCash;
-        profile.acquired_passives = prevPassives;
-        activeEvent.status = prevStatus;
-        activeEvent.resolved_choice = prevChoice;
-        activeEvent.resolved_at = prevResolvedAt;
+        rollbackEvent();
         return {
           success: false,
           statusCode: 500,

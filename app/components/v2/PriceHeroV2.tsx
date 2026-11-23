@@ -75,14 +75,14 @@ export default function PriceHeroV2({ stock }: { stock: Stock }) {
         <span className="text-dim text-[14px]">|</span>
         <span className={`font-mono tabular-nums text-[15px] font-semibold transition-colors duration-200 opacity-80 ${priceColor}`}>
           {dir === "up" ? "+" : dir === "down" ? "-" : ""}
-          {fmtPrice(Math.abs(amount), stock.market)}
+          {fmtPrice(Math.abs(amount), stock.market, stock.ticker)}
         </span>
       </div>
 
       <div className="flex items-center gap-1.5 mt-3">
         <span className="text-xs text-dim">전일종가</span>
         <span className="font-mono text-[12px] tabular-nums text-muted font-semibold">
-          {fmtPrice(stock.previousClose, stock.market)}
+          {fmtPrice(stock.previousClose, stock.market, stock.ticker)}
         </span>
       </div>
 

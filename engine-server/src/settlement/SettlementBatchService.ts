@@ -18,6 +18,8 @@ import type { OptionContract, OptionPosition, BondPosition } from './types';
 export interface DailySettlementBatchResult {
   readonly optionSettled: number;
   readonly optionPayout: number;
+  readonly optionOrdersExpired: number;
+  readonly optionLpLiabilitiesCleared?: number;
   readonly bondCouponsPaid: number;
   readonly bondPrincipalRedeemed: number;
 }
@@ -41,12 +43,14 @@ export class SettlementBatchService {
   }
 
   /**
-   * simulation clock 기준 기간 키를 계산한다 (예: period_2026-09).
+   * simulation clock 기준 분기 단위 기간 키를 계산한다 (예: period_2026-Q3).
+   * BondCouponEngine의 defaultPaymentsPerYear = 4(분기 지급)와 주기를 일치시키며,
    * 실제 벽시계 시각을 사용하지 않는다.
    */
   private currentPeriodKey(nowMs: number): string {
-    const iso = new Date(nowMs).toISOString();
-    return `period_${iso.slice(0, 7)}`;
+    const d = new Date(nowMs);
+    const quarter = Math.floor(d.getUTCMonth() / 3) + 1;
+    return `period_${d.getUTCFullYear()}-Q${quarter}`;
   }
 
   /**
@@ -55,7 +59,7 @@ export class SettlementBatchService {
    */
   public async runDailySettlementBatch(): Promise<DailySettlementBatchResult> {
     if (this.isRunning) {
-      return { optionSettled: 0, optionPayout: 0, bondCouponsPaid: 0, bondPrincipalRedeemed: 0 };
+      return { optionSettled: 0, optionPayout: 0, optionOrdersExpired: 0, bondCouponsPaid: 0, bondPrincipalRedeemed: 0 };
     }
 
     this.isRunning = true;
@@ -127,13 +131,15 @@ export class SettlementBatchService {
       const result: DailySettlementBatchResult = {
         optionSettled: optRes.settledCount,
         optionPayout: optRes.totalPayout,
+        optionOrdersExpired: optRes.expiredOrdersCount,
+        optionLpLiabilitiesCleared: optRes.lpLiabilitiesClearedCount ?? 0,
         bondCouponsPaid: bondRes.totalCouponPaid,
         bondPrincipalRedeemed: bondRes.totalPrincipalRedeemed,
       };
 
-      if (result.optionSettled > 0 || bondRes.couponCount > 0 || bondRes.redemptionCount > 0) {
+      if (result.optionSettled > 0 || result.optionOrdersExpired > 0 || bondRes.couponCount > 0 || bondRes.redemptionCount > 0) {
         console.log(
-          `🏦 [SettlementBatch] 정산 완료: 옵션 ${result.optionSettled}건(₩${result.optionPayout.toLocaleString()}), 채권이자 ₩${result.bondCouponsPaid.toLocaleString()}, 만기상환 ₩${result.bondPrincipalRedeemed.toLocaleString()}`
+          `🏦 [SettlementBatch] 정산 완료: 옵션 ${result.optionSettled}건(₩${result.optionPayout.toLocaleString()}), 만기 미체결 정리 ${result.optionOrdersExpired}건, 채권이자 ₩${result.bondCouponsPaid.toLocaleString()}, 만기상환 ₩${result.bondPrincipalRedeemed.toLocaleString()}`
         );
       }
       return result;

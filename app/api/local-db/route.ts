@@ -1,11 +1,11 @@
 import { NextResponse } from 'next/server';
-import { memoryDb } from '@/lib/memoryDb/memoryStore';
+import { memoryDb, type ProfileRecord } from '@/lib/memoryDb/memoryStore';
 import { createMemoryDbClient } from '@/lib/memoryDb/memoryDbClient';
-import { ensureLocalStandaloneReady, getLocalStandaloneEngine, persistConfirmedState } from '@/lib/engine/localStandaloneServer';
-import { LocalMarketService, withAllStockLocks } from '@/lib/engine/marketService';
+import { ensureLocalStandaloneReady, getLocalStandaloneEngine, persistConfirmedState, resetStandaloneMarketAtomically } from '@/lib/engine/localStandaloneServer';
+import { LocalMarketService } from '@/lib/engine/marketService';
 import { verifyAdminSession } from '@/lib/auth/adminAuth';
 import { resolveAuthenticatedUserId } from '@/lib/auth/sessionAuth';
-import { sanitizePublicNewsRecord } from '@/lib/engine/simulation/marketEventTypes';
+import { authorizeNewsRecord, canReadRumor } from '@/lib/news/accessPolicy';
 import { pruneExpiredProfileEntitlements } from '@/lib/shop/catalog';
 import { executeCurrencyExchange } from '@/lib/exchange/exchangeService';
 import { withAccountLocks } from '@/lib/memoryDb/accountLocks';
@@ -24,45 +24,97 @@ const PUBLIC_READ_TABLES = new Set([
   'news',
   'news_v2',
   'player_events',
-  'active_manipulations',
   'institutional_portfolios',
-  'bots_config',
-  'admin_settings',
   'trades',
 ]);
+const ADMIN_ONLY_READ_TABLES = new Set(['active_manipulations', 'admin_settings']);
+const PUBLIC_TRADE_COLUMNS = new Set([
+  'id',
+  'stock_id',
+  'price',
+  'size',
+  'buyer_is_bot',
+  'seller_is_bot',
+  'created_at',
+  'sequence',
+]);
 const NEWS_TABLES = new Set(['market_news', 'news', 'news_v2']);
+const PUBLIC_NEWS_COLUMNS = new Set([
+  'id',
+  'type',
+  'category',
+  'news_type',
+  'eventType',
+  'publisher',
+  'title',
+  'headline',
+  'target_sector',
+  'related_sector',
+  'sector_id',
+  'target_ticker',
+  'related_ticker',
+  'stock_id',
+  'impact_score',
+  'sentiment',
+  'sentiment_score',
+  'simulation_time',
+  'sequence',
+  'created_at',
+  'publishedAt',
+  'effectiveFrom',
+  'scope',
+  'sectorId',
+]);
+const SUBSCRIBER_NEWS_COLUMNS = new Set([
+  ...PUBLIC_NEWS_COLUMNS,
+  'content',
+  'summary',
+  'body',
+]);
 const USER_SCOPED_READ_TABLES = new Set(['option_settlements', 'bond_coupon_payments', 'active_player_events']);
 const ALLOWED_PROFILE_UPDATE_FIELDS = new Set(['username', 'nickname']);
 
-function sanitizePublicTradeRecord(trade: any) {
-  if (!trade || typeof trade !== 'object') return trade;
-  const safeTrade = { ...trade };
-  delete safeTrade.buyer_id;
-  delete safeTrade.seller_id;
-  delete safeTrade.buy_order_id;
-  delete safeTrade.sell_order_id;
-  return safeTrade;
+function findProfileByAuthId(userId: string | null): ProfileRecord | undefined {
+  if (!userId) return undefined;
+  return memoryDb.resolveProfileByUserId(userId);
 }
 
-function authorizeNewsRecord(record: any, hasRumorAccess: boolean) {
-  const safe = sanitizePublicNewsRecord(record);
-  if (!safe || typeof safe !== 'object') return safe;
-  const cat = (safe as any).category || (safe as any).news_type || (safe as any).eventType;
-  const isRumor = cat === 'RUMOR';
-  if (isRumor && !hasRumorAccess) {
-    const masked = '[프리미엄 구독 필요] 언론사 구독 후 전체 찌라시 본문을 열람할 수 있습니다.';
-    return {
-      ...safe,
-      content: masked,
-      summary: (safe as any).summary ? masked : (safe as any).summary,
-      body: (safe as any).body ? masked : (safe as any).body,
-      locked: true,
-    };
+function hasDisallowedQueryColumns(query: any, allowedCols: Set<string>): boolean {
+  if (query?.filters !== undefined) {
+    if (!Array.isArray(query.filters)) return true;
+    if (query.filters.some((f: any) => typeof f?.col !== 'string' || !allowedCols.has(f.col))) {
+      return true;
+    }
   }
-  return {
-    ...safe,
-    locked: false,
+  if (query?.orderCol !== undefined && query?.orderCol !== null && query?.orderCol !== '') {
+    if (typeof query.orderCol !== 'string' || !allowedCols.has(query.orderCol)) {
+      return true;
+    }
+  }
+  if (query?.orderSpecs !== undefined) {
+    if (!Array.isArray(query.orderSpecs)) return true;
+    if (query.orderSpecs.some((s: any) => typeof s?.col !== 'string' || !allowedCols.has(s.col))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function sanitizePublicTradeRecord(trade: any) {
+  if (!trade || typeof trade !== 'object') return trade;
+  const safeTrade: Record<string, any> = {
+    id: trade.id,
+    stock_id: trade.stock_id,
+    price: trade.price,
+    size: trade.size,
+    buyer_is_bot: trade.buyer_is_bot,
+    seller_is_bot: trade.seller_is_bot,
+    created_at: trade.created_at,
   };
+  if (trade.sequence !== undefined) {
+    safeTrade.sequence = trade.sequence;
+  }
+  return safeTrade;
 }
 
 // 외부 클라이언트가 직접 호출할 수 없는 내부 정산/유지보수 RPC 목록
@@ -222,18 +274,11 @@ export async function POST(request: Request) {
         );
       }
 
-      // 모든 종목의 락을 획득하여 진행 중인 모든 거래가 완료된 후 안전하게 리셋
-      const allStockIds = Array.from(memoryDb.stocks.keys());
       const engine = getLocalStandaloneEngine();
-      if (engine) {
-        await engine.resetSimulation();
-      } else {
-        await withAllStockLocks(allStockIds, async () => {
-          memoryDb.resetToSeedData();
-        });
-      }
+      const saved = engine
+        ? await engine.resetSimulation(persistConfirmedState)
+        : await resetStandaloneMarketAtomically(persistConfirmedState);
 
-      const saved = await persistConfirmedState();
       if (!saved) {
         return NextResponse.json(
           { data: null, error: { message: '초기화 스냅샷 저장에 실패했습니다.' } },
@@ -261,19 +306,39 @@ export async function POST(request: Request) {
           );
         }
 
+        if (tableName === 'trades' && hasDisallowedQueryColumns(query, PUBLIC_TRADE_COLUMNS)) {
+          return NextResponse.json(
+            { data: null, error: { message: '공개 체결 조회에서는 허용된 공개 컬럼(id, stock_id, price, size, buyer_is_bot, seller_is_bot, created_at, sequence) 외의 필터/정렬을 사용할 수 없습니다.' } },
+            { status: 403 }
+          );
+        }
+
+        let hasRumorAccess = false;
+        if (NEWS_TABLES.has(tableName)) {
+          const viewerProfile = findProfileByAuthId(authenticatedUserId);
+          hasRumorAccess = canReadRumor(viewerProfile);
+          const allowedNewsColumns = hasRumorAccess
+            ? SUBSCRIBER_NEWS_COLUMNS
+            : PUBLIC_NEWS_COLUMNS;
+          if (hasDisallowedQueryColumns(query, allowedNewsColumns)) {
+            return NextResponse.json(
+              {
+                data: null,
+                error: {
+                  message: hasRumorAccess
+                    ? '뉴스 조회에서는 내부 진실 필드 등 허용되지 않은 컬럼으로 필터/정렬할 수 없습니다.'
+                    : '공개 뉴스 조회에서는 허용된 공개 컬럼 외의 필터/정렬(is_fake, 본문 등)을 사용할 수 없습니다.',
+                },
+              },
+              { status: 403 }
+            );
+          }
+        }
+
         const qb = createMemoryDbClient().from(tableName);
         applyQueryOptions(qb, query);
         const result = await qb.execute();
         if (NEWS_TABLES.has(tableName) && result.data) {
-          const viewerProfile = authenticatedUserId ? memoryDb.profiles.get(authenticatedUserId) : undefined;
-          const cleanedEntitlements = viewerProfile
-            ? pruneExpiredProfileEntitlements({ ...viewerProfile })
-            : undefined;
-          const hasRumorAccess = Boolean(
-            viewerProfile?.is_admin ||
-              (cleanedEntitlements?.news_subscriptions &&
-                Object.keys(cleanedEntitlements.news_subscriptions).length > 0)
-          );
           return NextResponse.json({
             ...result,
             data: Array.isArray(result.data)
@@ -289,6 +354,52 @@ export async function POST(request: Request) {
               : sanitizePublicTradeRecord(result.data),
           });
         }
+        return NextResponse.json(result);
+      }
+
+      // ── [A-1] 공개 기관 명칭 디렉터리 (bots_config: 최소 안전 프로젝션 { id, name } 전용) ──
+      if (tableName === 'bots_config') {
+        if (qAction !== 'select') {
+          return NextResponse.json(
+            { data: null, error: { message: 'bots_config는 수정할 수 없습니다.' } },
+            { status: 403 }
+          );
+        }
+        const ALLOWED_BOT_DIR_COLS = new Set(['id', 'name']);
+        if (hasDisallowedQueryColumns(query, ALLOWED_BOT_DIR_COLS)) {
+          return NextResponse.json(
+            { data: null, error: { message: '공개 기관 디렉터리에서는 id, name 이외의 필터/정렬을 사용할 수 없습니다.' } },
+            { status: 403 }
+          );
+        }
+        const qb = createMemoryDbClient().from('bots_config');
+        applyQueryOptions(qb, query);
+        const result = await qb.execute();
+        const projectBotPublic = (row: any) => (row && typeof row === 'object' ? { id: row.id, name: row.name } : row);
+        return NextResponse.json({
+          ...result,
+          data: Array.isArray(result.data) ? result.data.map(projectBotPublic) : projectBotPublic(result.data),
+        });
+      }
+
+      // ── [A-1b] 관리자 전용 내부 설정/시나리오 테이블 ──
+      if (ADMIN_ONLY_READ_TABLES.has(tableName)) {
+        const auth = await verifyAdminSession(request);
+        if (!auth.isAdmin) {
+          return NextResponse.json(
+            { data: null, error: { message: `내부 테이블(${tableName}) 조회는 관리자 권한이 필요합니다.` } },
+            { status: 403 }
+          );
+        }
+        if (qAction !== 'select') {
+          return NextResponse.json(
+            { data: null, error: { message: `${tableName}은 직접 수정할 수 없습니다.` } },
+            { status: 403 }
+          );
+        }
+        const qb = createMemoryDbClient().from(tableName);
+        applyQueryOptions(qb, query);
+        const result = await qb.execute();
         return NextResponse.json(result);
       }
 
@@ -352,30 +463,45 @@ export async function POST(request: Request) {
       if (tableName === 'profiles') {
         if (qAction === 'select') {
           // 조회: 특정 유저 ID 필터 확인
-          const eqId = query?.filters?.find((f: any) => (f.col === 'id' || f.col === 'user_id') && f.op === 'eq')?.val;
-          const targetId = eqId ? String(eqId) : authenticatedUserId;
+          const eqFilter = query?.filters?.find((f: any) => (f.col === 'id' || f.col === 'user_id') && f.op === 'eq');
+          const targetId = eqFilter?.val ? String(eqFilter.val) : authenticatedUserId;
 
           if (!targetId) {
             return NextResponse.json({ data: null, error: { message: '인증이 필요합니다.' } }, { status: 401 });
           }
 
-          const profile = memoryDb.profiles.get(targetId);
+          let profile: ProfileRecord | undefined;
+          if (eqFilter?.col === 'user_id') {
+            profile = memoryDb.resolveProfileByUserId(targetId);
+          } else if (targetId === authenticatedUserId) {
+            profile = memoryDb.resolveProfileByUserId(targetId) ?? memoryDb.profiles.get(targetId);
+          } else {
+            profile = memoryDb.profiles.get(targetId) ?? memoryDb.resolveProfileByUserId(targetId);
+          }
           if (!profile) {
             return NextResponse.json({ data: null, error: null });
           }
 
           // 본인이 아닌 경우 민감 자산 정보(cash 등) 보호 및 SELECT 경로 무잠금 상태 변이 금지(복제본 기준 만료 정리)
-          const isOwner = authenticatedUserId && targetId === authenticatedUserId;
-          const safeData = isOwner
-            ? pruneExpiredProfileEntitlements({ ...profile })
-            : {
-                id: profile.id,
-                user_id: profile.user_id,
-                username: profile.username,
-                nickname: profile.nickname,
-                rank_tier: profile.rank_tier,
-                created_at: profile.created_at,
-              };
+          const isOwner = Boolean(
+            authenticatedUserId &&
+              (profile.user_id === authenticatedUserId || (!profile.user_id && profile.id === authenticatedUserId))
+          );
+          let safeData: Record<string, any>;
+          if (isOwner) {
+            const ownerProfileCopy = { ...profile };
+            pruneExpiredProfileEntitlements(ownerProfileCopy);
+            safeData = ownerProfileCopy;
+          } else {
+            safeData = {
+              id: profile.id,
+              user_id: profile.user_id,
+              username: profile.username,
+              nickname: profile.nickname,
+              rank_tier: profile.rank_tier,
+              created_at: profile.created_at,
+            };
+          }
 
           return NextResponse.json({
             data: query?.isSingle || query?.isMaybeSingle ? safeData : [safeData],
@@ -425,18 +551,18 @@ export async function POST(request: Request) {
             sanitizedUpdate[key] = val.trim();
           }
 
-          return await withAccountLocks([authenticatedUserId], async () => {
+          return await withAccountLocks([memoryDb.resolveAccountLockKey(authenticatedUserId)], async () => {
             return await runWithCommitGate(persistConfirmedState, async () => {
-              const existing = memoryDb.profiles.get(authenticatedUserId);
+              const existing = memoryDb.resolveProfileByUserId(authenticatedUserId);
               if (!existing) {
                 return NextResponse.json({ data: null, error: { message: '프로필을 찾을 수 없습니다.' } }, { status: 404 });
               }
 
               const updated = { ...existing, ...sanitizedUpdate };
-              memoryDb.profiles.set(authenticatedUserId, updated);
+              memoryDb.profiles.set(existing.id, updated);
               const saved = await persistConfirmedState();
               if (!saved) {
-                memoryDb.profiles.set(authenticatedUserId, existing);
+                memoryDb.profiles.set(existing.id, existing);
                 return NextResponse.json(
                   { data: null, error: { message: '프로필 저장에 실패했습니다.' } },
                   { status: 500 }

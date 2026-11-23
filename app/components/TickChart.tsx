@@ -19,6 +19,7 @@ import {
   calculateRSI,
 } from '@/lib/indicators';
 import { useTheme } from './ThemeProvider';
+import { getStockTickSize, isUsdTickChartAsset } from '@/lib/chart/tickSize';
 
 type TimeUnit = '10m' | '1h' | '1d' | '1M';
 
@@ -84,27 +85,18 @@ const DEFAULT_SETTINGS: IndicatorSettings = {
   bbStdDev: 2,
 };
 
-function getStockTickSize(price: number, ticker: string): number {
-  if (price <= 0) return 1;
-  const isUS = price < 1000 && !ticker.match(/^\d{6}$/);
-  if (isUS) return 0.01;
-  if (price < 2000) return 1;
-  if (price < 5000) return 5;
-  if (price < 20000) return 10;
-  if (price < 50000) return 50;
-  if (price < 200000) return 100;
-  if (price < 500000) return 500;
-  return 1000;
-}
-
 const STORAGE_KEY = 'stock_sys_indicator_settings';
 
 export default function TickChart({
   ticker,
   currentPrice,
+  market,
+  currency,
 }: {
   ticker: string;
   currentPrice: number;
+  market?: string;
+  currency?: string;
 }) {
   const mainChartContainerRef = useRef<HTMLDivElement>(null);
   const rsiChartContainerRef = useRef<HTMLDivElement>(null);
@@ -131,6 +123,11 @@ export default function TickChart({
   const candleMapRef = useRef<Map<number, CandleData>>(new Map());
   const isDisposedRef = useRef(false);
   const [stockId, setStockId] = useState<string | null>(null);
+  const [assetMeta, setAssetMeta] = useState<{ market?: string; currency?: string; theme_ids?: string[] }>({
+    market,
+    currency,
+  });
+  const assetMetaRef = useRef(assetMeta);
 
   // 타임프레임 상태
   const [timeUnit, setTimeUnit] = useState<TimeUnit>('10m');
@@ -196,18 +193,30 @@ export default function TickChart({
     rsiChartRef.current?.applyOptions(themeOpts);
   }, [resolvedTheme]);
 
-  // 3. 종목 ID 조회
+  // 3. 종목 ID 및 통화/시장 메타데이터 조회
   useEffect(() => {
+    const initialMeta = { market, currency };
+    assetMetaRef.current = initialMeta;
+    setAssetMeta(initialMeta);
     const client = createClient();
     client
       .from('stocks')
-      .select('id')
+      .select('id, market, currency, theme_ids')
       .eq('ticker', ticker)
       .maybeSingle()
-      .then(({ data }: { data: { id: string } | null }) => {
-        if (data?.id && !isDisposedRef.current) setStockId(data.id);
+      .then(({ data }: { data: { id: string; market?: string; currency?: string; theme_ids?: string[] } | null }) => {
+        if (data && !isDisposedRef.current) {
+          if (data.id) setStockId(data.id);
+          const resolvedMeta = {
+            market: data.market ?? market,
+            currency: data.currency ?? currency,
+            theme_ids: data.theme_ids,
+          };
+          assetMetaRef.current = resolvedMeta;
+          setAssetMeta(resolvedMeta);
+        }
       });
-  }, [ticker]);
+  }, [ticker, market, currency]);
 
   // 4. 메인 차트 및 보조지표 라인 시리즈 초기화
   useEffect(() => {
@@ -216,8 +225,8 @@ export default function TickChart({
 
     isDisposedRef.current = false;
 
-    const tickSize = getStockTickSize(currentPrice, ticker);
-    const isUS = tickSize === 0.01;
+    const tickSize = getStockTickSize(currentPrice, ticker, assetMeta);
+    const isUS = isUsdTickChartAsset(ticker, assetMeta);
     const isDarkInit = resolvedTheme !== 'light';
 
     const chart = createChart(el, {
@@ -354,6 +363,25 @@ export default function TickChart({
       }
     };
   }, []);
+
+  useEffect(() => {
+    assetMetaRef.current = assetMeta;
+    const tickSize = getStockTickSize(currentPrice, ticker, assetMeta);
+    const isUS = isUsdTickChartAsset(ticker, assetMeta);
+    const priceFormat = { type: 'price' as const, precision: isUS ? 2 : 0, minMove: tickSize };
+    for (const s of [
+      candleSeriesRef.current,
+      ma5SeriesRef.current,
+      ma20SeriesRef.current,
+      ma60SeriesRef.current,
+      ma120SeriesRef.current,
+      bbUpperSeriesRef.current,
+      bbMiddleSeriesRef.current,
+      bbLowerSeriesRef.current,
+    ]) {
+      s?.applyOptions({ priceFormat });
+    }
+  }, [ticker, currentPrice, assetMeta]);
 
   // 5. RSI 서브 차트 패널 초기화 (settings.showRSI 활성화 시)
   useEffect(() => {
@@ -524,7 +552,7 @@ export default function TickChart({
             }
           } else {
             // 합성 캔들: 랜덤 워크 누적 방식, 최소 ±1.5% 진폭 보장
-            const tick = getStockTickSize(currentPrice, ticker);
+            const tick = getStockTickSize(currentPrice, ticker, assetMetaRef.current);
             const alignP = (v: number) => (tick < 1 ? Number(v.toFixed(2)) : Math.round(v / tick) * tick);
 
             const candles: CandleData[] = [];
@@ -600,7 +628,7 @@ export default function TickChart({
           if (isDisposedRef.current || !candleSeriesRef.current) return;
           try {
             const t = payload.new as { price: number; created_at: string };
-            const tick = getStockTickSize(t.price, ticker);
+            const tick = getStockTickSize(t.price, ticker, assetMetaRef.current);
             const rawP = Number(t.price);
             const alignedPrice = tick < 1 ? Number(rawP.toFixed(2)) : Math.round(rawP / tick) * tick;
 
@@ -637,7 +665,7 @@ export default function TickChart({
     try {
       const currentIntervalMs = INTERVAL_MS[timeUnit];
       const nowTs = Math.floor(floorToInterval(Date.now(), currentIntervalMs) / 1000);
-      const tick = getStockTickSize(currentPrice, ticker);
+      const tick = getStockTickSize(currentPrice, ticker, assetMetaRef.current);
       const alignedPrice = tick < 1 ? Number(currentPrice.toFixed(2)) : Math.round(currentPrice / tick) * tick;
       const map = candleMapRef.current;
 

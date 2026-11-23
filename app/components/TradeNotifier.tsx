@@ -4,8 +4,16 @@ import { useEffect, useRef } from 'react';
 import { createClient } from '@/lib/db/client';
 import { useAuth } from '@/lib/auth/useAuth';
 import { useToast } from './ToastProvider';
-import { isUsdQuotedAsset } from '@/lib/engine/currency';
+import { getBondQuoteMultiplierToKrw, isUsdQuotedAsset } from '@/lib/engine/currency';
 import { fmtPrice } from '@/lib/format';
+
+type AssetDisplayInfo = {
+  name: string;
+  ticker: string;
+  market: string;
+  unitLabel: string;
+  notionalMultiplier: number;
+};
 
 export default function TradeNotifier() {
   const { userId, isLoggedIn } = useAuth();
@@ -13,26 +21,87 @@ export default function TradeNotifier() {
   const processedTradesRef = useRef<Set<string>>(new Set());
   const lastCheckTimeRef = useRef<string>('');
   const isInitialMountRef = useRef<boolean>(true);
+  const lastUserIdRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!isLoggedIn || !userId) return;
+    if (!isLoggedIn || !userId) {
+      processedTradesRef.current.clear();
+      lastCheckTimeRef.current = '';
+      isInitialMountRef.current = true;
+      lastUserIdRef.current = null;
+      return;
+    }
 
-    if (!lastCheckTimeRef.current) {
+    if (lastUserIdRef.current !== userId) {
+      processedTradesRef.current.clear();
+      lastCheckTimeRef.current = new Date(Date.now() - 5000).toISOString();
+      isInitialMountRef.current = true;
+      lastUserIdRef.current = userId;
+    } else if (!lastCheckTimeRef.current) {
       lastCheckTimeRef.current = new Date(Date.now() - 5000).toISOString();
     }
 
     const db = createClient();
     let isSubscribed = true;
 
-    // 종목 캐시 맵
-    const stockCache = new Map<string, { name: string; ticker: string; market: string }>();
+    // 종목/옵션/채권 캐시 맵
+    const assetCache = new Map<string, AssetDisplayInfo>();
 
-    const getStockInfo = async (stockId: string) => {
-      if (stockCache.has(stockId)) return stockCache.get(stockId)!;
-      const { data } = await db.from('stocks').select('name, ticker, market').eq('id', stockId).single();
-      const info = data || { name: '주식', ticker: 'STK', market: 'domestic' };
-      stockCache.set(stockId, info);
-      return info;
+    const getAssetInfo = async (assetId: string): Promise<AssetDisplayInfo> => {
+      if (assetCache.has(assetId)) return assetCache.get(assetId)!;
+
+      const { data: stockData } = await db
+        .from('stocks')
+        .select('name, ticker, market')
+        .eq('id', assetId)
+        .maybeSingle();
+      if (stockData) {
+        const info: AssetDisplayInfo = {
+          name: stockData.name,
+          ticker: stockData.ticker,
+          market: stockData.market,
+          unitLabel: '주',
+          notionalMultiplier: 1,
+        };
+        assetCache.set(assetId, info);
+        return info;
+      }
+
+      const { data: optionData } = await db
+        .from('options_contracts')
+        .select('ticker, multiplier')
+        .eq('id', assetId)
+        .maybeSingle();
+      if (optionData) {
+        const info: AssetDisplayInfo = {
+          name: optionData.ticker || '옵션 계약',
+          ticker: optionData.ticker || 'OPT',
+          market: 'options',
+          unitLabel: '계약',
+          notionalMultiplier: Number(optionData.multiplier || 250000),
+        };
+        assetCache.set(assetId, info);
+        return info;
+      }
+
+      const { data: bondData } = await db
+        .from('bonds')
+        .select('name, ticker, face_value, quote_base, current_price')
+        .eq('id', assetId)
+        .maybeSingle();
+      if (bondData) {
+        const info: AssetDisplayInfo = {
+          name: bondData.name || bondData.ticker || '채권',
+          ticker: bondData.ticker || 'BOND',
+          market: 'bonds',
+          unitLabel: '좌',
+          notionalMultiplier: getBondQuoteMultiplierToKrw(bondData),
+        };
+        assetCache.set(assetId, info);
+        return info;
+      }
+
+      return { name: '자산', ticker: 'ASSET', market: 'domestic', unitLabel: '주', notionalMultiplier: 1 };
     };
 
     const pollNewTrades = async () => {
@@ -55,26 +124,26 @@ export default function TradeNotifier() {
             // 초기 마운트 시의 과거 데이터는 알림을 띄우지 않고 ID만 등록
             if (!isInitialMountRef.current) {
               const isBuyer = Boolean(t.is_buyer);
-              const stock = await getStockInfo(t.stock_id);
+              const asset = await getAssetInfo(t.stock_id);
               const p = Number(t.price);
               const s = Number(t.size);
-              const totalVal = p * s;
+              const totalVal = p * s * asset.notionalMultiplier;
 
-              const isUsd = isUsdQuotedAsset(stock);
-              const priceFmt = fmtPrice(p, stock.market, stock.ticker);
+              const isUsd = isUsdQuotedAsset(asset);
+              const priceFmt = fmtPrice(p, asset.market as any, asset.ticker);
               const totalFmt = isUsd ? `$${totalVal.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : `₩${Math.round(totalVal).toLocaleString()}`;
 
               if (isBuyer) {
                 showToast({
                   type: 'buy',
-                  title: `${stock.name} ${s.toLocaleString()}주 매수 체결`,
+                  title: `${asset.name} ${s.toLocaleString()}${asset.unitLabel} 매수 체결`,
                   description: `체결가: ${priceFmt} · 총 ${totalFmt}`,
                   duration: 5000,
                 });
               } else {
                 showToast({
                   type: 'sell',
-                  title: `${stock.name} ${s.toLocaleString()}주 매도 체결`,
+                  title: `${asset.name} ${s.toLocaleString()}${asset.unitLabel} 매도 체결`,
                   description: `체결가: ${priceFmt} · 총 ${totalFmt}`,
                   duration: 5000,
                 });

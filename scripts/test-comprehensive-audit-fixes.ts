@@ -1,7 +1,7 @@
 import { memoryDb, StockRecord, ProfileRecord, HoldingRecord, OrderRecord } from '../lib/memoryDb/memoryStore';
 import { createMemoryDbClient } from '../lib/memoryDb/memoryDbClient';
 import { LocalMarketService } from '../lib/engine/marketService';
-import { ensureLocalStandaloneEngine, stopLocalStandaloneEngine, getLocalStandaloneEngine, __setStandaloneFailureHook } from '../lib/engine/localStandaloneServer';
+import { ensureLocalStandaloneReady, stopLocalStandaloneEngine, getLocalStandaloneEngine, __setStandaloneFailureHook } from '../lib/engine/localStandaloneServer';
 import { __setTestFailureHook } from '../lib/engine/dbMatching';
 import { POST as ordersPostHandler, DELETE as ordersDeleteHandler } from '../app/api/orders/route';
 import { POST as localDbPostHandler } from '../app/api/local-db/route';
@@ -19,7 +19,7 @@ async function runComprehensiveTests() {
   console.log('🚀 STOCKSYS COMPREHENSIVE AUDIT & REGRESSION TESTS');
   console.log('==================================================\n');
 
-  ensureLocalStandaloneEngine();
+  await ensureLocalStandaloneReady();
   const engine = getLocalStandaloneEngine()!;
 
   try {

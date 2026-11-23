@@ -21,6 +21,7 @@ export class ScenarioManager {
   private readonly clock: { now(): number };
   private readonly seed: number;
   private idCounter: number = 0;
+  private lastDbResetVersion: number = -1;
 
   constructor(options?: ScenarioManagerOptions) {
     this.clock = options?.clock ?? { now: () => 1774000000000 };
@@ -254,11 +255,12 @@ export class ScenarioManager {
   /**
    * 매 틱 시나리오 수명주기 및 단계 전이 실행
    */
-  public stepTick(): void {
+  public stepTick(assetTypeFilter?: AssetType): void {
     this.currentTick += 1;
 
     // 1. 작전 시나리오 상태 갱신
     this.activeScenarios.forEach((scenario, id) => {
+      if (assetTypeFilter && scenario.assetType !== assetTypeFilter) return;
       scenario.remainingTicks -= 1;
 
       if (scenario.remainingTicks <= 0) {
@@ -284,12 +286,14 @@ export class ScenarioManager {
     });
 
     // 2. 거시경제 쇼크 틱 감쇄
-    this.activeMacroShocks.forEach((shock, id) => {
-      shock.remainingTicks -= 1;
-      if (shock.remainingTicks <= 0) {
-        this.activeMacroShocks.delete(id);
-      }
-    });
+    if (!assetTypeFilter || assetTypeFilter === 'commodity') {
+      this.activeMacroShocks.forEach((shock, id) => {
+        shock.remainingTicks -= 1;
+        if (shock.remainingTicks <= 0) {
+          this.activeMacroShocks.delete(id);
+        }
+      });
+    }
   }
 
   /**
@@ -371,12 +375,16 @@ export class ScenarioManager {
     idCounter: number;
     activeScenarios: Array<[string, ManipulationScenario]>;
     activeMacroShocks: Array<[string, MacroShockEvent]>;
+    actionLogs?: AdminActionLog[];
+    lastDbResetVersion?: number;
   } {
     return {
       currentTick: this.currentTick,
       idCounter: this.idCounter,
       activeScenarios: Array.from(this.activeScenarios.entries()).map(([k, v]) => [k, { ...v }]),
       activeMacroShocks: Array.from(this.activeMacroShocks.entries()).map(([k, v]) => [k, { ...v }]),
+      actionLogs: this.actionLogs.map((l) => ({ ...l, details: { ...l.details } })),
+      lastDbResetVersion: this.lastDbResetVersion,
     };
   }
 
@@ -385,6 +393,62 @@ export class ScenarioManager {
     this.idCounter = snap.idCounter;
     this.activeScenarios = new Map(snap.activeScenarios.map(([k, v]) => [k, { ...v }]));
     this.activeMacroShocks = new Map(snap.activeMacroShocks.map(([k, v]) => [k, { ...v }]));
+    if (Array.isArray(snap.actionLogs)) {
+      this.actionLogs = snap.actionLogs.map((l) => ({ ...l, details: { ...l.details } }));
+    }
+    if (typeof snap.lastDbResetVersion === 'number' && Number.isFinite(snap.lastDbResetVersion)) {
+      this.lastDbResetVersion = snap.lastDbResetVersion;
+    }
+  }
+
+  public resetEmpty(clearLogs: boolean = false): void {
+    this.currentTick = 0;
+    this.idCounter = 0;
+    this.activeScenarios.clear();
+    this.activeMacroShocks.clear();
+    if (clearLogs) {
+      this.actionLogs = [];
+    }
+  }
+
+  public getLastDbResetVersion(): number {
+    return this.lastDbResetVersion;
+  }
+
+  public setLastDbResetVersion(version: number): void {
+    this.lastDbResetVersion = version;
+  }
+}
+
+export interface ScenarioDbLike {
+  scenarioRuntimeState: any;
+  scenarioResetVersion?: number;
+}
+
+/**
+ * MemoryDatabase.scenarioRuntimeState를 권위 있는 단일 소스로 삼아 ScenarioManager를 동기화한다.
+ * - scenarioRuntimeState가 존재하면 항상 해당 스냅샷으로 복원한다(주식/원자재 교차 진행 및 완료 상태 보존).
+ * - DB가 resetToSeedData()/importSnapshot()으로 초기화된 경우(scenarioResetVersion 변경 또는 clearOnDbNull)
+ *   stale 시나리오가 남지 않도록 매니저를 빈 상태로 초기화한다.
+ */
+export function syncScenarioManagerFromDatabase(
+  db: ScenarioDbLike,
+  manager: ScenarioManager,
+  options?: { clearOnDbNull?: boolean }
+): void {
+  const dbResetVer = db.scenarioResetVersion ?? 0;
+  if (db.scenarioRuntimeState && typeof db.scenarioRuntimeState === 'object') {
+    manager.restoreState(db.scenarioRuntimeState);
+    manager.setLastDbResetVersion(dbResetVer);
+    return;
+  }
+
+  const prevVer = manager.getLastDbResetVersion();
+  if (options?.clearOnDbNull || (prevVer !== -1 && prevVer !== dbResetVer)) {
+    manager.resetEmpty(prevVer !== -1 && prevVer !== dbResetVer);
+    manager.setLastDbResetVersion(dbResetVer);
+  } else if (prevVer === -1) {
+    manager.setLastDbResetVersion(dbResetVer);
   }
 }
 

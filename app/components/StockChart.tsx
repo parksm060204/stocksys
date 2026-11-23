@@ -234,10 +234,10 @@ export default function StockChart({ stock }: { stock: Stock }) {
         {/* OHLCV 인포 */}
         <div className="flex flex-wrap items-center gap-3 font-mono text-[11.5px] text-[#8E939D] font-medium">
           <span className="text-[#565A63]"><span className="text-white font-bold">{activeCandle.time}</span></span>
-          <span>시작: <span className={`font-bold ${activeCandle.open >= stock.previousClose ? "text-up" : "text-down"}`}>{fmtPrice(activeCandle.open, stock.market)}</span></span>
-          <span>최고: <span className="text-up font-bold">{fmtPrice(activeCandle.high, stock.market)}</span></span>
-          <span>최저: <span className="text-down font-bold">{fmtPrice(activeCandle.low, stock.market)}</span></span>
-          <span>마지막: <span className={`font-bold ${activeCandle.close >= stock.previousClose ? "text-up" : "text-down"}`}>{fmtPrice(activeCandle.close, stock.market)}</span></span>
+          <span>시작: <span className={`font-bold ${activeCandle.open >= stock.previousClose ? "text-up" : "text-down"}`}>{fmtPrice(activeCandle.open, stock.market, stock.ticker)}</span></span>
+          <span>최고: <span className="text-up font-bold">{fmtPrice(activeCandle.high, stock.market, stock.ticker)}</span></span>
+          <span>최저: <span className="text-down font-bold">{fmtPrice(activeCandle.low, stock.market, stock.ticker)}</span></span>
+          <span>마지막: <span className={`font-bold ${activeCandle.close >= stock.previousClose ? "text-up" : "text-down"}`}>{fmtPrice(activeCandle.close, stock.market, stock.ticker)}</span></span>
           <span className="text-[10px] text-emerald-400 font-bold bg-emerald-400/10 px-2 py-0.5 rounded border border-emerald-400/20 ml-1">
             LIVE ({realTrades.length}건)
           </span>

@@ -1,4 +1,5 @@
 import { BaseAgent } from "./BaseAgent";
+import type { SimulationContext } from "../../../lib/engine/simulation/runtime";
 
 export class ASMarketMakerAgent extends BaseAgent {
   private inventory: Record<string, number> = {};
@@ -8,8 +9,8 @@ export class ASMarketMakerAgent extends BaseAgent {
   private readonly k: number = 1.5; // 호가창 유동성 파라미터 (Order book liquidity)
   private readonly sigma2: number = 100; // 분산 (추정치)
 
-  constructor() {
-    super('bot_as_mm_001', 100000000000); // 1000억
+  constructor(context?: SimulationContext) {
+    super('bot_as_mm_001', 100000000000, context); // 1000억
   }
 
   public executeMarketMaking(currentMarket: any, orderBook?: any) {

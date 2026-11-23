@@ -21,13 +21,20 @@ export class InMemoryMarketRepository implements MarketRepository {
     return this.db;
   }
 
+  public isTradingHalted(): boolean {
+    return this.db.isTradingHalted();
+  }
+
   public async getMarketSnapshot(): Promise<MarketSnapshot> {
+    const setting = this.db.adminSettings.get('1') ?? Array.from(this.db.adminSettings.values())[0];
     return {
       stocks: Array.from(this.db.stocks.values()),
       bonds: Array.from(this.db.bonds.values()),
       commodities: Array.from(this.db.commodities.values()),
       exchangeRates: [...this.db.exchangeRates],
       indices: [],
+      options_contracts: Array.from(this.db.optionsContracts.values()),
+      adminSettings: setting ? { ...setting } : undefined,
     };
   }
 

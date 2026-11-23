@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { createClient } from "@/lib/db/client";
 import { useAuth } from "@/lib/auth/useAuth";
 import ScenarioController from "./ScenarioController";
@@ -27,9 +27,9 @@ export default function AdminPage() {
   const [eventTitle, setEventTitle] = useState<string>("");
   const [eventRawText, setEventRawText] = useState<string>("");
 
-  // Emergency Market Control State
+  // Emergency Market Control State (Authoritative server-backed)
   const [tradingHalt, setTradingHalt] = useState<boolean>(false);
-  const [lpInfiniteLiquidity, setLpInfiniteLiquidity] = useState<boolean>(true);
+  const [haltUpdating, setHaltUpdating] = useState<boolean>(false);
 
   // New Stock Listing Form State
   const [newTicker, setNewTicker] = useState<string>("");
@@ -40,41 +40,82 @@ export default function AdminPage() {
 
   const db = createClient();
   const { userId, isLoggedIn } = useAuth();
+  const authReqSeqRef = useRef(0);
 
   const fetchAdminStatus = useCallback(async () => {
+    const reqSeq = ++authReqSeqRef.current;
     if (isLoggedIn && userId) {
       const { data: profile } = await db
         .from("profiles")
         .select("is_admin, unlocked_features")
         .eq("id", userId)
-        .single();
+        .maybeSingle();
 
+      if (reqSeq !== authReqSeqRef.current) return;
       if (profile) {
         setIsAdmin(Boolean(profile.is_admin));
         setUnlockedFeatures((profile.unlocked_features as string[]) || []);
       } else {
         setIsAdmin(false);
+        setUnlockedFeatures([]);
       }
     } else {
       setIsAdmin(false);
+      setUnlockedFeatures([]);
     }
   }, [db, isLoggedIn, userId]);
 
   const fetchStocks = useCallback(async () => {
     const { data } = await db
       .from("stocks")
-      .select("id, ticker, name, market, current_price, target_price")
-      .eq("is_listed", true)
+      .select("id, ticker, name, market, current_price, target_price, is_listed")
+      .neq("is_listed", false)
       .order("ticker");
     if (data) {
-      setStocks(data as StockItem[]);
+      setStocks((data as Array<StockItem & { is_listed?: boolean }>).filter((s) => s.is_listed !== false));
     }
   }, [db]);
+
+  const fetchEmergencyControl = useCallback(async () => {
+    try {
+      const res = await fetch('/api/admin/scenarios');
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data?.success && data?.emergencyControl) {
+        setTradingHalt(Boolean(data.emergencyControl.tradingHalt));
+      }
+    } catch {
+      // ignore non-admin or transient fetch errors
+    }
+  }, []);
 
   useEffect(() => {
     fetchAdminStatus();
     fetchStocks();
-  }, [fetchAdminStatus, fetchStocks]);
+    fetchEmergencyControl();
+  }, [fetchAdminStatus, fetchStocks, fetchEmergencyControl]);
+
+  const handleToggleTradingHalt = async () => {
+    if (haltUpdating) return;
+    setHaltUpdating(true);
+    try {
+      const nextHalt = !tradingHalt;
+      const res = await fetch('/api/admin/scenarios', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'set_trading_halt', tradingHalt: nextHalt }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.message || '거래 동결 상태 변경에 실패했습니다.');
+      }
+      setTradingHalt(Boolean(data.tradingHalt));
+    } catch (e: any) {
+      alert('거래 동결 변경 실패: ' + (e?.message || e));
+    } finally {
+      setHaltUpdating(false);
+    }
+  };
 
   // Trigger AI Event
   const handleAIEventTrigger = async () => {
@@ -345,30 +386,38 @@ export default function AdminPage() {
             <div className="flex items-center justify-between p-4 rounded-xl bg-[#05070A] border border-border">
               <div>
                 <div className="font-bold text-white">거래 전면 중단 (Trading Halt)</div>
-                <div className="text-xs text-[#565A63]">주문 매칭 및 봇 거래를 일시 동결합니다.</div>
+                <div className="text-xs text-[#565A63]">서버 스냅샷에 연동되어 신규 주문·봇 매칭·원자재 틱을 일시 동결합니다.</div>
               </div>
               <button
-                onClick={() => setTradingHalt(!tradingHalt)}
-                className={`px-4 py-2 rounded-xl font-bold text-xs transition-colors cursor-pointer ${
+                onClick={handleToggleTradingHalt}
+                disabled={haltUpdating}
+                className={`px-4 py-2 rounded-xl font-bold text-xs transition-colors cursor-pointer disabled:opacity-50 ${
                   tradingHalt ? "bg-red-600 text-white" : "bg-[#161B22] text-[#8E939D] border border-border"
                 }`}
               >
-                {tradingHalt ? "🔴 동결 해제" : "⚪ 거래 동결"}
+                {haltUpdating ? "처리 중..." : tradingHalt ? "🔴 동결 해제" : "⚪ 거래 동결"}
               </button>
             </div>
 
-            <div className="flex items-center justify-between p-4 rounded-xl bg-[#05070A] border border-border">
+            <div className="flex items-center justify-between p-4 rounded-xl bg-[#05070A] border border-border opacity-75">
               <div>
-                <div className="font-bold text-white">LP 무한 유동성 공급 (Infinite Liquidity)</div>
-                <div className="text-xs text-[#565A63]">호가 공백 발생 시 자동 마켓메이커 개입</div>
+                <div className="font-bold text-white flex items-center gap-2">
+                  <span>LP 무한 유동성 공급 (Infinite Liquidity)</span>
+                  <span className="text-[10px] px-2 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/30">
+                    미지원 (유한 자본 LP 정책)
+                  </span>
+                </div>
+                <div className="text-xs text-[#565A63]">
+                  현재 독립 실행 엔진은 자본 한도가 적용된 유한 LP 호가만 지원하며 무한 유동성 강제 개입은 비활성화되어 있습니다.
+                </div>
               </div>
               <button
-                onClick={() => setLpInfiniteLiquidity(!lpInfiniteLiquidity)}
-                className={`px-4 py-2 rounded-xl font-bold text-xs transition-colors cursor-pointer ${
-                  lpInfiniteLiquidity ? "bg-emerald-600 text-white" : "bg-[#161B22] text-[#8E939D] border border-border"
-                }`}
+                type="button"
+                disabled
+                aria-disabled="true"
+                className="px-4 py-2 rounded-xl font-bold text-xs bg-[#161B22] text-[#565A63] border border-border cursor-not-allowed"
               >
-                {lpInfiniteLiquidity ? "🟢 LP 가동 중" : "⚪ LP 중단됨"}
+                🔒 미지원
               </button>
             </div>
           </div>

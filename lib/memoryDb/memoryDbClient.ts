@@ -11,7 +11,7 @@ import {
   GUEST_USER_ID,
 } from './memoryStore';
 import { MEDIA_OUTLETS } from '../shop/catalog';
-import { getStockFxRateToKrw } from '../engine/currency';
+import { getAssetSettlementPriceMultiplierToKrw } from '../engine/currency';
 import { executeCurrencyExchange } from '../exchange/exchangeService';
 import { applyCashCreditWithMarginDebt } from '../engine/orderRisk';
 
@@ -26,6 +26,7 @@ export class MemoryQueryBuilder {
   private tableName: string;
   private db: MemoryDatabase;
   private filters: FilterOp[] = [];
+  private orFilterGroups: string[] = [];
   private orderSpecs: { col: string; ascending: boolean }[] = [];
   private orderCol?: string;
   private orderAsc: boolean = true;
@@ -105,6 +106,13 @@ export class MemoryQueryBuilder {
     return this;
   }
 
+  public or(expr: string): this {
+    if (typeof expr === 'string' && expr.trim().length > 0) {
+      this.orFilterGroups.push(expr.trim());
+    }
+    return this;
+  }
+
   public order(col: string, options?: { ascending?: boolean }): this {
     const ascending = options?.ascending ?? true;
     this.orderSpecs.push({ col, ascending });
@@ -166,9 +174,12 @@ export class MemoryQueryBuilder {
       } else if (this.tableName === 'trades' && eqStockId) {
         targetList = db.tradeStockIndex.get(String(eqStockId)) || [];
       } else if (this.tableName === 'profiles' && (eqUserId || eqId)) {
-        const uid = String(eqUserId || eqId);
-        const profId = db.profileUserIdIndex.get(uid) || uid;
-        const profile = db.profiles.get(profId);
+        let profile: ProfileRecord | undefined;
+        if (eqUserId) {
+          profile = db.resolveProfileByUserId(String(eqUserId));
+        } else if (eqId) {
+          profile = db.profiles.get(String(eqId)) ?? db.resolveProfileByUserId(String(eqId));
+        }
         targetList = profile ? [profile] : [];
       } else {
         // 인덱스가 없는 경우 기본 전체 테이블 스캔
@@ -407,6 +418,56 @@ export class MemoryQueryBuilder {
     }
   }
 
+  private matchesOrClause(item: any, clause: string): boolean {
+    const firstDot = clause.indexOf('.');
+    if (firstDot <= 0) return false;
+    const col = clause.slice(0, firstDot).trim();
+    const rest = clause.slice(firstDot + 1);
+    const secondDot = rest.indexOf('.');
+    if (secondDot <= 0) return false;
+    const op = rest.slice(0, secondDot).trim().toLowerCase();
+    const rawVal = rest.slice(secondDot + 1);
+    const itemVal = item?.[col];
+
+    switch (op) {
+      case 'eq':
+        return itemVal == rawVal;
+      case 'neq':
+        return itemVal != rawVal;
+      case 'gt':
+        return itemVal > (Number.isFinite(Number(rawVal)) && typeof itemVal === 'number' ? Number(rawVal) : rawVal);
+      case 'gte':
+        return itemVal >= (Number.isFinite(Number(rawVal)) && typeof itemVal === 'number' ? Number(rawVal) : rawVal);
+      case 'lt':
+        return itemVal < (Number.isFinite(Number(rawVal)) && typeof itemVal === 'number' ? Number(rawVal) : rawVal);
+      case 'lte':
+        return itemVal <= (Number.isFinite(Number(rawVal)) && typeof itemVal === 'number' ? Number(rawVal) : rawVal);
+      case 'is':
+        if (rawVal === 'null') return itemVal === null || itemVal === undefined;
+        if (rawVal === 'true') return itemVal === true;
+        if (rawVal === 'false') return itemVal === false;
+        return false;
+      case 'ilike':
+      case 'like': {
+        if (itemVal === null || itemVal === undefined) return false;
+        const escaped = rawVal
+          .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+          .replace(/%/g, '.*')
+          .replace(/_/g, '.');
+        const re = new RegExp(`^${escaped}$`, op === 'ilike' ? 'i' : '');
+        return re.test(String(itemVal));
+      }
+      default:
+        return false;
+    }
+  }
+
+  private matchesOrGroup(item: any, expr: string): boolean {
+    const clauses = expr.split(',').map((c) => c.trim()).filter(Boolean);
+    if (clauses.length === 0) return true;
+    return clauses.some((clause) => this.matchesOrClause(item, clause));
+  }
+
   private applyFilters(list: any[]): any[] {
     return list.filter((item) => {
       for (const f of this.filters) {
@@ -434,6 +495,9 @@ export class MemoryQueryBuilder {
             if (!Array.isArray(f.val) || !f.val.includes(itemVal)) return false;
             break;
         }
+      }
+      for (const expr of this.orFilterGroups) {
+        if (!this.matchesOrGroup(item, expr)) return false;
       }
       return true;
     });
@@ -469,9 +533,10 @@ export class MemoryDbClient {
     if (fnName === 'update_cash_balance') {
       const userId = params?.p_user_id || params?.user_id || GUEST_USER_ID;
       const delta = Number(params?.p_delta || params?.amount || 0);
+      const lockProfileId = db.resolveAccountLockKey(userId);
 
-      const updatedProfile = await db.updateAtomic<ProfileRecord>(`profile:${userId}`, (prev) => {
-        const user = prev || db.profiles.get(userId);
+      const updatedProfile = await db.updateAtomic<ProfileRecord>(`profile:${lockProfileId}`, (prev) => {
+        const user = prev || db.resolveProfileByUserId(userId);
         if (!user) {
           const newUser: ProfileRecord = {
             id: userId,
@@ -504,7 +569,7 @@ export class MemoryDbClient {
           return { data: null, error: { message: `Invalid trade price or size: price=${t.price}, size=${t.size}` } };
         }
         if (!t.buyer_is_bot && t.buyer_id) {
-          const buyer = db.profiles.get(t.buyer_id);
+          const buyer = db.resolveProfileByUserId(t.buyer_id);
           if (!buyer) {
             return { data: null, error: { message: `Buyer profile not found for user ${t.buyer_id}` } };
           }
@@ -513,7 +578,7 @@ export class MemoryDbClient {
         // 프로필 없이 보유 수량만 있는 경우, settlement이 진행되면 holding은 감소하되
         // 매도 수익은 누구에게도 지급되지 않는 자산 소멸이 발생한다. 사전 차단 필수.
         if (!t.seller_is_bot && t.seller_id) {
-          const seller = db.profiles.get(t.seller_id);
+          const seller = db.resolveProfileByUserId(t.seller_id);
           if (!seller) {
             return { data: null, error: { message: `Seller profile not found for user ${t.seller_id}` } };
           }
@@ -530,27 +595,35 @@ export class MemoryDbClient {
       const sellerRequiredQty = new Map();
 
       for (const t of trades) {
-        const stock = db.stocks.get(t.stock_id);
-        const fxRate = stock ? getStockFxRateToKrw(db, stock) : 1;
+        const fxRate = getAssetSettlementPriceMultiplierToKrw(db, t.stock_id);
         const quoteAmount = Number(t.price) * Number(t.size);
         const tradeAmountKrw = fxRate === 1 ? quoteAmount : Math.round(quoteAmount * fxRate);
         const buyerFeeRate = Number(t.buyer_fee ?? 0);
         const buyerFeeKrw = Math.round(tradeAmountKrw * buyerFeeRate);
 
-        if (t.buyer_id && db.profiles.has(t.buyer_id)) {
+        if (t.buyer_id && db.resolveProfileByUserId(t.buyer_id)) {
           const prev = buyerRequiredCash.get(t.buyer_id) ?? 0;
           buyerRequiredCash.set(t.buyer_id, prev + tradeAmountKrw + buyerFeeKrw);
         }
-        if (t.seller_id && db.profiles.has(t.seller_id)) {
+        if (t.seller_id && db.resolveProfileByUserId(t.seller_id)) {
           const key = `${t.seller_id}_${t.stock_id}`;
           const prev = sellerRequiredQty.get(key) ?? 0;
           sellerRequiredQty.set(key, prev + Number(t.size));
         }
       }
 
-      // 매수자 누적 현금 검증 — 부족 시 전체 배치 거절, 상태 변경 없음
+      // 매수자 누적 현금 및 미수 부채 검증 — 부족/부채 상태 시 전체 배치 거절, 상태 변경 없음
       for (const [buyerId, required] of buyerRequiredCash.entries()) {
-        const buyer = db.profiles.get(buyerId);
+        const buyer = db.resolveProfileByUserId(buyerId);
+        const buyerDebt = Math.max(0, Number(buyer?.margin_debt_krw ?? 0));
+        if (buyerDebt > 0) {
+          return {
+            data: null,
+            error: {
+              message: `Buyer ${buyerId} has unpaid margin debt (${buyerDebt}); resting buy settlement blocked`,
+            },
+          };
+        }
         const available = buyer?.cash ?? 0;
         if (available < required) {
           return {
@@ -585,11 +658,12 @@ export class MemoryDbClient {
       const tradeRecords: TradeRecord[] = [];
 
       const getProfile = (userId: string): ProfileRecord | undefined => {
-        if (!profileUpdates.has(userId)) {
-          const profile = db.profiles.get(userId);
-          if (profile) profileUpdates.set(userId, { ...profile });
+        const resolved = db.resolveProfileByUserId(userId);
+        if (!resolved) return undefined;
+        if (!profileUpdates.has(resolved.id)) {
+          profileUpdates.set(resolved.id, { ...resolved });
         }
-        return profileUpdates.get(userId);
+        return profileUpdates.get(resolved.id);
       };
 
       const getHolding = (holdingId: string): HoldingRecord | null => {
@@ -603,8 +677,7 @@ export class MemoryDbClient {
       for (const t of trades) {
         const buyerId = t.buyer_id;
         const sellerId = t.seller_id;
-        const stock = db.stocks.get(t.stock_id);
-        const fxRate = stock ? getStockFxRateToKrw(db, stock) : 1;
+        const fxRate = getAssetSettlementPriceMultiplierToKrw(db, t.stock_id);
         const quoteAmount = Number(t.price) * Number(t.size);
         const tradeAmountKrw = fxRate === 1 ? quoteAmount : Math.round(quoteAmount * fxRate);
         const buyerFee = Number(t.buyer_fee ?? 0);
@@ -612,7 +685,7 @@ export class MemoryDbClient {
         const buyerFeeKrw = Math.round(tradeAmountKrw * buyerFee);
         const sellerFeeKrw = Math.round(tradeAmountKrw * sellerFee);
 
-        if (buyerId && db.profiles.has(buyerId)) {
+        if (buyerId && db.resolveProfileByUserId(buyerId)) {
           const buyer = getProfile(buyerId);
           if (buyer) {
             buyer.cash -= tradeAmountKrw + buyerFeeKrw;
@@ -637,7 +710,7 @@ export class MemoryDbClient {
           }
         }
 
-        if (sellerId && db.profiles.has(sellerId)) {
+        if (sellerId && db.resolveProfileByUserId(sellerId)) {
           const seller = getProfile(sellerId);
           if (seller) {
             const netProceeds = tradeAmountKrw - sellerFeeKrw;

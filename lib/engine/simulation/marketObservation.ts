@@ -134,7 +134,7 @@ export function calculateAuthoritativePortfolioValuation(
     }
   }
 
-  const marginDebt = Math.max(0, Number(memoryDb.profiles.get(accountId)?.margin_debt_krw ?? 0));
+  const marginDebt = Math.max(0, Number(memoryDb.resolveProfileByUserId(accountId)?.margin_debt_krw ?? 0));
   const nav = rawCash + totalHoldingsValue - marginDebt;
   return {
     totalHoldingsValue,
@@ -241,7 +241,7 @@ export function buildMarketObservation(
   const isWarmup = returns.length < 5;
 
   // 3. Single-authority account asset status (derived directly from authoritative orders and profiles)
-  const profile = memoryDb.profiles.get(accountId);
+  const profile = memoryDb.resolveProfileByUserId(accountId);
   const holdingKey = `${accountId}_${stockId}`;
   const holding = memoryDb.holdings.get(holdingKey);
 

@@ -1,5 +1,6 @@
 import type { OptionsMMBot } from "../types";
 import { BaseAgent } from "./BaseAgent";
+import type { SimulationContext } from "../../../lib/engine/simulation/runtime";
 
 export class OptionsMMAgent extends BaseAgent {
   private bot: OptionsMMBot;
@@ -8,8 +9,8 @@ export class OptionsMMAgent extends BaseAgent {
   private gammaGrid: Record<string, { strike: number, stdDev: number }> = {};
   private lastPriceState: Record<string, number> = {};
 
-  constructor(bot: OptionsMMBot) {
-    super(bot.id, bot.capital);
+  constructor(bot: OptionsMMBot, context?: SimulationContext) {
+    super(bot.id, bot.capital, context);
     this.bot = bot;
   }
 

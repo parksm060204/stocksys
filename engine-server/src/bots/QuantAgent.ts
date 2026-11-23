@@ -1,6 +1,7 @@
 import type { QuantBot, MarketEvent } from "../types";
 import { BaseAgent } from "./BaseAgent";
 import { EventBus } from "../EventBus";
+import type { SimulationContext } from "../../../lib/engine/simulation/runtime";
 
 interface PendingNews {
   event: MarketEvent;
@@ -11,8 +12,8 @@ export class QuantAgent extends BaseAgent {
   private bot: QuantBot;
   private pendingNews: PendingNews[] = [];
   
-  constructor(bot: QuantBot) {
-    super(bot.id, bot.capital);
+  constructor(bot: QuantBot, context?: SimulationContext) {
+    super(bot.id, bot.capital, context);
     this.bot = bot;
 
     // EventBus 구독: 뉴스 이벤트가 발생하면 즉시 비동기로 수신

@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import type { Stock, ChatMessage } from "@/lib/types";
 import { fmtPrice, fmtVolume } from "@/lib/format";
+import { isUsdQuotedAsset } from "@/lib/engine/currency";
 import OrderEntry from "@/app/components/OrderEntry";
 import StockChartV2 from "@/app/components/v2/StockChartV2";
 import OrderbookV2 from "@/app/components/v2/OrderbookV2";
@@ -11,6 +12,7 @@ import TradeFeedV2 from "@/app/components/v2/TradeFeedV2";
 import PriceHeroV2 from "@/app/components/v2/PriceHeroV2";
 import RealtimePriceHeader from "@/app/components/RealtimePriceHeader";
 import ActiveOrdersPanel from "@/app/components/ActiveOrdersPanel";
+import BondDetailPanel from "@/app/components/BondDetailPanel";
 
 /* ─────────────────────────────────────────────────────────
    Types
@@ -87,9 +89,9 @@ function DefaultLayout(
 
       {/* OHLCV 요약 바 — tabular-nums font-mono 강화 */}
       <div className="grid grid-cols-4 gap-px bg-panel rounded-xl overflow-hidden">
-        <MetaCell label="시가" value={fmtPrice(stock.openPrice, stock.market)} />
-        <MetaCell label="고가" value={fmtPrice(stock.high, stock.market)} tone="up" />
-        <MetaCell label="저가" value={fmtPrice(stock.low, stock.market)} tone="down" />
+        <MetaCell label="시가" value={fmtPrice(stock.openPrice, stock.market, stock.ticker)} />
+        <MetaCell label="고가" value={fmtPrice(stock.high, stock.market, stock.ticker)} tone="up" />
+        <MetaCell label="저가" value={fmtPrice(stock.low, stock.market, stock.ticker)} tone="down" />
         <MetaCell label="거래량" value={fmtVolume(stock.volume)} />
       </div>
 
@@ -107,6 +109,10 @@ function DefaultLayout(
 
       {/* 빅 매수/매도 버튼 — Default 모드 핵심 CTA */}
       <BigTradeButtons stock={stock} />
+
+      {stock.market === "bonds" && stock.bondMeta && (
+        <BondDetailPanel stock={stock} />
+      )}
 
       {/* 하단 그리드 — 주문창 + 미체결 주문 + 관련 뉴스 */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4" id="v2-order-entry">
@@ -172,9 +178,9 @@ function ProLayout(
         style={{ gridColumn: "1", gridRow: "3" }}
       >
         <div className="grid grid-cols-4 h-full">
-          <MetaCell label="시가" value={fmtPrice(stock.openPrice, stock.market)} />
-          <MetaCell label="고가" value={fmtPrice(stock.high, stock.market)} tone="up" />
-          <MetaCell label="저가" value={fmtPrice(stock.low, stock.market)} tone="down" />
+          <MetaCell label="시가" value={fmtPrice(stock.openPrice, stock.market, stock.ticker)} />
+          <MetaCell label="고가" value={fmtPrice(stock.high, stock.market, stock.ticker)} tone="up" />
+          <MetaCell label="저가" value={fmtPrice(stock.low, stock.market, stock.ticker)} tone="down" />
           <MetaCell label="거래대금" value={tradingValueStr} />
         </div>
       </div>
@@ -286,7 +292,9 @@ export default function StockDetailV2Client({
           <nav className="flex items-center gap-1.5 text-xs text-dim">
             <Link href="/v2" className="hover:text-white transition-colors">홈</Link>
             <span>/</span>
-            <Link href="/v2/stocks" className="hover:text-white transition-colors">주식</Link>
+            <Link href={stock.market === "bonds" ? "/markets/bonds" : "/v2/stocks"} className="hover:text-white transition-colors">
+              {stock.market === "bonds" ? "채권" : "주식"}
+            </Link>
             <span>/</span>
             <span className="text-muted">{stock.name}</span>
           </nav>
@@ -436,7 +444,7 @@ function NewsList({
               compact ? "text-xs line-clamp-1" : "text-[12px] line-clamp-2"
             }`}
           >
-            {n.headline}
+            {n.title ?? n.headline}
           </p>
           {!compact && (
             <p className="mt-0.5 text-xs text-dim line-clamp-1">
@@ -454,12 +462,9 @@ function NewsList({
    클릭 시 주문창으로 스크롤
 ───────────────────────────────────────────────────────── */
 function BigTradeButtons({ stock }: { stock: Stock }) {
-  const isUSD =
-    stock.market === "overseas" ||
-    stock.market === "europe" ||
-    stock.market === "commodities";
-  const currency = isUSD ? "$" : "₩";
-  const priceStr = isUSD
+  const isUSD = isUsdQuotedAsset({ market: stock.market, ticker: stock.ticker });
+  const currency = isUSD ? "$" : stock.market === "bonds" ? "" : "₩";
+  const priceStr = isUSD || stock.market === "bonds"
     ? stock.currentPrice.toFixed(2)
     : Math.round(stock.currentPrice).toLocaleString();
 

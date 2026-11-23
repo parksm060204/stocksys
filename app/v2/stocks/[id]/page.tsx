@@ -1,7 +1,9 @@
 import { notFound } from "next/navigation";
 import { fmtCap } from "@/lib/format";
 import { createClient } from "@/lib/db/server";
-import { sanitizePublicNewsRecord } from "@/lib/engine/simulation/marketEventTypes";
+import { resolveAuthenticatedUserId } from "@/lib/auth/sessionAuth";
+import { authorizeNewsRecord, canReadRumor } from "@/lib/news/accessPolicy";
+import { isUsdQuotedAsset } from "@/lib/engine/currency";
 import type { Stock } from "@/lib/types";
 import StockDetailV2Client from "./StockDetailV2Client";
 
@@ -55,11 +57,56 @@ export default async function StockDetailV2Page({
   const { id } = await params;
   const db = await createClient();
 
-  const { data: row } = await db
+  let { data: row } = await db
     .from("stocks")
     .select("*")
     .eq("id", id)
-    .single();
+    .maybeSingle();
+  if (!row) {
+    const { data: rowByTicker } = await db.from("stocks").select("*").eq("ticker", id).maybeSingle();
+    row = rowByTicker;
+  }
+
+  let bondMeta: Stock["bondMeta"] = undefined;
+  if (!row) {
+    let { data: bondRow } = await db.from("bonds").select("*").eq("id", id).maybeSingle();
+    if (!bondRow) {
+      const { data: bondByTicker } = await db.from("bonds").select("*").eq("ticker", id).maybeSingle();
+      bondRow = bondByTicker;
+    }
+    if (bondRow) {
+      const curPrice = Number(bondRow.current_price) || 100;
+      const prevClose = Number(bondRow.previous_close) || curPrice;
+      row = {
+        id: bondRow.id || bondRow.ticker,
+        name: bondRow.name,
+        ticker: bondRow.ticker,
+        market: "bonds",
+        sector: bondRow.bond_type === "govt" ? "국채" : bondRow.bond_type === "corp_ig" ? "우량회사채" : "투기회사채",
+        current_price: curPrice,
+        previous_close: prevClose,
+        description: `${bondRow.name} (${bondRow.ticker}) - 잔존만기 ${bondRow.maturity || "2Y"}, 표면금리 ${bondRow.coupon_rate || 3.25}%, 액면가 ${bondRow.face_value || 10000}원 채권 자산입니다.`,
+        market_cap: (bondRow.face_value || 10000) * (bondRow.volume || 10000),
+        open_price: prevClose,
+        high: Math.max(curPrice, prevClose),
+        low: Math.min(curPrice, prevClose),
+        volume: Number(bondRow.volume) || 15000,
+        relevance_weight: 1,
+        target_price: curPrice,
+        is_core: true,
+        listed_at: "2020-01-01",
+      };
+      bondMeta = {
+        faceValue: 100,
+        couponRate: bondRow.coupon_rate || 3.25,
+        maturityYears: bondRow.maturity ? parseInt(bondRow.maturity, 10) || 2 : 2,
+        currentYtm: bondRow.ytm || 3.35,
+        riskCategory: bondRow.bond_type === "govt" ? "sovereign" : bondRow.bond_type === "corp_ig" ? "corporate_ig" : "high_yield",
+        countryCode: bondRow.ticker?.startsWith("US") ? "US" : "KR",
+        issuerName: bondRow.name,
+      };
+    }
+  }
   if (!row) notFound();
 
   const stock: Stock = {
@@ -85,27 +132,44 @@ export default async function StockDetailV2Page({
     isCore: row.is_core || false,
     listedAt: formatListedAt(row.ticker, row.listed_at),
     financials: row.financials || null,
+    bondMeta: bondMeta || (row as any).bondMeta,
   };
 
-  const isUSD =
-    stock.market === "overseas" ||
-    stock.market === "europe" ||
-    stock.market === "commodities";
+  const isUSD = isUsdQuotedAsset({ market: stock.market, ticker: stock.ticker });
   const tradingValueStr = isUSD
     ? `$${fmtCap(stock.currentPrice * stock.volume)}`
     : `₩${fmtCap(stock.currentPrice * stock.volume)}`;
 
-  // 관련 뉴스
-  const { data: newsData } = await db
-    .from("market_news")
-    .select("*")
-    .or(
-      `target_sector.eq.${stock.sector},headline.ilike.%${stock.name}%,summary.ilike.%${stock.name}%`
-    )
-    .order("created_at", { ascending: false })
-    .limit(8);
-  const relatedNews = (newsData || []).map(sanitizePublicNewsRecord);
+  let hasRumorAccess = false;
+  try {
+    const viewerId = await resolveAuthenticatedUserId();
+    if (viewerId) {
+      const { data: viewerProfile } = await db
+        .from("profiles")
+        .select("is_admin, news_subscriptions")
+        .eq("id", viewerId)
+        .maybeSingle();
+      hasRumorAccess = canReadRumor(viewerProfile);
+    }
+  } catch {
+    hasRumorAccess = false;
+  }
 
+  // 관련 뉴스 (세션 권한 기반 RUMOR 마스킹 적용 + 예외 안전 처리)
+  let relatedNews: any[] = [];
+  try {
+    const { data: newsData } = await db
+      .from("market_news")
+      .select("*")
+      .or(
+        `target_ticker.eq.${stock.ticker},target_sector.eq.${stock.sector},title.ilike.%${stock.name}%,headline.ilike.%${stock.name}%`
+      )
+      .order("created_at", { ascending: false })
+      .limit(8);
+    relatedNews = (newsData || []).map((r: any) => authorizeNewsRecord(r, hasRumorAccess));
+  } catch (e) {
+    console.warn("[StockDetailV2] Failed to fetch market news:", e);
+  }
 
   const messages: never[] = [];
 

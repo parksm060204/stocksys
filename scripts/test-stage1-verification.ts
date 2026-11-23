@@ -365,7 +365,7 @@ async function runStage1Verification() {
 
     assert(intentLowUnc.action === 'buy', '낮은 불확실성에서는 1.8% 괴리에서 매수 진입');
     assert(
-      intentHighUnc.action === 'hold' && intentHighUnc.reason === 'insufficient_profit_margin',
+      intentHighUnc.action === 'hold' && intentHighUnc.reason === 'insufficient_profit_margin_uncertainty',
       '높은 불확실성에서는 요구 마진 확대로 신중하게 보류(hold) 전환'
     );
 

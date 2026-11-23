@@ -13,9 +13,20 @@ interface SearchStockItem {
   market: string;
 }
 
+/**
+ * 프로필 응답에서 수신한 cash 값을 런타임 검증한다.
+ * ProfileRecord 계약(유한한 number)만 허용하며, undefined/null/NaN/Infinity/배열/객체/문자열은 null로 거부한다.
+ */
+export function parseValidCash(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return null;
+  }
+  return Object.is(value, -0) ? 0 : value;
+}
+
 export default function TopBar() {
   const [now, setNow] = useState<Date | null>(null);
-  const [cash, setCash] = useState<number | null>(null);
+  const [cashState, setCashState] = useState<{ userId: string; amount: number } | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchFocused, setSearchFocused] = useState(false);
   const [allStocks, setAllStocks] = useState<SearchStockItem[]>([]);
@@ -23,16 +34,20 @@ export default function TopBar() {
   const router = useRouter();
   const db = createClient();
   const { user, isLoggedIn, signIn, signOut } = useAuth();
+  const userId = user?.id ?? null;
 
   useEffect(() => {
     let active = true;
     db.from("stocks")
       .select("id, ticker, name, market")
-      .then(({ data }: { data: SearchStockItem[] | null }) => {
-        if (active && Array.isArray(data)) {
-          setAllStocks(data);
-        }
-      });
+      .then(
+        ({ data }: { data: SearchStockItem[] | null }) => {
+          if (active && Array.isArray(data)) {
+            setAllStocks(data);
+          }
+        },
+        () => {}
+      );
     return () => {
       active = false;
     };
@@ -52,15 +67,55 @@ export default function TopBar() {
 
   useEffect(() => {
     let cancelled = false;
-    if (isLoggedIn && user?.id) {
-      db.from('profiles').select('cash').eq('id', user.id).single().then(({ data }: { data: { cash: number } | null }) => {
-        if (!cancelled && data) setCash(data.cash);
-      });
-    } else {
-      setCash(null);
+    setCashState(null);
+
+    if (!isLoggedIn || !userId) {
+      return () => {
+        cancelled = true;
+      };
     }
-    return () => { cancelled = true; };
-  }, [isLoggedIn, user?.id, db]);
+
+    (async () => {
+      try {
+        const res = await db
+          .from("profiles")
+          .select("cash")
+          .eq("id", userId)
+          .maybeSingle();
+
+        if (cancelled) return;
+
+        const data =
+          res && typeof res === "object"
+            ? (res as { data?: unknown }).data
+            : null;
+        const error =
+          res && typeof res === "object"
+            ? (res as { error?: unknown }).error
+            : null;
+
+        if (error) {
+          setCashState(null);
+          return;
+        }
+
+        const rawCash =
+          data && typeof data === "object" && !Array.isArray(data)
+            ? (data as { cash?: unknown }).cash
+            : undefined;
+        const validCash = parseValidCash(rawCash);
+        setCashState(validCash !== null ? { userId, amount: validCash } : null);
+      } catch {
+        if (!cancelled) {
+          setCashState(null);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isLoggedIn, userId, db]);
 
   useEffect(() => {
     const update = () => setNow(new Date());
@@ -71,6 +126,11 @@ export default function TopBar() {
       clearTimeout(id);
     };
   }, []);
+
+  const displayCash =
+    isLoggedIn && user?.id && cashState && cashState.userId === user.id
+      ? parseValidCash(cashState.amount)
+      : null;
 
   const timeStr = now
     ? now.toLocaleTimeString("ko-KR", {
@@ -147,30 +207,35 @@ export default function TopBar() {
               <img
                 src={user.image}
                 alt=""
-                className="h-7 w-7 rounded-full border border-[#F04452]/40"
+                className="h-7 w-7 rounded-full border border-[#F04452]/40 shrink-0"
               />
             )}
-            <div className="flex flex-col items-end">
-              <span className="text-[13px] font-bold text-tx leading-none">
+            <div className="flex min-w-0 flex-col items-end">
+              <span className="max-w-[160px] sm:max-w-[220px] truncate text-[13px] font-bold text-tx leading-none">
                 {user.name ?? user.email}
               </span>
-              {cash !== null && (
-                <span className="text-xs text-up font-mono font-bold mt-1">
-                  ₩{cash.toLocaleString()}
+              {displayCash !== null && (
+                <span
+                  data-testid="topbar-cash"
+                  className="text-xs text-up font-mono font-bold mt-1 tabular-nums whitespace-nowrap"
+                >
+                  ₩{displayCash.toLocaleString()}
                 </span>
               )}
             </div>
             <button
+              type="button"
               onClick={() => signOut()}
-              className="rounded-xl border border-border bg-panel2 px-3 py-1.5 text-[12px] font-medium text-muted transition-all hover:border-[#3182F6]/40 hover:text-down"
+              className="shrink-0 rounded-xl border border-border bg-panel2 px-3 py-1.5 text-[12px] font-medium text-muted transition-all hover:border-[#3182F6]/40 hover:text-down"
             >
               로그아웃
             </button>
           </div>
         ) : (
           <button
+            type="button"
             onClick={() => signIn()}
-            className="rounded-xl border border-[#F04452]/40 bg-up/10 px-4 py-1.5 text-[13px] font-bold text-up transition-all hover:bg-up hover:text-white shadow-[0_0_12px_rgba(240,68,82,0.2)]"
+            className="shrink-0 rounded-xl border border-[#F04452]/40 bg-up/10 px-4 py-1.5 text-[13px] font-bold text-up transition-all hover:bg-up hover:text-white shadow-[0_0_12px_rgba(240,68,82,0.2)]"
           >
             Google 로그인
           </button>

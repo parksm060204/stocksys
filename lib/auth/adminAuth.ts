@@ -47,7 +47,7 @@ export async function verifyAdminSession(req?: Request): Promise<AdminAuthResult
     } catch (err) {
       console.error('[AdminAuth] Failed to restore memoryDb:', err);
     }
-    const profile = memoryDb.profiles.get(userId);
+    const profile = memoryDb.resolveProfileByUserId(userId);
     if (profile?.is_admin) {
       return { isAdmin: true, adminUser: profile.email || userId };
     }

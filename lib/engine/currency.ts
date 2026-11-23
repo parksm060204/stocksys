@@ -1,4 +1,4 @@
-import type { StockRecord } from '@/lib/memoryDb/memoryStore';
+import type { StockRecord, BondRecord } from '@/lib/memoryDb/memoryStore';
 
 export const DEFAULT_USD_TO_KRW_RATE = 1380;
 
@@ -70,4 +70,42 @@ export function getStockFxRateToKrw(
       : stockOrId;
   if (!stock) return 1;
   return getStockSettlementCurrency(stock) === 'USD' ? getUsdFxRateFromDb(db) : 1;
+}
+
+/**
+ * 채권 호가(예: 액면 100 기준 99.80)를 1계약당 원화 기준 액면(예: 10,000원)으로 환산하는 승수를 반환한다.
+ * quote_base가 명시되었거나, 액면가(>=1000) 대비 시세가 액면 100 기준 구간(<500)이면 face_value / 100을 적용한다.
+ */
+export function getBondQuoteMultiplierToKrw(bond?: Partial<BondRecord> | null): number {
+  if (!bond) return 1;
+  const faceValue = Number(bond.face_value ?? 0);
+  if (!Number.isFinite(faceValue) || faceValue <= 0) return 1;
+  if (typeof bond.quote_base === 'number' && Number.isFinite(bond.quote_base) && bond.quote_base > 0) {
+    return faceValue / bond.quote_base;
+  }
+  const curPrice = Number(bond.current_price ?? 0);
+  if (faceValue >= 1000 && Number.isFinite(curPrice) && curPrice > 0 && curPrice < 500) {
+    return faceValue / 100;
+  }
+  return 1;
+}
+
+export function getAssetSettlementPriceMultiplierToKrw(
+  db?: {
+    stocks?: ReadonlyMap<string, StockRecord>;
+    bonds?: ReadonlyMap<string, BondRecord>;
+    exchangeRates?: ReadonlyArray<{ currency_code: string; rate_to_krw: number }>;
+  } | null,
+  assetId?: string | null
+): number {
+  if (!assetId || !db) return 1;
+  const stock = db.stocks?.get(assetId);
+  if (stock) {
+    return getStockFxRateToKrw(db, stock);
+  }
+  const bond = db.bonds?.get(assetId);
+  if (bond) {
+    return getBondQuoteMultiplierToKrw(bond);
+  }
+  return 1;
 }

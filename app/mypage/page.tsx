@@ -5,7 +5,15 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import { isDevGuestAuthEnabled } from "@/lib/engine/localDevMode";
 import { GUEST_USER_ID } from "@/lib/memoryDb/memoryStore";
-import { getUsdFxRateFromDb, isUsdQuotedAsset } from "@/lib/engine/currency";
+import {
+  computeMyPagePortfolioSummary,
+  type MyPageBondRow,
+  type MyPageExchangeRateRow,
+  type MyPageHoldingRow,
+  type MyPageOptionContractRow,
+  type MyPagePortfolioRow,
+  type MyPageProfileRow,
+} from "@/lib/portfolio/mypageSummary";
 
 export const revalidate = 0; // Disable static caching to fetch live user data
 
@@ -44,12 +52,12 @@ export default async function MyPage() {
   const db = await createClient();
 
   const [
-    { data: profile },
-    { data: holdingsData },
-    { data: ratesData },
-    { data: optionsContractsData },
-    { data: bondsData },
-  ] = await Promise.all([
+    profileRes,
+    holdingsRes,
+    ratesRes,
+    optionsContractsRes,
+    bondsRes,
+  ] = (await Promise.all([
     db
       .from("profiles")
       .select("cash, margin_debt_krw, usd_balance, eur_balance, jpy_balance, cny_balance, gbp_balance")
@@ -62,129 +70,33 @@ export default async function MyPage() {
     db.from("exchange_rates").select("*"),
     db.from("options_contracts").select("id, ticker, type, option_type, strike_price, current_price, multiplier, expiry_date"),
     db.from("bonds").select("id, ticker, name, current_price, face_value"),
-  ]);
+  ])) as [
+    { data: MyPageProfileRow | null },
+    { data: MyPageHoldingRow[] | null },
+    { data: MyPageExchangeRateRow[] | null },
+    { data: MyPageOptionContractRow[] | null },
+    { data: MyPageBondRow[] | null },
+  ];
 
-  const cash = Number(profile?.cash || 0);
-  const marginDebtKrw = Math.max(0, Number(profile?.margin_debt_krw || 0));
-  const usd = Number(profile?.usd_balance || 0);
-  const eur = Number(profile?.eur_balance || 0);
-  const jpy = Number(profile?.jpy_balance || 0);
-  const cny = Number(profile?.cny_balance || 0);
-  const gbp = Number(profile?.gbp_balance || 0);
-
-  const ratesMap = new Map((ratesData || []).map((r: any) => [r.currency_code, Number(r.rate_to_krw || 1)]));
-  const getRate = (code: string): number => Number(ratesMap.get(code) || 1);
-  const usdToKrw = getUsdFxRateFromDb(ratesData || []);
-
-  const optionById = new Map<string, any>((optionsContractsData || []).map((o: any) => [o.id, o]));
-  const bondById = new Map<string, any>((bondsData || []).map((b: any) => [b.id, b]));
-
-  // 보유 주식/ETF/옵션/채권 실시간 손익 계산 (원화 총합 + 표시 통화 일관 유지)
-  const rows = (holdingsData || []).map((h: any) => {
-    const stock = h.stocks;
-    const opt = !stock ? optionById.get(h.stock_id) : null;
-    const bond = !stock && !opt ? bondById.get(h.stock_id) : null;
-    const quantity = Number(h.quantity || 0);
-    const avgPrice = Number(h.avg_price || 0);
-
-    if (opt) {
-      const currentPrice = Number(opt.current_price ?? avgPrice);
-      const multiplier = Number(opt.multiplier ?? 250000);
-      const valueKrw = Math.round(currentPrice * quantity * multiplier);
-      const costKrw = Math.round(avgPrice * quantity * multiplier);
-      const pnlKrw = valueKrw - costKrw;
-      const pnlPct = costKrw !== 0 ? (pnlKrw / costKrw) * 100 : 0;
-      const optType = opt.option_type || opt.type || "OPTION";
-      return {
-        stockId: h.stock_id,
-        assetKind: "OPTION" as const,
-        href: "/options",
-        name: `${opt.ticker} (${optType})`,
-        ticker: `승수 ₩${multiplier.toLocaleString()} · 행사가 ${Number(opt.strike_price || 0).toLocaleString()}`,
-        market: "domestic",
-        quantity,
-        avgPrice,
-        currentPrice,
-        valueDisplay: valueKrw,
-        pnlDisplay: pnlKrw,
-        valueKrw,
-        costKrw,
-        pnlKrw,
-        pnlPct,
-      };
-    }
-
-    if (bond) {
-      const currentPrice = Number(bond.current_price ?? avgPrice);
-      const faceValue = Number(bond.face_value ?? 10000);
-      const unitFactor = faceValue / 100;
-      const valueKrw = Math.round(currentPrice * unitFactor * quantity);
-      const costKrw = Math.round(avgPrice * unitFactor * quantity);
-      const pnlKrw = valueKrw - costKrw;
-      const pnlPct = costKrw !== 0 ? (pnlKrw / costKrw) * 100 : 0;
-      return {
-        stockId: h.stock_id,
-        assetKind: "BOND" as const,
-        href: `/stocks/${h.stock_id}`,
-        name: bond.name || bond.ticker || "채권",
-        ticker: bond.ticker || "BOND",
-        market: "domestic",
-        quantity,
-        avgPrice,
-        currentPrice,
-        valueDisplay: valueKrw,
-        pnlDisplay: pnlKrw,
-        valueKrw,
-        costKrw,
-        pnlKrw,
-        pnlPct,
-      };
-    }
-
-    const currentPrice = Number(stock?.current_price || h.avg_price);
-    const market = stock?.market || "domestic";
-    const ticker = stock?.ticker || "UNKN";
-    const isUsd = Boolean(stock && isUsdQuotedAsset({ market, ticker }));
-    const fxRate = isUsd ? usdToKrw : 1;
-
-    const valueDisplay = currentPrice * quantity;
-    const costDisplay = avgPrice * quantity;
-    const pnlDisplay = valueDisplay - costDisplay;
-    const valueKrw = isUsd ? Math.round(valueDisplay * fxRate) : Math.round(valueDisplay);
-    const costKrw = isUsd ? Math.round(costDisplay * fxRate) : Math.round(costDisplay);
-    const pnlKrw = valueKrw - costKrw;
-    const pnlPct = costKrw !== 0 ? (pnlKrw / costKrw) * 100 : 0;
-
-    return {
-      stockId: h.stock_id,
-      assetKind: "STOCK" as const,
-      href: `/stocks/${h.stock_id}`,
-      name: stock?.name || "알 수 없는 종목",
-      ticker,
-      market,
-      quantity,
-      avgPrice,
-      currentPrice,
-      valueDisplay,
-      pnlDisplay,
-      valueKrw,
-      costKrw,
-      pnlKrw,
-      pnlPct,
-    };
+  const {
+    cash,
+    usd,
+    eur,
+    jpy,
+    cny,
+    gbp,
+    rows,
+    totalValue,
+    totalPnl,
+    totalPnlPct,
+    totalAssetsKrw,
+  } = computeMyPagePortfolioSummary({
+    profile: profileRes.data,
+    holdingsData: holdingsRes.data,
+    ratesData: ratesRes.data,
+    optionsContractsData: optionsContractsRes.data,
+    bondsData: bondsRes.data,
   });
-
-  const totalValue = rows.reduce((a: number, r: any) => a + Number(r.valueKrw || 0), 0);
-  const totalCost = rows.reduce((a: number, r: any) => a + Number(r.costKrw || 0), 0);
-  const totalPnl = totalValue - totalCost;
-  const totalPnlPct = totalCost !== 0 ? (totalPnl / totalCost) * 100 : 0;
-
-  const usdInKrw = Number(usd || 0) * getRate("USD");
-  const eurInKrw = Number(eur || 0) * getRate("EUR");
-  const jpyInKrw = Number(jpy || 0) * getRate("JPY");
-  const cnyInKrw = Number(cny || 0) * getRate("CNY");
-  const gbpInKrw = Number(gbp || 0) * getRate("GBP");
-  const totalCurrenciesInKrw = Number(cash || 0) + usdInKrw + eurInKrw + jpyInKrw + cnyInKrw + gbpInKrw - marginDebtKrw;
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-6 font-sans space-y-6">
@@ -206,7 +118,7 @@ export default async function MyPage() {
 
       {/* Summary Cards */}
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4 font-mono">
-        <Summary label="총 자산 (원화 환산)" value={fmtPrice(totalValue + totalCurrenciesInKrw, "domestic")} />
+        <Summary label="총 자산 (원화 환산)" value={fmtPrice(totalAssetsKrw, "domestic")} />
         <Summary label="주식 평가금액" value={fmtPrice(totalValue, "domestic")} />
         <Summary label="원화 예수금" value={fmtPrice(cash, "domestic")} />
         <Summary
@@ -240,7 +152,7 @@ export default async function MyPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#212631]">
-                  {rows.map((r: any) => (
+                  {rows.map((r: MyPagePortfolioRow) => (
                     <tr key={r.stockId} className="transition-colors hover:bg-black/[0.03] dark:hover:bg-white/[0.04] border-b border-border last:border-none">
                       <td className="px-5 py-4 border-none">
                         <Link href={r.href} className="font-extrabold text-white hover:text-up transition-colors">

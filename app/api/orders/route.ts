@@ -3,25 +3,13 @@ import { LocalMarketService } from '@/lib/engine/marketService';
 import { resolveAuthenticatedUserId } from '@/lib/auth/sessionAuth';
 import { ensureLocalStandaloneReady, persistConfirmedState } from '@/lib/engine/localStandaloneServer';
 import { memoryDb } from '@/lib/memoryDb/memoryStore';
+import { WindowRateLimiter } from '@/lib/rateLimit/windowLimiter';
 
-// 인메모리 슬라이딩 윈도우 Rate Limiter (유저당 1초 최대 15회 요청 허용)
-const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
+// 인메모리 윈도우 Rate Limiter (유저당 1초 최대 15회 요청 허용 + 만료 엔트리 주기 정리)
+const orderRateLimiter = new WindowRateLimiter(15, 1000);
 
 function checkRateLimit(userId: string): boolean {
-  const now = Date.now();
-  const entry = rateLimitMap.get(userId);
-
-  if (!entry || now > entry.resetAt) {
-    rateLimitMap.set(userId, { count: 1, resetAt: now + 1000 });
-    return true;
-  }
-
-  if (entry.count >= 15) {
-    return false;
-  }
-
-  entry.count++;
-  return true;
+  return orderRateLimiter.allow(userId);
 }
 
 export async function POST(request: Request) {

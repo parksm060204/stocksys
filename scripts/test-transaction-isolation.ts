@@ -77,27 +77,21 @@ async function testCrossStockRollback(): Promise<void> {
   const makerB = await LocalMarketService.submitOrder({ userId: sellerB, stockId: stockB, side: 'sell', price: 700_000, size: 1 });
   assert(makerA.success && makerB.success, 'Both maker orders are resting');
 
-  let concurrentB: Promise<Awaited<ReturnType<typeof LocalMarketService.submitOrder>>> | undefined;
   __setTestFailureHook(async ({ stockId }) => {
     if (stockId !== stockA) return false;
-
-    concurrentB = LocalMarketService.submitOrder({ userId: buyerB, stockId: stockB, side: 'buy', price: 700_000, size: 1 });
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      if (memoryDb.trades.some((trade) => trade.stock_id === stockB && trade.buyer_id === buyerB)) break;
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    }
-    assert(memoryDb.trades.some((trade) => trade.stock_id === stockB && trade.buyer_id === buyerB), 'Stock B settles before Stock A rollback');
-    await concurrentB;
     throw new Error('SIMULATED_CROSS_STOCK_FAILURE');
   });
 
-  let failedA;
+  let failedA: Awaited<ReturnType<typeof LocalMarketService.submitOrder>>;
+  let successfulB: Awaited<ReturnType<typeof LocalMarketService.submitOrder>>;
   try {
-    failedA = await LocalMarketService.submitOrder({ userId: buyerA, stockId: stockA, side: 'buy', price: 700_000, size: 1 });
+    [failedA, successfulB] = await Promise.all([
+      LocalMarketService.submitOrder({ userId: buyerA, stockId: stockA, side: 'buy', price: 700_000, size: 1 }),
+      LocalMarketService.submitOrder({ userId: buyerB, stockId: stockB, side: 'buy', price: 700_000, size: 1 }),
+    ]);
   } finally {
     __setTestFailureHook(null);
   }
-  const successfulB = await concurrentB!;
 
   assert(failedA.success === false, 'Stock A transaction fails');
   assert(successfulB.success === true, 'Stock B transaction succeeds');

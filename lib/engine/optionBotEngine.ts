@@ -139,7 +139,7 @@ export async function runOptionBotTradingEngine(stockId: string, underlyingSymbo
   const isPinningPhase = hoursToExpiry <= 1.0;
   const isLiquidationPhase = hoursToExpiry <= 0.5;
 
-  // Seed default contracts if empty
+  // 브라우저 클라이언트에서는 DB 쓰기(insert/update/rpc)를 수행하지 않고 읽기 전용 시드 뷰만 구성한다.
   if (contracts.length === 0) {
     const baseStrike = Math.round(currentSpotPrice / 1000) * 1000 || 50000;
     const strikes = [
@@ -150,19 +150,17 @@ export async function runOptionBotTradingEngine(stockId: string, underlyingSymbo
       Math.round(baseStrike * 1.15)
     ];
 
-    const newContractsToInsert = [];
-
+    contracts = [];
     for (const strike of strikes) {
       for (const type of ['CALL', 'PUT'] as const) {
-        const assetClass: 'IDX' | 'STK' | 'FUT' = underlyingSymbol.includes('KOSPI') || underlyingSymbol.includes('INDEX') 
-          ? 'IDX' 
+        const assetClass: 'IDX' | 'STK' | 'FUT' = underlyingSymbol.includes('KOSPI') || underlyingSymbol.includes('INDEX')
+          ? 'IDX'
           : (underlyingSymbol.includes('WTI') || underlyingSymbol.includes('GOLD') ? 'FUT' : 'STK');
-
         const ticker = formatOptionTicker(assetClass, underlyingSymbol, expiryDate, type, strike);
         const greeks = calculateGreeksWithExpiry(currentSpotPrice, strike, type, daysToExpiry);
         const estPrice = Math.max(200, Math.round(Math.abs(currentSpotPrice - strike) * 0.1 + 1000));
-
-        newContractsToInsert.push({
+        contracts.push({
+          id: `preview_${ticker}`,
           underlying_stock_id: stockId,
           ticker,
           asset_class: assetClass,
@@ -170,24 +168,15 @@ export async function runOptionBotTradingEngine(stockId: string, underlyingSymbo
           option_type: type,
           strike_price: strike,
           current_price: estPrice,
-          open_interest: Math.floor(Math.random() * 3000) + 1000,
-          volume: Math.floor(Math.random() * 500) + 50,
+          open_interest: 1200,
+          volume: 150,
           delta: greeks.delta,
           gamma: greeks.gamma,
           theta: greeks.theta,
           implied_volatility: greeks.implied_volatility,
-          expiry_date: expiryDate.toISOString()
+          expiry_date: expiryDate.toISOString(),
         });
       }
-    }
-
-    const { data: insertedData } = await db
-      .from('options_contracts')
-      .insert(newContractsToInsert)
-      .select('*');
-
-    if (insertedData) {
-      contracts = insertedData as OptionContract[];
     }
   }
 
@@ -306,19 +295,6 @@ export async function runOptionBotTradingEngine(stockId: string, underlyingSymbo
         timestamp: new Date().toLocaleTimeString()
       });
     }
-
-    await db
-      .from('options_contracts')
-      .update({
-        open_interest: newOI,
-        volume: contract.volume + randomVol,
-        current_price: newPrice,
-        delta: greeks.delta,
-        gamma: greeks.gamma,
-        theta: greeks.theta,
-        implied_volatility: greeks.implied_volatility
-      })
-      .eq('id', contract.id);
   }
 
   // ─── [4. 풋-콜 파리티 무위험 차익거래 연계 (Put-Call Parity Arbitrage Linkage)] ─
@@ -401,21 +377,7 @@ export async function runOptionBotTradingEngine(stockId: string, underlyingSymbo
     targetPriceDelta += pinDelta;
   }
 
-  // ─── [5. 현물 가격 피드백 루프 (Spot Price Feedback Loop Update)] ─────────────
-  if (targetPriceDelta !== 0) {
-    const { data: stock } = await db.from('stocks').select('current_price, target_price').eq('id', stockId).single();
-    if (stock) {
-      const newSpot = Math.max(100, Math.round(stock.current_price + targetPriceDelta));
-      await db
-        .from('stocks')
-        .update({
-          current_price: newSpot,
-          high: Math.max(newSpot, stock.current_price)
-        })
-        .eq('id', stockId);
-    }
-  }
-
+  // 현물 가격/만기 정산은 서버 권위 엔진에서만 수행하며 브라우저 클라이언트에서는 쓰기/RPC를 호출하지 않는다.
   return {
     success: true,
     isDDay,
@@ -429,18 +391,8 @@ export async function runOptionBotTradingEngine(stockId: string, underlyingSymbo
 }
 
 /**
- * Option Expiration Cash Settlement & Zero-out Processor
+ * Option Expiration Cash Settlement (서버 권위 정산 전용 안내)
  */
-export async function processOptionExpiration(stockId: string, finalSpotPrice: number) {
-  const db = createClient();
-  const { data, error } = await db.rpc('settle_options_expiration', {
-    p_stock_id: stockId,
-    p_final_spot_price: finalSpotPrice
-  });
-
-  if (error) {
-    console.error("Error processing option expiration:", error);
-    return 0;
-  }
-  return data;
+export async function processOptionExpiration(_stockId: string, _finalSpotPrice: number) {
+  return 0;
 }

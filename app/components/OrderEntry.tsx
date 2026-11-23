@@ -1,14 +1,17 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import type { Stock } from "@/lib/types";
 import { fmtPrice } from "@/lib/format";
 import { createClient } from "@/lib/db/client";
 import { useAuth } from "@/lib/auth/useAuth";
 import { useToast } from "@/app/components/ToastProvider";
 import { DEFAULT_USD_TO_KRW_RATE, isUsdQuotedAsset } from "@/lib/engine/currency";
-
-const STOCK_TAKER_FEE_RATE = 0.0025;
+import {
+  calculateReservedCash,
+  getEffectiveStockTakerFeeRate,
+  STOCK_TAKER_FEE_RATE,
+} from "@/lib/engine/orderRisk";
 
 export default function OrderEntry({ stock }: { stock: Stock }) {
   const [side, setSide] = useState<"buy" | "sell">("buy");
@@ -17,69 +20,157 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
   const [stockId, setStockId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [userCash, setUserCash] = useState<number | null>(null);
+  const [reservedBuyCash, setReservedBuyCash] = useState<number>(0);
+  const [userMarginDebt, setUserMarginDebt] = useState<number>(0);
+  const [effectiveFeeRate, setEffectiveFeeRate] = useState<number>(STOCK_TAKER_FEE_RATE);
   const [userHoldingQty, setUserHoldingQty] = useState<number | null>(null);
   const [usdToKrwRate, setUsdToKrwRate] = useState<number>(DEFAULT_USD_TO_KRW_RATE);
 
   const db = createClient();
   const { userId, isLoggedIn } = useAuth();
   const { showToast } = useToast();
+  const balanceReqSeqRef = useRef<number>(0);
+  const activeContextRef = useRef<{ ticker: string; accountKey: string | null }>({
+    ticker: stock.ticker,
+    accountKey: isLoggedIn && userId ? userId : null,
+  });
 
   const isBondAsset = stock.market === "bonds";
   const isUsdAsset = isUsdQuotedAsset({ market: stock.market, ticker: stock.ticker });
   const fxRate = isUsdAsset ? usdToKrwRate : 1;
 
+  const resetUserOrderState = useCallback(() => {
+    setUserCash(null);
+    setReservedBuyCash(0);
+    setUserMarginDebt(0);
+    setEffectiveFeeRate(STOCK_TAKER_FEE_RATE);
+    setUserHoldingQty(null);
+  }, []);
+
   const refreshUserBalances = useCallback(async (sId: string) => {
-    const { data: fxData } = await db
-      .from('exchange_rates')
-      .select('rate_to_krw')
-      .eq('currency_code', 'USD')
-      .maybeSingle();
-    if (fxData && Number(fxData.rate_to_krw) > 0) {
-      setUsdToKrwRate(Number(fxData.rate_to_krw));
+    const reqSeq = ++balanceReqSeqRef.current;
+    const reqTicker = stock.ticker;
+    const reqAccountKey = isLoggedIn && userId ? userId : null;
+
+    const [{ data: fxData }, { data: allStocks }, { data: contracts }] = await Promise.all([
+      db.from('exchange_rates').select('rate_to_krw').eq('currency_code', 'USD').maybeSingle(),
+      db.from('stocks').select('id, market, ticker'),
+      db.from('options_contracts').select('id, multiplier'),
+    ]);
+    if (
+      reqSeq !== balanceReqSeqRef.current ||
+      activeContextRef.current.ticker !== reqTicker ||
+      activeContextRef.current.accountKey !== reqAccountKey
+    ) {
+      return;
     }
 
-    if (!isLoggedIn || !userId) return;
-    const { data: profile } = await db.from('profiles').select('cash').eq('id', userId).single();
-    if (profile) setUserCash(Number(profile.cash || 0));
+    const latestFx = fxData && Number(fxData.rate_to_krw) > 0 ? Number(fxData.rate_to_krw) : DEFAULT_USD_TO_KRW_RATE;
+    setUsdToKrwRate(latestFx);
 
-    const { data: holding } = await db.from('holdings').select('quantity').eq('user_id', userId).eq('stock_id', sId).single();
+    if (!reqAccountKey) {
+      resetUserOrderState();
+      return;
+    }
+
+    const [{ data: profile }, { data: holding }, { data: openOrders }] = await Promise.all([
+      db.from('profiles').select('cash, margin_debt_krw, unlocked_features, feature_expiries, acquired_passives').eq('user_id', reqAccountKey).maybeSingle(),
+      db.from('holdings').select('quantity').eq('user_id', reqAccountKey).eq('stock_id', sId).maybeSingle(),
+      db.from('orders').select('stock_id, side, price, size, filled, status').eq('user_id', reqAccountKey),
+    ]);
+    if (
+      reqSeq !== balanceReqSeqRef.current ||
+      activeContextRef.current.ticker !== reqTicker ||
+      activeContextRef.current.accountKey !== reqAccountKey
+    ) {
+      return;
+    }
+
+    const nextFeeRate = getEffectiveStockTakerFeeRate(profile);
+    setEffectiveFeeRate(nextFeeRate);
+
+    if (profile) {
+      setUserCash(Number(profile.cash || 0));
+      setUserMarginDebt(Math.max(0, Number(profile.margin_debt_krw || 0)));
+    } else {
+      setUserCash(null);
+      setUserMarginDebt(0);
+    }
     setUserHoldingQty(holding ? Number(holding.quantity || 0) : 0);
-  }, [isLoggedIn, userId, db]);
+
+    const stockMap = new Map<string, { market?: string; ticker?: string }>();
+    if (Array.isArray(allStocks)) {
+      for (const st of allStocks) {
+        if (st?.id) stockMap.set(st.id, st);
+      }
+    }
+    const optionMap = new Map<string, { multiplier?: number }>();
+    for (const contract of contracts || []) optionMap.set(contract.id, contract);
+    setReservedBuyCash(calculateReservedCash(
+      openOrders || [],
+      undefined,
+      optionMap,
+      { stocks: stockMap, usdToKrwRate: latestFx },
+      nextFeeRate,
+    ));
+  }, [isLoggedIn, userId, stock.ticker, db, resetUserOrderState]);
 
   useEffect(() => {
+    const nextAccountKey = isLoggedIn && userId ? userId : null;
+    activeContextRef.current = { ticker: stock.ticker, accountKey: nextAccountKey };
+    const reqSeq = ++balanceReqSeqRef.current;
+
+    if (!nextAccountKey) {
+      resetUserOrderState();
+    } else {
+      // 계정/종목 전환 시 이전 계정의 잔고·보유수량이 잠시라도 노출되지 않도록 즉시 초기화
+      resetUserOrderState();
+    }
+
     const initData = async () => {
       const { data: fxData } = await db
         .from('exchange_rates')
         .select('rate_to_krw')
         .eq('currency_code', 'USD')
         .maybeSingle();
+      if (reqSeq !== balanceReqSeqRef.current || activeContextRef.current.ticker !== stock.ticker) return;
       if (fxData && Number(fxData.rate_to_krw) > 0) {
         setUsdToKrwRate(Number(fxData.rate_to_krw));
       }
 
-      const { data: stockData } = await db.from('stocks').select('id').eq('ticker', stock.ticker).single();
+      const { data: stockData } = await db.from('stocks').select('id').eq('ticker', stock.ticker).maybeSingle();
+      if (reqSeq !== balanceReqSeqRef.current || activeContextRef.current.ticker !== stock.ticker) return;
       if (stockData) {
         setStockId(stockData.id);
-        if (isLoggedIn && userId) {
-          refreshUserBalances(stockData.id);
+        if (nextAccountKey && activeContextRef.current.accountKey === nextAccountKey) {
+          void refreshUserBalances(stockData.id);
         }
       }
     };
-    initData();
-  }, [stock.ticker, db, isLoggedIn, userId, refreshUserBalances]);
+    void initData();
 
+    return () => {
+      balanceReqSeqRef.current += 1;
+    };
+  }, [stock.ticker, db, isLoggedIn, userId, refreshUserBalances, resetUserOrderState]);
+
+  const availableBuyCashKrw = userCash !== null ? Math.max(0, userCash - reservedBuyCash) : null;
   const total = (Number(price) || 0) * (Number(qty) || 0);
   const notionalKrw = fxRate === 1 ? Math.round(total) : Math.round(total * fxRate);
-  const estimatedFeeKrw = Math.round(notionalKrw * STOCK_TAKER_FEE_RATE);
+  const estimatedFeeKrw = Math.round(notionalKrw * effectiveFeeRate);
   const requiredBuyCashKrw = notionalKrw + estimatedFeeKrw;
 
   const handleQuickBuy = (pct: number) => {
     setSide("buy");
     const targetPrice = Number(price) || stock.currentPrice;
-    if (userCash && targetPrice > 0) {
-      const unitCashCost = Math.max(1, targetPrice * fxRate * (1 + STOCK_TAKER_FEE_RATE));
-      const maxAffordableQty = Math.floor((userCash * (pct / 100)) / unitCashCost);
-      setQty(String(Math.max(1, maxAffordableQty)));
+    if (userMarginDebt > 0) {
+      setQty("0");
+      return;
+    }
+    if (availableBuyCashKrw !== null && targetPrice > 0) {
+      const unitCashCost = Math.max(1, targetPrice * fxRate * (1 + effectiveFeeRate));
+      const maxAffordableQty = Math.floor((availableBuyCashKrw * (pct / 100)) / unitCashCost);
+      setQty(String(Math.max(0, maxAffordableQty)));
     } else {
       setQty("10");
     }
@@ -116,18 +207,48 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
         return;
       }
 
+      const orderAccountKey = userId;
+      const orderTicker = stock.ticker;
+      const isStaleOrderContext = () =>
+        activeContextRef.current.accountKey !== orderAccountKey ||
+        activeContextRef.current.ticker !== orderTicker;
+
       if (side === 'buy') {
-        const { data: profile } = await db.from('profiles').select('cash').eq('id', userId).single();
-        if (!profile || Number(profile.cash || 0) < requiredBuyCashKrw) {
+        if (userMarginDebt > 0) {
           showToast({
             type: 'error',
-            title: '예수금 부족',
-            description: `예상 필요 예수금(₩${requiredBuyCashKrw.toLocaleString()}, 수수료 포함)이 현재 예수금보다 큽니다.`,
+            title: '미수 부채 상환 필요',
+            description: `미수금(₩${Math.round(userMarginDebt).toLocaleString()}) 상환 전에는 신규 매수 주문을 제출할 수 없습니다.`,
+          });
+          return;
+        }
+        const { data: profile } = await db
+          .from('profiles')
+          .select('cash, margin_debt_krw')
+          .eq('user_id', userId)
+          .maybeSingle();
+        if (isStaleOrderContext()) return;
+        const latestCash = Number(profile?.cash || 0);
+        const latestDebt = Math.max(0, Number(profile?.margin_debt_krw || 0));
+        if (latestDebt > 0) {
+          showToast({
+            type: 'error',
+            title: '미수 부채 상환 필요',
+            description: `미수금(₩${Math.round(latestDebt).toLocaleString()}) 상환 전에는 신규 매수 주문을 제출할 수 없습니다.`,
+          });
+          return;
+        }
+        if (!profile || Math.max(0, latestCash - reservedBuyCash) < requiredBuyCashKrw) {
+          showToast({
+            type: 'error',
+            title: '가용 예수금 부족',
+            description: `예상 필요 예수금(₩${requiredBuyCashKrw.toLocaleString()}, 수수료 포함)이 가용 예수금(₩${Math.max(0, latestCash - reservedBuyCash).toLocaleString()})보다 큽니다.`,
           });
           return;
         }
       } else {
-        const { data: holding } = await db.from('holdings').select('quantity').eq('user_id', userId).eq('stock_id', stockId).single();
+        const { data: holding } = await db.from('holdings').select('quantity').eq('user_id', userId).eq('stock_id', stockId).maybeSingle();
+        if (isStaleOrderContext()) return;
         if (!holding || Number(holding.quantity || 0) < Number(qty)) {
           showToast({
             type: 'error',
@@ -137,6 +258,8 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
           return;
         }
       }
+
+      if (isStaleOrderContext()) return;
 
       const apiRes = await fetch('/api/orders', {
         method: 'POST',
@@ -151,6 +274,7 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
       });
 
       const res = await apiRes.json();
+      if (isStaleOrderContext()) return;
 
       if (res.success) {
         showToast({
@@ -158,7 +282,7 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
           title: res.filledQty > 0 ? `${stock.name} 주문 체결 완료` : `${stock.name} 주문 접수 완료`,
           description: res.message,
         });
-        refreshUserBalances(stockId);
+        void refreshUserBalances(stockId);
       } else {
         showToast({
           type: 'error',
@@ -291,10 +415,31 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
               </span>
             </div>
             <div className="flex items-center justify-between text-[11px] font-mono text-muted">
-              <span>{isUsdAsset ? `원화 환산 (1 USD = ₩${usdToKrwRate.toLocaleString()}) + 수수료` : '최대 테이커 수수료(0.25%) 포함'}</span>
+              <span>
+                {isUsdAsset
+                  ? `원화 환산 (1 USD = ₩${usdToKrwRate.toLocaleString()}) + 수수료(${(effectiveFeeRate * 100).toFixed(3).replace(/\.?0+$/, '')}%)`
+                  : `테이커 수수료(${(effectiveFeeRate * 100).toFixed(3).replace(/\.?0+$/, '')}%${effectiveFeeRate < STOCK_TAKER_FEE_RATE ? ' · 50% 할인' : ''}) 포함`}
+              </span>
               <span className="font-bold text-tx">₩{(side === 'buy' ? requiredBuyCashKrw : notionalKrw).toLocaleString()}</span>
             </div>
+            {availableBuyCashKrw !== null && (
+              <div className="flex items-center justify-between text-[11px] font-mono text-muted pt-0.5 border-t border-border/50">
+                <span>
+                  가용 예수금
+                  {reservedBuyCash > 0 ? ` (예약 ₩${reservedBuyCash.toLocaleString()})` : ''}
+                </span>
+                <span className="font-bold text-tx">
+                  ₩{Math.floor(userMarginDebt > 0 ? 0 : availableBuyCashKrw).toLocaleString()}
+                </span>
+              </div>
+            )}
           </div>
+
+          {userMarginDebt > 0 && (
+            <div className="mb-3 rounded-xl border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-[11.5px] text-rose-300 font-medium">
+              미수 부채(₩{Math.round(userMarginDebt).toLocaleString()}) 상환 전까지 신규 매수가 제한됩니다.
+            </div>
+          )}
 
           {isBondAsset && (
             <div className="mb-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11.5px] text-amber-300 font-medium">

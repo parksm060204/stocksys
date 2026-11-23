@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createClient } from "@/lib/db/client";
 import Link from "next/link";
 import { change, fmtSigned } from "@/lib/format";
@@ -20,29 +20,47 @@ export default function DashboardGate({ children }: { children: React.ReactNode 
 
   const db = createClient();
   const { userId, isLoggedIn } = useAuth();
+  const reqSeqRef = useRef<number>(0);
 
   useEffect(() => {
     let cancelled = false;
+    const reqSeq = ++reqSeqRef.current;
+
+    if (!isLoggedIn || !userId) {
+      setMode('intro');
+      return () => {
+        cancelled = true;
+        reqSeqRef.current += 1;
+      };
+    }
+
+    setMode('intro');
 
     (async () => {
-      if (!isLoggedIn || !userId || cancelled) return;
-
       const { data: profile } = await db
         .from('profiles')
         .select('is_admin, unlocked_features')
         .eq('id', userId)
-        .single();
+        .maybeSingle();
 
-      if (cancelled) return;
-      if (!profile) return;
+      if (cancelled || reqSeq !== reqSeqRef.current) return;
+      if (!profile) {
+        setMode('intro');
+        return;
+      }
 
       const unlocked = (profile.unlocked_features as string[]) || [];
       if (profile.is_admin || unlocked.includes("custom_dashboard")) {
         setMode('dashboard');
+      } else {
+        setMode('intro');
       }
     })();
 
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      reqSeqRef.current += 1;
+    };
   }, [db, isLoggedIn, userId]);
 
   if (mode === 'intro') return <>{children}</>;
@@ -74,22 +92,18 @@ function DashboardSkeleton() {
 function DashboardContent() {
   const [stocks, setStocks] = useState<Stock[]>([]);
   const [news, setNews] = useState<any[]>([]);
-  const [indicesMap, setIndicesMap] = useState<Record<string, number>>({});
   const [ready, setReady] = useState(false);
 
   const db = createClient();
 
   useEffect(() => {
+    let cancelled = false;
     (async () => {
-      const [{ data: stocksData }, { data: newsData }, { data: indicesData }] = await Promise.all([
+      const [{ data: stocksData }, { data: newsData }] = await Promise.all([
         db.from('stocks').select('id, name, ticker, market, sector, current_price, previous_close'),
         db.from('market_news').select('*').order('created_at', { ascending: false }).limit(5),
-        db.from('market_indices').select('code, current_value')
       ]);
-
-      const map: Record<string, number> = {};
-      if (indicesData) indicesData.forEach((row: { code: string; current_value: number }) => { map[row.code ? row.code.toLowerCase() : ''] = Number(row.current_value); });
-      setIndicesMap(map);
+      if (cancelled) return;
 
       if (stocksData) {
         setStocks(stocksData.map((row: { id: string; name: string; ticker: string; market: string; sector: string; current_price: number; previous_close: number }) => ({
@@ -101,13 +115,14 @@ function DashboardContent() {
       setNews(newsData || []);
       setReady(true);
     })();
+    return () => { cancelled = true; };
   }, [db]);
 
   if (!ready) return <DashboardSkeleton />;
 
-  const kospi = getKOSPIIndex(stocks, indicesMap['kospi'] || 2500);
-  const sp50 = getSP50Index(stocks, indicesMap['sp50'] || 5000);
-  const euroStoxx50 = getEuroStoxx50Index(stocks, indicesMap['eurostoxx50'] || 4000);
+  const kospi = getKOSPIIndex(stocks, 2500);
+  const sp50 = getSP50Index(stocks, 5000);
+  const euroStoxx50 = getEuroStoxx50Index(stocks, 4000);
 
   const sorted = [...stocks].sort(
     (a, b) => change(b.currentPrice, b.previousClose).percent - change(a.currentPrice, a.previousClose).percent,
@@ -159,7 +174,7 @@ function DashboardContent() {
                     {n.sentiment === "positive" ? "호재" : n.sentiment === "negative" ? "악재" : "중립"}
                   </span>
                 </div>
-                <p className="mt-1.5 line-clamp-2 text-[12.5px] text-white font-medium group-hover:text-up transition-colors leading-snug">{n.headline}</p>
+                <p className="mt-1.5 line-clamp-2 text-[12.5px] text-white font-medium group-hover:text-up transition-colors leading-snug">{n.title ?? n.headline}</p>
               </Link>
             )) : (
               <div className="flex-1 flex flex-col items-center justify-center p-6 text-center">

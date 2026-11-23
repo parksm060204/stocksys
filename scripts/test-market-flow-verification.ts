@@ -14,7 +14,7 @@ import { memoryDb } from '../lib/memoryDb/memoryStore';
 import { AgentManager } from '../lib/engine/simulation/agentManager';
 import { MarketEvent, resolveTargetStockIds } from '../lib/engine/simulation/marketEventTypes';
 import { buildMarketObservation } from '../lib/engine/simulation/marketObservation';
-import { ensureLocalStandaloneEngine, getLocalStandaloneEngine } from '../lib/engine/localStandaloneServer';
+import { ensureLocalStandaloneReady, stopLocalStandaloneEngine } from '../lib/engine/localStandaloneServer';
 import { secondsToMs } from '../lib/engine/simulation/simClock';
 
 // ── Utilities ────────────────────────────────────────────────────────────────
@@ -448,37 +448,41 @@ async function main(): Promise<void> {
   console.log('   뉴스→주문·체결→주도주·유동성 인과 흐름 검증 (seed×3 시나리오)');
   console.log('='.repeat(68));
 
-  ensureLocalStandaloneEngine();
-  getLocalStandaloneEngine()?.stop();
+  await ensureLocalStandaloneReady();
+  stopLocalStandaloneEngine();
   await resetDb();
 
-  const seeds = [42, 137];
-  const results: { seed: number; scenario: number; passed: boolean }[] = [];
+  try {
+    const seeds = [42, 137];
+    const results: { seed: number; scenario: number; passed: boolean }[] = [];
 
-  for (const seed of seeds) {
-    for (const [idx, fn] of ([runScenario1, runScenario2, runScenario3] as const).entries()) {
-      try {
-        await fn(seed);
-        results.push({ seed, scenario: idx + 1, passed: true });
-      } catch (e: any) {
-        console.error(`\n❌ Scenario ${idx + 1} seed=${seed} FAILED: ${e.message}`);
-        results.push({ seed, scenario: idx + 1, passed: false });
+    for (const seed of seeds) {
+      for (const [idx, fn] of ([runScenario1, runScenario2, runScenario3] as const).entries()) {
+        try {
+          await fn(seed);
+          results.push({ seed, scenario: idx + 1, passed: true });
+        } catch (e: any) {
+          console.error(`\n❌ Scenario ${idx + 1} seed=${seed} FAILED: ${e.message}`);
+          results.push({ seed, scenario: idx + 1, passed: false });
+        }
       }
     }
-  }
 
-  console.log('\n' + '='.repeat(68));
-  console.log('📋 Market Flow Verification Summary');
-  console.log('='.repeat(68));
-  console.table(results);
+    console.log('\n' + '='.repeat(68));
+    console.log('📋 Market Flow Verification Summary');
+    console.log('='.repeat(68));
+    console.table(results);
 
-  const allPassed = results.every((r) => r.passed);
-  if (allPassed) {
-    console.log('\n🎉 ALL MARKET FLOW VERIFICATION SCENARIOS PASSED!\n');
-  } else {
-    const failed = results.filter((r) => !r.passed).length;
-    console.log(`\n❌ ${failed}/${results.length} scenarios FAILED.\n`);
-    process.exit(1);
+    const allPassed = results.every((r) => r.passed);
+    if (allPassed) {
+      console.log('\n🎉 ALL MARKET FLOW VERIFICATION SCENARIOS PASSED!\n');
+    } else {
+      const failed = results.filter((r) => !r.passed).length;
+      console.log(`\n❌ ${failed}/${results.length} scenarios FAILED.\n`);
+      process.exitCode = 1;
+    }
+  } finally {
+    stopLocalStandaloneEngine();
   }
 }
 

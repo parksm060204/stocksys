@@ -1,12 +1,13 @@
 import { BaseAgent } from "./BaseAgent";
 import { CircularQueue } from "./utils/CircularQueue";
+import type { SimulationContext } from "../../../lib/engine/simulation/runtime";
 
 export class AdversarialAgent extends BaseAgent {
   public id = 'PROP_DESK_PREDATOR';
   private lobHistory: Map<string, CircularQueue<any>> = new Map(); 
 
-  constructor() {
-    super({ id: 'PROP_DESK_PREDATOR', baseWeights: { stock: 0.5, bond: 0, commodity: 0, cash: 0.5 } } as any, 50000000000); // 500억
+  constructor(context?: SimulationContext) {
+    super({ id: 'PROP_DESK_PREDATOR', baseWeights: { stock: 0.5, bond: 0, commodity: 0, cash: 0.5 } } as any, 50000000000, context); // 500억
   }
 
 

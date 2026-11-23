@@ -11,14 +11,12 @@ async function ensureRestoredAndPersistUserProfile(
   initialData: { username: string; nickname: string; email?: string }
 ): Promise<void> {
   await ensureMemoryDbReady();
-  await withAccountLocks([userId], async () => {
-    const existingId = memoryDb.profileUserIdIndex.get(userId) || userId;
-    if (memoryDb.profiles.has(existingId)) {
+  await withAccountLocks([memoryDb.resolveAccountLockKey(userId)], async () => {
+    if (memoryDb.resolveProfileByUserId(userId)) {
       return;
     }
     await runWithCommitGate(persistConfirmedState, async () => {
-      const doubleCheckId = memoryDb.profileUserIdIndex.get(userId) || userId;
-      if (memoryDb.profiles.has(doubleCheckId)) {
+      if (memoryDb.resolveProfileByUserId(userId)) {
         return;
       }
       memoryDb.ensureUserProfile(userId, initialData);

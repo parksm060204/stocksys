@@ -1,10 +1,11 @@
 import { NextResponse } from 'next/server';
-import { scenarioManager } from '@/lib/scenario/ScenarioManager';
+import { scenarioManager, syncScenarioManagerFromDatabase } from '@/lib/scenario/ScenarioManager';
 import { commodityEngineInstance } from '@/app/api/commodities/route';
+import { COMMODITY_DEFINITIONS } from '@/lib/commodities/definitions';
 import { verifyAdminSession } from '@/lib/auth/adminAuth';
 import { ensureLocalStandaloneReady, getLocalStandaloneEngine, persistConfirmedState } from '@/lib/engine/localStandaloneServer';
 import { withAllStockLocks } from '@/lib/engine/marketService';
-import { runWithCommitGate } from '@/lib/memoryDb/PersistenceManager';
+import { runWithCommitGate, persistenceManager } from '@/lib/memoryDb/PersistenceManager';
 import { memoryDb } from '@/lib/memoryDb/memoryStore';
 
 function getAuthoritativeScenarioManager() {
@@ -19,19 +20,39 @@ export async function GET(req: Request) {
   }
 
   const activeManager = getAuthoritativeScenarioManager();
-  const activeScenarios = activeManager.getActiveScenarios();
-  const activeMacroShocks = activeManager.getActiveMacroShocks();
-  const logs = activeManager.getActionLogs();
+  const snapshot = await runWithCommitGate(
+    undefined,
+    async () => {
+      try {
+        syncScenarioManagerFromDatabase(memoryDb, activeManager, { clearOnDbNull: true });
+        if (activeManager !== scenarioManager) {
+          syncScenarioManagerFromDatabase(memoryDb, scenarioManager, { clearOnDbNull: true });
+        }
+      } catch { /* ignore invalid persisted snapshot */ }
+      return {
+        tick: activeManager.currentTick,
+        activeScenarios: activeManager.getActiveScenarios(),
+        activeMacroShocks: activeManager.getActiveMacroShocks(),
+        logs: activeManager.getActionLogs(),
+        tradingHalt: memoryDb.isTradingHalted(),
+      };
+    },
+    persistenceManager
+  );
   const engine = getLocalStandaloneEngine();
   const diagnostics = engine ? engine.getDiagnosticsSummaryReport() : null;
 
   return NextResponse.json({
     success: true,
-    tick: activeManager.currentTick,
-    activeScenarios,
-    activeMacroShocks,
-    logs,
+    tick: snapshot.tick,
+    activeScenarios: snapshot.activeScenarios,
+    activeMacroShocks: snapshot.activeMacroShocks,
+    logs: snapshot.logs,
     diagnostics,
+    emergencyControl: {
+      tradingHalt: snapshot.tradingHalt,
+      lpInfiniteLiquiditySupported: false,
+    },
   });
 }
 
@@ -51,6 +72,31 @@ export async function POST(req: Request) {
     // 1. 작전 세력 주입
     if (action === 'inject_scenario') {
       const { assetType, assetId, ticker, name, mode, durationTicks, targetChangePct, volumeMultiplier, initialPrice } = body;
+
+      if (assetType !== 'stock' && assetType !== 'commodity') {
+        return NextResponse.json(
+          { success: false, message: `지원하지 않는 시나리오 자산 유형입니다: ${String(assetType)} (stock 또는 commodity만 지원)` },
+          { status: 400 }
+        );
+      }
+
+      if (assetType === 'stock') {
+        const targetStock = typeof assetId === 'string' ? memoryDb.stocks.get(assetId) : undefined;
+        if (!targetStock || targetStock.market === 'bonds') {
+          return NextResponse.json(
+            { success: false, message: '유효한 상장 주식/ETF 종목만 작전 시나리오 대상으로 지정할 수 있습니다. (채권 미지원)' },
+            { status: 400 }
+          );
+        }
+      } else {
+        const validCommodity = COMMODITY_DEFINITIONS.some((c) => c.id === assetId);
+        if (!validCommodity) {
+          return NextResponse.json(
+            { success: false, message: `유효하지 않은 원자재 식별자입니다: ${String(assetId)}` },
+            { status: 400 }
+          );
+        }
+      }
 
       const stockRecord = typeof assetId === 'string' ? memoryDb.stocks.get(assetId) : undefined;
       const numericInitPrice = Number(initialPrice);
@@ -80,82 +126,110 @@ export async function POST(req: Request) {
         adminUser,
       };
 
-      const scenario = activeManager.injectScenario(scenarioParams);
-      if (activeManager !== scenarioManager) {
-        try { scenarioManager.injectScenario(scenarioParams); } catch { /* ignore */ }
-      }
+      // DB stocks 목표가 및 시나리오 상태 원자적·영속 반영 (단일 커밋 게이트 내부에서 동기화/변이/롤백)
+      const stockIdForLock = assetType === 'stock' && typeof assetId === 'string' && memoryDb.stocks.has(assetId)
+        ? [assetId]
+        : [];
+      const injectedResult = await withAllStockLocks(stockIdForLock, async () => {
+        return await runWithCommitGate(persistConfirmedState, async () => {
+          syncScenarioManagerFromDatabase(memoryDb, activeManager, { clearOnDbNull: true });
+          const prevSnap = activeManager.snapshotState();
+          const prevDbSnap = memoryDb.scenarioRuntimeState ? structuredClone(memoryDb.scenarioRuntimeState) : null;
+          const scenario = activeManager.injectScenario(scenarioParams);
+          if (activeManager !== scenarioManager) {
+            try { scenarioManager.restoreState(activeManager.snapshotState()); } catch { /* ignore */ }
+          }
 
-      // DB stocks 목표가 원자적·영속 반영
-      if (assetType === 'stock' && typeof assetId === 'string' && memoryDb.stocks.has(assetId)) {
-        const targetMultiplier = 1 + safeTargetPct / 100;
-        const nextTargetPrice = Math.max(1, Math.round(safeInitialPrice * targetMultiplier));
-        const persistOk = await withAllStockLocks([assetId], async () => {
-          return await runWithCommitGate(persistConfirmedState, async () => {
-            const stk = memoryDb.stocks.get(assetId);
-            if (!stk) return true;
-            const prevTarget = (stk as any).target_price;
-            (stk as any).target_price = nextTargetPrice;
-            const saved = await persistConfirmedState();
-            if (!saved) {
-              (stk as any).target_price = prevTarget;
-              return false;
+          const stk = stockIdForLock.length > 0 ? memoryDb.stocks.get(stockIdForLock[0]!) : undefined;
+          const prevTarget = stk ? (stk as any).target_price : undefined;
+          if (stk) {
+            const targetMultiplier = 1 + safeTargetPct / 100;
+            (stk as any).target_price = Math.max(1, Math.round(safeInitialPrice * targetMultiplier));
+          }
+          memoryDb.scenarioRuntimeState = activeManager.snapshotState();
+          const saved = await persistConfirmedState();
+          if (!saved) {
+            if (stk) (stk as any).target_price = prevTarget;
+            memoryDb.scenarioRuntimeState = prevDbSnap;
+            activeManager.restoreState(prevSnap);
+            if (activeManager !== scenarioManager) {
+              try { scenarioManager.restoreState(prevSnap); } catch { /* ignore */ }
             }
-            return true;
-          });
+            return null;
+          }
+          return scenario;
         });
-        if (!persistOk) {
-          return NextResponse.json(
-            { success: false, message: '시나리오 목표가 영속 저장에 실패하여 롤백되었습니다.' },
-            { status: 500 }
-          );
-        }
+      });
+      if (!injectedResult) {
+        return NextResponse.json(
+          { success: false, message: '시나리오 영속 저장에 실패하여 롤백되었습니다.' },
+          { status: 500 }
+        );
       }
 
-      return NextResponse.json({ success: true, scenario });
+      return NextResponse.json({ success: true, scenario: injectedResult });
     }
 
     // 2. 거시경제 충격 발동
     if (action === 'trigger_macro_shock') {
       const { shockType } = body;
-      const shock = activeManager.triggerMacroShock({
-        type: shockType,
-        adminUser,
-      });
-      if (activeManager !== scenarioManager) {
-        try { scenarioManager.triggerMacroShock({ type: shockType, adminUser }); } catch { /* ignore */ }
-      }
 
-      // admin_settings 테이블 매크로 심리 레짐 영속 갱신
-      const persisted = await runWithCommitGate(persistConfirmedState, async () => {
+      // admin_settings 테이블 매크로 심리 레짐 + 시나리오/원자재 런타임 상태 영속 갱신
+      const shockResult = await runWithCommitGate(persistConfirmedState, async () => {
+        syncScenarioManagerFromDatabase(memoryDb, activeManager, { clearOnDbNull: true });
+        const prevSnap = activeManager.snapshotState();
+        const prevDbSnap = memoryDb.scenarioRuntimeState ? structuredClone(memoryDb.scenarioRuntimeState) : null;
+        const prevEventSnap = commodityEngineInstance.eventSystem.snapshotState();
+        const prevDbEventSnap = memoryDb.commodityEventRuntimeState
+          ? structuredClone(memoryDb.commodityEventRuntimeState)
+          : null;
+
+        const shock = activeManager.triggerMacroShock({
+          type: shockType,
+          adminUser,
+        });
+        if (activeManager !== scenarioManager) {
+          try { scenarioManager.restoreState(activeManager.snapshotState()); } catch { /* ignore */ }
+        }
+
+        // 원자재 시장에도 관련 이벤트 전파
+        if (shockType === 'GEOPOLITICAL_CRISIS') {
+          commodityEngineInstance.eventSystem.triggerEventById('ev_tmpl_hormuz_blockade', commodityEngineInstance.currentTick);
+        } else if (shockType === 'RATE_HIKE_SHOCK') {
+          commodityEngineInstance.eventSystem.triggerEventById('ev_tmpl_recession_pmi_crash', commodityEngineInstance.currentTick);
+        } else if (shockType === 'LIQUIDITY_BOOM') {
+          commodityEngineInstance.eventSystem.triggerEventById('ev_tmpl_green_subsidy_surge', commodityEngineInstance.currentTick);
+        }
+
         const setting = memoryDb.adminSettings.get('1') ?? Array.from(memoryDb.adminSettings.values())[0];
         const prevSentiment = setting?.market_sentiment;
         if (setting) {
           setting.market_sentiment = shock.regime;
         }
+        memoryDb.scenarioRuntimeState = activeManager.snapshotState();
+        memoryDb.commodityEventRuntimeState = commodityEngineInstance.eventSystem.snapshotState();
         const saved = await persistConfirmedState();
-        if (!saved && setting) {
-          setting.market_sentiment = prevSentiment;
-          return false;
+        if (!saved) {
+          if (setting) setting.market_sentiment = prevSentiment;
+          memoryDb.scenarioRuntimeState = prevDbSnap;
+          memoryDb.commodityEventRuntimeState = prevDbEventSnap;
+          activeManager.restoreState(prevSnap);
+          if (activeManager !== scenarioManager) {
+            try { scenarioManager.restoreState(prevSnap); } catch { /* ignore */ }
+          }
+          commodityEngineInstance.eventSystem.restoreState(prevEventSnap);
+          return null;
         }
-        return saved;
+        return shock;
       });
-      if (!persisted) {
+      if (!shockResult) {
         return NextResponse.json(
-          { success: false, message: '거시경제 충격 상태 영속 저장에 실패했습니다.' },
+          { success: false, message: '거시경제 충격 상태 영속 저장에 실패하여 롤백되었습니다.' },
           { status: 500 }
         );
       }
 
-      // 원자재 시장에도 관련 이벤트 전파
-      if (shockType === 'GEOPOLITICAL_CRISIS') {
-        commodityEngineInstance.eventSystem.triggerEventById('ev_tmpl_hormuz_blockade', commodityEngineInstance.currentTick);
-      } else if (shockType === 'RATE_HIKE_SHOCK') {
-        commodityEngineInstance.eventSystem.triggerEventById('ev_tmpl_recession_pmi_crash', commodityEngineInstance.currentTick);
-      } else if (shockType === 'LIQUIDITY_BOOM') {
-        commodityEngineInstance.eventSystem.triggerEventById('ev_tmpl_green_subsidy_surge', commodityEngineInstance.currentTick);
-      }
-
-      return NextResponse.json({ success: true, shock });
+      return NextResponse.json({ success: true, shock: shockResult });
     }
 
     // 5. 신규 종목 상장 (관리자 전용)
@@ -207,7 +281,7 @@ export async function POST(req: Request) {
           const saved = await persistConfirmedState();
           if (!saved) {
             memoryDb.stocks.delete(newId);
-            memoryDb.tickerIndex.delete(ticker);
+            memoryDb.removeStockFromIndex(rec);
             return null;
           }
           return rec;
@@ -265,23 +339,98 @@ export async function POST(req: Request) {
     // 3. 단일 시나리오 롤백
     if (action === 'rollback_scenario') {
       const { scenarioId } = body;
-      const success = activeManager.rollbackScenario(scenarioId, adminUser);
-      if (activeManager !== scenarioManager) {
-        try { scenarioManager.rollbackScenario(scenarioId, adminUser); } catch { /* ignore */ }
+      const rollbackOutcome = await runWithCommitGate(persistConfirmedState, async () => {
+        syncScenarioManagerFromDatabase(memoryDb, activeManager, { clearOnDbNull: true });
+        const prevSnap = activeManager.snapshotState();
+        const prevDbSnap = memoryDb.scenarioRuntimeState ? structuredClone(memoryDb.scenarioRuntimeState) : null;
+        const success = activeManager.rollbackScenario(scenarioId, adminUser);
+        if (activeManager !== scenarioManager) {
+          try { scenarioManager.restoreState(activeManager.snapshotState()); } catch { /* ignore */ }
+        }
+        if (!success) {
+          return { persisted: true, success: false };
+        }
+        memoryDb.scenarioRuntimeState = activeManager.snapshotState();
+        const saved = await persistConfirmedState();
+        if (!saved) {
+          memoryDb.scenarioRuntimeState = prevDbSnap;
+          activeManager.restoreState(prevSnap);
+          if (activeManager !== scenarioManager) {
+            try { scenarioManager.restoreState(prevSnap); } catch { /* ignore */ }
+          }
+          return { persisted: false, success: false };
+        }
+        return { persisted: true, success: true };
+      });
+      if (!rollbackOutcome.persisted) {
+        return NextResponse.json({ success: false, message: '시나리오 롤백 영속 저장에 실패했습니다.' }, { status: 500 });
       }
-      return NextResponse.json({ success });
+      return NextResponse.json({ success: rollbackOutcome.success });
     }
 
     // 4. 전체 긴급 정지 (EMERGENCY HALT ALL)
     if (action === 'emergency_halt') {
-      const result = activeManager.emergencyHaltAll(adminUser);
-      if (activeManager !== scenarioManager) {
-        try { scenarioManager.emergencyHaltAll(adminUser); } catch { /* ignore */ }
+      const haltResult = await runWithCommitGate(persistConfirmedState, async () => {
+        syncScenarioManagerFromDatabase(memoryDb, activeManager, { clearOnDbNull: true });
+        const prevSnap = activeManager.snapshotState();
+        const prevDbSnap = memoryDb.scenarioRuntimeState ? structuredClone(memoryDb.scenarioRuntimeState) : null;
+        const result = activeManager.emergencyHaltAll(adminUser);
+        if (activeManager !== scenarioManager) {
+          try { scenarioManager.restoreState(activeManager.snapshotState()); } catch { /* ignore */ }
+        }
+        memoryDb.scenarioRuntimeState = activeManager.snapshotState();
+        const saved = await persistConfirmedState();
+        if (!saved) {
+          memoryDb.scenarioRuntimeState = prevDbSnap;
+          activeManager.restoreState(prevSnap);
+          if (activeManager !== scenarioManager) {
+            try { scenarioManager.restoreState(prevSnap); } catch { /* ignore */ }
+          }
+          return null;
+        }
+        return result;
+      });
+      if (!haltResult) {
+        return NextResponse.json({ success: false, message: '긴급 정지 영속 저장에 실패했습니다.' }, { status: 500 });
       }
-      return NextResponse.json({ success: true, result });
+      return NextResponse.json({ success: true, result: haltResult });
     }
 
-    // 5. 구조화된 시장 뉴스 이벤트 주입
+    // 5. 긴급 서킷브레이커 (거래 동결 토글)
+    if (action === 'set_trading_halt') {
+      if (typeof body.tradingHalt !== 'boolean') {
+        return NextResponse.json(
+          { success: false, message: 'tradingHalt(boolean) 값이 필요합니다.' },
+          { status: 400 }
+        );
+      }
+      const nextHalt = body.tradingHalt;
+      const persisted = await runWithCommitGate(persistConfirmedState, async () => {
+        let setting = memoryDb.adminSettings.get('1') ?? Array.from(memoryDb.adminSettings.values())[0];
+        const prevHalt = Boolean(setting?.trading_halt);
+        if (!setting) {
+          setting = { id: 1, base_rate: 0.025, market_sentiment: 'NEUTRAL', trading_halt: nextHalt };
+          memoryDb.adminSettings.set('1', setting);
+        } else {
+          setting.trading_halt = nextHalt;
+        }
+        const saved = await persistConfirmedState();
+        if (!saved) {
+          setting.trading_halt = prevHalt;
+          return false;
+        }
+        return true;
+      });
+      if (!persisted) {
+        return NextResponse.json(
+          { success: false, message: '거래 동결 상태 영속 저장에 실패하여 롤백되었습니다.' },
+          { status: 500 }
+        );
+      }
+      return NextResponse.json({ success: true, tradingHalt: nextHalt });
+    }
+
+    // 6. 구조화된 시장 뉴스 이벤트 주입
     if (action === 'inject_news_event') {
       const { event } = body;
       const engine = getLocalStandaloneEngine();

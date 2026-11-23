@@ -36,13 +36,15 @@ export class PensionFundAgent extends BaseAgent {
       const adjustedTargetYTM = isCreditCrunch ? targetYTM + 0.02 : targetYTM;
       const faceValue = bond.face_value !== undefined ? bond.face_value : (bond.faceValue !== undefined ? bond.faceValue : 10000);
       const maturityYears = bond.maturity_years !== undefined ? bond.maturity_years : (bond.maturityYears !== undefined ? bond.maturityYears : 10);
-      const currentPrice = bond.current_price !== undefined ? bond.current_price : (bond.currentPrice !== undefined ? bond.currentPrice : 10000);
+      const currentPrice = bond.current_price !== undefined ? bond.current_price : (bond.currentPrice !== undefined ? bond.currentPrice : 100);
+      const quoteBase = bond.quote_base !== undefined ? bond.quote_base : (currentPrice < faceValue / 10 ? 100 : faceValue);
 
-      const targetBuyPrice = this.calculatePriceFromYTM(faceValue, adjustedTargetYTM, maturityYears);
-      const adjustedBuyPrice = Math.floor(targetBuyPrice / 10) * 10;
+      const targetBuyPrice = this.calculatePriceFromYTM(quoteBase, adjustedTargetYTM, maturityYears);
+      const adjustedBuyPrice = quoteBase === 100 ? Math.floor(targetBuyPrice * 100) / 100 : Math.floor(targetBuyPrice / 10) * 10;
 
-      if (currentPrice <= adjustedBuyPrice + 50) {
-        const orderVolume = Math.floor((this.config.capital * (this.random.next() * 0.01 + 0.01)) / currentPrice);
+      if (currentPrice <= adjustedBuyPrice + (quoteBase === 100 ? 0.5 : 50)) {
+        const unitCostKrw = currentPrice * (faceValue / quoteBase);
+        const orderVolume = unitCostKrw > 0 ? Math.floor((this.config.capital * (this.random.next() * 0.01 + 0.01)) / unitCostKrw) : 0;
         orders.push({
           stock_id: bond.id,
           user_id: null,

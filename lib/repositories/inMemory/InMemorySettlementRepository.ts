@@ -23,9 +23,10 @@ import {
   OrderRecord,
   StockRecord
 } from '../../memoryDb/memoryStore';
-import { applyCashCreditWithMarginDebt } from '../../engine/orderRisk';
+import { applyCashCreditWithMarginDebt, sweepUnencumberedCashToMarginDebt } from '../../engine/orderRisk';
+import { hasAmbiguousK200Units } from '../../options/contractUnits';
 import type { SettlementRepository } from '../settlementRepository';
-import { getStockFxRateToKrw } from '../../engine/currency';
+import { getAssetSettlementPriceMultiplierToKrw } from '../../engine/currency';
 import type {
   TradeSettlementInput,
   SettlementBatchResult,
@@ -904,7 +905,7 @@ export class InMemorySettlementRepository implements SettlementRepository {
       const trade = pendingInputs[i];
       const buyerId = isNonEmptyId(trade.buyer_id) ? trade.buyer_id : null;
       const sellerId = isNonEmptyId(trade.seller_id) ? trade.seller_id : null;
-      const fxRate = getStockFxRateToKrw(this.db, this.db.stocks.get(trade.stock_id));
+      const fxRate = getAssetSettlementPriceMultiplierToKrw(this.db, trade.stock_id);
       const tradeAmountKrw = fxRate === 1 ? v.tradeAmount : roundMoney(trade.price * trade.size * fxRate);
       const buyerFeeKrw = fxRate === 1 ? v.fees.buyerFeeAmount : roundMoney(tradeAmountKrw * v.feeRates.buyerFeeRate);
       const sellerFeeKrw = fxRate === 1 ? v.fees.sellerFeeAmount : roundMoney(tradeAmountKrw * v.feeRates.sellerFeeRate);
@@ -1034,8 +1035,8 @@ export class InMemorySettlementRepository implements SettlementRepository {
     try {
       for (const [userId, cashDelta] of netCashDeltas.entries()) {
         const view = getAccountView(userId)!;
-        const nextCash = roundMoney(view.cash + cashDelta);
         if (view.needsProfileCreation) {
+          const nextCash = roundMoney(view.cash + cashDelta);
           const newProfile: ProfileRecord = {
             id: userId,
             user_id: userId,
@@ -1049,13 +1050,21 @@ export class InMemorySettlementRepository implements SettlementRepository {
           this.db.profiles.set(userId, newProfile);
           this.db.profileUserIdIndex.set(userId, userId);
           newlyCreatedProfileIds.add(userId);
+          const port = this.db.institutionalPortfolios.get(userId);
+          if (port) {
+            port.current_cash = nextCash;
+          }
         } else {
           const profile = this.db.profiles.get(this.db.profileUserIdIndex.get(userId) || userId)!;
-          profile.cash = nextCash;
-        }
-        const port = this.db.institutionalPortfolios.get(userId);
-        if (port) {
-          port.current_cash = nextCash;
+          if (cashDelta > 0) {
+            applyCashCreditWithMarginDebt(profile, cashDelta);
+          } else {
+            profile.cash = roundMoney(view.cash + cashDelta);
+          }
+          const port = this.db.institutionalPortfolios.get(userId);
+          if (port) {
+            port.current_cash = profile.cash;
+          }
         }
       }
 
@@ -1064,7 +1073,7 @@ export class InMemorySettlementRepository implements SettlementRepository {
         const trade = pendingInputs[i];
         const buyerId = isNonEmptyId(trade.buyer_id) ? trade.buyer_id : null;
         const sellerId = isNonEmptyId(trade.seller_id) ? trade.seller_id : null;
-        const fxRate = getStockFxRateToKrw(this.db, this.db.stocks.get(trade.stock_id));
+        const fxRate = getAssetSettlementPriceMultiplierToKrw(this.db, trade.stock_id);
         const tradeAmountKrw = fxRate === 1 ? v.tradeAmount : roundMoney(trade.price * trade.size * fxRate);
         const buyerFeeKrw = fxRate === 1 ? v.fees.buyerFeeAmount : roundMoney(tradeAmountKrw * v.feeRates.buyerFeeRate);
         const sellerFeeKrw = fxRate === 1 ? v.fees.sellerFeeAmount : roundMoney(tradeAmountKrw * v.feeRates.sellerFeeRate);
@@ -1249,7 +1258,12 @@ export class InMemorySettlementRepository implements SettlementRepository {
       }
       for (const [pid, snap] of profileSnapshots.entries()) {
         const p = this.db.profiles.get(pid);
-        if (p) Object.assign(p, snap);
+        if (p) {
+          for (const k of Object.keys(p)) {
+            if (!(k in snap)) delete (p as any)[k];
+          }
+          Object.assign(p, snap);
+        }
       }
       for (const [botId, snap] of portfolioSnapshots.entries()) {
         const port = this.db.institutionalPortfolios.get(botId);
@@ -1372,6 +1386,151 @@ export class InMemorySettlementRepository implements SettlementRepository {
     );
   }
 
+  public getOpenOptionOrderAccountIds(optionIds: readonly string[]): readonly string[] {
+    if (optionIds.length === 0) return [];
+    const accounts = new Set<string>();
+    const wanted = new Set(optionIds);
+    for (const optionId of wanted) {
+      const orderIds = this.db.orderStockIndex.get(optionId);
+      if (!orderIds) continue;
+      for (const oid of orderIds) {
+        const ord = this.db.orders.get(oid);
+        if (!ord || (ord.status !== 'open' && ord.status !== 'partial')) continue;
+        if (ord.user_id) {
+          accounts.add(this.db.profileUserIdIndex.get(ord.user_id) || ord.user_id);
+        }
+      }
+    }
+    return Array.from(accounts);
+  }
+
+  public async expireOrdersForExpiredOption(params: {
+    optionId: string;
+    now: number;
+  }): Promise<{
+    success: boolean;
+    expiredCount: number;
+    affectedUserIds: readonly string[];
+    errorCode?: string;
+    error?: string;
+  }> {
+    const { optionId, now } = params;
+    if (!isNonEmptyId(optionId) || !Number.isFinite(now)) {
+      return {
+        success: false,
+        expiredCount: 0,
+        affectedUserIds: [],
+        errorCode: 'INVALID_PARAMS',
+        error: 'optionId and finite now are required',
+      };
+    }
+
+    const contract = this.db.optionsContracts.get(optionId);
+    if (!contract) {
+      return {
+        success: false,
+        expiredCount: 0,
+        affectedUserIds: [],
+        errorCode: 'CONTRACT_NOT_FOUND',
+        error: `Option contract ${optionId} not found`,
+      };
+    }
+
+    const expiryTime = Date.parse(contract.expiry_date);
+    if (!Number.isFinite(expiryTime) || expiryTime > now) {
+      return {
+        success: true,
+        expiredCount: 0,
+        affectedUserIds: [],
+      };
+    }
+
+    const candidateOrders: OrderRecord[] = [];
+    const indexedIds = this.db.orderStockIndex.get(optionId);
+    if (indexedIds) {
+      for (const oid of indexedIds) {
+        const ord = this.db.orders.get(oid);
+        if (ord && ord.stock_id === optionId && (ord.status === 'open' || ord.status === 'partial')) {
+          candidateOrders.push(ord);
+        }
+      }
+    }
+
+    if (candidateOrders.length === 0) {
+      return {
+        success: true,
+        expiredCount: 0,
+        affectedUserIds: [],
+      };
+    }
+
+    const orderSnapshots = new Map<string, OrderRecord>();
+    const profileSnapshots = new Map<string, ProfileRecord>();
+    const affectedUsers = new Set<string>();
+
+    for (const ord of candidateOrders) {
+      orderSnapshots.set(ord.id, { ...ord });
+      if (ord.user_id) {
+        const pid = this.db.profileUserIdIndex.get(ord.user_id) || ord.user_id;
+        affectedUsers.add(pid);
+        const profile = this.db.profiles.get(pid);
+        if (profile && !profileSnapshots.has(pid)) {
+          profileSnapshots.set(pid, { ...profile });
+        }
+      }
+    }
+
+    try {
+      for (const ord of candidateOrders) {
+        ord.status = 'expired';
+        ord.version = (ord.version || 1) + 1;
+        if (ord.remainingQuantity !== undefined) {
+          ord.remainingQuantity = 0;
+        }
+        if (ord.remaining !== undefined) {
+          ord.remaining = 0;
+        }
+        this.db.addOrderToIndex(ord);
+      }
+
+      for (const pid of affectedUsers) {
+        const profile = this.db.profiles.get(pid);
+        if (profile) {
+          sweepUnencumberedCashToMarginDebt(this.db, profile);
+        }
+      }
+
+      return {
+        success: true,
+        expiredCount: candidateOrders.length,
+        affectedUserIds: Array.from(affectedUsers),
+      };
+    } catch (err: any) {
+      for (const [oid, prevOrd] of orderSnapshots.entries()) {
+        this.db.orders.set(oid, prevOrd);
+        this.db.addOrderToIndex(prevOrd);
+      }
+      for (const [pid, prevProfile] of profileSnapshots.entries()) {
+        const live = this.db.profiles.get(pid);
+        if (live) {
+          for (const k of Object.keys(live)) {
+            if (!(k in prevProfile)) delete (live as any)[k];
+          }
+          Object.assign(live, prevProfile);
+        } else {
+          this.db.profiles.set(pid, prevProfile);
+        }
+      }
+      return {
+        success: false,
+        expiredCount: 0,
+        affectedUserIds: [],
+        errorCode: 'EXPIRE_ORDERS_FAILED',
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
   public getBonds(now: number): readonly BondRecord[] {
     if (!Number.isFinite(now)) {
       throw new RangeError(`[InMemorySettlementRepository] getBonds requires a finite now: ${now}`);
@@ -1431,19 +1590,45 @@ export class InMemorySettlementRepository implements SettlementRepository {
     });
   }
 
+  public hasBondCouponPaidInWindow(
+    userId: string,
+    bondId: string,
+    maturityTimeMs: number,
+    nowMs: number,
+    paymentsPerYear: number = 4
+  ): boolean {
+    if (!Number.isFinite(maturityTimeMs) || !Number.isFinite(nowMs) || paymentsPerYear <= 0) {
+      return false;
+    }
+    const periodDurationMs = (365 * 24 * 60 * 60 * 1000) / paymentsPerYear;
+    const periodWindowStart = maturityTimeMs - periodDurationMs;
+    const windowEnd = Math.max(nowMs, maturityTimeMs);
+    return this.db.bondCouponPayments.some((p: any) => {
+      if (p.user_id !== userId || p.bond_id !== bondId) return false;
+      if (p.payment_type === 'MATURITY_REDEMPTION') return false;
+      const paidMs = Date.parse(p.paid_at || p.payment_date || '');
+      return Number.isFinite(paidMs) && paidMs > periodWindowStart && paidMs <= windowEnd;
+    });
+  }
+
   public async settleBondCoupon(
     userId: string,
     bondId: string,
     couponAmount: number,
-    idempotencyKey: string
+    idempotencyKey: string,
+    paidAtMs?: number
   ): Promise<boolean> {
+    const paidAtIso =
+      paidAtMs !== undefined && Number.isFinite(paidAtMs)
+        ? new Date(paidAtMs).toISOString()
+        : this.db.getIsoTimestamp();
     return this.commitCashPayout(idempotencyKey, userId, couponAmount, () => {
       this.db.bondCouponPayments.push({
         id: idempotencyKey,
         user_id: userId,
         bond_id: bondId,
         coupon_amount: couponAmount,
-        paid_at: this.db.getIsoTimestamp(),
+        paid_at: paidAtIso,
       });
     });
   }
@@ -1464,6 +1649,33 @@ export class InMemorySettlementRepository implements SettlementRepository {
         paid_at: this.db.getIsoTimestamp(),
       });
     });
+  }
+
+  public clearOptionLpLiabilitiesIfSettled(optionId: string): number {
+    if (!isNonEmptyId(optionId)) return 0;
+    for (const h of this.db.holdings.values()) {
+      if (h.stock_id === optionId && Number(h.quantity || 0) > 0) {
+        return 0;
+      }
+    }
+    const orderIds = this.db.orderStockIndex.get(optionId);
+    if (orderIds) {
+      for (const oid of orderIds) {
+        const ord = this.db.orders.get(oid);
+        if (ord && (ord.status === 'open' || ord.status === 'partial')) {
+          return 0;
+        }
+      }
+    }
+    let cleared = 0;
+    for (const key of Array.from(this.db.lpLiabilities.keys())) {
+      const sepIdx = key.lastIndexOf(':');
+      if (sepIdx !== -1 && key.slice(sepIdx + 1) === optionId) {
+        this.db.lpLiabilities.delete(key);
+        cleared += 1;
+      }
+    }
+    return cleared;
   }
 
   public async settleOptionExpiryAtomically(
@@ -1498,6 +1710,9 @@ export class InMemorySettlementRepository implements SettlementRepository {
     const contract = this.db.optionsContracts.get(params.optionId);
     if (!contract) {
       return { success: false, errorCode: 'CONTRACT_NOT_FOUND', error: `Option contract ${params.optionId} not found` };
+    }
+    if (hasAmbiguousK200Units(contract)) {
+      return { success: false, errorCode: 'HELD_UNDERLYING_UNIT_MISMATCH', error: 'Legacy K200 contract requires explicit unit reconciliation before settlement' };
     }
 
     const expiryTime = Date.parse(contract.expiry_date);
@@ -1575,13 +1790,13 @@ export class InMemorySettlementRepository implements SettlementRepository {
 
     const profileSnapshot = { ...profile };
     const holdingSnapshot = { ...holding };
+    const lpLiabilitiesSnapshot = new Map(this.db.lpLiabilities);
     const historyCountBefore = this.db.optionSettlements.length;
 
     try {
       if (payoutAmount > 0) {
-        const nextCash = roundMoney(profile.cash + payoutAmount);
-        if (!Number.isFinite(nextCash)) throw new Error('Cash calculation overflow');
-        profile.cash = nextCash;
+        applyCashCreditWithMarginDebt(profile, payoutAmount);
+        if (!Number.isFinite(profile.cash)) throw new Error('Cash calculation overflow');
       }
 
       this.db.optionSettlements.push({
@@ -1616,13 +1831,18 @@ export class InMemorySettlementRepository implements SettlementRepository {
         settled_at: this.db.getIsoTimestamp(),
       });
 
-      return { success: true };
+      const lpLiabilitiesCleared = this.clearOptionLpLiabilitiesIfSettled(params.optionId);
+      return { success: true, lpLiabilitiesCleared };
     } catch (err) {
+      for (const k of Object.keys(profile)) {
+        if (!(k in profileSnapshot)) delete (profile as any)[k];
+      }
       Object.assign(profile, profileSnapshot);
       this.db.optionSettlements = this.db.optionSettlements.slice(0, historyCountBefore);
       this.db.holdings.set(hid, holdingSnapshot);
       this.db.addHoldingToIndex(holdingSnapshot);
       this.db.settlementLedger.delete(params.idempotencyKey);
+      this.db.lpLiabilities = new Map(lpLiabilitiesSnapshot);
       return {
         success: false,
         errorCode: 'EXECUTION_FAILED',
@@ -1667,6 +1887,16 @@ export class InMemorySettlementRepository implements SettlementRepository {
     }
 
     const maturityDateStr = bond.maturity_date || bond.maturity;
+    if (
+      typeof maturityDateStr !== 'string' ||
+      /^\s*\d+\s*[YMDW]\s*$/i.test(maturityDateStr)
+    ) {
+      return {
+        success: false,
+        errorCode: 'INVALID_MATURITY_DATE',
+        error: `Explicit ISO maturity_date is required (relative tenor '${maturityDateStr}' cannot be parsed)`,
+      };
+    }
     const maturityTime = Date.parse(maturityDateStr);
     if (!Number.isFinite(maturityTime) || isNaN(maturityTime)) {
       return { success: false, errorCode: 'INVALID_MATURITY_DATE', error: `Invalid bond maturity date: ${maturityDateStr}` };
@@ -1693,7 +1923,36 @@ export class InMemorySettlementRepository implements SettlementRepository {
     }
 
     const authoritativePrincipal = roundMoney(bond.face_value * holding.quantity);
-    const authoritativeCoupon = roundMoney(bond.face_value * (couponRate / 100) * holding.quantity);
+    const paymentsPerYear =
+      typeof params.paymentsPerYear === 'number' && Number.isFinite(params.paymentsPerYear) && params.paymentsPerYear > 0
+        ? params.paymentsPerYear
+        : (typeof bond.payments_per_year === 'number' && Number.isFinite(bond.payments_per_year) && bond.payments_per_year > 0
+            ? bond.payments_per_year
+            : 4);
+    const authoritativePeriodCoupon = roundMoney(
+      bond.face_value * (couponRate / 100 / paymentsPerYear) * holding.quantity
+    );
+
+    // 최종 쿠폰 지급 주기가 이미 정산되었는지 확인 (중복 쿠폰 지급 방지)
+    let derivedCouponKey = params.couponIdempotencyKey;
+    if (!derivedCouponKey && params.idempotencyKey.startsWith('bond_maturity_redemption_')) {
+      derivedCouponKey = `bond_coupon_${params.idempotencyKey.slice('bond_maturity_redemption_'.length)}`;
+    }
+    const periodDurationMs = (365 * 24 * 60 * 60 * 1000) / paymentsPerYear;
+    const periodWindowStart = maturityTime - periodDurationMs;
+    const finalCouponAlreadyPaidByLedger = Boolean(
+      derivedCouponKey && this.db.isTradeAlreadySettled(derivedCouponKey)
+    );
+    const finalCouponAlreadyPaidByHistory = this.db.bondCouponPayments.some((p: any) => {
+      if (p.user_id !== params.userId || p.bond_id !== params.bondId) return false;
+      if (p.payment_type === 'MATURITY_REDEMPTION') return false;
+      if (derivedCouponKey && p.id === derivedCouponKey) return true;
+      const paidMs = Date.parse(p.paid_at || p.payment_date || '');
+      return Number.isFinite(paidMs) && paidMs > periodWindowStart && paidMs <= Math.max(now, maturityTime);
+    });
+    const finalCouponAlreadyPaid = finalCouponAlreadyPaidByLedger || finalCouponAlreadyPaidByHistory;
+    const maxAllowedFinalCoupon = finalCouponAlreadyPaid ? 0 : authoritativePeriodCoupon;
+    let authoritativeCoupon = finalCouponAlreadyPaid ? 0 : authoritativePeriodCoupon;
 
     if (params.principalAmount !== undefined && Math.abs(params.principalAmount - authoritativePrincipal) > 0.01) {
       return {
@@ -1702,12 +1961,22 @@ export class InMemorySettlementRepository implements SettlementRepository {
         error: `Principal amount mismatch: expected ${authoritativePrincipal}, got ${params.principalAmount}`,
       };
     }
-    if (params.couponAmount !== undefined && Math.abs(params.couponAmount - authoritativeCoupon) > 0.01) {
-      return {
-        success: false,
-        errorCode: 'INVALID_COUPON_AMOUNT',
-        error: `Coupon amount mismatch: expected ${authoritativeCoupon}, got ${params.couponAmount}`,
-      };
+    if (params.couponAmount !== undefined) {
+      if (
+        typeof params.couponAmount !== 'number' ||
+        !Number.isFinite(params.couponAmount) ||
+        params.couponAmount < 0 ||
+        params.couponAmount > maxAllowedFinalCoupon + 0.01
+      ) {
+        return {
+          success: false,
+          errorCode: 'INVALID_COUPON_AMOUNT',
+          error: finalCouponAlreadyPaid
+            ? `Final period coupon already paid; expected 0, got ${params.couponAmount}`
+            : `Coupon amount out of schedule bounds [0, ${maxAllowedFinalCoupon}]: got ${params.couponAmount}`,
+        };
+      }
+      authoritativeCoupon = roundMoney(params.couponAmount);
     }
 
     const totalPayout = roundMoney(authoritativePrincipal + authoritativeCoupon);
@@ -1718,13 +1987,21 @@ export class InMemorySettlementRepository implements SettlementRepository {
     const profileSnapshot = { ...profile };
     const holdingSnapshot = { ...holding };
     const historyCountBefore = this.db.bondCouponPayments.length;
+    const settledCouponKey =
+      authoritativeCoupon > 0 && derivedCouponKey && !this.db.isTradeAlreadySettled(derivedCouponKey)
+        ? derivedCouponKey
+        : null;
 
     try {
       if (totalPayout > 0) {
-        const nextCash = roundMoney(profile.cash + totalPayout);
-        if (!Number.isFinite(nextCash)) throw new Error('Cash calculation overflow');
-        profile.cash = nextCash;
+        applyCashCreditWithMarginDebt(profile, totalPayout);
+        if (!Number.isFinite(profile.cash)) throw new Error('Cash calculation overflow');
       }
+
+      const paidAtIso =
+        params.now !== undefined && Number.isFinite(params.now)
+          ? new Date(params.now).toISOString()
+          : this.db.getIsoTimestamp();
 
       this.db.bondCouponPayments.push({
         id: params.idempotencyKey,
@@ -1733,7 +2010,7 @@ export class InMemorySettlementRepository implements SettlementRepository {
         principal_amount: authoritativePrincipal,
         coupon_amount: authoritativeCoupon,
         payment_type: 'MATURITY_REDEMPTION',
-        paid_at: this.db.getIsoTimestamp(),
+        paid_at: paidAtIso,
       });
 
       if (params.faultInjection === 'FAIL_AT_CLOSE') {
@@ -1745,6 +2022,21 @@ export class InMemorySettlementRepository implements SettlementRepository {
 
       if (params.faultInjection === 'FAIL_AT_LEDGER') {
         throw new Error('FAULT_INJECTION_FAIL_AT_LEDGER');
+      }
+
+      if (settledCouponKey) {
+        this.db.settlementLedger.set(settledCouponKey, {
+          trade_id: settledCouponKey,
+          stock_id: params.bondId,
+          price: 0,
+          size: 0,
+          total_amount: authoritativeCoupon,
+          buyer_fee_rate: 0,
+          seller_fee_rate: 0,
+          buyer_fee_amount: 0,
+          seller_fee_amount: 0,
+          settled_at: this.db.getIsoTimestamp(),
+        });
       }
 
       this.db.settlementLedger.set(params.idempotencyKey, {
@@ -1762,11 +2054,17 @@ export class InMemorySettlementRepository implements SettlementRepository {
 
       return { success: true };
     } catch (err) {
+      for (const k of Object.keys(profile)) {
+        if (!(k in profileSnapshot)) delete (profile as any)[k];
+      }
       Object.assign(profile, profileSnapshot);
       this.db.bondCouponPayments = this.db.bondCouponPayments.slice(0, historyCountBefore);
       this.db.holdings.set(hid, holdingSnapshot);
       this.db.addHoldingToIndex(holdingSnapshot);
       this.db.settlementLedger.delete(params.idempotencyKey);
+      if (settledCouponKey) {
+        this.db.settlementLedger.delete(settledCouponKey);
+      }
       return {
         success: false,
         errorCode: 'EXECUTION_FAILED',

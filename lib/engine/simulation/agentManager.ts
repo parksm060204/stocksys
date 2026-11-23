@@ -139,6 +139,7 @@ export class AgentManager {
   public idempotencyTracker: EventIdempotencyTracker = new EventIdempotencyTracker();
   public attentionMap: Map<string, number> = new Map();     // stockId -> attentionScore [0, 1]
   public uncertaintyMap: Map<string, number> = new Map();   // stockId -> uncertaintyScore [0, 1]
+  public scenarioBiases: Map<string, { buyBias: number; sellBias: number; eventShock: number; volumeMultiplier: number; suppressVolatility: boolean }> = new Map();
   // LP 취소 실패/지연으로 인한 종목별 신규 호가 제출 보류 진단 기록
   public lpDeferrals: Map<string, { stockId: string; reason: string; unresolvedOrderIds: string[]; simTime: number }> = new Map();
 
@@ -640,7 +641,7 @@ export class AgentManager {
         });
         return { allowed: false, heldReason: 'RISK_CONSTRAINT_UNSATISFIED' };
       }
-      const userProfile = memoryDb.profiles.get(agent.accountId);
+      const userProfile = memoryDb.resolveProfileByUserId(agent.accountId);
       const openOrders = this.getUserOpenOrders(agent.accountId);
       const reservedBuyCash = calculateReservedCash(
         openOrders,
@@ -1117,7 +1118,7 @@ export class AgentManager {
         agentSignalsMap.set(accId, signals);
 
         const profile = agent.macroProfile || createDefaultMacroProfile(accId, agent.strategyType, agent.riskTolerance);
-        const userProfile = memoryDb.profiles.get(accId);
+        const userProfile = memoryDb.resolveProfileByUserId(accId);
         const rawCash = userProfile?.cash ?? 50_000_000;
         const userOpenOrders = this.getUserOpenOrders(accId);
         // 미체결 매수 주문 예약금 차감 (실제 가용 현금)
@@ -1249,7 +1250,16 @@ export class AgentManager {
       }
 
       const dF = f * (this.mjd_mu * dt + this.mjd_sigma * dW + jump);
-      const newF = Math.max(10, f + dF);
+      let newF = Math.max(10, f + dF);
+      const sBias = this.scenarioBiases.get(stock.id);
+      if (sBias) {
+        if (sBias.eventShock !== 0) {
+          newF = Math.max(10, newF * (1 + sBias.eventShock));
+        }
+        if (sBias.suppressVolatility) {
+          newF = Math.max(10, stock.current_price * 0.9 + newF * 0.1);
+        }
+      }
       this.fundamentals.set(stock.id, newF);
     }
 
@@ -1520,6 +1530,16 @@ export class AgentManager {
           if (intent.action === 'buy' || intent.action === 'sell') {
             if (!intent.price || !intent.size || intent.size <= 0) continue;
 
+            const sBias = this.scenarioBiases.get(stock.id);
+            if (sBias) {
+              if (intent.action === 'buy' && sBias.buyBias < 0.5) continue;
+              if (intent.action === 'sell' && sBias.sellBias < 0.5) continue;
+              const sideBias = intent.action === 'buy' ? sBias.buyBias : sBias.sellBias;
+              if (sideBias > 1 || sBias.volumeMultiplier > 1) {
+                intent.size = Math.max(1, Math.round(intent.size * Math.min(4, Math.max(1, sideBias * 0.5) * Math.min(2, sBias.volumeMultiplier))));
+              }
+            }
+
             const directionalGate = intent.action === 'buy' ? probs.pBuy : probs.pSell;
             if (activityRoll >= directionalGate) continue;
 
@@ -1608,6 +1628,16 @@ export class AgentManager {
 
           if (intent.action === 'buy' || intent.action === 'sell') {
             if (!intent.price || !intent.size || intent.size <= 0) continue;
+
+            const sBias = this.scenarioBiases.get(stock.id);
+            if (sBias) {
+              if (intent.action === 'buy' && sBias.buyBias < 0.5) continue;
+              if (intent.action === 'sell' && sBias.sellBias < 0.5) continue;
+              const sideBias = intent.action === 'buy' ? sBias.buyBias : sBias.sellBias;
+              if (sideBias > 1 || sBias.volumeMultiplier > 1) {
+                intent.size = Math.max(1, Math.round(intent.size * Math.min(4, Math.max(1, sideBias * 0.5) * Math.min(2, sBias.volumeMultiplier))));
+              }
+            }
 
             // ── 교차자산 위험 게이트 (EXPERIMENTAL_ON) ──
             if (this._crossAssetMode === 'EXPERIMENTAL_ON') {
@@ -1828,6 +1858,16 @@ export class AgentManager {
 
           if (intent.action === 'buy' || intent.action === 'sell') {
             if (!intent.price || !intent.size || intent.size <= 0) continue;
+
+            const sBias = this.scenarioBiases.get(stock.id);
+            if (sBias) {
+              if (intent.action === 'buy' && sBias.buyBias < 0.5) continue;
+              if (intent.action === 'sell' && sBias.sellBias < 0.5) continue;
+              const sideBias = intent.action === 'buy' ? sBias.buyBias : sBias.sellBias;
+              if (sideBias > 1 || sBias.volumeMultiplier > 1) {
+                intent.size = Math.max(1, Math.round(intent.size * Math.min(4, Math.max(1, sideBias * 0.5) * Math.min(2, sBias.volumeMultiplier))));
+              }
+            }
             await this.submitBotOrder(agent, stock, intent, simTime, visibleEvents, activeRegimeState, false);
           }
         }
@@ -2360,7 +2400,7 @@ export class AgentManager {
         }
 
         // 예약 현금이 실제 프로필 현금을 초과하는지 검증
-        const profile = memoryDb.profiles.get(userId);
+        const profile = memoryDb.resolveProfileByUserId(userId);
         if (profile && Number.isFinite(resCash) && resCash > profile.cash) {
           reportViolation(
             'RESERVED_CASH_EXCEEDS_BALANCE',

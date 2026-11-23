@@ -1,5 +1,6 @@
 import { BaseAgent } from "./BaseAgent";
 import { CircularQueue } from "./utils/CircularQueue";
+import type { SimulationContext } from "../../../lib/engine/simulation/runtime";
 
 export class StatArbAgent extends BaseAgent {
   // 페어 트레이딩 목록 (종목 티커)
@@ -14,8 +15,8 @@ export class StatArbAgent extends BaseAgent {
   private history: Map<string, CircularQueue<number>> = new Map();
   private positions: Record<string, 'NONE' | 'SHORT_A' | 'LONG_A'> = {};
 
-  constructor(botConfig?: any) {
-    super(botConfig || 'QUANT_STAT_ARB', botConfig?.capital || 100000000000); // 1000억
+  constructor(botConfig?: any, context?: SimulationContext) {
+    super(botConfig || 'QUANT_STAT_ARB', botConfig?.capital || 100000000000, context); // 1000억
   }
 
   // 이벤트 주도형 호출

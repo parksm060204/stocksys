@@ -4,21 +4,17 @@ import {
   getLocalStandaloneEngine,
 } from '@/lib/engine/localStandaloneServer';
 import { verifyAdminSession } from '@/lib/auth/adminAuth';
+import { resolveAuthenticatedUserId } from '@/lib/auth/sessionAuth';
+import { memoryDb, type MarketNewsRecord } from '@/lib/memoryDb/memoryStore';
+import { authorizeNewsRecord, canReadRumor } from '@/lib/news/accessPolicy';
+import { WindowRateLimiter } from '@/lib/rateLimit/windowLimiter';
 
 export const dynamic = 'force-dynamic';
 
-const manualStepRateLimit = new Map<string, { count: number; resetAt: number }>();
+const manualStepLimiter = new WindowRateLimiter(15, 1000, 60_000, 256, true);
 
 function allowManualStep(adminUser: string): boolean {
-  const now = Date.now();
-  const current = manualStepRateLimit.get(adminUser);
-  if (!current || now >= current.resetAt) {
-    manualStepRateLimit.set(adminUser, { count: 1, resetAt: now + 1000 });
-    return true;
-  }
-  if (current.count >= 15) return false;
-  current.count += 1;
-  return true;
+  return manualStepLimiter.allow(adminUser);
 }
 
 export function parseMarketFlowStepBody(body: unknown): { ok: true; dt: number } | { ok: false; message: string } {
@@ -42,6 +38,35 @@ function parsePointsLimit(value: string | null): number {
   return Math.min(120, Math.max(10, parsed));
 }
 
+function resolveViewerRumorAccess(authenticatedUserId: string | null): boolean {
+  if (!authenticatedUserId) return false;
+  const viewerProfile = memoryDb.resolveProfileByUserId(authenticatedUserId);
+  return canReadRumor(viewerProfile);
+}
+
+function sanitizeMarketFlowRecentNews(recentNews: any[], hasRumorAccess: boolean) {
+  if (!Array.isArray(recentNews)) return recentNews;
+  const newsById = new Map<string, MarketNewsRecord>();
+  for (const rec of memoryDb.marketNews) {
+    if (rec?.id) newsById.set(rec.id, rec);
+  }
+  return recentNews.map((item) => {
+    if (!item || typeof item !== 'object') return item;
+    const source = typeof item.id === 'string' ? newsById.get(item.id) : undefined;
+    const category =
+      source?.category ??
+      (source as any)?.news_type ??
+      (source as any)?.eventType ??
+      item.category ??
+      item.news_type ??
+      item.eventType;
+    return authorizeNewsRecord(
+      category !== undefined ? { ...item, category } : item,
+      hasRumorAccess
+    );
+  });
+}
+
 export async function GET(request: Request) {
   try {
     await ensureLocalStandaloneReady();
@@ -59,15 +84,21 @@ export async function GET(request: Request) {
 
     const { searchParams } = new URL(request.url);
     const pointsLimit = parsePointsLimit(searchParams.get('points'));
-    const auth = await verifyAdminSession(request);
+    const [auth, authenticatedUserId] = await Promise.all([
+      verifyAdminSession(request),
+      resolveAuthenticatedUserId(),
+    ]);
+    const hasRumorAccess = resolveViewerRumorAccess(authenticatedUserId);
 
     const flowData = engine.getMarketFlowData(pointsLimit);
+    const recentNews = sanitizeMarketFlowRecentNews(flowData.recentNews, hasRumorAccess);
 
     return NextResponse.json(
       {
         success: true,
         data: {
           ...flowData,
+          recentNews,
           engineRunning: engine.isEngineRunning(),
           activeAgentsCount: engine.getActiveAgentsCount(),
           ...(auth.isAdmin ? { marketState: engine.getMarketStateSnapshot() } : {}),
@@ -131,12 +162,14 @@ export async function POST(request: Request) {
     if (parsed.ok) {
       await engine.stepSimulation(parsed.dt);
       const flowData = engine.getMarketFlowData(60);
+      const recentNews = sanitizeMarketFlowRecentNews(flowData.recentNews, true);
 
       return NextResponse.json({
         success: true,
         message: `Simulation advanced by ${parsed.dt}s`,
         data: {
           ...flowData,
+          recentNews,
           engineRunning: engine.isEngineRunning(),
           activeAgentsCount: engine.getActiveAgentsCount(),
           marketState: engine.getMarketStateSnapshot(),

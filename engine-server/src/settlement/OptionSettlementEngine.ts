@@ -23,6 +23,8 @@ export interface OptionSettlementBatchResult {
   readonly itmCount: number;
   readonly otmCount: number;
   readonly totalPayout: number;
+  readonly expiredOrdersCount: number;
+  readonly lpLiabilitiesClearedCount?: number;
   readonly results: readonly OptionSettlementResult[];
   readonly heldResults: readonly HeldOptionResult[];
 }
@@ -116,10 +118,23 @@ export class OptionSettlementEngine {
     let itmCount = 0;
     let otmCount = 0;
     let totalPayout = 0;
+    let expiredOrdersCount = 0;
+    let lpLiabilitiesClearedCount = 0;
 
     for (const contract of params.contracts) {
       const expTime = Date.parse(contract.expiry_date);
       if (!Number.isFinite(expTime) || expTime > now) continue;
+
+      if (this.repositories.settlement.expireOrdersForExpiredOption) {
+        const expireRes = await this.repositories.settlement.expireOrdersForExpiredOption({
+          optionId: contract.id,
+          now,
+        });
+        if (!expireRes.success) {
+          throw new Error(expireRes.error || `Failed to expire orders for option ${contract.id}`);
+        }
+        expiredOrdersCount += expireRes.expiredCount;
+      }
 
       const rawUnderlyingPrice = params.underlyingPrices[contract.underlying_stock_id];
       if (rawUnderlyingPrice === undefined || rawUnderlyingPrice === null) {
@@ -170,6 +185,7 @@ export class OptionSettlementEngine {
         continue;
       }
 
+      let contractHasFailure = false;
       for (const pos of params.positions) {
         if (pos.optionId !== contract.id || pos.quantity <= 0) continue;
 
@@ -194,8 +210,12 @@ export class OptionSettlementEngine {
           idempotencyKey: key,
         });
 
-        if (!settlementRes.success) continue;
+        if (!settlementRes.success) {
+          contractHasFailure = true;
+          continue;
+        }
 
+        lpLiabilitiesClearedCount += settlementRes.lpLiabilitiesCleared ?? 0;
         results.push(settlement);
         if (settlement.isItm) {
           itmCount++;
@@ -204,8 +224,21 @@ export class OptionSettlementEngine {
           otmCount++;
         }
       }
+
+      if (!contractHasFailure && this.repositories.settlement.clearOptionLpLiabilitiesIfSettled) {
+        lpLiabilitiesClearedCount += this.repositories.settlement.clearOptionLpLiabilitiesIfSettled(contract.id);
+      }
     }
 
-    return { settledCount: results.length, itmCount, otmCount, totalPayout, results, heldResults };
+    return {
+      settledCount: results.length,
+      itmCount,
+      otmCount,
+      totalPayout,
+      expiredOrdersCount,
+      lpLiabilitiesClearedCount,
+      results,
+      heldResults,
+    };
   }
 }

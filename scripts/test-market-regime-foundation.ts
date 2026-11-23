@@ -2115,13 +2115,22 @@ async function runAllTests() {
       function addTwoSidedOrders(stockId: string, price: number, spreadPct: number = 0.01) {
         const bId = `ord_t33_b_${stockId}_${orderSeq++}`;
         const aId = `ord_t33_a_${stockId}_${orderSeq++}`;
+        const bidPrice = price < 100
+          ? Math.max(0.01, Math.floor(price * (1 - spreadPct) * 100) / 100)
+          : Math.max(1, Math.floor(price * (1 - spreadPct)));
+        let askPrice = price < 100
+          ? Math.max(0.02, Math.ceil(price * (1 + spreadPct) * 100) / 100)
+          : Math.max(2, Math.ceil(price * (1 + spreadPct)));
+        if (askPrice <= bidPrice) {
+          askPrice = price < 100 ? Number((bidPrice + 0.01).toFixed(2)) : bidPrice + 1;
+        }
         memoryDb.orders.set(bId, {
           id: bId,
           user_id: 'usr_t33_maker',
           stock_id: stockId,
           side: 'buy',
           order_type: 'limit',
-          price: Math.max(1, Math.round(price * (1 - spreadPct))),
+          price: bidPrice,
           size: 100,
           filled: 0,
           status: 'open',
@@ -2134,7 +2143,7 @@ async function runAllTests() {
           stock_id: stockId,
           side: 'sell',
           order_type: 'limit',
-          price: Math.max(1, Math.round(price * (1 + spreadPct))),
+          price: askPrice,
           size: 100,
           filled: 0,
           status: 'open',

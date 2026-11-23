@@ -6,13 +6,13 @@ import { CommodityDefinition, ActiveCommodityEvent, CommodityNewsItem } from '@/
 import { fmtSigned, fmtPrice } from '@/lib/format';
 import RealtimePriceHeader from '@/app/components/RealtimePriceHeader';
 import TickChart from '@/app/components/TickChart';
-import Orderbook from '@/app/components/Orderbook';
 import TradeFeed from '@/app/components/TradeFeed';
 import StrictWidget from '@/app/components/StrictWidget';
 import CommoditySeasonalityPanel from '@/app/components/commodities/CommoditySeasonalityPanel';
 import CommodityEventPanel from '@/app/components/commodities/CommodityEventPanel';
 import CommodityOrderEntry from '@/app/components/commodities/CommodityOrderEntry';
 import CommodityActiveOrdersPanel from '@/app/components/commodities/CommodityActiveOrdersPanel';
+import CommodityOrderbookPanel from '@/app/components/commodities/CommodityOrderbookPanel';
 
 type TabId = 'chart' | 'orderbook' | 'seasonality' | 'events' | 'orders';
 
@@ -40,6 +40,13 @@ export default function CommodityDetailClient({
   const [currentTick, setCurrentTick] = useState<number>(100);
   const [activeTab, setActiveTab] = useState<TabId>('chart');
   const [ordersRefreshSignal, setOrdersRefreshSignal] = useState<number>(0);
+  const [orderbookDepth, setOrderbookDepth] = useState<{
+    bids: Array<{ price: number; totalSize?: number; size?: number; orderCount?: number }>;
+    asks: Array<{ price: number; totalSize?: number; size?: number; orderCount?: number }>;
+  }>({ bids: [], asks: [] });
+  const [orderbookSpread, setOrderbookSpread] = useState<
+    number | { bestBid?: number | null; bestAsk?: number | null; spread?: number | null; spreadPct?: number | null } | null
+  >(null);
 
   // 실시간 1.5초 주기 폴링
   useEffect(() => {
@@ -54,12 +61,15 @@ export default function CommodityDetailClient({
           if (data.activeEvents) setActiveEvents(data.activeEvents);
           if (data.newsFeed) setNewsFeed(data.newsFeed);
           if (data.tick) setCurrentTick(data.tick);
+          if (data.depth) setOrderbookDepth(data.depth);
+          if (data.spread !== undefined) setOrderbookSpread(data.spread);
         }
       } catch {
         // 폴링 에러 무시
       }
     };
 
+    void fetchDetail();
     const interval = setInterval(fetchDetail, 1500);
     return () => {
       isMounted = false;
@@ -161,7 +171,7 @@ export default function CommodityDetailClient({
             <div className="col-span-12 lg:col-span-8 flex flex-col gap-3 h-full overflow-hidden">
               <div className="flex-1 overflow-hidden border border-border bg-[#0E1117] rounded-2xl shadow-xl">
                 <StrictWidget title="COMMODITY REALTIME TICK / CANDLE CHART">
-                  <TickChart ticker={commodity.ticker} currentPrice={commodity.currentPrice} />
+                  <TickChart ticker={commodity.ticker} currentPrice={commodity.currentPrice} market="commodities" currency="USD" />
                 </StrictWidget>
               </div>
 
@@ -200,7 +210,13 @@ export default function CommodityDetailClient({
         {activeTab === 'orderbook' && (
           <div className="grid grid-cols-12 gap-3 h-full overflow-hidden">
             <div className="col-span-6 h-full overflow-hidden border border-border bg-[#0E1117] rounded-2xl shadow-xl">
-              <Orderbook ticker={commodity.ticker} currentPrice={commodity.currentPrice} />
+              <CommodityOrderbookPanel
+                ticker={commodity.ticker}
+                currentPrice={commodity.currentPrice}
+                bids={orderbookDepth.bids}
+                asks={orderbookDepth.asks}
+                spread={orderbookSpread}
+              />
             </div>
             <div className="col-span-6 h-full overflow-hidden border border-border bg-[#0E1117] rounded-2xl shadow-xl">
               <TradeFeed stock={stockCompat as any} />

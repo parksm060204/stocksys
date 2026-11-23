@@ -39,7 +39,10 @@ export default function CommodityOrderEntry({
       }
       if (isLoggedIn && userId) {
         setUserCash(data.availableCashKrw !== null && data.availableCashKrw !== undefined ? Number(data.availableCashKrw) : null);
-        setPositionQty(Number(data.myPosition?.quantity ?? 0));
+        const rawPosQty = Math.abs(Number(data.myPosition?.quantity ?? 0));
+        const posSide = data.myPosition?.side;
+        const signedPosQty = posSide === 'short' ? -rawPosQty : posSide === 'flat' ? 0 : rawPosQty;
+        setPositionQty(Number.isFinite(signedPosQty) ? signedPosQty : 0);
         setPendingOrders(Array.isArray(data.myOrders) ? data.myOrders : []);
       } else {
         setUserCash(null);
@@ -76,7 +79,9 @@ export default function CommodityOrderEntry({
   // 최대 주문 가능 계약수 (청산 가능 수량 + 신규 증거금 여력)
   const maxContracts =
     reduceOnlyCapacity +
-    (userCash && marginPerContractKrw > 0 ? Math.max(0, Math.floor(userCash / marginPerContractKrw)) : 0);
+    (userCash !== null && userCash > 0 && marginPerContractKrw > 0
+      ? Math.max(0, Math.floor(userCash / marginPerContractKrw))
+      : 0);
 
   const handleSetMax = () => {
     setContracts(String(Math.max(1, maxContracts)));

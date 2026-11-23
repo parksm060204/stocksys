@@ -5,6 +5,8 @@ import { verifyAdminSession } from '@/lib/auth/adminAuth';
 import { resolveAuthenticatedUserId } from '@/lib/auth/sessionAuth';
 import { memoryDb } from '@/lib/memoryDb/memoryStore';
 import { ensureLocalStandaloneReady, persistConfirmedState } from '@/lib/engine/localStandaloneServer';
+import { runWithCommitGate, persistenceManager } from '@/lib/memoryDb/PersistenceManager';
+import { syncScenarioManagerFromDatabase } from '@/lib/scenario/ScenarioManager';
 import {
   cancelCommodityOrders,
   getUsdToKrwRate,
@@ -34,6 +36,25 @@ if (!globalForCommodities.commodityEngine) {
 async function ensureCommodityEngineReady(): Promise<void> {
   await ensureLocalStandaloneReady();
   await commodityEngineInstance.reconcileWithDatabase(memoryDb);
+  if (
+    memoryDb.commodityEventRuntimeState &&
+    commodityEngineInstance.eventSystem.activeEvents.length === 0
+  ) {
+    try {
+      commodityEngineInstance.eventSystem.restoreState(memoryDb.commodityEventRuntimeState);
+    } catch { /* ignore invalid snapshot */ }
+  }
+  await runWithCommitGate(
+    undefined,
+    async () => {
+      try {
+        syncScenarioManagerFromDatabase(memoryDb, commodityEngineInstance.scenarioManager, {
+          clearOnDbNull: true,
+        });
+      } catch { /* ignore invalid snapshot */ }
+    },
+    persistenceManager
+  );
   commodityEngineInstance.start(1500, persistConfirmedState);
 }
 
@@ -123,12 +144,27 @@ export async function POST(req: Request) {
         return NextResponse.json({ success: false, message: '유효한 templateId가 필요합니다.' }, { status: 400 });
       }
 
+      const prevEventSnap = commodityEngineInstance.eventSystem.snapshotState();
+      const prevDbEventSnap = memoryDb.commodityEventRuntimeState;
       const event = commodityEngineInstance.eventSystem.triggerEventById(
         templateId,
         commodityEngineInstance.currentTick
       );
       if (!event) {
         return NextResponse.json({ success: false, message: '존재하지 않는 이벤트 템플릿입니다.' }, { status: 404 });
+      }
+      const persisted = await runWithCommitGate(persistConfirmedState, async () => {
+        memoryDb.commodityEventRuntimeState = commodityEngineInstance.eventSystem.snapshotState();
+        const saved = await persistConfirmedState();
+        if (!saved) {
+          memoryDb.commodityEventRuntimeState = prevDbEventSnap;
+          commodityEngineInstance.eventSystem.restoreState(prevEventSnap);
+          return false;
+        }
+        return true;
+      });
+      if (!persisted) {
+        return NextResponse.json({ success: false, message: '원자재 이벤트 영속 저장에 실패하여 롤백되었습니다.' }, { status: 500 });
       }
       return NextResponse.json({ success: true, event });
     }

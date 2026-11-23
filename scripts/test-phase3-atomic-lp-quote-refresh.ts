@@ -73,9 +73,11 @@ async function runTests() {
   // Chunk 1 has already been written, chunk 2 fails, leaving the LP order book in a half-updated corrupted state!
   console.log('Testing fault injection on atomic LP quote refresh...');
   let shouldFailLpInsert = true;
+  let fingerprintBeforeFailedRefresh: string | undefined;
   const origRefreshLp = bundle.settlement.refreshLpQuotesAtomically!.bind(bundle.settlement);
   bundle.settlement.refreshLpQuotesAtomically = async (params) => {
     if (shouldFailLpInsert) {
+      fingerprintBeforeFailedRefresh = computeLpOrderbookFingerprint(db, STOCK_ID);
       throw new Error('FAULT_INJECTION_LP_INSERT_ORDERS_FAILED');
     }
     return origRefreshLp(params);
@@ -86,15 +88,20 @@ async function runTests() {
     const tickRes = await engine.tick();
     if (i === 5) {
       console.log('Tick 5 result during LP insert failure:', tickRes);
+      assert.equal(tickRes.success, true, 'A post-commit LP failure must preserve the committed tick');
+      assert.ok(tickRes.postCommitWarnings?.some(w => w.stage === 'LP_QUOTE_REFRESH'));
     }
   }
 
-  // Check fingerprint: Was the previous LP orderbook preserved intact?
+  // Earlier ticks and this tick's trades legitimately consume quotes. Compare
+  // the book at the refresh boundary, after those trades committed, rather than
+  // comparing with tick 1 and incorrectly treating executed fills as corruption.
   const postFailFingerprint = computeLpOrderbookFingerprint(db, STOCK_ID);
   console.log('Post failure LP orderbook fingerprint:', postFailFingerprint);
+  assert.ok(fingerprintBeforeFailedRefresh, 'Fault injection must reach the LP refresh boundary');
   assert.strictEqual(
     postFailFingerprint,
-    initialFingerprint,
+    fingerprintBeforeFailedRefresh,
     'LP orderbook fingerprint MUST be preserved intact when LP refresh fails!'
   );
   console.log('✅ [PASS] Fault injection during LP refresh preserves previous LP orderbook');

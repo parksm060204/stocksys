@@ -88,6 +88,37 @@ export const SHOP_PRODUCTS: Record<string, ShopProductDefinition> = {
   },
 };
 
+export const SHOP_PRODUCT_MAP: ReadonlyMap<string, ShopProductDefinition> = new Map(
+  Object.entries(SHOP_PRODUCTS)
+);
+
+/**
+ * prototype-chain 상속 속성(__proto__, constructor, toString 등)을 배제하고
+ * 유효한 가격·기간을 가진 카탈로그 상품만 반환한다.
+ */
+export function getShopProductById(productId: unknown): ShopProductDefinition | null {
+  if (typeof productId !== 'string' || productId.length === 0) {
+    return null;
+  }
+  if (!Object.prototype.hasOwnProperty.call(SHOP_PRODUCTS, productId)) {
+    return null;
+  }
+  const product = SHOP_PRODUCT_MAP.get(productId);
+  if (!product || product.id !== productId) {
+    return null;
+  }
+  if (typeof product.price !== 'number' || !Number.isFinite(product.price) || product.price < 0) {
+    return null;
+  }
+  if (
+    product.durationDays !== null &&
+    (typeof product.durationDays !== 'number' || !Number.isFinite(product.durationDays) || product.durationDays <= 0)
+  ) {
+    return null;
+  }
+  return product;
+}
+
 export function hasActiveFeeBooster(
   profile?: Pick<ProfileRecord, 'unlocked_features' | 'feature_expiries' | 'acquired_passives'> | null,
   nowMs: number = Date.now()

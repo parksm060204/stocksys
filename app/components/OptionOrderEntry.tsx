@@ -1,6 +1,10 @@
 "use client";
 
 import React, { useState, useEffect } from 'react';
+import {
+  calculateMaxOptionBuyContracts,
+  OPTION_RESERVATION_FEE_RATE,
+} from '@/lib/engine/orderRisk';
 
 export type OrderType = 'LIMIT' | 'MARKET';
 
@@ -10,6 +14,7 @@ interface OptionOrderEntryProps {
   currentPrice: number;
   multiplier?: number;
   userBalance?: number | null;
+  availableSellQty?: number | null;
   onOrderSubmit?: (order: {
     contractId?: string;
     ticker: string;
@@ -26,6 +31,7 @@ export const OptionOrderEntry: React.FC<OptionOrderEntryProps> = ({
   currentPrice,
   multiplier = 250000,
   userBalance = null,
+  availableSellQty = null,
   onOrderSubmit,
 }) => {
   const [side, setSide] = useState<'BUY' | 'SELL'>('BUY');
@@ -42,15 +48,29 @@ export const OptionOrderEntry: React.FC<OptionOrderEntryProps> = ({
 
   const effectivePrice = orderType === 'MARKET' ? currentPrice : price;
   const totalAmount = Math.round(effectivePrice * qty * multiplier);
+  const estimatedFee = Math.round(totalAmount * OPTION_RESERVATION_FEE_RATE);
+  const totalWithFee = totalAmount + estimatedFee;
 
   const handleQuickQty = (amount: number) => {
     setQty(amount);
   };
 
   const handlePctQty = (pct: number) => {
-    const unitCost = effectivePrice * multiplier;
-    if (userBalance !== null && userBalance > 0 && unitCost > 0) {
-      const maxPossible = Math.floor((userBalance * (pct / 100)) / unitCost);
+    if (side === 'SELL') {
+      if (availableSellQty !== null && availableSellQty !== undefined && availableSellQty > 0) {
+        const sellQty = Math.floor(availableSellQty * (pct / 100));
+        setQty(Math.max(1, sellQty));
+      }
+      return;
+    }
+    if (userBalance !== null && userBalance > 0 && effectivePrice > 0 && multiplier > 0) {
+      const maxPossible = calculateMaxOptionBuyContracts(
+        userBalance,
+        effectivePrice,
+        multiplier,
+        pct,
+        OPTION_RESERVATION_FEE_RATE
+      );
       setQty(Math.max(1, maxPossible));
     }
   };
@@ -207,7 +227,7 @@ export const OptionOrderEntry: React.FC<OptionOrderEntryProps> = ({
       {/* 3. 주문 가격 설정 (직접입력, 현재가, 틱 조정) */}
       <div className="space-y-2 bg-[#05070A] p-3 rounded-xl border border-border">
         <div className="flex items-center justify-between">
-          <span className="text-xs font-extrabold text-[#8E939D]">주문 가격 (원)</span>
+          <span className="text-xs font-extrabold text-[#8E939D]">주문 가격 (pt)</span>
           <button
             onClick={() => setPrice(currentPrice)}
             className="text-[10px] bg-[#161B22] text-white px-2 py-0.5 rounded border border-border font-bold hover:bg-[#212631]"
@@ -264,6 +284,12 @@ export const OptionOrderEntry: React.FC<OptionOrderEntryProps> = ({
           <span className="text-[#8E939D] font-medium">총 주문 예상금액 (승수 {multiplier.toLocaleString()})</span>
           <span className="font-mono text-[14px] font-black text-white tabular-nums">
             ₩{totalAmount.toLocaleString()}
+          </span>
+        </div>
+        <div className="flex justify-between items-center text-[11px]">
+          <span className="text-[#8E939D]">수수료(0.1%) 포함 합계</span>
+          <span className="font-mono font-bold text-[#F4F5F6] tabular-nums">
+            ₩{totalWithFee.toLocaleString()}
           </span>
         </div>
         <div className="flex justify-between items-center text-[11px]">

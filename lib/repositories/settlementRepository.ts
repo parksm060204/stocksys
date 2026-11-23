@@ -110,8 +110,20 @@ export interface SettlementRepository {
     userId: string,
     bondId: string,
     couponAmount: number,
-    idempotencyKey: string
+    idempotencyKey: string,
+    paidAtMs?: number
   ): Promise<boolean>;
+
+  /**
+   * 만기 정산 윈도우 내 기지급 쿠폰 이력 존재 여부를 확인한다.
+   */
+  hasBondCouponPaidInWindow?(
+    userId: string,
+    bondId: string,
+    maturityTimeMs: number,
+    nowMs: number,
+    paymentsPerYear?: number
+  ): boolean;
 
   /**
    * 만기 원금 상환.
@@ -124,7 +136,31 @@ export interface SettlementRepository {
   ): Promise<boolean>;
 
   /**
+   * 만기 도래 옵션 계약의 미체결(open/partial) 주문 계좌 목록 조회.
+   */
+  getOpenOptionOrderAccountIds?(optionIds: readonly string[]): readonly string[];
+
+  /**
+   * 만기 도래 옵션 계약의 open/partial 매수·매도 주문을 expired 상태로 전환한다.
+   */
+  expireOrdersForExpiredOption?(params: {
+    optionId: string;
+    now: number;
+  }): Promise<{
+    success: boolean;
+    expiredCount: number;
+    affectedUserIds: readonly string[];
+    errorCode?: string;
+    error?: string;
+  }>;
+
+  /**
    * 만기 채권 포지션을 원자적으로 청산한다.
    */
   closeMaturedBondPosition(userId: string, bondId: string, idempotencyKey: string): boolean;
+
+  /**
+   * 해당 만기 옵션 계약의 모든 보유 포지션과 미체결 주문이 정리된 경우 LP 부채(lpLiabilities)를 제거한다.
+   */
+  clearOptionLpLiabilitiesIfSettled?(optionId: string): number;
 }

@@ -5382,3 +5382,161 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
 - 금전 정산·부채 계좌 보호·저장/롤백·상품 통화·봇·API 권한·화면 연결 수정 및 회귀 테스트·리뷰 보고서를 커밋 대상으로 정리했다.
 - 작업자 보고의 타입 검사·lint·빌드·주요 회귀 검사 통과와 남은 F20 부분 해결·테스트 실패/종료 대기 한계를 확인했다. 커밋 전 git diff --check를 통과했다.
 - 기존 로컬 훅 설정과 debug.log는 커밋 대상에서 제외했다. 원격 대상은 origin(parksm060204/stocksys), 브랜치는 main이다.
+
+---
+## 2026-11-19 11:46
+
+**요청 요약:** `HEAD 7008f55` 및 현재 워크트리 전체 코드 독립 재리뷰, 9개 필수 영역 정밀 점검, 격리 반례·테스트 검증 및 후속 AGY 수정 과제 준비.
+**수행 결과:**
+- 애플리케이션·설정·기존 테스트를 수정하지 않고 전체 백엔드, 인메모리 저장소, `engine-server`·봇, 상품/파생/부채 회계, 프론트엔드(V1/V2/옵션/원자재/상점/관리자), 운영/스키마 구성을 재점검해 [full-code-review-2026-11-19-findings.md](/C:/Users/abcde/Desktop/웹소설/stock-sys/docs/full-code-review-2026-11-19-findings.md:1)에 총 19건(P1 10건, P2 9건)을 기록했다.
+- 격리 `STOCKSYS_DATA_DIR` 및 `MemoryDatabase` 반례 실행(`CE-1`~`CE-10`)으로 `/api/local-db` `trades` 필터 오라클, 시드 채권 만기 실패(`2Y`)·연 쿠폰 전액 과지급·호가-액면 100배 괴리, 옵션/채권 만기·음수 비용 이벤트 보상의 `margin_debt_krw` 우회, 부채 전 대기 매수 주문 체결 및 취소 시 미상환, `MarketEngine.tick()` vs 30초 `startAutoSave` 미커밋 저장, `MarketEngine.initializeBots()` 7개 특화 봇 풀 누락, `ASMarketMakerAgent` `orderBook` 미전달·부분체결 LP 이중 슬롯 잔존, `localStandaloneServer` `fee_booster` 미반영, 옵션 시드(`IDX-K200` vs `STK`)·클라이언트 금지 DB 쓰기를 재현 확인했다.
+- 루트/`engine-server` `tsc --noEmit`(exit 0), `npm run lint`(exit 0, 147 warnings), 핵심·Phase 2~4·UI 훅·라우트 E2E·NextAuth HTTP 통합 등 37개 스크립트 통과를 확인하고, 기존 실패 6건·종료 대기 2건이 노후 테스트 픽스처/API·정책 불일치 및 `process.exit(0)` 누락임을 구분해 보고서에 정리했다.
+
+---
+## 2026-11-19 16:49
+
+**요청 요약:** 반복 정체된 AGY 수정 작업을 중지하고 전체 리뷰 19건 수정과 검증을 마무리.
+**수행 결과:**
+- AGY 두 번째 재시도 워커의 stopped 및 ptyKilled를 확인하고 기존 변경을 보존한 채 직접 인계했다. LP 디버그 명령 실행 중 표시를 확인했으나 CLI 내부 정체 원인을 확정하지는 않았다.
+- 테스트 타이머·기존 주문 간섭과 고정 옵션 티커 fixture를 수정하고, LP 갱신 실패 검증을 실제 커밋 경계 기준으로 바로잡았다. 실제 발견된 특화 봇 런타임 복구 누락은 BaseAgent의 난수·전략·재고·큐 전체 스냅샷/복원과 전용 봇 포함으로 수정했으며, 독립 fixture 및 봇 상태를 포함한 지문으로 재시도 결정론을 검증했다.
+- OrderEntry에서 공통 예약 계산으로 옵션 승수까지 반영하고 프로필 user_id 조회를 정합화했다. 구형 보유 채권의 만기일 추측과 보유/미체결 옵션의 계약 변경을 방지하고 모호한 K200 계약의 신규 주문·만기 지급을 차단했다. 환경 검증에서 자격증명 값 출력을 제거하고 현재 모드 예제를 추가했다.
+- 전체 테스트 76개 중 첫 실행 74개 통과/2개 실패를 수정한 뒤 두 실패 항목 및 영향 범위 25개, 계약 보호 6개를 모두 통과했다. 최종 타입 검사·lint·프로덕션 빌드와 임시 프로덕션 서버의 화면/API 7개 확인을 통과했다. 실제 브라우저 클릭·실 OAuth·운영 DB는 미검증이며 커밋/푸시는 수행하지 않았다.
+- 항목별 수정 내역·검증 범위·구형 데이터 처리 제한을 docs/full-code-review-2026-11-19-fix-results.md에 기록했다.
+
+---
+## 2026-11-19 17:27
+
+**요청 요약:** `HEAD 7008f55` 및 미커밋 수정·신규 파일을 대상으로 실행 경로 도달성 및 재현 근거 중심의 읽기 전용 코드/보안 리뷰를 수행하고 결과를 `docs/reachable-review-2026-11-19-findings.md`에 정리.
+**수행 결과:**
+- 애플리케이션·테스트·설정·기존 문서를 수정하지 않고 6개 영역을 점검해 [reachable-review-2026-11-19-findings.md](/C:/Users/abcde/Desktop/웹소설/stock-sys/docs/reachable-review-2026-11-19-findings.md:1)에 확정 결함 10건(`P1` 6건, `P2` 4건)과 `의심·미검증` 5건을 구분해 기록했다.
+- 격리된 임시 `STOCKSYS_DATA_DIR`에서 `verify_defects.ts`(`EXIT=0`)로 `/api/local-db` `NEWS_TABLES` 필터 오라클, `GET /api/market-flow` `RUMOR` 원문 유출, `SettlementBatchService` 월간 키-분기 쿠폰 불일치에 따른 3배 과지급 및 만기 상환 실패, 로컬 스탠드얼론 만기 옵션 미정산 및 `acc_*` 봇/LP 주문 무한 누적, `MarketEngine` 채권 100배 현금 사전검증 누락, `/v2/stocks/[id]` `.or()` 예외, `CommodityOrderbookPanel` `$NaN`/`NaN` 렌더링 및 숏 포지션 부호 손실을 재현 검증했다.
+- 임시 디렉터리에서 기존 `scripts/test-full-review-2026-11-19-fixes.ts` 실행(`EXIT=0`) 및 전후 `git diff` 확인으로 기존 미커밋 작업과 `.data`가 변경되지 않았음을 검증했다.
+
+---
+## 2026-11-19 17:32
+
+**요청 요약:** 읽기 전용 리뷰 보고서의 실행 경로 도달성·HTTP 스트리밍 오류 실측·기본 봇 채권 생성 여부·정적 상한 부재·재현 코드 상세 보완.
+**수행 결과:**
+- 기존 `.next` 빌드(`next start -p 13199`, 격리 `STOCKSYS_DATA_DIR`) 실측으로 `/v2/stocks/AAPL`·`/v2/stocks/bond_kr_2y`가 HTTP 500이 아닌 **HTTP 200 스트리밍 SSR 오류(`digest: '1057335340'`)** 임을 확인해 [reachable-review-2026-11-19-findings.md](/C:/Users/abcde/Desktop/웹소설/stock-sys/docs/reachable-review-2026-11-19-findings.md:1)의 `RR-06`(구 `RR-07`)을 정정했다.
+- 기본 `BUILT_IN_PARTICIPANTS` 15개 봇(`MarketEngine.initializeBots()` + 3틱 실행 시 `bondOrders: 0, bondHoldings: 0`)에 `PENSION_FUND`/`COMMERCIAL_BANK`/`ExecutionTrader`가 없음을 확인해 `RR-03`을 구성 환경 조건부(`P2`)로 구분하고, private `processBatchOrders` 직접 주입에 의존했던 채권 `100x` 현금 사전검증 불일치(구 `RR-05`)를 `의심·미검증`(`SU-06`)으로 이동해 확정 건수를 9건(`P1` 5, `P2` 4)·의심 6건으로 갱신했다.
+- `RR-05`(구 `RR-06`)에서 20틱 실측과 전체 저장소 대체 `orders` trim 경로 부재 근거를 분리하고, 각 항목에 절대 스크립트 링크·필수 환경·최소 재현 코드를 보완했다.
+
+---
+## 2026-11-20 10:57
+
+**?? ??:** RR-01?RR-02 ?? ?? ?? ? market-flow ?? RUMOR ?? ?? ??? ?? ?? ??.
+**?? ??:**
+- AGY ?? ??? ?? ????? ??? ?? ?? ????, ?? ?? ???? ?? ?? ?? ?? ? ??? RUMOR ?? ???? ? API? ????.
+- ?? scripts/test-reachable-security-fixes.ts?? ?? STOCKSYS_DATA_DIR? ????????????? ??????? ??? ?? ???? ????. ?? ??? ???? market-flow ???? ?? ?? ??? ????. ?? ? ?? ?? ?? ???? 5?? ?? ?? ?? 0?? ????.
+- ?? ? engine-server TypeScript ??? ????. ?? ?? ??? ?? ??? ??? ??? fixture? ????? ?? OAuth ??/???? ?? E2E? ???? ???. ?????? ???? ???.
+- ?? ESLint ??? 60? ???? ETIMEDOUT?? ????? ??? ???? ???.
+
+---
+## 2026-11-20 11:50
+
+**?? ??:** ?? ??? ?? ?? ?? lint ???.
+**?? ??:**
+- local-db ? market-flow ???, ?? ?? ??, ?? ?? ???? ESLint? 180? ???? ????? ?? ?? 0(????? ??)? ????.
+
+
+---
+## 2026-11-20 12:25
+
+**요청 요약:** 애플리케이션 코드 무수정 기준 작업본 전체(app, lib, engine-server, 운영 설정·검증 스크립트) 읽기 전용 코드 리뷰 및 검증 수행.
+**수행 결과:**
+- 루트/`engine-server` `tsc --noEmit`(`exit 0`), `npm run lint`(`exit 0`, 0 errors / 149 warnings), `test-reachable-security-fixes.ts`(`RR-01`·`RR-02` 해결 확인) 및 주요 Phase 1~4·라우트·NextAuth·정산·AI 회귀 스크립트들을 임시 `STOCKSYS_DATA_DIR` 격리 환경에서 실행해 검증했다.
+- 활성 실행 경로 기준 확정 결함 10건(`P1` 5건, `P2` 4건, `P3` 1건: 채권 월간 키-분기 쿠폰 불일치 및 만기 상환 차단, Standalone 만기 정산 미호출·`acc_*` 봇/LP 주문 정리 스킵, `/v2/stocks/[id]` `.or()` SSR 크래시·뉴스 마스킹/`headline` 불일치, `MarketEngine` 소수점 해외주식 `ORDER_PRICE_MISMATCH`, `CommodityOrderbookPanel` `NaN`/`$NaN`, 원자재 숏 포지션 `side` 누락, `/admin` 서킷브레이커·주식 시나리오 미연결, USD ETF `₩` 통화 혼용, 옵션 `100%` 수량 수수료 미반영)과 `추측 및 미검증 사항` 5건을 [full-code-review-2026-11-20-findings.md](/C:/Users/abcde/Desktop/웹소설/stock-sys/docs/full-code-review-2026-11-20-findings.md#L1)에 정리했다.
+
+---
+## 2026-11-20 15:13
+
+**요청 요약:** 2026-11-20 전체 코드 리뷰 확정 결함 `F-20261120-01`~`F-20261120-10` 전체 수정 및 격리 검증·빌드·결과 보고서 작성.
+**수행 결과:**
+- **F01~F03, F05(정산·엔진·정리·틱)**: `SettlementBatchService` 분기 키(`period_YYYY-Qn`) 통일 및 `BondCouponEngine` 레거시 월간 키·91.25일 기지급 윈도우 호환/오류 전파 적용, `localStandaloneServer.runTick()` 50틱 만기 정산(락·커밋게이트·롤백 포함) 및 20틱 봇/LP 주문 정리(실사용자 및 `acc_*` 비봇 주문 보호·인덱스 정합) 구현, `MarketEngine`·`legacyOrderSafety`·`BaseAgent` 해외주식/USD ETF `$0.01` 틱 및 채권 전용 `[80, 120]` 클램핑 분리로 소수점 저장소 주문 `ORDER_PRICE_MISMATCH` 해소.
+- **F04, F06~F10(SSR·뉴스권한·원자재·관리자·USD ETF·옵션)**: `MemoryQueryBuilder.or()` 구현과 V1/V2 상세 SSR 세션 기반 `authorizeNewsRecord` 마스킹 및 `title ?? headline` 호환 적용, `CommodityOrderbookPanel` `totalSize`/`spread` 객체 파싱 및 `NaN` 차단, `CommodityOrderEntry`·`CommodityActiveOrdersPanel` 숏 포지션 `side` 반영 및 청산/부분청산/초과주문 증거금 정합, `/admin` `tradingHalt` 서버/엔진 연동·`LP 무한 유동성` 비활성화·`/api/admin/scenarios` `bond`/미상장 거부 및 `stock` 시나리오 엔진 연동, `USD ETF`(`TQQQ` 등) V1/V2/Hero/TradeFeed `$` 통일, `OptionOrderEntry` `0.1%` 예약 수수료 및 float 경계 수량 계산(`calculateMaxOptionBuyContracts`) 교정.
+- **검증 및 산출물**: 루트/`engine-server` `tsc --noEmit`(`exit 0`), `npm run lint`(`exit 0`), `npm run build`(`exit 0`), 신규 회귀 `scripts/test-full-review-2026-11-20-fixes.ts`(`exit 0`), `test-nextauth-http-integration.ts`(`exit 0`), 기존 16개 회귀 스위트(`exit 0`), 최신 `.next` 기반 격리 HTTP/SSR 스모크(`exit 0`) 통과 및 [full-code-review-2026-11-20-fix-results.md](/C:/Users/abcde/Desktop/웹소설/stock-sys/docs/full-code-review-2026-11-20-fix-results.md) 작성.
+
+---
+## 2026-11-20 16:40
+
+**요청 요약:** 전체 리뷰 수정 후에도 남은 추가 오류 재검토 및 재현 검증.
+**수행 결과:**
+- 애플리케이션과 기존 테스트를 수정하지 않고 거래 동결·시나리오 진행도·옵션 만기 정산 경계를 검토했다. 독립 engine-server 동결 중 실제 체결, 잠금 대기 원자재 주문의 동결 이후 접수, 관리자 시나리오 진행도 7→10틱 되돌림, 만기 옵션 미체결 주문 예약금 2,503원 잔존의 4건(P1 2건/P2 2건)을 격리 실행으로 확인했다.
+- 기존 `scripts/test-full-review-2026-11-20-fixes.ts` 전체 통과(exit 0)를 재확인하고 재현 조건·관찰값·증거 범위·수정 방향을 `docs/post-fix-review-2026-11-20-findings.md`에 기록했다. 타입/린트/빌드·실브라우저/OAuth/운영 DB는 이번에 검증하지 않았다.
+
+
+---
+## 2026-11-20 17:02
+
+**요청 요약:** 추가 오류 검토 보고서(`docs/post-fix-review-2026-11-20-findings.md`)의 확정 결함 `AR-01`~`AR-04` 전체 수정, 회귀 테스트 추가 및 통합 검증 수행.
+**수행 결과:**
+- **AR-01 (독립 엔진 거래 동결 준수)**: `engine-server/src/MarketEngine.ts`, `lib/repositories/marketRepository.ts`, `lib/repositories/inMemory/InMemoryMarketRepository.ts`에서 커밋 게이트 내부의 `isAuthoritativeTradingHalted()` 검사를 추가해 동결 시 주문 체결·봇 주문·LP 갱신·원자재 틱을 차단하고 20틱 데이터 정리 및 50틱 만기 정산 의무는 유지·롤백하도록 수정했다.
+- **AR-02 (잠금 대기 후 거래 동결 재검사)**: `lib/engine/dbMatching.ts`, `lib/options/optionOrderService.ts`, `lib/commodities/commodityLedger.ts`에서 `onPersist` 유무와 무관하게 `runWithCommitGate` 내부에서 `isTradingHalted()`를 재검사하도록 보완하여 계좌/종목/틱 락 대기 중 확정된 거래 동결을 준수하고 선행 커밋 주문은 보존하도록 수정했다.
+- **AR-03 (시나리오 진행 상태 일관성)**: `lib/memoryDb/memoryStore.ts`, `lib/scenario/ScenarioManager.ts`, `lib/engine/localStandaloneServer.ts`, `lib/commodities/CommodityMarketEngine.ts`, `app/api/admin/scenarios/route.ts`, `app/api/commodities/route.ts`에서 `memoryDb.scenarioRuntimeState`를 단일 권위 스냅샷으로 통일하고 `commitGate` 내부 동기화·스텝·영속·롤백을 적용해 주식/원자재 교차 진행, 완료 시나리오 재활성화 방지, 영속 실패 롤백을 보장했다.
+- **AR-04 (옵션 만기 미체결 주문 및 예약금 해제)**: `lib/repositories/settlementRepository.ts`, `lib/repositories/inMemory/InMemorySettlementRepository.ts`, `engine-server/src/settlement/OptionSettlementEngine.ts`, `engine-server/src/settlement/SettlementBatchService.ts`, `lib/engine/localStandaloneServer.ts`, `engine-server/src/MarketEngine.ts`에서 만기 옵션 계약의 `open`/`partial` 매수·매도 주문을 보유 유무와 무관하게 `expired`로 전환하고 주문자 계좌 락·롤백 스냅샷·주문 전용 배치 영속을 포함해 예약금 해제(이중 현금 환급 없음)를 구현했다.
+- **검증 및 산출물**: `scripts/test-post-fix-review-2026-11-20-fixes.ts` 및 기존 10개 회귀·보안·정산·시나리오·동시성 스위트(전부 `exit 0`), 루트/`engine-server` `tsc --noEmit`(`exit 0`), `npm run lint`(`exit 0`), `npm run build`(`exit 0`) 통과 확인 후 `docs/post-fix-review-2026-11-20-fix-results.md`에 결과를 기록했다.
+
+
+---
+## 2026-11-20 17:30
+
+**요청 요약:** `app/components/TopBar.tsx:159` `cash.toLocaleString()` 런타임 `Cannot read properties of undefined` 크래시 수정 및 회귀 검증.
+**수행 결과:**
+- **서버 원인 수정 (`app/api/local-db/route.ts`)**: `profiles` `SELECT`에서 `isOwner`일 때 `pruneExpiredProfileEntitlements({ ...profile })`의 반환값(`{ unlocked_features, feature_expiries, news_subscriptions }`)만 그대로 반환해 `cash` 등 본인 프로필 필드가 누락되던 문제를 수정해 복제본에 만료 정리를 적용한 전체 `ownerProfileCopy`를 반환하도록 하고, 타인 조회 시 `cash` 비노출 정책은 그대로 유지했다.
+- **클라이언트 내구성 교정 (`app/components/TopBar.tsx`)**: `parseValidCash`로 유한한 `number`(0 포함)만 허용하고 `undefined`/`null`/`NaN`/`Infinity`/배열/객체/문자열을 상태 저장 및 렌더링 양쪽에서 차단했으며, `userId`와 결합된 `cashState` 및 `useEffect` 취소·오류 처리로 계정 전환·로그아웃·조회 실패·지연(stale) 응답 시 이전 잔액 잔존 및 크래시를 방지했다.
+- **검증**: JSDOM + 실제 React 렌더링 회귀 테스트(`scripts/test-topbar-cash-runtime.tsx`), 보안 회귀 테스트(`scripts/test-reachable-security-fixes.ts`), `detect.mjs`, 루트 `tsc --noEmit`, 대상 파일 `eslint` 모두 `exit 0` 통과를 확인했다.
+
+---
+## 2026-11-20 18:19
+
+**요청 요약:** F01~F10·AR-01~04 및 TopBar 수정 이후 전체 작업본 코드 재리뷰.
+**수행 결과:**
+- 인증/API·거래/정산/예약·영속화/메모리DB·Standalone/독립 엔진·시나리오·V1/V2/ETF/환전/마이페이지·운영 설정을 검토하고, 추가 확정 결함 7건(P1 5건/P2 2건)을 `docs/full-code-review-2026-11-20-rereview-findings.md`에 재현 조건·실측값·수정 방향과 함께 기록했다.
+- 원자재 시장 초기화 후 구주문 잔존에 따른 반복 틱 실패, 상점 `__proto__` 상품ID로 현금 NaN 손상, ETF 전환 직후 이전 종목 오주문, 잠금 대기 중 만기된 옵션 체결, 독립 engine-server 빌드 산출물 Node 기동 실패, 마이페이지 환율 1380 고정, 환전 화면 로그아웃 후 잔액 잔존을 격리 실행/실제 React JSDOM/함수 실행으로 확인했다.
+- 루트·engine-server 타입 검사, ESLint 오류 검사 및 기존 회귀 스크립트 22개 모두 exit 0을 확인했다. engine-server 임시 tsc 빌드는 통과했지만 일반 Node 기동은 alias 모듈 누락으로 exit 1임을 별도 결함으로 구분했다. 애플리케이션/기존 테스트를 수정하지 않았으며 실브라우저·실계정 OAuth·원격 DB·최신 Next.js production build는 미검증이다.
+
+
+---
+## 2026-11-20 22:33
+
+**요청 요약:** 최신 코드 재리뷰(`docs/full-code-review-2026-11-20-rereview-findings.md`)의 확정 결함 `R2-01`~`R2-07`(P1 5건, P2 2건) 전체 수정, 회귀 테스트 작성 및 통합 검증.
+**수행 결과:**
+- **R2-01 (시장 초기화 후 원자재 구주문 잔존 방지)**: `lib/memoryDb/memoryStore.ts`에 `commodityResetVersion`·`commoditySnapshotVersion`을 도입해 `resetToSeedData()`·`importSnapshot()`·`restoreRollbackSnapshot()` 세대를 구분하고, `lib/commodities/CommodityMarketEngine.ts`의 `reconcileWithDatabase()` 및 `stepTickAsync()`가 초기화/스냅샷 교체를 감지해 초기 런타임(`initialRuntimeSnapshot`) 복원 및 오더북 정리를 수행하도록 수정했다. `lib/engine/localStandaloneServer.ts`의 `resetStandaloneMarketAtomically()`와 `app/api/local-db/route.ts`(`reset_market`)·`app/api/commodities/route.ts`가 원자재 `tickLock`→종목 락→`commitGate` 순서로 동기화되며 영속 실패 시 DB와 엔진을 함께 롤백한다.
+- **R2-02 (상점 상속 속성 ID 차단 및 트랜잭션 복구)**: `lib/shop/catalog.ts`에 `SHOP_PRODUCT_MAP`·`getShopProductById()`(own-property 및 가격/기간 검증)를 추가하고, `app/api/shop/purchase/route.ts`에서 `__proto__`/`constructor`/`toString` 등 비상품 ID 및 비정상 구독 인자를 4xx로 거절하며 `pruneExpiredProfileEntitlements` 이전 스냅샷 기준 예외/저장 실패 롤백을 보장했다.
+- **R2-03 (ETF 전환 직후 이전 종목 오주문 차단)**: `app/etf/page.tsx`에 `syncedEtf`(`{ ticker, stockId, price }`) 계약과 `etfSyncSeqRef` 세대 검사를 적용해 종목 전환 즉시 이전 응답을 무효화하고 새 종목 동기화 완료 전 매수/매도 버튼과 제출 핸들러를 차단하며 지연 응답 덮어쓰기를 방지했다.
+- **R2-04 (락 대기 중 만기된 옵션 체결 차단)**: `lib/options/optionOrderService.ts`의 `submitAuthoritativeOptionOrder()`가 `now`/`nowMs`/실시간 시계(`getCurrentNowMs`)를 통해 진입·`withStockLock`·`withAccountLocks`·`runWithCommitGate` 각 경계에서 최신 계약·만기·호가·자격증을 재검증하도록 수정했다.
+- **R2-05 (독립 `engine-server` `build`→`start` 모듈 해석)**: `engine-server/scripts/rewrite-aliases.mjs`와 `engine-server/package.json`의 `build` 파이프라인(`tsc && node scripts/rewrite-aliases.mjs`)으로 빌드 산출물의 `@/` 경로를 상대 경로로 치환해 일반 `node dist/engine-server/src/index.js` 기동을 복구하고 `README.md` 실행 안내를 일치시켰다.
+- **R2-06 (마이페이지 USD 환율 1380 고정 수정)**: `lib/portfolio/mypageSummary.ts`와 `app/mypage/page.tsx`에 명시적 API 응답 타입을 적용하고 `getUsdFxRateFromDb({ exchangeRates })` 구조로 교정해 해외주식·USD ETF·외화 현금이 동일 서버 환율을 사용하도록 수정했다.
+- **R2-07 (환전 화면 로그아웃·계정전환 잔액 잔존 차단)**: `app/exchange/page.tsx`에 소유자 결합 `balanceState`·즉시 초기화·`balanceRequestSeqRef` 세대 검증·`parseProfileBalances` 유효성 검사를 적용해 로그아웃 및 계정 전환 경합 시 이전 사용자 잔액 노출을 차단했다(V2 래퍼 `app/v2/exchange/page.tsx` 동일 적용).
+- **검증 및 산출물**: `scripts/test-r2-01-to-07-fixes.tsx`(`exit 0`), 기존 회귀 23개 스위트(`exit 0`), 루트/`engine-server` `tsc --noEmit`(`exit 0`), `eslint . --quiet`(`exit 0`), `npm run build`(`exit 0`), `npm --workspace engine-server run build` 및 일반 Node 기동 헬스체크(`HTTP 200`) 통과를 확인하고 결과를 `docs/full-code-review-2026-11-20-rereview-fix-results.md`에 기록했다.
+
+---
+## 2026-11-23 16:42
+
+**요청 요약:** ETF 주문 중 동일 종목 동기화 경합 취소 및 시장 초기화 롤백 시 commoditySnapshotVersion 미복구 P2 결함 2건 수정 및 회귀 검증
+**수행 결과:**
+- `app/etf/page.tsx`: `etfSyncSeqRef`(조회 응답 순서)와 `tradeContextSeqRef`/`tradeAttemptSeqRef`/`activeAccountKeyRef`(실제 종목·계정 전환 세대)를 분리해 동일 ETF/계정의 주기적·수동 동기화가 진행 중인 `handleUserTrade`를 취소하지 않도록 수정하고, 실제 종목·계정 전환 및 로그아웃 후에는 오래된 주문 제출을 차단했다.
+- `lib/memoryDb/memoryStore.ts`, `lib/engine/localStandaloneServer.ts`, `lib/scenario/ScenarioManager.ts`: `exportSnapshot()` 및 `applySnapshotData()`(`bumpTradeEpoch: false`)와 `resetStandaloneMarketAtomically()`의 롤백 경로에서 `commoditySnapshotVersion`, `commodityResetVersion`, `scenarioResetVersion`, 시나리오/엔진 reconcile 메타데이터가 함께 원복되도록 수정해 롤백 직후 다음 틱에서 불필요한 재조정 및 봇 휴면 주문 삭제가 발생하지 않도록 보장했다.
+- `scripts/test-r2-01-to-07-fixes.tsx`: 동일 ETF 수동 동기화 중 주문 1회 제출, 종목 왕복/계정 전환/로그아웃 시 구주문 차단, 초기화 저장 `false`/예외 롤백 후 버전 원복 및 다음 틱 봇 휴면 주문 유지 회귀 케이스를 추가하고, R2 스위트·관련 회귀 4종·루트/엔진 `tsc`·`eslint` 통과를 확인했다.
+
+---
+## 2026-11-23 17:40
+
+**요청 요약:** `stock-sys` `main` 전체 재리뷰 결함(P1 2건, P2 4건, P3/성능 6건) 수정 및 격리 회귀 검증
+**수행 결과:**
+- **P1**:
+  - `lib/memoryDb/memoryStore.ts`, `app/admin/page.tsx`: 시드 33종목에 `is_listed: true` 부여 및 구 스냅샷 마이그레이션(`migrateLegacyStockListingFlags`)·관리자 조회(`.neq('is_listed', false)`)로 기본 상장 33종목 복구 및 명시적 상장 폐지(`is_listed: false`) 제외 보장.
+  - `lib/options/optionOrderService.ts`, `lib/repositories/inMemory/InMemorySettlementRepository.ts`, `engine-server/src/settlement/{OptionSettlementEngine,SettlementBatchService}.ts`, `lib/engine/localStandaloneServer.ts`, `engine-server/src/MarketEngine.ts`: `OPTIONS_LP_ID` 재매수 시 `lpLiabilities` 선상계(부분·전량·초과) 및 만기 정산 확정 시 `clearOptionLpLiabilitiesIfSettled` 정리·영속 실패/보류 시 롤백 복원 구현.
+- **P2**:
+  - `app/components/{OrderEntry,Sidebar,DashboardGate,RandomEventModal}.tsx`, `app/shop/page.tsx`: 로그아웃·계정 전환 시 사용자 상태 즉시 초기화 및 요청 순번/컨텍스트 기반 지연 응답(stale) 차단.
+  - `lib/memoryDb/{memoryStore,memoryTransaction,memoryDbClient}.ts`, `lib/auth/adminAuth.ts`, `lib/engine/{marketService,dbMatching,orderRisk,localStandaloneServer}.ts`, `lib/commodities/{commodityLedger,CommodityMarketEngine}.ts`, `lib/exchange/exchangeService.ts`, `lib/events/playerEventService.ts`, `app/api/{local-db,shop/purchase,market-flow,auth/[...nextauth]}/route.ts`: `resolveProfileByUserId` / `resolveAccountLockKey`로 레거시 프로필(`id !== user_id`) 조회·갱신·잠금 범위·교차계정 격리 통일.
+  - `lib/events/playerEventService.ts`: `catch` 예외 경로에도 `margin_debt_krw` 롤백 추가.
+  - `app/etf/page.tsx`: `handleSelectETF`에서 렌더 클로저 대신 `selectedTickerRef.current` 비교로 같은 렌더 배치 `A → B → A` 재선택 복구.
+- **P3 / 성능**:
+  - `app/components/OptionHTSDashboard.tsx`: 상태 업데이터 내부 부수효과 제거(`selectedContractIdRef` 분리).
+  - `app/components/DashboardGate.tsx`: 미존재 `market_indices` 403 요청 제거.
+  - `lib/chart/tickSize.ts`, `app/components/TickChart.tsx`, `app/stocks/[id]/StockDetailClient.tsx`, `app/commodities/[id]/CommodityDetailClient.tsx`: `isUsdQuotedAsset` 기반 틱 단위 계산으로 통화 오판 해소.
+  - `app/components/TradeNotifier.tsx`: 옵션(`계약`)·채권(`좌`) 체결 알림 종목 라벨/단위 지원.
+  - `lib/memoryDb/memoryStore.ts`, `lib/engine/localStandaloneServer.ts`: `resetStandaloneMarketAtomically`에서 영속 커밋 성공 후에만 `market_reset` 발행.
+  - `lib/rateLimit/windowLimiter.ts`, `app/api/{orders,market-flow}/route.ts`: 만료 엔트리 주기 정리 적용.
+- **검증**: 신규 회귀 스위트 `scripts/test-rereview-2026-11-23-fixes.tsx` 및 기존 8개 스위트(`test-r2-01-to-07-fixes.tsx`, `run_settlement_verification.ts`, `test-post-fix-review-2026-11-20-fixes.ts`, `test-order-security-and-atomic.ts`, `test-route-handlers-e2e.ts`, `test-topbar-cash-runtime.tsx`, `test-phase1-settlement-integrity.ts`, `test-reachable-security-fixes.ts`), 루트/`engine-server` `tsc --noEmit`, `eslint . --quiet`, `engine-server` 빌드+alias rewrite, `next build` 모두 격리 환경 `exit 0` 통과 확인.

@@ -24,6 +24,7 @@ async function main() {
   const engine = new MarketEngine({
     simulationContext: context,
     repositories,
+    persistence: enginePersistence,
     initialTickCount: restartRuntime.initialTickCount,
     initialPartialFillSequence: restartRuntime.initialPartialFillSequence,
     onTickCommitPersist: async ({ tickCount, partialFillSequence, hadTrades, hasPersistentStateChanges }) => {

@@ -18,6 +18,7 @@ export interface CommodityOpenOrderItem {
 }
 
 export interface CommodityPositionSummary {
+  side?: 'long' | 'short' | 'flat';
   quantity: number;
   avg_entry_price: number;
 }
@@ -146,6 +147,14 @@ export default function CommodityActiveOrdersPanel({
     );
   }
 
+  const rawPosQty = Math.abs(Number(position?.quantity ?? 0));
+  const signedPositionQty =
+    position?.side === 'short'
+      ? -rawPosQty
+      : position?.side === 'flat'
+        ? 0
+        : rawPosQty;
+
   return (
     <div className="flex flex-col h-full font-mono text-xs select-none">
       {/* 상단 요약 & 일괄 취소 */}
@@ -154,13 +163,13 @@ export default function CommodityActiveOrdersPanel({
           <span className="text-[11.5px] text-[#8E939D] font-bold">
             {commodityName} 미체결 <strong className="text-white">{orders.length}</strong>건
           </span>
-          {position && position.quantity !== 0 && (
+          {position && signedPositionQty !== 0 && (
             <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold border ${
-              position.quantity > 0
+              signedPositionQty > 0
                 ? 'bg-up/10 text-up border-[#F04452]/30'
                 : 'bg-down/10 text-down border-[#3182F6]/30'
             }`}>
-              보유 포지션: {position.quantity > 0 ? `롱 +${position.quantity}` : `숏 ${position.quantity}`}계약 (평균 ${Number(position.avg_entry_price || 0).toFixed(2)})
+              보유 포지션: {signedPositionQty > 0 ? `롱 +${signedPositionQty}` : `숏 ${signedPositionQty}`}계약 (평균 ${Number(position.avg_entry_price || 0).toFixed(2)})
             </span>
           )}
         </div>

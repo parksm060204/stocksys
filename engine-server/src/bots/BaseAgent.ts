@@ -1,6 +1,6 @@
 import type { AgentConfig, AgentPortfolio, AgentWeights, MarketSentiment, MarketEvent } from '../types';
 import { EventBus } from '../EventBus';
-import { applyLegacyChildOrderSafetyLimits, getLegacyTickSize, alignToLegacyTickSize } from '../risk/legacyOrderSafety';
+import { applyLegacyChildOrderSafetyLimits, getLegacyTickSize, alignToLegacyTickSize, alignPriceToMarketTick } from '../risk/legacyOrderSafety';
 import { isMarketAbuseScenarioEnabled } from '../simulation/featureFlags';
 import {
   SimulationContext,
@@ -8,6 +8,40 @@ import {
   SimulationTimeSource,
   createSimulationContext
 } from '../../../lib/engine/simulation/runtime';
+
+interface AgentRuntimeSnapshot {
+  state: Record<string, unknown>;
+  randomStreams: Map<string, {
+    source: SimulationRandomSource;
+    snapshot: ReturnType<SimulationRandomSource['snapshot']>;
+  }>;
+}
+
+// Preserve the prototypes of strategy helpers (regressions, rolling windows),
+// while copying their mutable state. structuredClone alone strips those methods.
+function cloneRuntimeValue<T>(value: T, seen = new Map<object, unknown>()): T {
+  if (value === null || typeof value !== 'object') return value;
+  if (seen.has(value)) return seen.get(value) as T;
+  if (value instanceof Date) return new Date(value.getTime()) as T;
+  if (value instanceof Map) {
+    const copy = new Map();
+    seen.set(value, copy);
+    for (const [key, item] of value) copy.set(key, cloneRuntimeValue(item, seen));
+    return copy as T;
+  }
+  if (value instanceof Set) {
+    const copy = new Set();
+    seen.set(value, copy);
+    for (const item of value) copy.add(cloneRuntimeValue(item, seen));
+    return copy as T;
+  }
+  const copy = Array.isArray(value) ? [] : Object.create(Object.getPrototypeOf(value));
+  seen.set(value, copy);
+  for (const key of Object.keys(value)) {
+    copy[key] = cloneRuntimeValue((value as Record<string, unknown>)[key], seen);
+  }
+  return copy as T;
+}
 
 export class BaseAgent {
   public botId: string;
@@ -25,6 +59,34 @@ export class BaseAgent {
   public icebergReserves: Map<string, { side: 'buy' | 'sell'; price: number; remainingQty: number; sliceQty: number }> = new Map();
   public activeSpoofOrders: Array<{ orderId: string; stockId: string; side: 'buy' | 'sell'; price: number; tickCreated: number }> = [];
   public ordersToCancel: string[] = [];
+
+  public snapshotRuntimeState(): AgentRuntimeSnapshot {
+    const state: Record<string, unknown> = {};
+    const randomStreams: AgentRuntimeSnapshot['randomStreams'] = new Map();
+    for (const [key, value] of Object.entries(this)) {
+      if (key === 'context' || key === 'clock') continue;
+      if (value && typeof value.snapshot === 'function' && typeof value.restore === 'function' && typeof value.next === 'function') {
+        randomStreams.set(key, { source: value, snapshot: value.snapshot() });
+      } else {
+        state[key] = value;
+      }
+    }
+    return { state: cloneRuntimeValue(state), randomStreams };
+  }
+
+  public restoreRuntimeState(snapshot: AgentRuntimeSnapshot): void {
+    const target = this as unknown as Record<string, unknown>;
+    for (const key of Object.keys(this)) {
+      if (key !== 'context' && key !== 'clock' && !(key in snapshot.state) && !snapshot.randomStreams.has(key)) {
+        delete target[key];
+      }
+    }
+    Object.assign(this, cloneRuntimeValue(snapshot.state));
+    for (const [key, { source, snapshot: randomState }] of snapshot.randomStreams) {
+      source.restore!(randomState);
+      target[key] = source;
+    }
+  }
 
   constructor(configOrId: any, initialCapital?: number, context?: SimulationContext) {
     if (typeof configOrId === 'string') {
@@ -333,11 +395,17 @@ export class BaseAgent {
     }
   }
 
-  protected getTickSize(price: number): number {
+  protected getTickSize(price: number, asset?: { market?: string; currency?: string; ticker?: string }): number {
+    if (asset && (asset.market === 'bonds' || asset.market === 'overseas' || asset.market === 'europe' || asset.market === 'us' || asset.market === 'commodities' || asset.currency === 'USD')) {
+      return 0.01;
+    }
     return getLegacyTickSize(price);
   }
 
-  public alignToTickSize(price: number): number {
+  public alignToTickSize(price: number, asset?: { market?: string; currency?: string; ticker?: string }): number {
+    if (asset) {
+      return alignPriceToMarketTick(price, asset);
+    }
     return alignToLegacyTickSize(price);
   }
 

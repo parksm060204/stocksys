@@ -621,7 +621,7 @@ async function main() {
       userId: BUYER,
       bondId: 'BOND_10Y',
       principalAmount: 100000,
-      couponAmount: 5000,
+      couponAmount: 1250,
       idempotencyKey: 'bond_fail_1',
       faultInjection: 'FAIL_AT_CLOSE',
     });
@@ -634,11 +634,11 @@ async function main() {
       userId: BUYER,
       bondId: 'BOND_10Y',
       principalAmount: 100000,
-      couponAmount: 5000,
+      couponAmount: 1250,
       idempotencyKey: 'bond_success_1',
     });
     assert.strictEqual(bondSuccess.success, true, 'bond maturity settlement must succeed');
-    assert.strictEqual(db.profiles.get(BUYER)!.cash, cashBeforeBond + 105000, 'principal + coupon paid');
+    assert.strictEqual(db.profiles.get(BUYER)!.cash, cashBeforeBond + 101250, 'principal + quarterly coupon paid');
     assert.strictEqual(db.holdings.has(bondHolding.id), false, 'bond holding removed');
 
     // 15g. Bond: 멱등 재시도 -> 중복 지급 없음
@@ -646,11 +646,11 @@ async function main() {
       userId: BUYER,
       bondId: 'BOND_10Y',
       principalAmount: 100000,
-      couponAmount: 5000,
+      couponAmount: 1250,
       idempotencyKey: 'bond_success_1',
     });
     assert.strictEqual(bondRetry.success, true, 'bond retry must succeed');
-    assert.strictEqual(db.profiles.get(BUYER)!.cash, cashBeforeBond + 105000, 'no double payment');
+    assert.strictEqual(db.profiles.get(BUYER)!.cash, cashBeforeBond + 101250, 'no double payment');
     console.log('  ✅ [PASS] option and bond fault injection verified; atomicity and idempotency enforced');
   }
 

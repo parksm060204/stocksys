@@ -10,6 +10,8 @@
  *   are strictly rejected fail-closed.
  */
 
+import { isUsdQuotedAsset } from '../../../lib/engine/currency';
+
 export const LEGACY_CHILD_ORDER_LIMITS = {
   MAX_NOTIONAL_PER_ORDER: 5000000, // 5,000,000 KRW (5 million KRW)
   MAX_QTY_PER_ORDER: 5000,         // 5,000 shares
@@ -40,6 +42,22 @@ export function alignToLegacyTickSize(price: number): number {
   return Math.round(price / tick) * tick;
 }
 
+export function alignPriceToMarketTick(
+  price: number,
+  context?: Pick<OrderRiskContext, 'market' | 'currency' | 'ticker'>
+): number {
+  if (price <= 0 || !isFinite(price) || isNaN(price)) return ABSOLUTE_SYSTEMIC_LIMITS.MIN_TICK_PRICE;
+  if (context?.market === 'bonds') {
+    const bPrice = Math.max(80.00, Math.min(120.00, Math.round(price * 100) / 100));
+    return Number(bPrice.toFixed(2));
+  }
+  if (isUsdQuotedAsset({ market: context?.market, currency: context?.currency, ticker: context?.ticker })) {
+    const usdPrice = Math.max(0.01, Math.round(price * 100) / 100);
+    return Number(usdPrice.toFixed(2));
+  }
+  return alignToLegacyTickSize(price);
+}
+
 export interface LegacyOrderInput {
   stock_id?: string;
   user_id?: string | null;
@@ -65,6 +83,9 @@ export interface OrderRiskContext {
   readonly currentPosition?: number;
   readonly orderType?: 'CHILD_ORDER' | 'STRATEGIC_ORDER' | 'LP_QUOTE';
   readonly bypassLegacyChildOrderCap?: boolean;
+  readonly market?: string;
+  readonly currency?: string;
+  readonly ticker?: string;
   readonly diagnostics?: OrderRiskDiagnostic[];
 }
 
@@ -184,10 +205,11 @@ export function evaluateOrderSafety<T extends LegacyOrderInput>(
     };
   }
 
-  // 3. Price alignment to KRX tick
-  const safePrice = alignToLegacyTickSize(rawPrice);
+  // 3. Price alignment to market-appropriate tick (USD $0.01, bonds 0.01 [80..120], KRX tick)
+  const safePrice = alignPriceToMarketTick(rawPrice, context);
   if (safePrice !== rawPrice) {
-    reasonCodes.push('ALIGNED_TO_KRX_TICK');
+    const isUsd = isUsdQuotedAsset({ market: context?.market, currency: context?.currency, ticker: context?.ticker });
+    reasonCodes.push(context?.market === 'bonds' ? 'ALIGNED_TO_BOND_TICK' : isUsd ? 'ALIGNED_TO_USD_TICK' : 'ALIGNED_TO_KRX_TICK');
   }
 
   let safeQty = rawSize;

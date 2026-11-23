@@ -6,9 +6,10 @@ import type {
 } from '@/lib/memoryDb/memoryStore';
 import { withStockLock, withAllStockLocks } from '@/lib/engine/marketService';
 import { withAccountLocks } from '@/lib/memoryDb/accountLocks';
-import { runWithCommitGate } from '@/lib/memoryDb/PersistenceManager';
-import { calculateSingleBuyOrderReservedCash, getAvailableCashKrw, applyCashCreditWithMarginDebt } from '@/lib/engine/orderRisk';
+import { runWithCommitGate, persistenceManager } from '@/lib/memoryDb/PersistenceManager';
+import { calculateSingleBuyOrderReservedCash, getAvailableCashKrw, applyCashCreditWithMarginDebt, sweepUnencumberedCashToMarginDebt } from '@/lib/engine/orderRisk';
 import { pruneExpiredProfileEntitlements } from '@/lib/shop/catalog';
+import { hasAmbiguousK200Units } from './contractUnits';
 
 export const OPTIONS_LP_ID = 'bot_options_mm_001';
 const SUPPORTED_OPTION_ORDER_TYPES = new Set(['LIMIT', 'MARKET']);
@@ -45,6 +46,7 @@ export interface OptionOrderSubmitInput {
   price?: number;
   qty: number;
   nowMs?: number;
+  now?: () => number;
   onPersist?: () => Promise<boolean>;
 }
 
@@ -90,15 +92,31 @@ export async function submitAuthoritativeOptionOrder(
   input: OptionOrderSubmitInput
 ): Promise<OptionOrderSubmitResult> {
   const { db, userId, contractId, ticker, side, orderType, price, qty } = input;
-  const nowMs = input.nowMs ?? Date.now();
+  const getCurrentNowMs = (): number => {
+    if (typeof input.now === 'function') return input.now();
+    if (input.nowMs !== undefined) return input.nowMs;
+    return db.executionContext ? db.getNowMs() : Date.now();
+  };
+  const entryNowMs = getCurrentNowMs();
+
+  if (db.isTradingHalted()) {
+    return {
+      success: false,
+      statusCode: 403,
+      message: '현재 관리자 긴급 서킷브레이커(거래 동결)가 발동되어 옵션 주문을 접수할 수 없습니다.',
+    };
+  }
 
   if (!contractId && !ticker) {
     return { success: false, statusCode: 400, message: '옵션 계약 식별자(contractId 또는 ticker)가 필요합니다.' };
   }
 
-  const contract = findOptionContract(db, contractId, ticker);
-  if (!contract) {
+  const prelimContract = findOptionContract(db, contractId, ticker);
+  if (!prelimContract) {
     return { success: false, statusCode: 404, message: '존재하지 않는 옵션 계약입니다.' };
+  }
+  if (hasAmbiguousK200Units(prelimContract)) {
+    return { success: false, statusCode: 409, message: '기존 옵션 계약의 지수·주식 단위가 일치하지 않아 계약 확인이 필요합니다.' };
   }
 
   if (side !== 'BUY' && side !== 'SELL') {
@@ -117,13 +135,13 @@ export async function submitAuthoritativeOptionOrder(
     return { success: false, statusCode: 400, message: '주문 수량(qty)은 1계약 이상의 정수여야 합니다.' };
   }
 
-  const expiryMs = Date.parse(contract.expiry_date);
-  if (!Number.isFinite(expiryMs) || expiryMs <= nowMs) {
+  const prelimExpiryMs = Date.parse(prelimContract.expiry_date);
+  if (!Number.isFinite(prelimExpiryMs) || prelimExpiryMs <= entryNowMs) {
     return { success: false, statusCode: 400, message: '만기된 옵션 계약은 주문할 수 없습니다.' };
   }
 
-  const multiplier = contract.multiplier ?? 250000;
-  if (!Number.isFinite(multiplier) || multiplier <= 0) {
+  const prelimMultiplier = prelimContract.multiplier ?? 250000;
+  if (!Number.isFinite(prelimMultiplier) || prelimMultiplier <= 0) {
     return { success: false, statusCode: 400, message: '옵션 계약 승수가 유효하지 않습니다.' };
   }
 
@@ -133,17 +151,51 @@ export async function submitAuthoritativeOptionOrder(
     }
   }
 
-  const { lpBidPrice, lpAskPrice } = getOptionLpQuotes(contract);
+  const prelimQuotes = getOptionLpQuotes(prelimContract);
   const limitPrice = orderType === 'LIMIT' ? round2(price!) : side === 'BUY' ? Infinity : 0;
 
   // 입력값 곱셈 안전 정수 범위 사전 검증
-  const worstCaseUnit = orderType === 'LIMIT' ? limitPrice : side === 'BUY' ? lpAskPrice : lpBidPrice;
-  const worstCaseNotional = safeMulInt(worstCaseUnit * multiplier, qty);
-  if (worstCaseNotional === null || worstCaseNotional <= 0) {
+  const prelimWorstCaseUnit =
+    orderType === 'LIMIT' ? limitPrice : side === 'BUY' ? prelimQuotes.lpAskPrice : prelimQuotes.lpBidPrice;
+  const prelimWorstCaseNotional = safeMulInt(prelimWorstCaseUnit * prelimMultiplier, qty);
+  if (prelimWorstCaseNotional === null || prelimWorstCaseNotional <= 0) {
     return { success: false, statusCode: 400, message: '주문 금액이 안전한 정수 범위를 초과했습니다.' };
   }
 
-  return withStockLock(contract.id, async () => {
+  return withStockLock(prelimContract.id, async () => {
+    const lockNowMs = getCurrentNowMs();
+    if (db.isTradingHalted()) {
+      return {
+        success: false,
+        statusCode: 403,
+        message: '현재 관리자 긴급 서킷브레이커(거래 동결)가 발동되어 옵션 주문을 접수할 수 없습니다.',
+      };
+    }
+
+    const contract = findOptionContract(db, prelimContract.id, ticker);
+    if (!contract) {
+      return { success: false, statusCode: 404, message: '존재하지 않는 옵션 계약입니다.' };
+    }
+    if (hasAmbiguousK200Units(contract)) {
+      return { success: false, statusCode: 409, message: '기존 옵션 계약의 지수·주식 단위가 일치하지 않아 계약 확인이 필요합니다.' };
+    }
+
+    const expiryMs = Date.parse(contract.expiry_date);
+    if (!Number.isFinite(expiryMs) || expiryMs <= lockNowMs) {
+      return { success: false, statusCode: 400, message: '만기된 옵션 계약은 주문할 수 없습니다.' };
+    }
+
+    const multiplier = contract.multiplier ?? 250000;
+    if (!Number.isFinite(multiplier) || multiplier <= 0) {
+      return { success: false, statusCode: 400, message: '옵션 계약 승수가 유효하지 않습니다.' };
+    }
+
+    const { lpBidPrice, lpAskPrice } = getOptionLpQuotes(contract);
+    const worstCaseUnit = orderType === 'LIMIT' ? limitPrice : side === 'BUY' ? lpAskPrice : lpBidPrice;
+    const worstCaseNotional = safeMulInt(worstCaseUnit * multiplier, qty);
+    if (worstCaseNotional === null || worstCaseNotional <= 0) {
+      return { success: false, statusCode: 400, message: '주문 금액이 안전한 정수 범위를 초과했습니다.' };
+    }
     // 1. 매칭 후보 조회 (상대 휴면 지정가 주문 + LP 호가)
     const oppSide = side === 'BUY' ? 'sell' : 'buy';
     const orderIds = db.orderStockIndex.get(contract.id);
@@ -187,6 +239,10 @@ export async function submitAuthoritativeOptionOrder(
       const oppRem = opp.size - opp.filled;
       const fillQty = Math.min(remaining, oppRem);
       if (fillQty > 0 && opp.user_id) {
+        if (side === 'SELL') {
+          const oppBuyerDebt = Math.max(0, Number(db.resolveProfileByUserId(opp.user_id)?.margin_debt_krw ?? 0));
+          if (oppBuyerDebt > 0) continue;
+        }
         fills.push({ counterpartyId: opp.user_id, price: opp.price, qty: fillQty, restingOrder: opp });
         remaining -= fillQty;
       }
@@ -204,16 +260,26 @@ export async function submitAuthoritativeOptionOrder(
     }
 
     const lockAccounts = Array.from(new Set([userId, ...fills.map((f) => f.counterpartyId)]));
+    const lockKeys = lockAccounts.map((id) => db.resolveAccountLockKey(id));
 
-    return withAccountLocks(lockAccounts, async () => {
-      const profile = db.profiles.get(userId);
+    return withAccountLocks(lockKeys, async () => {
+      if (db.isTradingHalted()) {
+        return {
+          success: false,
+          statusCode: 403,
+          message: '현재 관리자 긴급 서킷브레이커(거래 동결)가 발동되어 옵션 주문을 접수할 수 없습니다.',
+        };
+      }
+      const profile = db.resolveProfileByUserId(userId);
       if (!profile) {
         return { success: false, statusCode: 404, message: '사용자 계좌를 찾을 수 없습니다.' };
       }
 
-      // 서버 측 만료 권한 정리 및 옵션 거래 자격증 검증
-      pruneExpiredProfileEntitlements(profile, nowMs);
-      if (!profile.is_admin && !profile.has_options_license) {
+      // 서버 측 옵션 거래 자격증 검증 (만료 정리는 커밋 게이트/스냅샷 내부에서 수행)
+      const accountNowMs = getCurrentNowMs();
+      const tempEntitlementProfile = { ...profile };
+      pruneExpiredProfileEntitlements(tempEntitlementProfile, accountNowMs);
+      if (!tempEntitlementProfile.is_admin && !tempEntitlementProfile.has_options_license) {
         return {
           success: false,
           statusCode: 403,
@@ -323,14 +389,17 @@ export async function submitAuthoritativeOptionOrder(
 
       // 상대방(휴면/LP) 계좌 존재·누적 예수금(수수료 포함)·누적 보유수량 사전 검증
       for (const f of fills) {
-        const cp = db.profiles.get(f.counterpartyId);
+        const cp = db.resolveProfileByUserId(f.counterpartyId);
         if (!cp) {
           return { success: false, statusCode: 500, message: `상대방 계좌(${f.counterpartyId})를 찾을 수 없습니다.` };
         }
       }
       if (side === 'SELL') {
         for (const [cpId, requiredTotalCash] of cpCumulativeBuyCash.entries()) {
-          const cp = db.profiles.get(cpId)!;
+          const cp = db.resolveProfileByUserId(cpId)!;
+          if (Math.max(0, Number(cp.margin_debt_krw ?? 0)) > 0) {
+            return { success: false, statusCode: 400, message: '상대방 매수자에 미수 부채가 있어 체결할 수 없습니다.' };
+          }
           if (!Number.isFinite(cp.cash) || cp.cash < requiredTotalCash) {
             return { success: false, statusCode: 400, message: '상대방 매수자의 예수금(수수료 포함)이 부족하여 체결할 수 없습니다.' };
           }
@@ -376,6 +445,53 @@ export async function submitAuthoritativeOptionOrder(
       }
 
       return runWithCommitGate(input.onPersist, async () => {
+      const commitNowMs = getCurrentNowMs();
+      if (db.isTradingHalted()) {
+        return {
+          success: false,
+          statusCode: 403,
+          message: '현재 관리자 긴급 서킷브레이커(거래 동결)가 발동되어 옵션 주문을 접수할 수 없습니다.',
+        };
+      }
+      const latestContract = findOptionContract(db, contract.id);
+      if (!latestContract) {
+        return { success: false, statusCode: 404, message: '존재하지 않는 옵션 계약입니다.' };
+      }
+      if (hasAmbiguousK200Units(latestContract)) {
+        return { success: false, statusCode: 409, message: '기존 옵션 계약의 지수·주식 단위가 일치하지 않아 계약 확인이 필요합니다.' };
+      }
+      const latestExpiryMs = Date.parse(latestContract.expiry_date);
+      if (!Number.isFinite(latestExpiryMs) || latestExpiryMs <= commitNowMs) {
+        return { success: false, statusCode: 400, message: '만기된 옵션 계약은 주문할 수 없습니다.' };
+      }
+      const latestMultiplier = latestContract.multiplier ?? 250000;
+      const latestQuotes = getOptionLpQuotes(latestContract);
+      const usesLpFill = fills.some((f) => f.counterpartyId === OPTIONS_LP_ID);
+      if (
+        latestMultiplier !== multiplier ||
+        (usesLpFill &&
+          ((side === 'BUY' && latestQuotes.lpAskPrice !== lpAskPrice) ||
+            (side === 'SELL' && latestQuotes.lpBidPrice !== lpBidPrice)))
+      ) {
+        return {
+          success: false,
+          statusCode: 409,
+          message: '주문 처리 중 옵션 계약 조건 또는 호가가 변경되어 다시 시도해 주세요.',
+        };
+      }
+      const latestProfile = db.resolveProfileByUserId(userId);
+      if (!latestProfile) {
+        return { success: false, statusCode: 404, message: '사용자 계좌를 찾을 수 없습니다.' };
+      }
+      const commitEntitlementProfile = { ...latestProfile };
+      pruneExpiredProfileEntitlements(commitEntitlementProfile, commitNowMs);
+      if (!commitEntitlementProfile.is_admin && !commitEntitlementProfile.has_options_license) {
+        return {
+          success: false,
+          statusCode: 403,
+          message: '파생상품 옵션 거래 자격증이 필요합니다. 상점에서 자격증을 취득해 주세요.',
+        };
+      }
       // 스냅샷(관련 계좌·종목만) 확보
       const snapProfiles = new Map<string, any>();
       const snapHoldings = new Map<string, any>();
@@ -385,12 +501,13 @@ export async function submitAuthoritativeOptionOrder(
       const createdTradeIds: string[] = [];
 
       for (const accId of lockAccounts) {
-        const p = db.profiles.get(accId);
-        if (p) snapProfiles.set(accId, { ...p });
+        const p = db.resolveProfileByUserId(accId);
+        if (p) snapProfiles.set(p.id, structuredClone(p));
         const hk = `${accId}_${contract.id}`;
         const h = db.holdings.get(hk);
         if (h) snapHoldings.set(hk, { ...h });
       }
+      pruneExpiredProfileEntitlements(latestProfile, commitNowMs);
       for (const f of fills) {
         if (f.restingOrder) snapOrders.set(f.restingOrder.id, { ...f.restingOrder });
       }
@@ -399,12 +516,17 @@ export async function submitAuthoritativeOptionOrder(
 
       const rollbackLocal = () => {
         contract.volume = prevVolume;
-        for (const [accId, prevP] of snapProfiles.entries()) {
-          const curP = db.profiles.get(accId);
+        for (const [profileId, prevP] of snapProfiles.entries()) {
+          const curP = db.profiles.get(profileId);
           if (curP) {
+            for (const key of Object.keys(curP)) {
+              if (!(key in prevP)) {
+                delete (curP as any)[key];
+              }
+            }
             Object.assign(curP, prevP);
           } else {
-            db.profiles.set(accId, prevP);
+            db.profiles.set(profileId, prevP);
           }
         }
         for (const accId of lockAccounts) {
@@ -427,7 +549,7 @@ export async function submitAuthoritativeOptionOrder(
           db.removeOrderFromIndex(incOrd);
           db.orders.delete(incomingOrderId);
         }
-        db.lpLiabilities = snapLpLiabilities;
+        db.lpLiabilities = new Map(snapLpLiabilities);
         for (const tid of createdTradeIds) {
           db.settlementLedger.delete(tid);
           const idx = db.trades.findIndex((t) => t.id === tid);
@@ -449,8 +571,8 @@ export async function submitAuthoritativeOptionOrder(
           const buyerFee = buyerId === OPTIONS_LP_ID ? 0 : Math.round(fillNotional * OPTION_FEE_RATE);
           const sellerFee = sellerId === OPTIONS_LP_ID ? 0 : Math.round(fillNotional * OPTION_FEE_RATE);
 
-          const buyerProfile = db.profiles.get(buyerId)!;
-          const sellerProfile = db.profiles.get(sellerId)!;
+          const buyerProfile = db.resolveProfileByUserId(buyerId)!;
+          const sellerProfile = db.resolveProfileByUserId(sellerId)!;
 
           buyerProfile.cash = round2(buyerProfile.cash - (fillNotional + buyerFee));
           const sellerNet = fillNotional - sellerFee;
@@ -460,24 +582,42 @@ export async function submitAuthoritativeOptionOrder(
             sellerProfile.cash = round2(sellerProfile.cash + sellerNet);
           }
 
-          // 매수자 보유량 증가
-          const buyerHKey = `${buyerId}_${contract.id}`;
-          const buyerHolding = db.holdings.get(buyerHKey);
-          if (buyerHolding) {
-            const nextQ = buyerHolding.quantity + f.qty;
-            buyerHolding.avg_price = (buyerHolding.avg_price * buyerHolding.quantity + f.price * f.qty) / nextQ;
-            buyerHolding.quantity = nextQ;
-          } else {
-            const newH = {
-              id: buyerHKey,
-              user_id: buyerId,
-              stock_id: contract.id,
-              quantity: f.qty,
-              avg_price: f.price,
-              created_at: db.getIsoTimestamp(),
-            };
-            db.holdings.set(buyerHKey, newH);
-            db.addHoldingToIndex(newH);
+          // 매수자 보유량 증가 (LP 재매수 시 기존 lpLiabilities 부채를 먼저 상계한 뒤 초과분만 보유량 적립)
+          let remainingToHold = f.qty;
+          if (buyerId === OPTIONS_LP_ID) {
+            const liabKey = `${OPTIONS_LP_ID}:${contract.id}`;
+            const curLiab = db.lpLiabilities.get(liabKey) ?? 0;
+            if (curLiab > 0) {
+              const netted = Math.min(curLiab, f.qty);
+              const nextLiab = curLiab - netted;
+              if (nextLiab > 0) {
+                db.lpLiabilities.set(liabKey, nextLiab);
+              } else {
+                db.lpLiabilities.delete(liabKey);
+              }
+              remainingToHold = f.qty - netted;
+            }
+          }
+
+          if (remainingToHold > 0) {
+            const buyerHKey = `${buyerId}_${contract.id}`;
+            const buyerHolding = db.holdings.get(buyerHKey);
+            if (buyerHolding) {
+              const nextQ = buyerHolding.quantity + remainingToHold;
+              buyerHolding.avg_price = (buyerHolding.avg_price * buyerHolding.quantity + f.price * remainingToHold) / nextQ;
+              buyerHolding.quantity = nextQ;
+            } else {
+              const newH = {
+                id: buyerHKey,
+                user_id: buyerId,
+                stock_id: contract.id,
+                quantity: remainingToHold,
+                avg_price: f.price,
+                created_at: db.getIsoTimestamp(),
+              };
+              db.holdings.set(buyerHKey, newH);
+              db.addHoldingToIndex(newH);
+            }
           }
 
           // 매도자 보유량 차감 (LP 매도 시 재고 부족분은 lpLiabilities에 부채 기록)
@@ -611,7 +751,7 @@ export async function submitAuthoritativeOptionOrder(
           message: err?.message || '옵션 주문 정산 중 오류가 발생하여 롤백했습니다.',
         };
       }
-      });
+      }, input.onPersist ? undefined : persistenceManager);
     });
   });
 }
@@ -754,7 +894,7 @@ export async function cancelOptionOrder(params: {
   }
 
   return withStockLock(prelim.stock_id, async () => {
-    return withAccountLocks([userId], async () => {
+    return withAccountLocks([db.resolveAccountLockKey(userId)], async () => {
       return runWithCommitGate(onPersist, async () => {
         const current = db.orders.get(orderId);
         if (!current || !db.optionsContracts.has(current.stock_id)) {
@@ -768,10 +908,21 @@ export async function cancelOptionOrder(params: {
         }
         const prevStatus = current.status;
         current.status = 'cancelled';
+        const userProfile = db.resolveProfileByUserId(userId);
+        const prevCash = userProfile?.cash;
+        const prevDebt = userProfile?.margin_debt_krw;
+        if (userProfile) {
+          sweepUnencumberedCashToMarginDebt(db, userProfile);
+        }
         if (onPersist) {
           const saved = await onPersist();
           if (!saved) {
             current.status = prevStatus;
+            if (userProfile) {
+              if (prevCash !== undefined) userProfile.cash = prevCash;
+              if (prevDebt !== undefined) userProfile.margin_debt_krw = prevDebt;
+              else delete userProfile.margin_debt_krw;
+            }
             return { success: false, statusCode: 500, message: '옵션 주문 취소 저장에 실패해 롤백했습니다.' };
           }
         }
@@ -802,7 +953,7 @@ export async function cancelAllOptionOrders(params: {
   }
 
   return withAllStockLocks(prelimIds, async () => {
-    return withAccountLocks([userId], async () => {
+    return withAccountLocks([db.resolveAccountLockKey(userId)], async () => {
       return runWithCommitGate(onPersist, async () => {
         const prevStatuses = new Map<string, OrderRecord['status']>();
         const userOrders = db.orderUserIndex.get(userId);
@@ -819,12 +970,23 @@ export async function cancelAllOptionOrders(params: {
         if (prevStatuses.size === 0) {
           return { success: true, statusCode: 200, cancelledCount: 0, message: '취소할 미체결 옵션 주문이 없습니다.' };
         }
+        const userProfile = db.resolveProfileByUserId(userId);
+        const prevCash = userProfile?.cash;
+        const prevDebt = userProfile?.margin_debt_krw;
+        if (userProfile) {
+          sweepUnencumberedCashToMarginDebt(db, userProfile);
+        }
         if (onPersist) {
           const saved = await onPersist();
           if (!saved) {
             for (const [oid, prevStatus] of prevStatuses.entries()) {
               const ord = db.orders.get(oid);
               if (ord) ord.status = prevStatus;
+            }
+            if (userProfile) {
+              if (prevCash !== undefined) userProfile.cash = prevCash;
+              if (prevDebt !== undefined) userProfile.margin_debt_krw = prevDebt;
+              else delete userProfile.margin_debt_krw;
             }
             return {
               success: false,

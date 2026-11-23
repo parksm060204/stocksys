@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { createClient } from "@/lib/db/client";
 import { useAuth } from "@/lib/auth/useAuth";
 
@@ -32,10 +32,35 @@ export default function RandomEventModal() {
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const { userId, isLoggedIn } = useAuth();
+  const reqSeqRef = useRef<number>(0);
+  const activeAccountRef = useRef<string | null>(isLoggedIn && userId ? userId : null);
+  const hasActiveEventRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    hasActiveEventRef.current = Boolean(activeEvent);
+  }, [activeEvent]);
 
   useEffect(() => {
     let mounted = true;
-    const currentUserId: string | null = userId;
+    const reqSeq = ++reqSeqRef.current;
+    const currentUserId: string | null = isLoggedIn && userId ? userId : null;
+    activeAccountRef.current = currentUserId;
+
+    // 로그아웃 또는 계정 전환 시 이전 계정의 돌발 이벤트 모달 상태 즉시 초기화
+    setActiveEvent(null);
+    setEventData(null);
+    setErrorMsg(null);
+    setLoading(false);
+
+    if (!currentUserId) {
+      return () => {
+        mounted = false;
+        reqSeqRef.current += 1;
+      };
+    }
+
+    const isStale = () =>
+      !mounted || reqSeq !== reqSeqRef.current || activeAccountRef.current !== currentUserId;
 
     const checkPendingEvents = async (uid: string) => {
       const { data } = await db
@@ -46,42 +71,55 @@ export default function RandomEventModal() {
         .order('created_at', { ascending: true })
         .limit(1);
 
-      if (!mounted) return;
+      if (isStale()) return;
       if (data && data.length > 0) {
         const active = data[0];
-        setActiveEvent(active);
-        const { data: edata } = await db.from('player_events').select('*').eq('id', active.event_id).single();
-        if (mounted && edata) setEventData(edata);
+        const { data: edata } = await db
+          .from('player_events')
+          .select('*')
+          .eq('id', active.event_id)
+          .maybeSingle();
+        if (isStale()) return;
+        if (edata) {
+          setActiveEvent(active);
+          setEventData(edata);
+        }
+      } else {
+        setActiveEvent(null);
+        setEventData(null);
       }
     };
 
     // 주기적 이벤트 체크 폴링 (매 30초)
     const pollInterval = setInterval(() => {
-      if (currentUserId && mounted && !activeEvent) {
-        checkPendingEvents(currentUserId);
+      if (!isStale() && !hasActiveEventRef.current) {
+        void checkPendingEvents(currentUserId);
       }
     }, 30000);
 
     // Initial delay check
     const delayTimer = setTimeout(() => {
-      if (currentUserId && mounted) checkPendingEvents(currentUserId);
+      if (!isStale()) void checkPendingEvents(currentUserId);
     }, 2000);
 
     return () => {
       mounted = false;
+      reqSeqRef.current += 1;
       clearTimeout(delayTimer);
       clearInterval(pollInterval);
     };
-  }, [activeEvent, userId]);
+  }, [isLoggedIn, userId]);
 
   if (!activeEvent || !eventData) return null;
 
   const handleChoice = async (choice: 'A' | 'B') => {
     if (loading || !activeEvent) return;
+    const reqUserId = isLoggedIn && userId ? userId : null;
+    const reqSeq = reqSeqRef.current;
     setLoading(true);
     setErrorMsg(null);
     try {
-      if (!isLoggedIn || !userId) {
+      if (!reqUserId) {
         setErrorMsg('로그인이 필요한 기능입니다.');
         return;
       }
@@ -95,6 +133,7 @@ export default function RandomEventModal() {
         }),
       });
       const data = await res.json();
+      if (activeAccountRef.current !== reqUserId || reqSeqRef.current !== reqSeq) return;
 
       if (!res.ok || !data.success) {
         setErrorMsg(data.message || '이벤트 선택을 저장하지 못했습니다.');
@@ -104,6 +143,7 @@ export default function RandomEventModal() {
       setActiveEvent(null);
       setEventData(null);
     } catch (e: any) {
+      if (activeAccountRef.current !== reqUserId || reqSeqRef.current !== reqSeq) return;
       console.error(e);
       setErrorMsg(e?.message || '이벤트 처리 중 통신 오류가 발생했습니다.');
     } finally {

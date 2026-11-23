@@ -544,6 +544,12 @@ STOCKSYS는 현물 주식 외에도 원자재 선물(Commodity Futures)과 옵�
   ```bash
   npm run test:settlement
   ```
+- **독립 엔진 서버 (`engine-server`) 빌드 및 실행**:
+  ```bash
+  npm --workspace engine-server run build
+  npm --workspace engine-server run start
+  ```
+  (`engine-server/package.json` 기준: `build`는 `tsc && node scripts/rewrite-aliases.mjs`로 `@/` 별칭을 상대 경로로 치환하고, `start`는 `node dist/engine-server/src/index.js`를 실행합니다. 별도 데이터 경로와 포트를 쓰려면 `ENGINE_SERVER_DATA_DIR`, `PORT` 환경변수를 지정합니다.)
 
 ---
 

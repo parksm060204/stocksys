@@ -1,5 +1,6 @@
 import { BaseAgent } from './BaseAgent';
 import { CommercialHedgerBot, CTABot } from '../types';
+import type { SimulationContext } from '../../../lib/engine/simulation/runtime';
 
 /**
  * 1. Commercial Hedger Bot (보수적 헤지 목적)
@@ -8,8 +9,8 @@ import { CommercialHedgerBot, CTABot } from '../types';
 export class CommercialHedgerAgent extends BaseAgent {
   public readonly config: CommercialHedgerBot;
 
-  constructor(config: CommercialHedgerBot) {
-    super(config.id, config.capital);
+  constructor(config: CommercialHedgerBot, context?: SimulationContext) {
+    super(config.id, config.capital, context);
     this.config = config;
   }
 
@@ -60,8 +61,8 @@ export class CTAAgent extends BaseAgent {
   public readonly config: CTABot;
   private priceHistory: number[] = [];
 
-  constructor(config: CTABot) {
-    super(config.id, config.capital);
+  constructor(config: CTABot, context?: SimulationContext) {
+    super(config.id, config.capital, context);
     this.config = config;
   }
 

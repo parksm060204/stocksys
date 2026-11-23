@@ -82,6 +82,7 @@ export interface StockRecord {
   pe_ratio: number;
   dividend_yield: number;
   sector: string;
+  is_listed?: boolean;
   is_core?: boolean;
   // 구조적 유동성 & 메타데이터 (하위 호환 및 fallback 지원)
   shares_outstanding?: number;     // 총 발행주식 수
@@ -279,6 +280,8 @@ export interface BondRecord {
   maturity_date?: string;
   coupon_rate: number;
   face_value: number;
+  quote_base?: number;
+  payments_per_year?: number;
   current_price: number;
   ytm: number;
   duration: number;
@@ -366,6 +369,9 @@ export class MemoryDatabase {
   public playerEvents: any[] = [];
   public activePlayerEvents: any[] = [];
   public activeManipulations: any[] = [];
+  public scenarioRuntimeState: any = null;
+  public scenarioResetVersion: number = 0;
+  public commodityEventRuntimeState: any = null;
   public botsConfig: any[] = [];
   public optionSettlements: any[] = [];
   public bondCouponPayments: any[] = [];
@@ -386,8 +392,10 @@ export class MemoryDatabase {
   public settledDeterministicWatermarks: Map<string, number> = new Map();
   public settledDeterministicIntervals: Map<string, Array<[number, number]>> = new Map();
   public settledBondCouponIntervals: Map<string, Array<[string, string]>> = new Map();
+  public settledBondCouponQuarterIntervals: Map<string, Array<[string, string]>> = new Map();
   public settledBondRedemptions: Set<string> = new Set();
   public settledBondRedemptionWatermarkYm: string = '';
+  public settledBondRedemptionWatermarkYq: string = '';
   public settledOptionExpiryKeys: Set<string> = new Set();
   public settledOptionExpiryWatermarkYmd: string = '';
   public evictedCustomTradeIds: Set<string> = new Set();
@@ -408,6 +416,13 @@ export class MemoryDatabase {
   public commodityCurrentTick: number = 0;
   public commodityUserOrderSeq: number = 0;
   public commodityTradeSeq: number = 0;
+  public commodityResetVersion: number = 0;
+  public commoditySnapshotVersion: number = 0;
+
+  public isTradingHalted(): boolean {
+    const setting = this.adminSettings.get('1') ?? Array.from(this.adminSettings.values())[0];
+    return Boolean(setting?.trading_halt);
+  }
 
   public isAuthorizedLp(id: string): boolean {
     if (!id) return false;
@@ -444,7 +459,7 @@ export class MemoryDatabase {
   }
 
   public getNowMs(): number {
-    return this.executionContext ? this.executionContext.clock.now() : 1774000000000;
+    return this.executionContext ? this.executionContext.clock.now() : Date.now();
   }
 
   public getIsoTimestamp(): string {
@@ -456,7 +471,7 @@ export class MemoryDatabase {
       return this.executionContext.idGenerator.nextId(prefix);
     }
     this.fallbackCounter += 1;
-    return `${prefix}_${this.fallbackCounter.toString().padStart(6, '0')}`;
+    return `${prefix}_e${this.tradeEpoch}_${this.fallbackCounter.toString().padStart(6, '0')}`;
   }
 
   /**
@@ -518,7 +533,13 @@ export class MemoryDatabase {
 
   public removeStockFromIndex(s: StockRecord): void {
     if (s.ticker) this.tickerIndex.delete(s.ticker.toUpperCase());
-    this.marketIndex.get(s.market)?.delete(s.id);
+    const marketSet = this.marketIndex.get(s.market);
+    if (marketSet) {
+      marketSet.delete(s.id);
+      if (marketSet.size === 0) {
+        this.marketIndex.delete(s.market);
+      }
+    }
   }
 
   public addCommodityToIndex(c: CommodityRecord): void {
@@ -557,15 +578,51 @@ export class MemoryDatabase {
   }
 
   public addProfileToIndex(p: ProfileRecord): void {
-    this.profileUserIdIndex.set(p.user_id, p.id);
+    if (p.user_id) {
+      this.profileUserIdIndex.set(p.user_id, p.id);
+    }
+  }
+
+  /**
+   * 인증/주문 user_id 기준으로 단일 프로필을 안전하게 조회한다.
+   * 레거시 스냅샷(profile.id !== profile.user_id)에서도 profileUserIdIndex를 우선 확인하며,
+   * 다른 계정의 user_id가 붙어 있는 프로필과 ID 충돌 시 교차 접근을 허용하지 않는다.
+   */
+  public resolveProfileByUserId(userId: string): ProfileRecord | undefined {
+    if (!userId) return undefined;
+    const indexedId = this.profileUserIdIndex.get(userId);
+    if (indexedId) {
+      const indexedProfile = this.profiles.get(indexedId);
+      if (indexedProfile && (indexedProfile.user_id === userId || !indexedProfile.user_id)) {
+        return indexedProfile;
+      }
+    }
+    const direct = this.profiles.get(userId);
+    if (direct && (!direct.user_id || direct.user_id === userId)) {
+      return direct;
+    }
+    for (const p of this.profiles.values()) {
+      if (p.user_id === userId) {
+        this.addProfileToIndex(p);
+        return p;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * 계좌 잠금(withAccountLocks) 시 모든 경로가 동일한 정규 프로필 키(profile.id)를 사용하도록 반환한다.
+   */
+  public resolveAccountLockKey(userId: string): string {
+    const profile = this.resolveProfileByUserId(userId);
+    return profile ? profile.id : userId;
   }
 
   public ensureUserProfile(
     userId: string,
     initialData?: Partial<ProfileRecord>
   ): ProfileRecord {
-    const existingId = this.profileUserIdIndex.get(userId) || userId;
-    const existing = this.profiles.get(existingId);
+    const existing = this.resolveProfileByUserId(userId);
     if (existing) return existing;
 
     const displayName = initialData?.username || initialData?.nickname || '익명 투자자';
@@ -725,6 +782,7 @@ export class MemoryDatabase {
       sector: s.sector,
       sector_id: s.sector_id,
       theme_ids: s.theme_ids,
+      is_listed: true,
       is_core: s.is_core ?? false,
       shares_outstanding: s.shares_outstanding,
       floating_shares: s.floating_shares,
@@ -891,24 +949,27 @@ export class MemoryDatabase {
     });
 
     // ── 채권 시드 ──
+    const bondBaseMs = this.executionContext ? this.getNowMs() : Date.now();
+    const yearsToIso = (years: number) => new Date(bondBaseMs + years * 365 * 24 * 60 * 60 * 1000).toISOString();
     const bondList: BondRecord[] = [
-      { id: 'bond_kr_2y', ticker: 'KR_GVT_2Y', name: '한국 국고채 2년', bond_type: 'govt', maturity: '2Y', coupon_rate: 3.25, face_value: 10000, current_price: 99.80, ytm: 3.35, duration: 1.92, volume: 15000 },
-      { id: 'bond_kr_5y', ticker: 'KR_GVT_5Y', name: '한국 국고채 5년', bond_type: 'govt', maturity: '5Y', coupon_rate: 3.50, face_value: 10000, current_price: 98.50, ytm: 3.75, duration: 4.55, volume: 12000 },
-      { id: 'bond_kr_10y', ticker: 'KR_GVT_10Y', name: '한국 국고채 10년', bond_type: 'govt', maturity: '10Y', coupon_rate: 3.75, face_value: 10000, current_price: 97.20, ytm: 4.05, duration: 8.40, volume: 8000 },
-      { id: 'bond_us_2y', ticker: 'US_GVT_2Y', name: '미국 국고채 2년', bond_type: 'govt', maturity: '2Y', coupon_rate: 4.75, face_value: 10000, current_price: 99.50, ytm: 4.80, duration: 1.94, volume: 24000 },
-      { id: 'bond_us_10y', ticker: 'US_GVT_10Y', name: '미국 국고채 10년', bond_type: 'govt', maturity: '10Y', coupon_rate: 4.25, face_value: 10000, current_price: 97.80, ytm: 4.35, duration: 8.25, volume: 28000 },
-      { id: 'bond_corp_ig', ticker: 'KR_CORP_IG', name: '한국 우량 회사채', bond_type: 'corp_ig', maturity: '3Y', coupon_rate: 4.10, face_value: 10000, current_price: 98.80, ytm: 4.35, duration: 2.78, volume: 5000 },
-      { id: 'bond_corp_hy', ticker: 'KR_CORP_HY', name: '한국 투기 회사채', bond_type: 'corp_hy', maturity: '3Y', coupon_rate: 7.25, face_value: 10000, current_price: 95.20, ytm: 7.85, duration: 2.62, volume: 3000 },
+      { id: 'bond_kr_2y', ticker: 'KR_GVT_2Y', name: '한국 국고채 2년', bond_type: 'govt', maturity: '2Y', maturity_date: yearsToIso(2), coupon_rate: 3.25, face_value: 10000, quote_base: 100, payments_per_year: 4, current_price: 99.80, ytm: 3.35, duration: 1.92, volume: 15000 },
+      { id: 'bond_kr_5y', ticker: 'KR_GVT_5Y', name: '한국 국고채 5년', bond_type: 'govt', maturity: '5Y', maturity_date: yearsToIso(5), coupon_rate: 3.50, face_value: 10000, quote_base: 100, payments_per_year: 4, current_price: 98.50, ytm: 3.75, duration: 4.55, volume: 12000 },
+      { id: 'bond_kr_10y', ticker: 'KR_GVT_10Y', name: '한국 국고채 10년', bond_type: 'govt', maturity: '10Y', maturity_date: yearsToIso(10), coupon_rate: 3.75, face_value: 10000, quote_base: 100, payments_per_year: 4, current_price: 97.20, ytm: 4.05, duration: 8.40, volume: 8000 },
+      { id: 'bond_us_2y', ticker: 'US_GVT_2Y', name: '미국 국고채 2년', bond_type: 'govt', maturity: '2Y', maturity_date: yearsToIso(2), coupon_rate: 4.75, face_value: 10000, quote_base: 100, payments_per_year: 4, current_price: 99.50, ytm: 4.80, duration: 1.94, volume: 24000 },
+      { id: 'bond_us_10y', ticker: 'US_GVT_10Y', name: '미국 국고채 10년', bond_type: 'govt', maturity: '10Y', maturity_date: yearsToIso(10), coupon_rate: 4.25, face_value: 10000, quote_base: 100, payments_per_year: 4, current_price: 97.80, ytm: 4.35, duration: 8.25, volume: 28000 },
+      { id: 'bond_corp_ig', ticker: 'KR_CORP_IG', name: '한국 우량 회사채', bond_type: 'corp_ig', maturity: '3Y', maturity_date: yearsToIso(3), coupon_rate: 4.10, face_value: 10000, quote_base: 100, payments_per_year: 4, current_price: 98.80, ytm: 4.35, duration: 2.78, volume: 5000 },
+      { id: 'bond_corp_hy', ticker: 'KR_CORP_HY', name: '한국 투기 회사채', bond_type: 'corp_hy', maturity: '3Y', maturity_date: yearsToIso(3), coupon_rate: 7.25, face_value: 10000, quote_base: 100, payments_per_year: 4, current_price: 95.20, ytm: 7.85, duration: 2.62, volume: 3000 },
     ];
     bondList.forEach((b) => this.bonds.set(b.id, b));
 
     // ── 옵션 계약 시드 (현재 시점 기준 향후 3개 월물 + 기본 하위호환 계약) ──
     const optBaseMs = this.executionContext ? this.getNowMs() : Date.now();
-    const expDate = new Date(optBaseMs + 30 * 24 * 60 * 60 * 1000).toISOString();
-    const osId = STOCK_UUID_MAP['0010'] || '00000000-0000-4000-8000-000000000101';
+    const expDateObj = new Date(optBaseMs + 30 * 24 * 60 * 60 * 1000);
+    const expDate = expDateObj.toISOString();
+    const expYymm = `${String(expDateObj.getUTCFullYear()).slice(2)}${String(expDateObj.getUTCMonth() + 1).padStart(2, '0')}`;
     const optList: OptionContractRecord[] = [
-      { id: 'opt_c_720', underlying_stock_id: osId, ticker: 'IDX-K200-2608-C260.0', asset_class: 'STK', type: 'CALL', option_type: 'CALL', strike_price: 72000, current_price: 2.15, multiplier: 250000, expiry_date: expDate, open_interest: 450, volume: 120, delta: 0.65, gamma: 0.04, theta: -0.15, implied_volatility: 0.22, created_at: this.getIsoTimestamp() },
-      { id: 'opt_p_720', underlying_stock_id: osId, ticker: 'IDX-K200-2608-P260.0', asset_class: 'STK', type: 'PUT', option_type: 'PUT', strike_price: 72000, current_price: 1.85, multiplier: 250000, expiry_date: expDate, open_interest: 380, volume: 95, delta: -0.35, gamma: 0.04, theta: -0.12, implied_volatility: 0.21, created_at: this.getIsoTimestamp() },
+      { id: 'opt_c_720', underlying_stock_id: K200_INDEX_UNDERLYING_ID, ticker: `IDX-K200-${expYymm}-C260.0`, asset_class: 'IDX', type: 'CALL', option_type: 'CALL', strike_price: 260, current_price: 2.15, multiplier: 250000, expiry_date: expDate, open_interest: 450, volume: 120, delta: 0.65, gamma: 0.04, theta: -0.15, implied_volatility: 0.22, created_at: this.getIsoTimestamp() },
+      { id: 'opt_p_720', underlying_stock_id: K200_INDEX_UNDERLYING_ID, ticker: `IDX-K200-${expYymm}-P260.0`, asset_class: 'IDX', type: 'PUT', option_type: 'PUT', strike_price: 260, current_price: 1.85, multiplier: 250000, expiry_date: expDate, open_interest: 380, volume: 95, delta: -0.35, gamma: 0.04, theta: -0.12, implied_volatility: 0.21, created_at: this.getIsoTimestamp() },
       ...this.buildFutureOptionContracts(optBaseMs),
     ];
     optList.forEach((o) => this.optionsContracts.set(o.id, o));
@@ -1110,7 +1171,7 @@ export class MemoryDatabase {
   /**
    * 개발자용 시장 리셋 (초기 시드 상태로 완전 복원)
    */
-  public resetToSeedData(): void {
+  public resetToSeedData(options?: { suppressPublish?: boolean }): void {
     this.stocks.clear();
     this.stockPriceHistory = [];
     this.commodities.clear();
@@ -1133,8 +1194,13 @@ export class MemoryDatabase {
     this.settledDeterministicWatermarks.clear();
     this.settledDeterministicIntervals.clear();
     this.settledBondCouponIntervals.clear();
+    this.settledBondCouponQuarterIntervals.clear();
     this.settledBondRedemptions.clear();
     this.settledBondRedemptionWatermarkYm = '';
+    this.settledBondRedemptionWatermarkYq = '';
+    this.scenarioRuntimeState = null;
+    this.scenarioResetVersion += 1;
+    this.commodityEventRuntimeState = null;
     this.settledOptionExpiryKeys.clear();
     this.settledOptionExpiryWatermarkYmd = '';
     this.evictedCustomTradeIds.clear();
@@ -1159,11 +1225,15 @@ export class MemoryDatabase {
     this.commodityCurrentTick = 0;
     this.commodityUserOrderSeq = 0;
     this.commodityTradeSeq = 0;
+    this.commodityResetVersion += 1;
+    this.commoditySnapshotVersion += 1;
 
     this.seedDefaultData();
     this.rebuildIndexes();
     console.log('🔄 [MemoryDB] Market state successfully reset to initial seed data.');
-    this.publish('market_reset', { timestamp: this.getNowMs() });
+    if (!options?.suppressPublish) {
+      this.publish('market_reset', { timestamp: this.getNowMs() });
+    }
   }
 
   private recordContiguousSeq<K>(
@@ -1263,6 +1333,46 @@ export class MemoryDatabase {
     return false;
   }
 
+  private nextYearQuarter(yq: string): string {
+    const [yStr, qStr] = yq.split('-Q');
+    let y = Number(yStr);
+    let q = Number(qStr) + 1;
+    if (q > 4) {
+      y += 1;
+      q = 1;
+    }
+    return `${String(y).padStart(4, '0')}-Q${q}`;
+  }
+
+  private recordBondCouponQuarterInterval(bondUserKey: string, yq: string): void {
+    const existing = this.settledBondCouponQuarterIntervals.get(bondUserKey)
+      ? [...this.settledBondCouponQuarterIntervals.get(bondUserKey)!]
+      : [];
+    existing.push([yq, yq]);
+    existing.sort((a, b) => a[0].localeCompare(b[0]));
+
+    const merged: Array<[string, string]> = [];
+    for (const cur of existing) {
+      const last = merged[merged.length - 1];
+      if (last && this.nextYearQuarter(last[1]) >= cur[0]) {
+        if (cur[1] > last[1]) last[1] = cur[1];
+      } else {
+        merged.push([cur[0], cur[1]]);
+      }
+    }
+    this.settledBondCouponQuarterIntervals.set(bondUserKey, merged);
+  }
+
+  private isBondCouponQuarterSettledInIntervals(bondUserKey: string, yq: string): boolean {
+    const intervals = this.settledBondCouponQuarterIntervals.get(bondUserKey);
+    if (!intervals) return false;
+    for (const [start, end] of intervals) {
+      if (yq >= start && yq <= end) return true;
+      if (yq < start) break;
+    }
+    return false;
+  }
+
   private compactSettledOptionExpiryKeys(): void {
     if (this.settledOptionExpiryKeys.size <= 2000) return;
 
@@ -1341,16 +1451,41 @@ export class MemoryDatabase {
         candidateYms.push(m[1]);
       }
     }
-    if (candidateYms.length === 0) return;
-    candidateYms.sort();
-    const compactCutoffYm = candidateYms[Math.min(candidateYms.length - 1, Math.floor(candidateYms.length * 0.75))];
-    if (compactCutoffYm > this.settledBondRedemptionWatermarkYm) {
-      this.settledBondRedemptionWatermarkYm = compactCutoffYm;
+    if (candidateYms.length > 0) {
+      candidateYms.sort();
+      const compactCutoffYm = candidateYms[Math.min(candidateYms.length - 1, Math.floor(candidateYms.length * 0.75))];
+      if (compactCutoffYm > this.settledBondRedemptionWatermarkYm) {
+        this.settledBondRedemptionWatermarkYm = compactCutoffYm;
+      }
+      for (const key of Array.from(this.settledBondRedemptions)) {
+        const m = bondYmRe.exec(key);
+        if (m && m[1] <= this.settledBondRedemptionWatermarkYm) {
+          this.settledBondRedemptions.delete(key);
+        }
+      }
     }
-    for (const key of Array.from(this.settledBondRedemptions)) {
-      const m = bondYmRe.exec(key);
-      if (m && m[1] <= this.settledBondRedemptionWatermarkYm) {
-        this.settledBondRedemptions.delete(key);
+
+    const ymParts = minProtectedYm.split('-');
+    const minProtectedYq = `${ymParts[0]}-Q${Math.floor((Number(ymParts[1]) - 1) / 3) + 1}`;
+    const bondYqRe = /^bond_maturity_redemption_.+_period_(\d{4}-Q[1-4])$/;
+    const candidateYqs: string[] = [];
+    for (const key of this.settledBondRedemptions) {
+      const m = bondYqRe.exec(key);
+      if (m && m[1] < minProtectedYq) {
+        candidateYqs.push(m[1]);
+      }
+    }
+    if (candidateYqs.length > 0) {
+      candidateYqs.sort();
+      const compactCutoffYq = candidateYqs[Math.min(candidateYqs.length - 1, Math.floor(candidateYqs.length * 0.75))];
+      if (compactCutoffYq > this.settledBondRedemptionWatermarkYq) {
+        this.settledBondRedemptionWatermarkYq = compactCutoffYq;
+      }
+      for (const key of Array.from(this.settledBondRedemptions)) {
+        const m = bondYqRe.exec(key);
+        if (m && m[1] <= this.settledBondRedemptionWatermarkYq) {
+          this.settledBondRedemptions.delete(key);
+        }
       }
     }
   }
@@ -1371,6 +1506,7 @@ export class MemoryDatabase {
     const optionMonotonicRe = /^opt_tr_e(\d+)_(\d+)$/;
     const deterministicTradeRe = /^trade_(.+?)_t\d+_s.+~.+_f(\d+)$/;
     const bondCouponPeriodRe = /^bond_coupon_(.+)_period_(\d{4}-\d{2})$/;
+    const bondCouponQuarterRe = /^bond_coupon_(.+)_period_(\d{4}-Q[1-4])$/;
 
     for (let i = 0; i < removeCount; i++) {
       const [key, val] = entries[i];
@@ -1399,12 +1535,17 @@ export class MemoryDatabase {
             const couponMatch = bondCouponPeriodRe.exec(key);
             if (couponMatch) {
               this.recordBondCouponInterval(couponMatch[1], couponMatch[2]);
-            } else if (key.startsWith('bond_')) {
-              this.settledBondRedemptions.add(key);
-            } else if (key.startsWith('opt_settle_')) {
-              this.settledOptionExpiryKeys.add(key);
             } else {
-              this.evictedCustomTradeIds.add(key);
+              const quarterCouponMatch = bondCouponQuarterRe.exec(key);
+              if (quarterCouponMatch) {
+                this.recordBondCouponQuarterInterval(quarterCouponMatch[1], quarterCouponMatch[2]);
+              } else if (key.startsWith('bond_')) {
+                this.settledBondRedemptions.add(key);
+              } else if (key.startsWith('opt_settle_')) {
+                this.settledOptionExpiryKeys.add(key);
+              } else {
+                this.evictedCustomTradeIds.add(key);
+              }
             }
           }
         }
@@ -1449,11 +1590,23 @@ export class MemoryDatabase {
         return true;
       }
     }
+    const quarterCouponMatch = /^bond_coupon_(.+)_period_(\d{4}-Q[1-4])$/.exec(tradeId);
+    if (quarterCouponMatch) {
+      if (this.isBondCouponQuarterSettledInIntervals(quarterCouponMatch[1], quarterCouponMatch[2])) {
+        return true;
+      }
+    }
     if (tradeId.startsWith('bond_')) {
       if (this.settledBondRedemptions.has(tradeId)) return true;
       if (this.settledBondRedemptionWatermarkYm) {
         const ymMatch = /^bond_maturity_redemption_.+_period_(\d{4}-\d{2})$/.exec(tradeId);
         if (ymMatch && ymMatch[1] <= this.settledBondRedemptionWatermarkYm) {
+          return true;
+        }
+      }
+      if (this.settledBondRedemptionWatermarkYq) {
+        const yqMatch = /^bond_maturity_redemption_.+_period_(\d{4}-Q[1-4])$/.exec(tradeId);
+        if (yqMatch && yqMatch[1] <= this.settledBondRedemptionWatermarkYq) {
           return true;
         }
       }
@@ -1529,6 +1682,8 @@ export class MemoryDatabase {
       playerEvents: [...this.playerEvents],
       activePlayerEvents: [...this.activePlayerEvents],
       activeManipulations: [...this.activeManipulations],
+      scenarioRuntimeState: this.scenarioRuntimeState ? structuredClone(this.scenarioRuntimeState) : null,
+      commodityEventRuntimeState: this.commodityEventRuntimeState ? structuredClone(this.commodityEventRuntimeState) : null,
       botsConfig: [...this.botsConfig],
       settlementLedger: Array.from(this.settlementLedger.entries()),
       settlementLedgerCutoffMs: this.settlementLedgerCutoffMs,
@@ -1539,14 +1694,17 @@ export class MemoryDatabase {
       settledDeterministicWatermarks: Array.from(this.settledDeterministicWatermarks.entries()),
       settledDeterministicIntervals: Array.from(this.settledDeterministicIntervals.entries()),
       settledBondCouponIntervals: Array.from(this.settledBondCouponIntervals.entries()),
+      settledBondCouponQuarterIntervals: Array.from(this.settledBondCouponQuarterIntervals.entries()),
       settledBondRedemptions: Array.from(this.settledBondRedemptions.values()),
       settledBondRedemptionWatermarkYm: this.settledBondRedemptionWatermarkYm,
+      settledBondRedemptionWatermarkYq: this.settledBondRedemptionWatermarkYq,
       settledOptionExpiryKeys: Array.from(this.settledOptionExpiryKeys.values()),
       settledOptionExpiryWatermarkYmd: this.settledOptionExpiryWatermarkYmd,
       evictedCustomTradeIds: Array.from(this.evictedCustomTradeIds.values()),
       tradeEpoch: this.tradeEpoch,
       tradeSeq: this.tradeSeq,
       optionTradeSeq: this.optionTradeSeq,
+      fallbackCounter: this.fallbackCounter,
       engineNextEpoch: this.engineNextEpoch,
       engineTickCount: this.engineTickCount,
       enginePartialFillSequence: this.enginePartialFillSequence,
@@ -1566,6 +1724,9 @@ export class MemoryDatabase {
       commodityCurrentTick: this.commodityCurrentTick,
       commodityUserOrderSeq: this.commodityUserOrderSeq,
       commodityTradeSeq: this.commodityTradeSeq,
+      commodityResetVersion: this.commodityResetVersion,
+      commoditySnapshotVersion: this.commoditySnapshotVersion,
+      scenarioResetVersion: this.scenarioResetVersion,
       timestamp: this.getNowMs(),
     };
   }
@@ -1654,6 +1815,25 @@ export class MemoryDatabase {
     this.playerEvents = Array.isArray(data.playerEvents) ? [...data.playerEvents] : [];
     this.activePlayerEvents = Array.isArray(data.activePlayerEvents) ? [...data.activePlayerEvents] : [];
     this.activeManipulations = Array.isArray(data.activeManipulations) ? [...data.activeManipulations] : [];
+    this.scenarioRuntimeState = data.scenarioRuntimeState ? structuredClone(data.scenarioRuntimeState) : null;
+    if (options.bumpTradeEpoch) {
+      if (
+        typeof data.scenarioResetVersion === 'number' &&
+        Number.isFinite(data.scenarioResetVersion) &&
+        data.scenarioResetVersion >= 0
+      ) {
+        this.scenarioResetVersion = Math.max(this.scenarioResetVersion, data.scenarioResetVersion) + 1;
+      } else {
+        this.scenarioResetVersion += 1;
+      }
+    } else if (
+      typeof data.scenarioResetVersion === 'number' &&
+      Number.isFinite(data.scenarioResetVersion) &&
+      data.scenarioResetVersion >= 0
+    ) {
+      this.scenarioResetVersion = data.scenarioResetVersion;
+    }
+    this.commodityEventRuntimeState = data.commodityEventRuntimeState ? structuredClone(data.commodityEventRuntimeState) : null;
     this.botsConfig = Array.isArray(data.botsConfig) ? [...data.botsConfig] : [];
     this.settlementLedger = Array.isArray(data.settlementLedger) ? new Map(data.settlementLedger) : new Map();
     this.settlementLedgerCutoffMs =
@@ -1681,12 +1861,19 @@ export class MemoryDatabase {
     this.settledBondCouponIntervals = Array.isArray(data.settledBondCouponIntervals)
       ? new Map(data.settledBondCouponIntervals)
       : new Map();
+    this.settledBondCouponQuarterIntervals = Array.isArray(data.settledBondCouponQuarterIntervals)
+      ? new Map(data.settledBondCouponQuarterIntervals)
+      : new Map();
     this.settledBondRedemptions = Array.isArray(data.settledBondRedemptions)
       ? new Set(data.settledBondRedemptions)
       : new Set();
     this.settledBondRedemptionWatermarkYm =
       typeof data.settledBondRedemptionWatermarkYm === 'string'
         ? data.settledBondRedemptionWatermarkYm
+        : '';
+    this.settledBondRedemptionWatermarkYq =
+      typeof data.settledBondRedemptionWatermarkYq === 'string'
+        ? data.settledBondRedemptionWatermarkYq
         : '';
     this.settledOptionExpiryKeys = Array.isArray(data.settledOptionExpiryKeys)
       ? new Set(data.settledOptionExpiryKeys)
@@ -1711,6 +1898,9 @@ export class MemoryDatabase {
       this.tradeEpoch = restoredEpoch;
       this.tradeSeq = typeof data.tradeSeq === 'number' && Number.isFinite(data.tradeSeq) ? data.tradeSeq : 0;
       this.optionTradeSeq = typeof data.optionTradeSeq === 'number' && Number.isFinite(data.optionTradeSeq) ? data.optionTradeSeq : 0;
+    }
+    if (typeof data.fallbackCounter === 'number' && Number.isFinite(data.fallbackCounter) && data.fallbackCounter >= 0) {
+      this.fallbackCounter = data.fallbackCounter;
     }
     this.engineNextEpoch =
       typeof data.engineNextEpoch === 'number' && Number.isFinite(data.engineNextEpoch) && data.engineNextEpoch >= 1
@@ -1771,6 +1961,39 @@ export class MemoryDatabase {
       typeof data.commodityTradeSeq === 'number' && Number.isFinite(data.commodityTradeSeq)
         ? data.commodityTradeSeq
         : 0;
+    if (options.bumpTradeEpoch) {
+      if (
+        typeof data.commodityResetVersion === 'number' &&
+        Number.isFinite(data.commodityResetVersion) &&
+        data.commodityResetVersion >= 0
+      ) {
+        this.commodityResetVersion = Math.max(this.commodityResetVersion, data.commodityResetVersion);
+      }
+      if (
+        typeof data.commoditySnapshotVersion === 'number' &&
+        Number.isFinite(data.commoditySnapshotVersion) &&
+        data.commoditySnapshotVersion >= 0
+      ) {
+        this.commoditySnapshotVersion = Math.max(this.commoditySnapshotVersion, data.commoditySnapshotVersion) + 1;
+      } else {
+        this.commoditySnapshotVersion += 1;
+      }
+    } else {
+      if (
+        typeof data.commodityResetVersion === 'number' &&
+        Number.isFinite(data.commodityResetVersion) &&
+        data.commodityResetVersion >= 0
+      ) {
+        this.commodityResetVersion = data.commodityResetVersion;
+      }
+      if (
+        typeof data.commoditySnapshotVersion === 'number' &&
+        Number.isFinite(data.commoditySnapshotVersion) &&
+        data.commoditySnapshotVersion >= 0
+      ) {
+        this.commoditySnapshotVersion = data.commoditySnapshotVersion;
+      }
+    }
 
     // 복원 시 LP 옵션 계좌가 없으면 보장 (구버전 스냅샷 호환)
     if (!this.profiles.has('bot_options_mm_001')) {
@@ -1791,10 +2014,74 @@ export class MemoryDatabase {
     this.rebuildIndexes();
 
     if (options.migrateCatalog) {
+      this.migrateLegacyStockListingFlags();
       this.migrateLegacyIdxOptionUnderlyings();
+      this.migrateLegacySeedBonds();
       this.supplementMissingCatalogStocks();
       this.supplementFutureOptionContracts();
     }
+  }
+
+  /**
+   * 구버전 스냅샷 상장 상태 마이그레이션:
+   * 기존 시드/상장 종목에 is_listed가 누락(undefined)된 경우 true로 보정하고,
+   * 명시적으로 상장 폐지된(is_listed === false) 종목은 그대로 보존한다.
+   */
+  public migrateLegacyStockListingFlags(): number {
+    let migrated = 0;
+    for (const stock of this.stocks.values()) {
+      if (stock.is_listed === undefined) {
+        stock.is_listed = true;
+        migrated++;
+      }
+    }
+    return migrated;
+  }
+
+  /**
+   * 구버전 스냅샷 내장 시드 채권 마이그레이션:
+   * 알려진 내장 시드 채권(bond_kr_*, bond_us_*, bond_corp_*)에 명시적 ISO maturity_date와
+   * quote_base(100 기준 호가 -> face_value 10,000 환산)가 누락된 경우에만 멱등적으로 보완한다.
+   * 비표준/모호한 사용자·테스트 채권은 임의 변환하지 않고 fail-closed 검증에 맡긴다.
+   */
+  public migrateLegacySeedBonds(): number {
+    const SEED_BOND_YEARS: Record<string, number> = {
+      bond_kr_2y: 2,
+      bond_kr_5y: 5,
+      bond_kr_10y: 10,
+      bond_us_2y: 2,
+      bond_us_10y: 10,
+      bond_corp_ig: 3,
+      bond_corp_hy: 3,
+    };
+    const baseMs = this.executionContext ? this.getNowMs() : Date.now();
+    const heldBondIds = new Set(
+      Array.from(this.holdings.values()).filter(h => h.quantity > 0).map(h => h.stock_id)
+    );
+    let migrated = 0;
+    for (const [bondId, years] of Object.entries(SEED_BOND_YEARS)) {
+      const bond = this.bonds.get(bondId);
+      if (!bond) continue;
+      let changed = false;
+      if (!bond.maturity_date || /^\s*\d+\s*[YMDW]\s*$/i.test(bond.maturity_date)) {
+        // A relative tenor cannot determine an existing holder's redemption date.
+        // Preserve it for explicit reconciliation instead of extending it on restart.
+        if (!heldBondIds.has(bondId)) {
+          bond.maturity_date = new Date(baseMs + years * 365 * 24 * 60 * 60 * 1000).toISOString();
+          changed = true;
+        }
+      }
+      if (bond.quote_base === undefined && bond.face_value >= 1000 && bond.current_price < 500) {
+        bond.quote_base = 100;
+        changed = true;
+      }
+      if (bond.payments_per_year === undefined) {
+        bond.payments_per_year = 4;
+        changed = true;
+      }
+      if (changed) migrated++;
+    }
+    return migrated;
   }
 
   /**
@@ -1804,6 +2091,13 @@ export class MemoryDatabase {
    */
   public migrateLegacyIdxOptionUnderlyings(): number {
     let migrated = 0;
+    const heldContractIds = new Set<string>();
+    for (const h of this.holdings.values()) {
+      if ((h.quantity ?? 0) > 0) heldContractIds.add(h.stock_id);
+    }
+    for (const order of this.orders.values()) {
+      if (order.status === 'open' || order.status === 'partial') heldContractIds.add(order.stock_id);
+    }
     for (const opt of this.optionsContracts.values()) {
       if (
         opt.asset_class === 'IDX' &&
@@ -1814,6 +2108,23 @@ export class MemoryDatabase {
         this.stocks.has(opt.underlying_stock_id)
       ) {
         opt.underlying_stock_id = K200_INDEX_UNDERLYING_ID;
+        migrated++;
+      } else if (
+        (opt.id === 'opt_c_720' || opt.id === 'opt_p_720') &&
+        opt.ticker?.startsWith('IDX-K200-') &&
+        opt.asset_class === 'STK' &&
+        opt.strike_price === 72000 &&
+        !heldContractIds.has(opt.id)
+      ) {
+        opt.asset_class = 'IDX';
+        opt.underlying_stock_id = K200_INDEX_UNDERLYING_ID;
+        opt.strike_price = 260;
+        const d = new Date(opt.expiry_date || Date.now());
+        if (!Number.isNaN(d.getTime())) {
+          const yymm = `${String(d.getUTCFullYear()).slice(2)}${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+          const sideChar = opt.id === 'opt_c_720' ? 'C' : 'P';
+          opt.ticker = `IDX-K200-${yymm}-${sideChar}260.0`;
+        }
         migrated++;
       }
     }

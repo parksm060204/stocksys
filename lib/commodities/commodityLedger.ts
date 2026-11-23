@@ -6,8 +6,8 @@ import type {
   PersistedCommodityOrder,
 } from '@/lib/memoryDb/memoryStore';
 import { withAccountLocks } from '@/lib/memoryDb/accountLocks';
-import { runWithCommitGate } from '@/lib/memoryDb/PersistenceManager';
-import { getAvailableCashKrw, calculateUserReservedCashKrw } from '@/lib/engine/orderRisk';
+import { runWithCommitGate, persistenceManager } from '@/lib/memoryDb/PersistenceManager';
+import { getAvailableCashKrw, calculateUserReservedCashKrw, sweepUnencumberedCashToMarginDebt } from '@/lib/engine/orderRisk';
 import { getCurrencyRateToKrw } from '@/lib/exchange/exchangeService';
 import type { CommodityDefinition, CommodityOrder, CommodityTrade } from './types';
 
@@ -66,9 +66,24 @@ export async function reserveMarginAndSubmitCommodityOrder(
 ): Promise<CommodityOrderReserveResult> {
   const { db, commodity, userId, side, size, submitToEngine, rollbackFromEngine, onPersist, runWithEngineLock } = input;
 
-  const execute = async (): Promise<CommodityOrderReserveResult> => withAccountLocks([userId], async () => {
+  if (db.isTradingHalted()) {
+    return {
+      success: false,
+      message: '현재 관리자 긴급 서킷브레이커(거래 동결)가 발동되어 원자재 주문을 접수할 수 없습니다.',
+      statusCode: 403,
+    };
+  }
+
+  const execute = async (): Promise<CommodityOrderReserveResult> => withAccountLocks([db.resolveAccountLockKey(userId)], async () => {
     return runWithCommitGate(onPersist, async () => {
-      const profile = db.profiles.get(userId);
+      if (db.isTradingHalted()) {
+        return {
+          success: false,
+          message: '현재 관리자 긴급 서킷브레이커(거래 동결)가 발동되어 원자재 주문을 접수할 수 없습니다.',
+          statusCode: 403,
+        };
+      }
+      const profile = db.resolveProfileByUserId(userId);
       if (!profile) {
         return {
           success: false,
@@ -179,7 +194,7 @@ export async function reserveMarginAndSubmitCommodityOrder(
           statusCode: 400,
         };
       }
-    });
+    }, onPersist ? undefined : persistenceManager);
   });
 
   return runWithEngineLock ? runWithEngineLock(execute) : execute();
@@ -381,8 +396,9 @@ export async function settleCommodityTradeForUsers(
   }
 
   const lockIds = Array.from(new Set([buyerUser, sellerUser].filter(Boolean) as string[]));
+  const lockKeys = lockIds.map((uid) => db.resolveAccountLockKey(uid));
 
-  await withAccountLocks(lockIds, async () => {
+  await withAccountLocks(lockKeys, async () => {
     if (db.isCommodityTradeSettled(trade.id)) return;
 
     // 스냅샷 확보 (실패 시 해당 계좌·포지션·예약만 롤백)
@@ -392,8 +408,8 @@ export async function settleCommodityTradeForUsers(
     const openOrderSnapshots = new Map<string, PersistedCommodityOrder | null>();
 
     for (const uid of lockIds) {
-      const p = db.profiles.get(uid);
-      if (p) profileSnapshots.set(uid, { ...p });
+      const p = db.resolveProfileByUserId(uid);
+      if (p) profileSnapshots.set(p.id, { ...p });
       const posKey = `${uid}_${commodity.id}`;
       const pos = db.commodityPositions.get(posKey);
       positionSnapshots.set(posKey, pos ? { ...pos } : null);
@@ -417,8 +433,8 @@ export async function settleCommodityTradeForUsers(
     }
 
     const rollbackSettlement = () => {
-      for (const [uid, prevP] of profileSnapshots.entries()) {
-        db.profiles.set(uid, prevP);
+      for (const [pid, prevP] of profileSnapshots.entries()) {
+        db.profiles.set(pid, prevP);
       }
       for (const [posKey, prevPos] of positionSnapshots.entries()) {
         if (prevPos) db.commodityPositions.set(posKey, prevPos);
@@ -436,7 +452,7 @@ export async function settleCommodityTradeForUsers(
 
     try {
       const settleParty = (userId: string, side: 'buy' | 'sell', orderId: string) => {
-        const profile = db.profiles.get(userId);
+        const profile = db.resolveProfileByUserId(userId);
         if (!profile) {
           throw new Error(`계좌 프로필을 찾을 수 없습니다: ${userId}`);
         }
@@ -530,13 +546,13 @@ export async function releaseCommodityOrderMargin(
   if (!reservation) return false;
   if (reservation.status !== 'open' && reservation.status !== 'partial') return false;
 
-  return withAccountLocks([reservation.user_id], async () => {
+  return withAccountLocks([db.resolveAccountLockKey(reservation.user_id)], async () => {
     const current = db.commodityMarginReservations.get(orderId);
     if (!current || (current.status !== 'open' && current.status !== 'partial')) {
       return false;
     }
 
-    const profile = db.profiles.get(current.user_id);
+    const profile = db.resolveProfileByUserId(current.user_id);
     if (profile && current.reserved_krw > 0) {
       applyCashDeltaWithMarginDebt(db, profile, current.reserved_krw);
     }
@@ -592,7 +608,7 @@ export async function evaluateAndLiquidateCommodityMaintenanceMargin(
     }
 
     // 2. 강제 청산 정산
-    const profile = db.profiles.get(pos.user_id);
+    const profile = db.resolveProfileByUserId(pos.user_id);
     if (profile) {
       const cashDelta = roundMoney(pos.reserved_margin_krw + unrealizedPnlKrw);
       applyCashDeltaWithMarginDebt(db, profile, cashDelta);
@@ -638,7 +654,7 @@ export async function cancelCommodityOrders(
   }
 
   const executeLocked = async (): Promise<CancelCommodityOrdersResult> => {
-    return withAccountLocks([userId], async () => {
+    return withAccountLocks([db.resolveAccountLockKey(userId)], async () => {
       const targetIds: string[] = [];
 
       if (Array.isArray(orderIds) && orderIds.length > 0) {
@@ -675,8 +691,9 @@ export async function cancelCommodityOrders(
       }
 
       return runWithCommitGate(params.onPersist, async () => {
-        const profile = db.profiles.get(userId);
+        const profile = db.resolveProfileByUserId(userId);
         const prevCash = profile ? profile.cash : undefined;
+        const prevMarginDebt = profile ? profile.margin_debt_krw : undefined;
         const resSnapshots = new Map<string, CommodityMarginReservation>();
         const openOrdSnapshots = new Map<string, PersistedCommodityOrder>();
         const removedBookOrders: Array<{ commodityId: string; order: CommodityOrder }> = [];
@@ -691,6 +708,8 @@ export async function cancelCommodityOrders(
         const rollbackCancel = () => {
           if (profile && prevCash !== undefined) {
             profile.cash = prevCash;
+            if (prevMarginDebt !== undefined) profile.margin_debt_krw = prevMarginDebt;
+            else delete profile.margin_debt_krw;
           }
           for (const [oid, prevRes] of resSnapshots.entries()) {
             db.commodityMarginReservations.set(oid, prevRes);
@@ -725,6 +744,10 @@ export async function cancelCommodityOrders(
               totalRefunded = roundMoney(totalRefunded + prevReserved);
               cancelledOrderIds.push(oid);
             }
+          }
+
+          if (profile) {
+            sweepUnencumberedCashToMarginDebt(db, profile);
           }
 
           if (params.onPersist) {

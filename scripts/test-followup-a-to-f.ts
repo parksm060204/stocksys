@@ -26,6 +26,7 @@ async function testA_OptionsLimitAndConservation() {
   const lp = db.profiles.get(OPTIONS_LP_ID)!;
   user.cash = 10_000_000;
   const lpStartCash = lp.cash;
+  const optionTicker = db.optionsContracts.get('opt_c_720')!.ticker;
 
   // 1. Unlicensed non-admin user rejected (403)
   const noLicUser = { ...user, id: 'user_nolic', user_id: 'user_nolic', is_admin: false, has_options_license: false };
@@ -33,7 +34,7 @@ async function testA_OptionsLimitAndConservation() {
   const resNoLic = await submitAuthoritativeOptionOrder({
     db,
     userId: noLicUser.id,
-    ticker: 'IDX-K200-2608-C260.0',
+    ticker: optionTicker,
     side: 'BUY',
     orderType: 'LIMIT',
     price: 2.15,
@@ -46,7 +47,7 @@ async function testA_OptionsLimitAndConservation() {
   const resLowBuy = await submitAuthoritativeOptionOrder({
     db,
     userId: GUEST_USER_ID,
-    ticker: 'IDX-K200-2608-C260.0',
+    ticker: optionTicker,
     side: 'BUY',
     orderType: 'LIMIT',
     price: 0.01,
@@ -61,7 +62,7 @@ async function testA_OptionsLimitAndConservation() {
   const resBuy = await submitAuthoritativeOptionOrder({
     db,
     userId: GUEST_USER_ID,
-    ticker: 'IDX-K200-2608-C260.0',
+    ticker: optionTicker,
     side: 'BUY',
     orderType: 'LIMIT',
     price: 5.0, // willing to pay up to 5.0, but fills at LP ask 2.15!
@@ -76,7 +77,7 @@ async function testA_OptionsLimitAndConservation() {
   const resHighSell = await submitAuthoritativeOptionOrder({
     db,
     userId: GUEST_USER_ID,
-    ticker: 'IDX-K200-2608-C260.0',
+    ticker: optionTicker,
     side: 'SELL',
     orderType: 'LIMIT',
     price: 99999,
@@ -90,7 +91,7 @@ async function testA_OptionsLimitAndConservation() {
   const resOverflow = await submitAuthoritativeOptionOrder({
     db,
     userId: GUEST_USER_ID,
-    ticker: 'IDX-K200-2608-C260.0',
+    ticker: optionTicker,
     side: 'BUY',
     orderType: 'LIMIT',
     price: 1e12,
@@ -105,7 +106,7 @@ async function testA_OptionsLimitAndConservation() {
   const resSaveFail = await submitAuthoritativeOptionOrder({
     db,
     userId: GUEST_USER_ID,
-    ticker: 'IDX-K200-2608-C260.0',
+    ticker: optionTicker,
     side: 'BUY',
     orderType: 'MARKET',
     qty: 1,

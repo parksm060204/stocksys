@@ -18,7 +18,7 @@ import { AgentManager } from '../lib/engine/simulation/agentManager';
 import { MarketEvent, resolveTargetStockIds } from '../lib/engine/simulation/marketEventTypes';
 import { buildMarketObservation } from '../lib/engine/simulation/marketObservation';
 import { evaluateLpStrategy } from '../lib/engine/simulation/strategies/lpStrategy';
-import { ensureLocalStandaloneEngine, getLocalStandaloneEngine } from '../lib/engine/localStandaloneServer';
+import { ensureLocalStandaloneReady, stopLocalStandaloneEngine } from '../lib/engine/localStandaloneServer';
 import { secondsToMs } from '../lib/engine/simulation/simClock';
 
 function assert(condition: unknown, msg: string): void {
@@ -485,24 +485,28 @@ async function main(): Promise<void> {
   console.log('🧬 STOCKSYS Causal Market Flow & Integrated Verification Suite');
   console.log('================================================================\n');
 
-  ensureLocalStandaloneEngine();
-  getLocalStandaloneEngine()?.stop();
+  await ensureLocalStandaloneReady();
+  stopLocalStandaloneEngine();
   await resetDb();
 
-  const mgr = new AgentManager(42);
+  try {
+    const mgr = new AgentManager(42);
 
-  await runScenarioA(mgr);
-  await runScenarioB(mgr);
-  await runScenarioC(mgr);
-  await runScenarioD(mgr);
-  await runScenarioE(mgr);
-  await runScenarioF(mgr);
-  await runScenarioG(mgr);
-  await runScenarioH();
+    await runScenarioA(mgr);
+    await runScenarioB(mgr);
+    await runScenarioC(mgr);
+    await runScenarioD(mgr);
+    await runScenarioE(mgr);
+    await runScenarioF(mgr);
+    await runScenarioG(mgr);
+    await runScenarioH();
 
-  console.log('\n================================================================');
-  console.log('🎉 ALL CAUSAL MARKET FLOW SCENARIOS (A ~ H) PASSED PERFECTLY!');
-  console.log('================================================================\n');
+    console.log('\n================================================================');
+    console.log('🎉 ALL CAUSAL MARKET FLOW SCENARIOS (A ~ H) PASSED PERFECTLY!');
+    console.log('================================================================\n');
+  } finally {
+    stopLocalStandaloneEngine();
+  }
 }
 
 main().catch((err) => {

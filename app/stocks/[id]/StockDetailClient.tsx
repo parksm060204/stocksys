@@ -223,7 +223,7 @@ export default function StockDetailClient({
             {/* 좌측 (7) — 10분봉 캔들스틱 틱 차트 + 체결 피드 */}
             <div className="col-span-12 lg:col-span-7 flex flex-col gap-3">
               <div className="h-[440px] md:h-[480px] border border-border bg-panel rounded-2xl shadow-xl overflow-hidden">
-                <TickChart ticker={stock.ticker} currentPrice={stock.currentPrice} />
+                <TickChart ticker={stock.ticker} currentPrice={stock.currentPrice} market={stock.market} />
               </div>
               <div className="h-[280px] md:h-[320px] border border-border bg-panel rounded-2xl shadow-xl overflow-hidden">
                 <TradeFeed stock={stock} />
@@ -371,7 +371,7 @@ export default function StockDetailClient({
                             {n.sentiment === "positive" ? "호재" : n.sentiment === "negative" ? "악재" : "중립"}
                           </span>
                         </div>
-                        <p className="mt-1.5 text-[13px] font-bold text-tx font-sans">{n.headline}</p>
+                        <p className="mt-1.5 text-[13px] font-bold text-tx font-sans">{n.title ?? n.headline}</p>
                         <p className="mt-1 line-clamp-2 text-[11.5px] text-muted font-sans font-medium">{n.content}</p>
                       </div>
                     ))}

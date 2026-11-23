@@ -3,7 +3,9 @@ import { notFound } from "next/navigation";
 import { fmtCap } from "@/lib/format";
 import RealtimePriceHeader from "@/app/components/RealtimePriceHeader";
 import { createClient } from "@/lib/db/server";
-import { sanitizePublicNewsRecord } from "@/lib/engine/simulation/marketEventTypes";
+import { resolveAuthenticatedUserId } from "@/lib/auth/sessionAuth";
+import { authorizeNewsRecord, canReadRumor } from "@/lib/news/accessPolicy";
+import { isUsdQuotedAsset } from "@/lib/engine/currency";
 import type { Stock } from "@/lib/types";
 import { fetchCanonicalPriceHistory, createDeterministicBondHistory } from "@/lib/services/priceHistoryService";
 import StockDetailClient from "./StockDetailClient";
@@ -134,19 +136,34 @@ export default async function StockDetail({
     bondMeta: bondMeta || (row as any).bondMeta,
   };
 
-  const isUSD = stock.market === "overseas" || stock.market === "europe" || stock.market === "commodities";
+  const isUSD = isUsdQuotedAsset({ market: stock.market, ticker: stock.ticker });
   const tradingValueStr = isUSD ? `$${fmtCap(stock.currentPrice * stock.volume)}` : `₩${fmtCap(stock.currentPrice * stock.volume)}`;
 
-  // Fetch news related to this stock or its sector
+  let hasRumorAccess = false;
+  try {
+    const viewerId = await resolveAuthenticatedUserId();
+    if (viewerId) {
+      const { data: viewerProfile } = await db
+        .from('profiles')
+        .select('is_admin, news_subscriptions')
+        .eq('id', viewerId)
+        .maybeSingle();
+      hasRumorAccess = canReadRumor(viewerProfile);
+    }
+  } catch {
+    hasRumorAccess = false;
+  }
+
+  // Fetch news related to this stock or its sector (세션 권한 기반 RUMOR 마스킹 적용)
   let relatedNews: any[] = [];
   try {
     const { data: newsData } = await db
       .from('market_news')
       .select('*')
-      .or(`target_sector.eq.${stock.sector},headline.ilike.%${stock.name}%,summary.ilike.%${stock.name}%`)
+      .or(`target_ticker.eq.${stock.ticker},target_sector.eq.${stock.sector},title.ilike.%${stock.name}%,headline.ilike.%${stock.name}%`)
       .order('created_at', { ascending: false })
       .limit(5);
-    relatedNews = (newsData || []).map(sanitizePublicNewsRecord);
+    relatedNews = (newsData || []).map((r: any) => authorizeNewsRecord(r, hasRumorAccess));
   } catch (e) {
     console.warn("Failed to fetch market news:", e);
   }

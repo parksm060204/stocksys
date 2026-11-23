@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "dev": "ts-node src/index.ts",
-    "build": "tsc",
+    "build": "tsc && node scripts/rewrite-aliases.mjs",
     "start": "node dist/engine-server/src/index.js"
   },
   "keywords": [],

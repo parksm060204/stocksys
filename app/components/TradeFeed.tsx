@@ -5,7 +5,7 @@ import { useOrderbookData } from '@/lib/hooks/useOrderbookData';
 import type { TradeRecord } from '@/lib/hooks/useOrderbookData';
 import type { SimTrade } from '@/lib/hooks/useStockBotSimulation';
 import type { Stock } from '@/lib/types';
-import { fmtKSTTime } from '@/lib/format';
+import { fmtKSTTime, fmtPrice as fmtAssetPrice } from '@/lib/format';
 
 interface TradeFeedProps {
   stock?: Stock;
@@ -44,10 +44,7 @@ export const TradeFeed: React.FC<TradeFeedProps> = ({ stock, trades: externalTra
       ? dbTrades
       : [];
 
-  const fmtPrice = (priceVal: number) => {
-    const isUSD = stock?.market === 'overseas' || stock?.market === 'europe' || stock?.market === 'commodities';
-    return isUSD ? `$${priceVal.toFixed(2)}` : `₩${Math.round(priceVal).toLocaleString()}`;
-  };
+  const fmtPrice = (priceVal: number) => fmtAssetPrice(priceVal, stock?.market, stock?.ticker);
 
   return (
     <div className="flex flex-col h-full text-xs font-sans select-none bg-panel">

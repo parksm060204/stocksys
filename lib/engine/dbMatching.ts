@@ -5,7 +5,7 @@ import { SettlementTrade, calculateTradeFees, executeSettlement } from '@/lib/en
 import { memoryDb, OrderRecord } from '@/lib/memoryDb/memoryStore';
 import { snapshotTradingState, rollbackTradingState, TradingSnapshot } from '@/lib/memoryDb/memoryTransaction';
 import { withAccountLocks } from '@/lib/memoryDb/accountLocks';
-import { runWithCommitGate } from '@/lib/memoryDb/PersistenceManager';
+import { runWithCommitGate, persistenceManager } from '@/lib/memoryDb/PersistenceManager';
 
 export interface OrderInput {
   stock_id: string;
@@ -117,14 +117,29 @@ export async function submitAndMatchOrder(
     };
   }
 
+  if (memoryDb.isTradingHalted()) {
+    return {
+      success: false,
+      filledQty: 0,
+      message: '현재 관리자 긴급 서킷브레이커(거래 동결)가 발동되어 신규 주문을 접수할 수 없습니다.',
+    };
+  }
+
   if (incomingSize <= 0 || incomingPrice <= 0) {
     return { success: false, filledQty: 0, message: '올바르지 않은 주문 가격 또는 수량입니다.' };
   }
 
   try {
-    let accountIds = [user_id];
+    let lockAccountKeys = [memoryDb.resolveAccountLockKey(user_id)];
     for (;;) {
-      const outcome = await withAccountLocks(accountIds, async () => {
+      const outcome = await withAccountLocks(lockAccountKeys, async () => {
+    if (memoryDb.isTradingHalted()) {
+      return {
+        success: false,
+        filledQty: 0,
+        message: '현재 관리자 긴급 서킷브레이커(거래 동결)가 발동되어 신규 주문을 접수할 수 없습니다.',
+      };
+    }
     // ── 0. Order Capacity Pre-Validation ──
     // Reads open/partial orders, current cash, current holding — pure reads, no mutation.
     {
@@ -139,8 +154,8 @@ export async function submitAndMatchOrder(
       const { data: profile } = await db
         .from('profiles')
         .select('cash')
-        .eq('id', user_id)
-        .single();
+        .eq('user_id', user_id)
+        .maybeSingle();
       const currentCash = Number(profile?.cash || 0);
 
       const { data: holding } = await db
@@ -151,7 +166,7 @@ export async function submitAndMatchOrder(
         .maybeSingle();
       const currentHoldingQty = Number(holding?.quantity || 0);
 
-      const userProfile = memoryDb.profiles.get(user_id);
+      const userProfile = memoryDb.resolveProfileByUserId(user_id);
       const stockTakerFeeRate = getEffectiveStockTakerFeeRate(userProfile, memoryDb.getNowMs());
       const capacityCheck = validateOrderCapacity({
         userId: user_id,
@@ -229,6 +244,12 @@ export async function submitAndMatchOrder(
         // [Self-Trade Prevention] defensive loop guard
         if (opp.user_id === user_id) continue;
 
+        // 미수 부채(margin_debt_krw > 0) 계좌의 기존 대기 매수 주문은 추가 위험 방지를 위해 체결하지 않음
+        if (side === 'sell' && opp.user_id) {
+          const oppBuyerDebt = Math.max(0, Number(memoryDb.resolveProfileByUserId(opp.user_id)?.margin_debt_krw ?? 0));
+          if (oppBuyerDebt > 0) continue;
+        }
+
         const oppRemaining = Math.max(0, Number(opp.size) - Number(opp.filled || 0));
         if (oppRemaining <= 0) continue;
 
@@ -250,10 +271,10 @@ export async function submitAndMatchOrder(
         const sellerIsMaker = side === 'buy';
         let { buyer_fee, seller_fee } = calculateTradeFees(buyerIsMaker, sellerIsMaker);
         const nowMs = memoryDb.getNowMs();
-        if (!buyerIsMaker && buyer_fee > 0 && buyerId && hasActiveFeeBooster(memoryDb.profiles.get(buyerId), nowMs)) {
+        if (!buyerIsMaker && buyer_fee > 0 && buyerId && hasActiveFeeBooster(memoryDb.resolveProfileByUserId(buyerId), nowMs)) {
           buyer_fee *= 0.5;
         }
-        if (!sellerIsMaker && seller_fee > 0 && sellerId && hasActiveFeeBooster(memoryDb.profiles.get(sellerId), nowMs)) {
+        if (!sellerIsMaker && seller_fee > 0 && sellerId && hasActiveFeeBooster(memoryDb.resolveProfileByUserId(sellerId), nowMs)) {
           seller_fee *= 0.5;
         }
 
@@ -267,7 +288,7 @@ export async function submitAndMatchOrder(
           size: matchQty,
           buyer_fee,
           seller_fee,
-          created_at: input.created_at || new Date().toISOString(),
+          created_at: input.created_at || memoryDb.getIsoTimestamp(),
           simulation_time: input.simulation_time,
         });
         executionFills.push({
@@ -291,27 +312,40 @@ export async function submitAndMatchOrder(
     }
 
     // ── 2. Generate orderId & check lock completeness before any mutation ──
-    const orderId = `ord_${user_id.slice(0, 8)}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const orderId = memoryDb.generateId(`ord_${user_id.slice(0, 8)}`);
     const involvedAccountIds = Array.from(involvedUserIds);
-    if (involvedAccountIds.some((id) => !accountIds.includes(id))) {
+    const neededLockKeys = Array.from(
+      new Set(involvedAccountIds.map((id) => memoryDb.resolveAccountLockKey(id)))
+    );
+    if (neededLockKeys.some((lk) => !lockAccountKeys.includes(lk))) {
       // The first read only needs the incoming user's lock. If matching found
       // other accounts, reacquire every account in sorted order so capacity
       // validation is protected by the complete lock set.
-      return { retryAccountIds: involvedAccountIds };
+      return { retryAccountIds: neededLockKeys };
     }
 
     const effectivePersist =
       input.onPersist && (!input.persistOnlyOnFill || tradesToSettle.length > 0)
         ? input.onPersist
         : undefined;
+    const gatePm = effectivePersist
+      ? undefined
+      : ((input.onPersist as any)?.__persistenceManager ?? persistenceManager);
 
     return await runWithCommitGate(effectivePersist, async () => {
+      if (memoryDb.isTradingHalted()) {
+        return {
+          success: false,
+          filledQty: 0,
+          message: '현재 관리자 긴급 서킷브레이커(거래 동결)가 발동되어 신규 주문을 접수할 수 없습니다.',
+        };
+      }
       const tradeIds = tradesToSettle.map(() => memoryDb.nextMonotonicTradeId('tr'));
       tradesToSettle.forEach((trade, index) => {
         trade.id = tradeIds[index];
       });
 
-      const snap: TradingSnapshot = snapshotTradingState(stock_id, accountIds);
+      const snap: TradingSnapshot = snapshotTradingState(stock_id, involvedAccountIds);
       snap.insertedOrderId = orderId;
       for (const tradeId of tradeIds) snap.createdTradeIds.add(tradeId);
 
@@ -389,7 +423,7 @@ export async function submitAndMatchOrder(
         filled: totalFilledQty,
         status: initialStatus,
         is_lp: input.is_lp ?? false,
-        created_at: input.created_at || new Date().toISOString(),
+        created_at: input.created_at || memoryDb.getIsoTimestamp(),
         participant_type: input.participant_type,
         account_id: input.account_id || user_id,
         agent_id: input.agent_id,
@@ -446,10 +480,10 @@ export async function submitAndMatchOrder(
       rollbackTradingState(snap);
       throw txErr; // re-throw so outer catch returns failure
     }
-    });
+    }, gatePm);
       });
       if ('retryAccountIds' in outcome && outcome.retryAccountIds) {
-        accountIds = outcome.retryAccountIds;
+        lockAccountKeys = outcome.retryAccountIds;
         continue;
       }
       return outcome;

@@ -95,6 +95,34 @@ export class BondCouponEngine {
     };
   }
 
+  private getLegacyMonthlyPeriodKeys(periodKey: string): string[] {
+    const qMatch = /^(?:period_)?(\d{4})[-_]Q([1-4])$/.exec(periodKey);
+    if (!qMatch) return [];
+    const year = qMatch[1];
+    const q = Number(qMatch[2]);
+    const startMonth = (q - 1) * 3 + 1;
+    return [0, 1, 2].map((offset) => {
+      const m = String(startMonth + offset).padStart(2, '0');
+      return `period_${year}-${m}`;
+    });
+  }
+
+  private isLegacyQuarterPaymentSettled(
+    bondId: string,
+    userId: string,
+    periodKey: string,
+    paymentType: 'COUPON' | 'MATURITY_REDEMPTION'
+  ): boolean {
+    const legacyPeriodKeys = this.getLegacyMonthlyPeriodKeys(periodKey);
+    for (const legacyKey of legacyPeriodKeys) {
+      const key = this.generateIdempotencyKey(bondId, userId, legacyKey, paymentType);
+      if (this.repositories.settlement.isTradeSettled(key)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   public async executeCouponBatch(params: {
     bonds: readonly BondItem[];
     positions: readonly BondPosition[];
@@ -107,13 +135,15 @@ export class BondCouponEngine {
     }
 
     const results: BondPaymentResult[] = [];
+    const failures: string[] = [];
     let couponCount = 0;
     let redemptionCount = 0;
     let totalCouponPaid = 0;
     let totalPrincipalRedeemed = 0;
 
     for (const bond of params.bonds) {
-      const isMatured = bond.maturity_date ? Date.parse(bond.maturity_date) <= now : false;
+      const parsedMaturity = bond.maturity_date ? Date.parse(bond.maturity_date) : NaN;
+      const isMatured = Number.isFinite(parsedMaturity) && parsedMaturity <= now;
 
       for (const pos of params.positions) {
         if (pos.bondId !== bond.id || pos.quantity <= 0) continue;
@@ -125,7 +155,29 @@ export class BondCouponEngine {
             params.periodKey,
             'MATURITY_REDEMPTION'
           );
-          if (this.repositories.settlement.isTradeSettled(mKey)) continue;
+          if (
+            this.repositories.settlement.isTradeSettled(mKey) ||
+            this.isLegacyQuarterPaymentSettled(bond.id, pos.userId, params.periodKey, 'MATURITY_REDEMPTION')
+          ) {
+            continue;
+          }
+
+          const cKey = this.generateIdempotencyKey(bond.id, pos.userId, params.periodKey, 'COUPON');
+          const periodCouponAlreadyPaid =
+            this.repositories.settlement.isTradeSettled(cKey) ||
+            this.isLegacyQuarterPaymentSettled(bond.id, pos.userId, params.periodKey, 'COUPON') ||
+            Boolean(
+              this.repositories.settlement.hasBondCouponPaidInWindow?.(
+                pos.userId,
+                bond.id,
+                parsedMaturity,
+                now,
+                this.defaultPaymentsPerYear
+              )
+            );
+          const finalCoupon = periodCouponAlreadyPaid
+            ? null
+            : this.calculateCouponPayment({ bond, position: pos, periodKey: params.periodKey });
 
           const redemption = this.calculateMaturityRedemption({
             bond,
@@ -137,16 +189,33 @@ export class BondCouponEngine {
             userId: pos.userId,
             bondId: bond.id,
             principalAmount: redemption.paymentAmount,
+            couponAmount: finalCoupon ? finalCoupon.paymentAmount : 0,
+            couponIdempotencyKey: cKey,
+            paymentsPerYear: this.defaultPaymentsPerYear,
+            now,
             idempotencyKey: mKey,
           });
-          if (!settlementRes.success) continue;
+          if (!settlementRes.success) {
+            failures.push(
+              `[MATURITY ${bond.id}/${pos.userId}] ${settlementRes.errorCode || 'FAILED'}: ${settlementRes.error || 'Unknown error'}`
+            );
+            continue;
+          }
 
           results.push(redemption);
           redemptionCount++;
           totalPrincipalRedeemed += redemption.paymentAmount;
+          if (finalCoupon && finalCoupon.paymentAmount > 0) {
+            totalCouponPaid += finalCoupon.paymentAmount;
+          }
         } else {
           const cKey = this.generateIdempotencyKey(bond.id, pos.userId, params.periodKey, 'COUPON');
-          if (this.repositories.settlement.isTradeSettled(cKey)) continue;
+          if (
+            this.repositories.settlement.isTradeSettled(cKey) ||
+            this.isLegacyQuarterPaymentSettled(bond.id, pos.userId, params.periodKey, 'COUPON')
+          ) {
+            continue;
+          }
 
           const coupon = this.calculateCouponPayment({ bond, position: pos, periodKey: params.periodKey });
 
@@ -154,15 +223,23 @@ export class BondCouponEngine {
             pos.userId,
             bond.id,
             coupon.paymentAmount,
-            cKey
+            cKey,
+            now
           );
-          if (!paid) continue;
+          if (!paid) {
+            failures.push(`[COUPON ${bond.id}/${pos.userId}] settleBondCoupon returned false`);
+            continue;
+          }
 
           results.push(coupon);
           couponCount++;
           totalCouponPaid += coupon.paymentAmount;
         }
       }
+    }
+
+    if (failures.length > 0) {
+      throw new Error(`[BondCouponEngine] Settlement batch failed (${failures.length}): ${failures.join('; ')}`);
     }
 
     return { couponCount, redemptionCount, totalCouponPaid, totalPrincipalRedeemed, results };

@@ -181,9 +181,16 @@ async function runSchemaDiffVerification() {
   if (totalMismatches === 0) {
     console.log(`🏁 [최종 결과] 스키마 정합성 검증: 전체 ${verifiedTableCount}개 엔티티 100% 완벽 일치 ✅`);
   } else {
-    console.log(`🏁 [최종 결과] 스키마 정합성 검증: 총 ${totalMismatches}건의 불일치 발견 ⚠️`);
+    console.log(`ℹ️ [비활성 경로 안내] 위 SQL 비교 대상은 archive/legacy-postgres/ 레거시 DDL입니다.`);
+    console.log(`🏁 [최종 결과] 스키마 정합성 검증: 총 ${totalMismatches}건의 레거시 스키마 불일치 발견 ⚠️`);
+    if (process.argv.includes('--strict') || process.env.STRICT_LEGACY_SCHEMA_CHECK === 'true') {
+      process.exitCode = 1;
+    }
   }
   console.log('================================================================\n');
 }
 
-runSchemaDiffVerification().catch(console.error);
+runSchemaDiffVerification().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

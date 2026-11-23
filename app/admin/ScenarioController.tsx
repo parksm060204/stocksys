@@ -10,7 +10,7 @@ import {
   AssetType,
 } from '@/lib/scenario/types';
 import { COMMODITY_DEFINITIONS } from '@/lib/commodities/definitions';
-import { fmtSigned, fmtKSTTime } from '@/lib/format';
+import { fmtPrice, fmtSigned, fmtKSTTime } from '@/lib/format';
 import { useToast } from '@/app/components/ToastProvider';
 
 interface StockItem {
@@ -77,8 +77,9 @@ export default function ScenarioController({
     return () => clearInterval(interval);
   }, [fetchStatus]);
 
-  // 선택 가능한 종목 목록 필터링
-  const filteredStocks = stocks.filter(
+  // 선택 가능한 종목 목록 필터링 (채권은 작전 시나리오 대상에서 제외)
+  const tradableStocks = stocks.filter((s) => s.market !== 'bonds');
+  const filteredStocks = tradableStocks.filter(
     (s) =>
       s.ticker.toLowerCase().includes(searchQuery.toLowerCase()) ||
       s.name.toLowerCase().includes(searchQuery.toLowerCase())
@@ -351,7 +352,7 @@ export default function ScenarioController({
                 {assetType === 'stock'
                   ? filteredStocks.map((s) => (
                       <option key={s.id} value={s.id}>
-                        [{s.ticker}] {s.name} (현재가: ₩{s.current_price.toLocaleString()})
+                        [{s.ticker}] {s.name} (현재가: {fmtPrice(s.current_price, s.market as any, s.ticker)})
                       </option>
                     ))
                   : filteredCommodities.map((c) => (

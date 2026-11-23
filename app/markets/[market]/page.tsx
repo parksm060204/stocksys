@@ -43,10 +43,10 @@ export default async function MarketPage({
         volume: Number(row.volume) || 0,
         market_cap: 100000000000,
         bondMeta: {
-          faceValue: row.face_value || 10000,
-          couponRate: row.coupon_rate || 0.035,
+          faceValue: row.quote_base || 100,
+          couponRate: row.coupon_rate || 3.5,
           maturityYears: row.maturity ? parseInt(row.maturity) || 5 : 5,
-          riskCategory: row.bond_type === 'govt' ? 'sovereign' : row.bond_type === 'corp_ig' ? 'corporate_ig' : 'corporate_hy',
+          riskCategory: row.bond_type === 'govt' ? 'sovereign' : row.bond_type === 'corp_ig' ? 'corporate_ig' : 'high_yield',
         }
       }));
     } else {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createClient } from "@/lib/db/client";
 
 type Outlet = {
@@ -21,6 +21,7 @@ function getDday(expiryStr: string) {
 }
 
 import { useAuth } from "@/lib/auth/useAuth";
+import { hasActiveFeeBooster } from "@/lib/shop/catalog";
 
 export default function ShopPage() {
   const [activeTab, setActiveTab] = useState<"shop" | "subscriptions">("shop");
@@ -36,30 +37,72 @@ export default function ShopPage() {
   const [hasFeeBooster, setHasFeeBooster] = useState<boolean>(false);
   const [hasScanner, setHasScanner] = useState<boolean>(false);
   const [hasAiPredictor, setHasAiPredictor] = useState<boolean>(false);
+  const [featureExpiries, setFeatureExpiries] = useState<Record<string, string>>({});
+  const [acquiredPassives, setAcquiredPassives] = useState<string[]>([]);
 
   const [selectedOutlet, setSelectedOutlet] = useState<Outlet | null>(null);
   const [selectedDays, setSelectedDays] = useState<number>(30);
 
   const db = createClient();
   const { userId, isLoggedIn } = useAuth();
+  const fetchSeqRef = useRef<number>(0);
+  const activeAccountRef = useRef<string | null>(isLoggedIn && userId ? userId : null);
 
   useEffect(() => {
+    const reqSeq = ++fetchSeqRef.current;
+    const nextAccountKey = isLoggedIn && userId ? userId : null;
+    activeAccountRef.current = nextAccountKey;
+
+    const resetUserShopState = () => {
+      setCash(0);
+      setIsAdmin(false);
+      setHasOptionsLicense(false);
+      setHasCustomDashboard(false);
+      setHasFeeBooster(false);
+      setHasScanner(false);
+      setHasAiPredictor(false);
+      setFeatureExpiries({});
+      setAcquiredPassives([]);
+      setUserSubs({});
+      setSelectedOutlet(null);
+    };
+
+    // 로그아웃 또는 계정 전환 시 이전 계정의 보유·잔액·권한 상태가 남지 않도록 즉시 초기화
+    resetUserShopState();
+
     const fetchData = async () => {
-      if (isLoggedIn && userId) {
-        const { data: profile } = await db.from('profiles').select('cash, is_admin, has_options_license, unlocked_features, news_subscriptions').eq('id', userId).single();
+      if (nextAccountKey) {
+        const { data: profile } = await db
+          .from('profiles')
+          .select('cash, is_admin, has_options_license, unlocked_features, feature_expiries, acquired_passives, news_subscriptions')
+          .eq('id', nextAccountKey)
+          .maybeSingle();
+        if (reqSeq !== fetchSeqRef.current || activeAccountRef.current !== nextAccountKey) return;
         if (profile) {
           setCash(Number(profile.cash || 0));
-          const adminFlag = profile.is_admin || false;
+          const adminFlag = Boolean(profile.is_admin);
           setIsAdmin(adminFlag);
-          setHasOptionsLicense(adminFlag || profile.has_options_license || false);
+          setHasOptionsLicense(adminFlag || Boolean(profile.has_options_license));
           const unlocked = (profile.unlocked_features as string[]) || [];
-          setHasCustomDashboard(adminFlag || unlocked.includes("custom_dashboard"));
-          setHasFeeBooster(adminFlag || unlocked.includes("fee_booster"));
-          setHasScanner(adminFlag || unlocked.includes("scanner_item"));
-          setHasAiPredictor(adminFlag || unlocked.includes("ai_predictor"));
-          if (profile.news_subscriptions) {
-            setUserSubs(profile.news_subscriptions as Record<string, string>);
-          }
+          const expiries = (profile.feature_expiries as Record<string, string>) || {};
+          const nowMs = Date.now();
+          const isFeatureValid = (key: string) => {
+            if (adminFlag) return true;
+            if (!unlocked.includes(key)) return false;
+            const exp = expiries[key];
+            if (!exp) return true;
+            const t = Date.parse(exp);
+            return Number.isFinite(t) && t > nowMs;
+          };
+          setFeatureExpiries(expiries);
+          setAcquiredPassives(Array.isArray(profile.acquired_passives) ? profile.acquired_passives : []);
+          setHasCustomDashboard(isFeatureValid("custom_dashboard"));
+          setHasFeeBooster(adminFlag || hasActiveFeeBooster(profile, nowMs));
+          setHasScanner(isFeatureValid("scanner_item"));
+          setHasAiPredictor(isFeatureValid("ai_predictor"));
+          setUserSubs((profile.news_subscriptions as Record<string, string>) || {});
+        } else {
+          resetUserShopState();
         }
       }
 
@@ -69,16 +112,23 @@ export default function ShopPage() {
         .neq('subscription_fee', 0)
         .order('subscription_fee', { ascending: false });
 
+      if (reqSeq !== fetchSeqRef.current) return;
       if (outletData) {
         setOutlets(outletData as Outlet[]);
       }
     };
-    fetchData();
+    void fetchData();
+
+    return () => {
+      fetchSeqRef.current += 1;
+    };
   }, [db, isLoggedIn, userId]);
 
   // Handle News Purchase Execution
   const executeNewsPurchase = async () => {
-    if (!selectedOutlet || !userId || loading) return;
+    if (!selectedOutlet || !isLoggedIn || !userId || loading) return;
+    const purchaseAccount = userId;
+    const purchaseSeq = fetchSeqRef.current;
 
     let price = selectedOutlet.subscription_fee;
     if (selectedDays === 90) {
@@ -107,6 +157,7 @@ export default function ShopPage() {
         }),
       });
       const data = await res.json();
+      if (activeAccountRef.current !== purchaseAccount || fetchSeqRef.current !== purchaseSeq) return;
       if (!res.ok || !data.success) {
         throw new Error(data.message || '구매에 실패했습니다.');
       }
@@ -119,6 +170,7 @@ export default function ShopPage() {
       alert(`성공적으로 ${selectedOutlet.name} 구독권을 결제했습니다.`);
       setSelectedOutlet(null);
     } catch (e: any) {
+      if (activeAccountRef.current !== purchaseAccount || fetchSeqRef.current !== purchaseSeq) return;
       console.error(e);
       alert("구매 실패: " + (e.message || "알 수 없는 오류"));
     } finally {
@@ -130,6 +182,9 @@ export default function ShopPage() {
     productId: 'options_license' | 'custom_dashboard' | 'fee_booster' | 'scanner_item' | 'ai_predictor',
     onSuccess: (data: any) => void
   ) => {
+    if (!isLoggedIn || !userId) return;
+    const purchaseAccount = userId;
+    const purchaseSeq = fetchSeqRef.current;
     setLoading(true);
     try {
       const res = await fetch('/api/shop/purchase', {
@@ -138,12 +193,17 @@ export default function ShopPage() {
         body: JSON.stringify({ itemType: 'product', productId }),
       });
       const data = await res.json();
+      if (activeAccountRef.current !== purchaseAccount || fetchSeqRef.current !== purchaseSeq) return;
       if (!res.ok || !data.success) {
         throw new Error(data.message || '구매에 실패했습니다.');
       }
       setCash(Number(data.cash));
+      if (data.feature_expiries && typeof data.feature_expiries === 'object') {
+        setFeatureExpiries(data.feature_expiries as Record<string, string>);
+      }
       onSuccess(data);
     } catch (e: any) {
+      if (activeAccountRef.current !== purchaseAccount || fetchSeqRef.current !== purchaseSeq) return;
       console.error(e);
       alert("구매 실패: " + (e.message || "알 수 없는 오류"));
     } finally {
@@ -233,13 +293,34 @@ export default function ShopPage() {
       expiry: "영구 소장"
     });
   }
+  const formatFeatureExpiry = (key: string) => {
+    if (isAdmin) return "관리자 무제한";
+    if (key === "fee_booster" && (acquiredPassives.includes("fee_discount_50") || acquiredPassives.includes("fee_booster"))) {
+      return "패시브 영구 보유";
+    }
+    const exp = featureExpiries[key];
+    if (!exp) return "만료일 정보 없음";
+    const dday = getDday(exp);
+    const dateStr = exp.slice(0, 10);
+    return dday >= 0 ? `D-${dday} (${dateStr})` : `만료 (${dateStr})`;
+  };
+  for (const passive of acquiredPassives) {
+    if (passive === "fee_discount_50" || passive === "fee_booster") continue;
+    purchasedItemsList.push({
+      id: `passive-${passive}`,
+      name: `패시브 특전 (${passive})`,
+      category: "획득 패시브",
+      desc: "이벤트 보상으로 획득한 영구 패시브 효과",
+      expiry: "패시브 영구 보유",
+    });
+  }
   if (hasFeeBooster) {
     purchasedItemsList.push({
       id: "fee-booster",
       name: "거래 수수료 50% 감면권",
       category: "트레이딩 부스터",
-      desc: "30일간 거래 수수료 50% 자동 할인",
-      expiry: "30일 유효"
+      desc: "거래 수수료 50% 자동 할인",
+      expiry: formatFeatureExpiry("fee_booster")
     });
   }
   if (hasScanner) {
@@ -248,7 +329,7 @@ export default function ShopPage() {
       name: "기관 수급 실시간 스캐너",
       category: "분석 솔루션",
       desc: "세력/기관 순매수 수급 스캐너 모니터링",
-      expiry: "30일 유효"
+      expiry: formatFeatureExpiry("scanner_item")
     });
   }
   if (hasAiPredictor) {
@@ -257,7 +338,7 @@ export default function ShopPage() {
       name: "AI 시황 예측 부스터",
       category: "분석 솔루션",
       desc: "AI 호재/악재 사건 예측 신호 포착",
-      expiry: "30일 유효"
+      expiry: formatFeatureExpiry("ai_predictor")
     });
   }
   outlets.forEach(outlet => {
@@ -458,7 +539,8 @@ export default function ShopPage() {
                   price={2000000}
                   isUnlocked={hasScanner}
                   onPurchase={handleScannerPurchase}
-                  loading={true}
+                  loading={false}
+                  disabled={!hasScanner}
                   buttonText={hasScanner ? "보유 중" : "판매 일시 중단"}
                   features={[
                     "연기금/헤지펀드 수급 흐름 실시간 포착",
@@ -474,7 +556,8 @@ export default function ShopPage() {
                   price={1500000}
                   isUnlocked={hasAiPredictor}
                   onPurchase={handleAiPredictorPurchase}
-                  loading={true}
+                  loading={false}
+                  disabled={!hasAiPredictor}
                   buttonText={hasAiPredictor ? "보유 중" : "판매 일시 중단"}
                   features={[
                     "Gemini AI 호재/악재 수치화 타겟 신호",
@@ -637,6 +720,7 @@ function PricingCard({
   isUnlocked,
   onPurchase,
   loading,
+  disabled = false,
   buttonText = "구매하기",
   features = []
 }: {
@@ -647,6 +731,7 @@ function PricingCard({
   isUnlocked: boolean;
   onPurchase: () => void;
   loading: boolean;
+  disabled?: boolean;
   buttonText?: string;
   features?: string[];
 }) {
@@ -692,14 +777,14 @@ function PricingCard({
       <div className="pt-5">
         <button
           onClick={onPurchase}
-          disabled={isUnlocked || loading}
+          disabled={isUnlocked || loading || disabled}
           className={`w-full py-2.5 rounded-xl font-bold text-[13px] transition-all active:scale-[0.98] ${
-            isUnlocked
+            isUnlocked || disabled
               ? "bg-white/[0.04] text-white/20 cursor-default border border-white/[0.06]"
               : "bg-white text-black hover:bg-white/90 cursor-pointer"
           }`}
         >
-          {isUnlocked ? "이용 중" : buttonText}
+          {isUnlocked ? "이용 중" : loading ? "처리 중..." : buttonText}
         </button>
       </div>
     </div>

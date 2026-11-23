@@ -82,8 +82,8 @@ async function main() {
         userId: uid, bondId: bond.id, idempotencyKey: 'f2_ok',
       });
       assert.equal(res.success, true);
-      // 2 * (10000 + 10000 * 0.0325) = 20650
-      assert.equal(db.profiles.get(uid)!.cash, 1_020_650);
+      // 2 * 10000 + Math.round(2 * 10000 * (0.0325 / 4)) = 20000 + 163 = 20163
+      assert.equal(db.profiles.get(uid)!.cash, 1_020_163);
       console.log('  ✅ PASS F2');
     }
 
@@ -233,7 +233,24 @@ async function main() {
       const os = Array.from(db.stocks.values()).find((s) => s.ticker === '0010')!;
       os.current_price = 90000;
       (engine as any).cachedMarketState = null;
-      const opt = Array.from(db.optionsContracts.values()).find((o) => o.underlying_stock_id === os.id && o.type === 'CALL')!;
+      let opt = Array.from(db.optionsContracts.values()).find((o) => o.underlying_stock_id === os.id && o.type === 'CALL');
+      if (!opt) {
+        opt = {
+          id: 'opt_stk_0010_call_test',
+          underlying_stock_id: os.id,
+          ticker: 'STK-0010-C90500',
+          asset_class: 'STK',
+          type: 'CALL',
+          option_type: 'CALL',
+          strike_price: 90500,
+          current_price: 1500,
+          multiplier: 1,
+          expiry_date: new Date(db.getNowMs() + 30 * 86400_000).toISOString(),
+          open_interest: 200000,
+          volume: 100,
+        };
+        db.optionsContracts.set(opt.id, opt);
+      }
       opt.strike_price = 90500;
       opt.open_interest = 200000;
       const wbOrders = (engine as any).wallBreakerAgent.executeGammaSqueezeHunt({ hour: 15 }, { [os.id]: 90000 }, [opt]);

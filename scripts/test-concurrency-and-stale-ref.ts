@@ -1,6 +1,6 @@
 import { memoryDb, StockRecord, OrderRecord } from '../lib/memoryDb/memoryStore';
 import { LocalMarketService, acquireStockLock } from '../lib/engine/marketService';
-import { ensureLocalStandaloneEngine, stopLocalStandaloneEngine, getLocalStandaloneEngine } from '../lib/engine/localStandaloneServer';
+import { ensureLocalStandaloneReady, stopLocalStandaloneEngine, getLocalStandaloneEngine } from '../lib/engine/localStandaloneServer';
 import { POST as ordersPostHandler, DELETE as ordersDeleteHandler } from '../app/api/orders/route';
 import { POST as localDbPostHandler } from '../app/api/local-db/route';
 
@@ -16,7 +16,7 @@ async function runConcurrencyAndStaleRefTests() {
   console.log('🔒 STOCKSYS CONCURRENCY & STALE REFERENCE REGRESSION TESTS');
   console.log('================================================================\n');
 
-  ensureLocalStandaloneEngine();
+  await ensureLocalStandaloneReady();
   const engine = getLocalStandaloneEngine()!;
 
   try {

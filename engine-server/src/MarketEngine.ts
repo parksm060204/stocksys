@@ -17,6 +17,7 @@ import { EventBus } from './EventBus';
 import type { MacroData } from './realWorldFetcher';
 import type { MarketEvent } from './types';
 import { CommodityMarketEngine } from '../../lib/commodities/CommodityMarketEngine';
+import { isUsdQuotedAsset } from '../../lib/engine/currency';
 import { SettlementBatchService } from './settlement/SettlementBatchService';
 import { buildDeterministicTradeId } from './settlement/deterministicTradeId';
 import { buildDeterministicOrderId } from './settlement/deterministicOrderId';
@@ -34,6 +35,34 @@ import { createInMemoryRepositoryBundle } from '../../lib/repositories/inMemory'
 import type { RepositoryBundle } from '../../lib/repositories/repositoryBundle';
 import type { TradeSettlementInput, PostCommitWarning } from '../../lib/repositories/types';
 import { MemoryDatabase } from '../../lib/memoryDb/memoryStore';
+import { persistenceManager, type PersistenceManager } from '../../lib/memoryDb/PersistenceManager';
+
+interface BuiltInParticipantSpec {
+  readonly id: string;
+  readonly kind: string;
+  readonly botType: string;
+  readonly name: string;
+  readonly cash: number;
+  readonly traits?: Record<string, unknown>;
+}
+
+const BUILT_IN_PARTICIPANTS: readonly BuiltInParticipantSpec[] = [
+  { id: 'PROP_DESK_PREDATOR', kind: 'DOMESTIC_INSTITUTION', botType: 'ADVERSARIAL', name: 'Prop Desk Predator', cash: 50_000_000_000 },
+  { id: 'WALL_BREAKER', kind: 'DOMESTIC_INSTITUTION', botType: 'WALL_BREAKER', name: 'Wall Breaker Institutional', cash: 100_000_000_000 },
+  { id: 'bot_as_mm_001', kind: 'LIQUIDITY_PROVIDER', botType: 'AS_MARKET_MAKER', name: 'AS Market Maker Primary', cash: 100_000_000_000 },
+  { id: 'AS_MARKET_MAKER', kind: 'LIQUIDITY_PROVIDER', botType: 'AS_MARKET_MAKER', name: 'AS Market Maker', cash: 20_000_000_000 },
+  { id: 'QUANT_STAT_ARB', kind: 'DOMESTIC_INSTITUTION', botType: 'STAT_ARB', name: 'Quant Stat Arb', cash: 100_000_000_000 },
+  { id: 'bot_retail_001', kind: 'RETAIL', botType: 'RETAIL_SWARM', name: 'Retail Swarm Alpha', cash: 5_000_000_000 },
+  { id: 'bot_retail_002', kind: 'RETAIL', botType: 'RETAIL_SWARM', name: 'Retail Swarm Beta', cash: 5_000_000_000 },
+  { id: 'bot_hf_001', kind: 'FOREIGN_INSTITUTION', botType: 'HEDGE_FUND', name: 'Bridgewater Associates', cash: 100_000_000_000, traits: { portfolioTarget: { equity: 0.6, safeBonds: 0.2, highYield: 0.2 }, currentSentiment: 'NEUTRAL' } },
+  { id: 'bot_hf_002', kind: 'FOREIGN_INSTITUTION', botType: 'HEDGE_FUND', name: 'Citadel Quant Fund', cash: 100_000_000_000, traits: { portfolioTarget: { equity: 0.7, safeBonds: 0.15, highYield: 0.15 }, currentSentiment: 'BULLISH' } },
+  { id: 'bot_prop_001', kind: 'FOREIGN_INSTITUTION', botType: 'PROP_DESK', name: 'Jane Street Prop Desk', cash: 100_000_000_000 },
+  { id: 'bot_prop_002', kind: 'FOREIGN_INSTITUTION', botType: 'PROP_DESK', name: 'Jump Trading Prop Desk', cash: 100_000_000_000 },
+  { id: 'bot_quant_001', kind: 'DOMESTIC_INSTITUTION', botType: 'QUANT_FUND', name: 'Two Sigma Quant Fund', cash: 50_000_000_000 },
+  { id: 'bot_options_mm_001', kind: 'LIQUIDITY_PROVIDER', botType: 'OPTIONS_MM', name: 'Options Market Maker', cash: 10_000_000_000, traits: { reactionSpeed: 2, tradingStyle: 'DELTA_NEUTRAL', initialGammaNet: -50 } },
+  { id: 'bot_cta_001', kind: 'FOREIGN_INSTITUTION', botType: 'CTA', name: 'Winton CTA Trend Fund', cash: 20_000_000_000, traits: { reactionSpeed: 1, breakoutThreshold: 0.02, tradingStyle: 'SWEEP_AGGRESSIVE' } },
+  { id: 'bot_hedger_001', kind: 'DOMESTIC_INSTITUTION', botType: 'COMMERCIAL_HEDGER', name: 'Global Commercial Hedger', cash: 50_000_000_000, traits: { targetCommodity: 'CRUDE_OIL', supportLevel: 65, resistanceLevel: 85, tradingStyle: 'LIMIT_HEAVY' } },
+];
 
 export interface TickResult {
   readonly success: boolean;
@@ -139,7 +168,7 @@ export interface TickCommitPersistInfo {
 export interface MarketEngineDependencies {
   simulationContext?: SimulationContext;
   marketDataSource?: MarketDataSource;
-  persistence?: MarketPersistence;
+  persistence?: MarketPersistence | PersistenceManager;
   repositories?: RepositoryBundle;
   /** 정산 결과 수신 전용 observer (authoritative settlement을 대체하지 않는다) */
   executionObserver?: MarketExecutionObserver;
@@ -165,7 +194,7 @@ export class MarketEngine {
   private readonly mjdJumpRandom: SimulationRandomSource;
   private readonly eventRandom: SimulationRandomSource;
   private readonly fxRandom: SimulationRandomSource;
-  public readonly customPersistence?: MarketPersistence;
+  public readonly customPersistence?: MarketPersistence | PersistenceManager;
   public readonly customDataSource?: MarketDataSource;
   public readonly executionObserver?: MarketExecutionObserver;
   public readonly onTickCommitPersist?: (info: TickCommitPersistInfo) => Promise<boolean>;
@@ -232,9 +261,10 @@ export class MarketEngine {
   // Specific role bots
   private optionsMMBots: OptionsMMAgent[] = [];
   private ctaBots: CTAAgent[] = [];
-  private adversarialAgent: AdversarialAgent = new AdversarialAgent();
-  private wallBreakerAgent: WallBreakerAgent = new WallBreakerAgent();
-  private asMarketMakerAgent: ASMarketMakerAgent = new ASMarketMakerAgent();
+  private adversarialAgent!: AdversarialAgent;
+  private wallBreakerAgent!: WallBreakerAgent;
+  private asMarketMakerAgent!: ASMarketMakerAgent;
+  private tickTail: Promise<void> = Promise.resolve();
   
   // New bots
   private retailSwarmAgents: RetailSwarmAgent[] = [];
@@ -284,6 +314,10 @@ export class MarketEngine {
       eventProbability: 0.02,
       simulationContext: this.simulationContext,
     });
+
+    this.adversarialAgent = new AdversarialAgent(this.simulationContext);
+    this.wallBreakerAgent = new WallBreakerAgent(this.simulationContext);
+    this.asMarketMakerAgent = new ASMarketMakerAgent(this.simulationContext);
   }
 
   /**
@@ -332,23 +366,7 @@ export class MarketEngine {
    * (fail-closed 검증을 유지하면서 내장 플릿을 정상 운용시키기 위한 최소 등록)
    */
   private async ensureBuiltInParticipantsRegistered(): Promise<void> {
-    const builtIn: Array<{ id: string; kind: string; cash: number }> = [
-      { id: 'PROP_DESK_PREDATOR', kind: 'DOMESTIC_INSTITUTION', cash: 50_000_000_000 },
-      { id: 'WALL_BREAKER', kind: 'DOMESTIC_INSTITUTION', cash: 100_000_000_000 },
-      { id: 'bot_as_mm_001', kind: 'LIQUIDITY_PROVIDER', cash: 100_000_000_000 },
-      { id: 'AS_MARKET_MAKER', kind: 'LIQUIDITY_PROVIDER', cash: 20_000_000_000 },
-      { id: 'QUANT_STAT_ARB', kind: 'DOMESTIC_INSTITUTION', cash: 100_000_000_000 },
-      { id: 'bot_retail_001', kind: 'RETAIL', cash: 5_000_000_000 },
-      { id: 'bot_retail_002', kind: 'RETAIL', cash: 5_000_000_000 },
-      { id: 'bot_hf_001', kind: 'DOMESTIC_INSTITUTION', cash: 100_000_000_000 },
-      { id: 'bot_hf_002', kind: 'DOMESTIC_INSTITUTION', cash: 100_000_000_000 },
-      { id: 'bot_prop_001', kind: 'DOMESTIC_INSTITUTION', cash: 100_000_000_000 },
-      { id: 'bot_prop_002', kind: 'DOMESTIC_INSTITUTION', cash: 100_000_000_000 },
-      { id: 'bot_quant_001', kind: 'DOMESTIC_INSTITUTION', cash: 50_000_000_000 },
-      { id: 'bot_options_mm_001', kind: 'LIQUIDITY_PROVIDER', cash: 10_000_000_000 },
-      { id: 'bot_cta_001', kind: 'DOMESTIC_INSTITUTION', cash: 20_000_000_000 },
-      { id: 'bot_hedger_001', kind: 'DOMESTIC_INSTITUTION', cash: 50_000_000_000 },
-    ];
+    const builtIn = BUILT_IN_PARTICIPANTS;
 
     for (const b of builtIn) {
       const existingProfile = await this.repositories.participant.getProfile(b.id);
@@ -357,26 +375,48 @@ export class MarketEngine {
           id: b.id,
           user_id: b.id,
           username: b.id,
-          nickname: b.id,
+          nickname: b.name,
           cash: b.cash,
           net_worth: b.cash,
           rank_tier: b.kind,
         });
+        if (b.kind !== 'LIQUIDITY_PROVIDER') {
+          try {
+            const snap = await this.repositories.markets.getMarketSnapshot();
+            for (const stk of snap.stocks || []) {
+              if (stk?.id && Number(stk.current_price) > 0) {
+                await this.repositories.participant.updateHolding(b.id, stk.id, 100, Number(stk.current_price));
+              }
+            }
+          } catch {
+            // ignore if market snapshot unavailable during isolated unit setup
+          }
+        }
       }
     }
 
     const existing = await this.repositories.participant.getBotConfigs();
-    const known = new Set(existing.map((b: any) => b.bot_id ?? b.id));
-    const toAdd = builtIn.filter((b) => !known.has(b.id));
-    if (toAdd.length > 0) {
+    const existingById = new Map<string, any>();
+    for (const e of existing) {
+      existingById.set(e.bot_id ?? e.id, e);
+    }
+    const toUpsert = builtIn.filter((b) => {
+      const prev = existingById.get(b.id);
+      return !prev || !prev.bot_type || prev.participant_kind !== b.kind || (b.traits && !prev.traits);
+    });
+    if (toUpsert.length > 0) {
       await this.repositories.participant.upsertBotConfigs(
-        toAdd.map((b) => ({
+        toUpsert.map((b) => ({
+          ...(existingById.get(b.id) || {}),
           bot_id: b.id,
           id: b.id,
+          name: existingById.get(b.id)?.name || b.name,
+          bot_type: b.botType,
           participant_kind: b.kind,
-          strategy_type: 'BUILT_IN',
-          current_cash: b.cash,
-          account_equity: b.cash,
+          traits: { ...(b.traits || {}), ...(existingById.get(b.id)?.traits || {}) },
+          strategy_type: existingById.get(b.id)?.strategy_type || 'BUILT_IN',
+          current_cash: existingById.get(b.id)?.current_cash ?? b.cash,
+          account_equity: existingById.get(b.id)?.account_equity ?? b.cash,
         }))
       );
     }
@@ -430,17 +470,30 @@ export class MarketEngine {
        } else if (config.bot_type === 'RETAIL_SWARM') {
           this.retailSwarmAgents.push(new RetailSwarmAgent(botConfig as any, this.simulationContext));
        } else if (config.bot_type === 'STAT_ARB' || config.bot_type === 'STATISTICAL_ARBITRAGE') {
-          this.statArbAgents.push(new StatArbAgent(botConfig as any));
+          this.statArbAgents.push(new StatArbAgent(botConfig as any, this.simulationContext));
        } else if (config.bot_type === 'COMMERCIAL_BANK') {
           this.commercialBankAgents.push(new CommercialBankAgent(botConfig as any, this.simulationContext));
        } else if (config.bot_type === 'PROP_DESK') {
           this.propDeskAgents.push(new PropDeskAgent(botConfig as any, this.simulationContext));
        } else if (config.bot_type === 'QUANT_FUND') {
-          this.quantAgents.push(new QuantAgent(botConfig as any));
+          this.quantAgents.push(new QuantAgent(botConfig as any, this.simulationContext));
+       } else if (config.bot_type === 'OPTIONS_MM') {
+          this.optionsMMBots.push(new OptionsMMAgent(botConfig as any, this.simulationContext));
+       } else if (config.bot_type === 'CTA') {
+          this.ctaBots.push(new CTAAgent({
+            ...botConfig,
+            breakoutThreshold: (botConfig as any).breakoutThreshold ?? 0.02,
+          } as any, this.simulationContext));
        } else if (config.bot_type === 'COMMERCIAL_HEDGER') {
-          this.commercialHedgerAgents.push(new CommercialHedgerAgent(botConfig as any));
+          this.commercialHedgerAgents.push(new CommercialHedgerAgent({
+            ...botConfig,
+            supportLevel: (botConfig as any).supportLevel ?? 65,
+            resistanceLevel: (botConfig as any).resistanceLevel ?? 85,
+          } as any, this.simulationContext));
+       } else if (config.bot_type === 'AS_MARKET_MAKER' || config.bot_type === 'ADVERSARIAL' || config.bot_type === 'WALL_BREAKER') {
+          // Dedicated ASMarketMakerAgent / AdversarialAgent / WallBreakerAgent instances handle these roles
        } else {
-          this.institutionalBots.push(new ExecutionTrader(botConfig as any, config.capital));
+          this.institutionalBots.push(new ExecutionTrader(botConfig as any, effectiveCapital, this.simulationContext));
        }
     }
 
@@ -474,22 +527,22 @@ export class MarketEngine {
       }
       if (this.quantAgents.length === 0) {
         const c1 = { id: 'bot_quant_001', bot_id: 'bot_quant_001', name: 'Aladdin Quant Fund', type: 'QUANT_FUND', participant_kind: 'DOMESTIC_INSTITUTION', capital: 50000000000, current_cash: 25000000000 };
-        this.quantAgents.push(new QuantAgent(c1 as any));
+        this.quantAgents.push(new QuantAgent(c1 as any, this.simulationContext));
         defaultBotConfigs.push(c1);
       }
       if (this.optionsMMBots.length === 0) {
         const c1 = { id: 'bot_options_mm_001', bot_id: 'bot_options_mm_001', name: 'Gamma Squeezer MM', type: 'OPTIONS_MM', participant_kind: 'LIQUIDITY_PROVIDER', capital: 10000000000, current_cash: 5000000000, reactionSpeed: 2, tradingStyle: 'DELTA_NEUTRAL', initialGammaNet: -50 };
-        this.optionsMMBots.push(new OptionsMMAgent(c1 as any));
+        this.optionsMMBots.push(new OptionsMMAgent(c1 as any, this.simulationContext));
         defaultBotConfigs.push(c1);
       }
       if (this.ctaBots.length === 0) {
         const c1 = { id: 'bot_cta_001', bot_id: 'bot_cta_001', name: 'Macro CTA Fund', type: 'CTA_MOMENTUM', participant_kind: 'FOREIGN_INSTITUTION', capital: 20000000000, current_cash: 10000000000, reactionSpeed: 1, breakoutThreshold: 0.02, tradingStyle: 'SWEEP_AGGRESSIVE' };
-        this.ctaBots.push(new CTAAgent(c1 as any));
+        this.ctaBots.push(new CTAAgent(c1 as any, this.simulationContext));
         defaultBotConfigs.push(c1);
       }
       if (this.commercialHedgerAgents.length === 0) {
-        const c1 = { id: 'bot_hedger_001', bot_id: 'bot_hedger_001', name: 'Chevron Commercial Hedger', type: 'COMMERCIAL_HEDGER', participant_kind: 'DOMESTIC_INSTITUTION', capital: 50000000000, current_cash: 25000000000, targetCommodity: 'WTI_CRUDE', supportLevel: 75, resistanceLevel: 90, tradingStyle: 'LIMIT_HEAVY' };
-        this.commercialHedgerAgents.push(new CommercialHedgerAgent(c1 as any));
+        const c1 = { id: 'bot_hedger_001', bot_id: 'bot_hedger_001', name: 'Chevron Commercial Hedger', type: 'COMMERCIAL_HEDGER', participant_kind: 'DOMESTIC_INSTITUTION', capital: 50000000000, current_cash: 25000000000, targetCommodity: 'CRUDE_OIL', supportLevel: 75, resistanceLevel: 90, tradingStyle: 'LIMIT_HEAVY' };
+        this.commercialHedgerAgents.push(new CommercialHedgerAgent(c1 as any, this.simulationContext));
         defaultBotConfigs.push(c1);
       }
       if (defaultBotConfigs.length > 0) {
@@ -622,21 +675,79 @@ export class MarketEngine {
       ...this.optionsMMBots,
       ...this.ctaBots,
       ...this.retailSwarmAgents,
+      this.asMarketMakerAgent,
+      this.adversarialAgent,
+      this.wallBreakerAgent,
     ];
   }
 
+  /**
+   * 틱 직렬화 및 커밋 경계 락 순서:
+   * - 전역 락 순서: tickLock -> commitGate (외부 API는 stockLock -> accountLocks -> commitGate).
+   * - commitGate 내부에서 tickLock/stockLock/accountLocks를 역취득하지 않는다(교착 방지).
+   * - 동일 async 흐름 내 commitGate 재진입(예: onTickCommitPersist -> saveSnapshot)은 허용된다.
+   */
+  private withTickLock<T>(fn: () => Promise<T>): Promise<T> {
+    let release!: () => void;
+    const prev = this.tickTail;
+    const next = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.tickTail = prev.then(() => next, () => next);
+    return prev.then(async () => {
+      try {
+        return await fn();
+      } finally {
+        release();
+      }
+    });
+  }
+
+  private async isAuthoritativeTradingHalted(): Promise<boolean> {
+    const repo = this.repositories.markets as any;
+    if (repo && typeof repo.isTradingHalted === 'function') {
+      return Boolean(await repo.isTradingHalted());
+    }
+    const db = repo && typeof repo.getDatabase === 'function' ? repo.getDatabase() : null;
+    if (db && typeof db.isTradingHalted === 'function') {
+      return Boolean(db.isTradingHalted());
+    }
+    try {
+      const snapshot = await this.repositories.markets.getMarketSnapshot();
+      return Boolean(snapshot?.adminSettings?.trading_halt);
+    } catch {
+      return false;
+    }
+  }
+
   public async tick(): Promise<TickResult> {
+    const runWithTickCommitGate = async (fn: () => Promise<TickResult>): Promise<TickResult> => {
+      const customPm = this.customPersistence as unknown as Partial<PersistenceManager> | undefined;
+      const persistCbPm = (this.onTickCommitPersist as any)?.__persistenceManager as Partial<PersistenceManager> | undefined;
+      const pm =
+        customPm && typeof customPm.withCommitGate === 'function'
+          ? customPm
+          : persistCbPm && typeof persistCbPm.withCommitGate === 'function'
+            ? persistCbPm
+            : persistenceManager;
+      return await pm.withCommitGate!(fn);
+    };
+
+    return await this.withTickLock(() =>
+      runWithTickCommitGate(async (): Promise<TickResult> => {
     const inMemoryDb = typeof (this.repositories.markets as any)?.getDatabase === 'function'
       ? (this.repositories.markets as any).getDatabase()
       : null;
-    const dbPreTickSnapshot = this.onTickCommitPersist && inMemoryDb
-      ? inMemoryDb.exportRollbackSnapshot()
-      : null;
+    const dbPreTickSnapshot = inMemoryDb ? inMemoryDb.exportRollbackSnapshot() : null;
 
-    const botPortfoliosSnapshot = new Map<any, any>();
+    const restoreBotRuntime: Array<() => void> = [];
     for (const bot of this.getAllBotAgents()) {
-      if (bot?.currentPortfolio) {
-        botPortfoliosSnapshot.set(bot, structuredClone(bot.currentPortfolio));
+      if (typeof bot?.snapshotRuntimeState === 'function') {
+        const snapshot = bot.snapshotRuntimeState();
+        restoreBotRuntime.push(() => bot.restoreRuntimeState(snapshot));
+      } else if (bot?.currentPortfolio) {
+        const portfolio = structuredClone(bot.currentPortfolio);
+        restoreBotRuntime.push(() => Object.assign(bot.currentPortfolio, structuredClone(portfolio)));
       }
     }
 
@@ -691,11 +802,7 @@ export class MarketEngine {
       }
       this.commodityEngine.restoreRuntime(runtimeSnapshot.commodityRuntime);
       this.settlementService.restoreLastRunPeriodKey(runtimeSnapshot.settlementPeriodKey);
-      for (const [bot, prevPortfolio] of botPortfoliosSnapshot.entries()) {
-        if (bot?.currentPortfolio) {
-          Object.assign(bot.currentPortfolio, structuredClone(prevPortfolio));
-        }
-      }
+      for (const restore of restoreBotRuntime) restore();
       this.cachedMarketState = null;
       this.currentTickCommitStatus = 'NOT_COMMITTED';
     };
@@ -718,6 +825,74 @@ export class MarketEngine {
         if (kstDecimal < 18 || kstDecimal >= 22.5) {
           return { success: true, commitStatus: 'NOT_COMMITTED', tickCount: this.tickCount };
         }
+      }
+
+      // 커밋 경계 내부에서 authoritative 저장소의 거래 동결 상태를 검사한다.
+      // 동결 중에는 대기 주문 체결·봇 주문·LP 갱신·원자재 틱을 차단하되,
+      // 만기 정산/쿠폰 지급 및 롤링 데이터 정리 같은 필수 의무 처리는 유지한다.
+      if (await this.isAuthoritativeTradingHalted()) {
+        if (this.tickCount % 20 === 0) {
+          try {
+            await this.trimOldTrades();
+            hasPersistentStateChanges = true;
+          } catch (trimErr: any) {
+            postCommitWarnings.push({
+              stage: 'TRIM_OLD_TRADES',
+              message: trimErr instanceof Error ? trimErr.message : String(trimErr),
+              error: trimErr,
+            });
+          }
+        }
+
+        if (this.tickCount % 50 === 0) {
+          const batchSummary = await this.settlementService.runDailySettlementBatch();
+          if (
+            batchSummary.optionSettled > 0 ||
+            (batchSummary.optionOrdersExpired ?? 0) > 0 ||
+            (batchSummary.optionLpLiabilitiesCleared ?? 0) > 0 ||
+            batchSummary.bondCouponsPaid > 0 ||
+            batchSummary.bondPrincipalRedeemed > 0
+          ) {
+            hasPersistentStateChanges = true;
+          }
+        }
+
+        if (this.onTickCommitPersist) {
+          let persisted = false;
+          let persistError: any = null;
+          try {
+            persisted = await this.onTickCommitPersist({
+              tickCount: this.tickCount,
+              partialFillSequence: this.partialFillSequence,
+              hadTrades: false,
+              hasPersistentStateChanges,
+            });
+          } catch (err: any) {
+            persisted = false;
+            persistError = err;
+          }
+          if (!persisted) {
+            rollbackAll();
+            this.lastPersistenceError = 'PERSISTENCE_FAILED';
+            return {
+              success: false,
+              commitStatus: 'NOT_COMMITTED',
+              tickCount: this.tickCount,
+              errorCode: 'PERSISTENCE_FAILED',
+              error: persistError instanceof Error
+                ? persistError.message
+                : 'Tick snapshot persistence failed during trading halt and all state was rolled back.',
+            };
+          }
+          this.lastPersistenceError = null;
+        }
+
+        return {
+          success: true,
+          commitStatus: hasPersistentStateChanges ? 'COMMITTED' : 'NOT_COMMITTED',
+          tickCount: this.tickCount,
+          postCommitWarnings: postCommitWarnings.length > 0 ? postCommitWarnings : undefined,
+        };
       }
 
       // 틱 시작 시 이벤트 수명 차감
@@ -852,7 +1027,7 @@ export class MarketEngine {
       
       // 4. 고도화된 마켓메이커 및 적대적 봇
       if (shouldRefreshLp) {
-        allOrders.push(...this.asMarketMakerAgent.executeMarketMaking(marketState));
+        allOrders.push(...this.asMarketMakerAgent.executeMarketMaking(marketState, orderBook));
       }
       
       // Collect endogenous news reaction orders from all agents
@@ -1047,6 +1222,8 @@ export class MarketEngine {
         error: error instanceof Error ? error.message : String(error),
       };
     }
+    })
+    );
   }
 
   /**
@@ -1153,9 +1330,14 @@ export class MarketEngine {
     diagnostics: any[]
   ): Promise<any | null> {
     if (!order || !order.stock_id) return null;
+    if (marketState.options_contracts?.some((o: any) => o.id === order.stock_id)) return null;
 
     const stock = marketState.stocks?.find((s: any) => s.id === order.stock_id);
-    const currentPrice = Number(order.price || stock?.current_price || 1);
+    const bond = !stock ? marketState.bonds?.find((b: any) => b.id === order.stock_id) : undefined;
+    const currentPrice = Number(order.price || stock?.current_price || bond?.current_price || 1);
+    const assetMarket = stock?.market ?? (bond ? 'bonds' : undefined);
+    const assetCurrency = stock?.currency;
+    const assetTicker = stock?.ticker ?? bond?.ticker;
     const adv = stock?.volume ? stock.volume * 50 : 100000;
 
     const participantId = extractParticipantId(order as Record<string, unknown>) || (order.user_id ? String(order.user_id) : null);
@@ -1219,7 +1401,12 @@ export class MarketEngine {
       order,
       currentPrice,
       0,
-      assessment.context
+      {
+        ...assessment.context,
+        market: assetMarket,
+        currency: assetCurrency,
+        ticker: assetTicker,
+      }
     );
     if (!safeOrder) {
       return null;
@@ -1254,6 +1441,9 @@ export class MarketEngine {
     hasPersistentStateChanges?: boolean;
     postCommitWarnings?: PostCommitWarning[];
   }> {
+    if (await this.isAuthoritativeTradingHalted()) {
+      return { commitStatus: 'NOT_COMMITTED', settledTradesCount: 0, hasPersistentStateChanges: false };
+    }
     // 1. 저장소의 미체결(Open) 주문들을 가져옵니다.
     const allOpenOrders = await this.repositories.markets.getOpenOrders();
     const activeOpenOrders = allOpenOrders.filter((o: any) => o.status === 'open' || o.status === 'partial');
@@ -1263,26 +1453,115 @@ export class MarketEngine {
 
     const orderRiskDiagnostics: any[] = [];
     const validatedOrders: any[] = [];
-
-    // 신규 생성된 봇 주문 검증
-    for (const b of lpOrders) {
-      if (!b) continue;
-      (b as any)._fromRepo = false;
-      const valid = await this.validateSingleOrder(b, marketState, false, orderRiskDiagnostics);
-      if (valid) {
-        (valid as any)._fromRepo = false;
-        validatedOrders.push(valid);
+    const isTrueLpOrderPre = (o: any) =>
+      Boolean(o.is_lp && (o.participantKind === 'LIQUIDITY_PROVIDER' || o.participantKind === 'MARKET_MAKER' || o.orderType === 'LP_QUOTE' || o.orderRole === 'LP_QUOTE'));
+    const botCashCache = new Map<string, number>();
+    const botHoldingCache = new Map<string, number>();
+    const getRemainingBotCash = async (pid: string): Promise<number> => {
+      if (!botCashCache.has(pid)) {
+        const p = await this.repositories.participant.getProfile(pid).catch(() => null);
+        botCashCache.set(pid, Number(p?.cash ?? 0));
       }
-    }
+      return botCashCache.get(pid)!;
+    };
+    const getRemainingBotHolding = async (pid: string, stockId: string): Promise<number> => {
+      const k = `${pid}::${stockId}`;
+      if (!botHoldingCache.has(k)) {
+        const h = await this.repositories.participant.getHolding(pid, stockId).catch(() => null);
+        botHoldingCache.set(k, Number(h?.quantity ?? 0));
+      }
+      return botHoldingCache.get(k)!;
+    };
 
-    // 저장소 미체결 주문 검증
+    // 저장소 미체결 주문 검증 (먼저 검증하여 기존 예약 수량/현금 파악)
+    const reservedRepoSellQty = new Map<string, number>();
+    const reservedRepoBuyCash = new Map<string, number>();
     for (const u of activeOpenOrders) {
       if (!u) continue;
       const valid = await this.validateSingleOrder(u, marketState, true, orderRiskDiagnostics);
       if (valid) {
         (valid as any)._fromRepo = true;
         validatedOrders.push(valid);
+        if (!isTrueLpOrderPre(valid) && valid.participantId) {
+          const remQty = Math.max(0, Number(valid.remainingQuantity ?? valid.size ?? 0));
+          if (valid.side === 'sell') {
+            const k = `${valid.participantId}::${valid.stock_id}`;
+            reservedRepoSellQty.set(k, (reservedRepoSellQty.get(k) || 0) + remQty);
+          } else if (valid.side === 'buy') {
+            const stkMeta = marketState.stocks?.find((s: any) => s.id === valid.stock_id);
+            const isUsd = stkMeta && isUsdQuotedAsset(stkMeta);
+            const fx = isUsd ? Number((marketState as any)?.usdToKrwRate ?? 1380) : 1;
+            const cost = Math.round(Number(valid.price || 0) * remQty * fx * 1.0025);
+            reservedRepoBuyCash.set(valid.participantId, (reservedRepoBuyCash.get(valid.participantId) || 0) + cost);
+          }
+        }
       }
+    }
+
+    // 신규 생성된 봇 주문 검증 (비-LP 봇 주문은 보유 수량·가용 현금 초과분 사전 차단/캡 적용)
+    const stagedNewSellQty = new Map<string, number>();
+    const stagedNewBuyCash = new Map<string, number>();
+    for (const b of lpOrders) {
+      if (!b) continue;
+      (b as any)._fromRepo = false;
+      const valid = await this.validateSingleOrder(b, marketState, false, orderRiskDiagnostics);
+      if (!valid) continue;
+      if (!isTrueLpOrderPre(valid) && valid.participantId) {
+        const pid = String(valid.participantId);
+        if (valid.side === 'sell') {
+          const k = `${pid}::${valid.stock_id}`;
+          const totalAvail = await getRemainingBotHolding(pid, valid.stock_id);
+          const alreadyReserved = (reservedRepoSellQty.get(k) || 0) + (stagedNewSellQty.get(k) || 0);
+          const freeQty = Math.max(0, totalAvail - alreadyReserved);
+          if (freeQty <= 0) {
+            orderRiskDiagnostics.push({
+              stockId: valid.stock_id,
+              participantId: pid,
+              originalSize: Number(valid.size ?? 0),
+              safeSize: 0,
+              originalPrice: valid.price,
+              safePrice: 0,
+              reasonCodes: ['INSUFFICIENT_HOLDINGS_PRECHECK'],
+            });
+            continue;
+          }
+          if (valid.size > freeQty) {
+            valid.size = freeQty;
+            valid.originalQuantity = freeQty;
+            valid.remainingQuantity = freeQty;
+          }
+          stagedNewSellQty.set(k, (stagedNewSellQty.get(k) || 0) + valid.size);
+        } else if (valid.side === 'buy') {
+          const stkMeta = marketState.stocks?.find((s: any) => s.id === valid.stock_id);
+          const isUsd = stkMeta && isUsdQuotedAsset(stkMeta);
+          const fx = isUsd ? Number((marketState as any)?.usdToKrwRate ?? 1380) : 1;
+          const unitCost = Math.max(1, Number(valid.price || 1) * fx * 1.0025);
+          const totalCash = await getRemainingBotCash(pid);
+          const alreadyReserved = (reservedRepoBuyCash.get(pid) || 0) + (stagedNewBuyCash.get(pid) || 0);
+          const freeCash = Math.max(0, totalCash - alreadyReserved);
+          const maxAffordable = Math.floor(freeCash / unitCost);
+          if (maxAffordable <= 0) {
+            orderRiskDiagnostics.push({
+              stockId: valid.stock_id,
+              participantId: pid,
+              originalSize: Number(valid.size ?? 0),
+              safeSize: 0,
+              originalPrice: valid.price,
+              safePrice: 0,
+              reasonCodes: ['INSUFFICIENT_CASH_PRECHECK'],
+            });
+            continue;
+          }
+          if (valid.size > maxAffordable) {
+            valid.size = maxAffordable;
+            valid.originalQuantity = maxAffordable;
+            valid.remainingQuantity = maxAffordable;
+          }
+          stagedNewBuyCash.set(pid, (stagedNewBuyCash.get(pid) || 0) + Math.round(valid.size * unitCost));
+        }
+      }
+      (valid as any)._fromRepo = false;
+      validatedOrders.push(valid);
     }
 
     if (orderRiskDiagnostics.length > 0) {
@@ -1335,6 +1614,13 @@ export class MarketEngine {
     // 3. 종목별 매칭 계산 (순수 계산)
     for (const stockId of Object.keys(orderBookByStock)) {
       const book = orderBookByStock[stockId]!;
+      const stockMeta = marketState.stocks?.find((s: any) => s.id === stockId);
+      const bondMeta = !stockMeta ? marketState.bonds?.find((b: any) => b.id === stockId) : undefined;
+      const assetMarket = stockMeta?.market ?? (bondMeta ? 'bonds' : undefined);
+      const assetCurrency = stockMeta?.currency;
+      const assetTicker = stockMeta?.ticker ?? bondMeta?.ticker;
+      const isUsdStock = stockMeta && isUsdQuotedAsset(stockMeta);
+      const usdFx = isUsdStock ? Number((marketState as any)?.usdToKrwRate ?? 1380) : 1;
 
       book.bids.sort((a, b) => {
         if (b.price !== a.price) return b.price - a.price;
@@ -1405,7 +1691,57 @@ export class MarketEngine {
           const askTime = new Date(workingCreatedAt.get(lowestAsk) || lowestAsk.created_at || 0).getTime();
           const isBidMaker = bidTime <= askTime;
 
-          const tradePrice = this.alignToTickSize(isBidMaker ? highestBid.price : lowestAsk.price);
+          const rawMatchPrice = isBidMaker ? highestBid.price : lowestAsk.price;
+          const alignedMatchPrice = this.alignToTickSize(rawMatchPrice, assetMarket, assetCurrency, assetTicker);
+          // 저장소 주문(사용자/미체결 주문) 매칭 시 원본 주문 가격 범위를 벗어나 ORDER_PRICE_MISMATCH가 발생하지 않도록 보장
+          const tradePrice =
+            alignedMatchPrice >= lowestAsk.price && alignedMatchPrice <= highestBid.price
+              ? alignedMatchPrice
+              : rawMatchPrice;
+
+          // 2.5) 신규 생성 비-LP 봇 주문의 누적 현금/보유수량 사전 보호 (단일 봇 초과 매도/매수가 전체 틱 배치를 무효화하지 않게 차단)
+          if (!highestBid._fromRepo && !isTrueLpOrderPre(highestBid)) {
+            const availCash = await getRemainingBotCash(buyerParticipantId);
+            const neededKrw = Math.round(tradePrice * tradeSize * usdFx * 1.0025);
+            if (availCash < neededKrw) {
+              orderRiskDiagnostics.push({
+                stockId,
+                participantId: buyerParticipantId,
+                originalSize: tradeSize,
+                safeSize: 0,
+                originalPrice: highestBid.price,
+                safePrice: 0,
+                reasonCodes: ['INSUFFICIENT_CASH_PRECHECK'],
+              });
+              workingBids.shift();
+              continue;
+            }
+          }
+          if (!lowestAsk._fromRepo && !isTrueLpOrderPre(lowestAsk)) {
+            const availQty = await getRemainingBotHolding(sellerParticipantId, stockId);
+            if (availQty < tradeSize) {
+              orderRiskDiagnostics.push({
+                stockId,
+                participantId: sellerParticipantId,
+                originalSize: tradeSize,
+                safeSize: 0,
+                originalPrice: lowestAsk.price,
+                safePrice: 0,
+                reasonCodes: ['INSUFFICIENT_HOLDINGS_PRECHECK'],
+              });
+              workingAsks.shift();
+              continue;
+            }
+          }
+          if (!highestBid._fromRepo && !isTrueLpOrderPre(highestBid)) {
+            const curCash = await getRemainingBotCash(buyerParticipantId);
+            botCashCache.set(buyerParticipantId, curCash - Math.round(tradePrice * tradeSize * usdFx * 1.0025));
+          }
+          if (!lowestAsk._fromRepo && !isTrueLpOrderPre(lowestAsk)) {
+            const curQty = await getRemainingBotHolding(sellerParticipantId, stockId);
+            botHoldingCache.set(`${sellerParticipantId}::${stockId}`, curQty - tradeSize);
+          }
+
           latestTradePrice = tradePrice;
 
           const makerRebateRate = -0.001;
@@ -1618,9 +1954,42 @@ export class MarketEngine {
     }
 
     // ── Phase 3: DB 일괄 커밋 페이로드 준비 ──
+    // refreshLpOrders 틱에서는 신규 LP 주문의 미체결 잔량을 lp_<stock>_slot* 슬롯으로 이관하므로
+    // ord_... 쪽에는 이번 틱에 실제 체결된 수량만 filled 상태로 기록해 이중 잔존을 방지한다.
+    const isTrueLpOrder = (o: any) =>
+      Boolean(o.is_lp && (o.participantKind === 'LIQUIDITY_PROVIDER' || o.participantKind === 'MARKET_MAKER' || o.orderType === 'LP_QUOTE' || o.orderRole === 'LP_QUOTE'));
+
+    const lpHandoverRemainingByOrderId = new Map<string, number>();
+    if (refreshLpOrders) {
+      for (const [order, rem] of workingSizes.entries()) {
+        if (!order._fromRepo && isTrueLpOrder(order) && order.id && newOrdersToCommitMap.has(order.id)) {
+          const origQty = order.originalQuantity ?? order.size;
+          const matchedQty = Math.max(0, origQty - rem);
+          if (matchedQty > 0) {
+            const committed = newOrdersToCommitMap.get(order.id)!;
+            committed.size = matchedQty;
+            committed.originalQuantity = matchedQty;
+            committed.filledQuantity = 0;
+            committed.remainingQuantity = matchedQty;
+            committed.remaining = matchedQty;
+            lpHandoverRemainingByOrderId.set(order.id, rem);
+          }
+        }
+      }
+    }
+
     const stagedOrderUpdates: { id: string; size: number; status: 'open' | 'partial' | 'filled' | 'cancelled' | 'expired'; remainingQuantity?: number }[] = [];
     for (const [order, size] of workingSizes.entries()) {
       if (order.id) {
+        if (lpHandoverRemainingByOrderId.has(order.id)) {
+          stagedOrderUpdates.push({
+            id: order.id,
+            size: 0,
+            status: 'filled',
+            remainingQuantity: 0,
+          });
+          continue;
+        }
         const origQty = order.originalQuantity ?? order.size;
         let status: 'open' | 'partial' | 'filled' | 'cancelled' | 'expired';
         if (size === 0) {
@@ -1647,14 +2016,14 @@ export class MarketEngine {
       if (stockItem) {
         const prevClose = Number(stockItem.previous_close || stockItem.previousClose || stockItem.current_price || 1000);
         let finalPrice = rawPrice;
-        if (stockItem.market === 'domestic') {
+        if (stockItem.market === 'domestic' || (stockItem.market === 'etf' && !isUsdQuotedAsset(stockItem))) {
           const upper = this.alignToTickSize(prevClose * 1.30, 'stocks');
           const lower = this.alignToTickSize(prevClose * 0.70, 'stocks');
           finalPrice = Math.max(lower, Math.min(upper, this.alignToTickSize(rawPrice, 'stocks')));
-        } else if (stockItem.market === 'overseas' || stockItem.market === 'europe') {
+        } else if (isUsdQuotedAsset(stockItem)) {
           const lower = Math.max(0.01, prevClose * 0.50);
           const upper = prevClose * 2.00;
-          finalPrice = Math.max(lower, Math.min(upper, rawPrice));
+          finalPrice = Math.max(lower, Math.min(upper, this.alignToTickSize(rawPrice, stockItem.market, stockItem.currency, stockItem.ticker)));
         } else {
           finalPrice = Math.max(1, this.alignToTickSize(rawPrice, 'stocks'));
         }
@@ -1664,8 +2033,6 @@ export class MarketEngine {
     }
 
     // ── Phase 4: Authoritative 단일 Unit-of-Work 원자적 커밋 ──
-    const isTrueLpOrder = (o: any) =>
-      Boolean(o.is_lp && (o.participantKind === 'LIQUIDITY_PROVIDER' || o.participantKind === 'MARKET_MAKER' || o.orderType === 'LP_QUOTE' || o.orderRole === 'LP_QUOTE'));
 
     // 미체결 일반 전략 주문은 원래 참여자/전략/메타데이터를 유지한 채 저장소에 저장
     const strategicOrdersToPersist: any[] = [];
@@ -1845,11 +2212,24 @@ export class MarketEngine {
     if (refreshLpOrders) {
       for (const stockId of Object.keys(orderBookByStock)) {
         const book = orderBookByStock[stockId]!;
+        const newBids = book.bids.filter((b: any) => !b._fromRepo && isTrueLpOrder(b));
+        const newAsks = book.asks.filter((a: any) => !a._fromRepo && isTrueLpOrder(a));
+        if (newBids.length === 0 && newAsks.length === 0) continue;
+
+        const isKeptSlotLp = (o: any) =>
+          Boolean(o._fromRepo && isTrueLpOrder(o) && typeof o.id === 'string' && o.id.startsWith(`lp_${stockId}_`));
+
         for (const bid of book.bids) {
-          if (!bid._fromRepo && isTrueLpOrder(bid)) lpOrdersToInsert.push(bid);
+          if ((!bid._fromRepo && isTrueLpOrder(bid)) || isKeptSlotLp(bid)) {
+            const rem = workingSizes.has(bid) ? (workingSizes.get(bid) ?? 0) : (bid.size ?? 0);
+            if (rem > 0) lpOrdersToInsert.push({ ...bid, size: rem });
+          }
         }
         for (const ask of book.asks) {
-          if (!ask._fromRepo && isTrueLpOrder(ask)) lpOrdersToInsert.push(ask);
+          if ((!ask._fromRepo && isTrueLpOrder(ask)) || isKeptSlotLp(ask)) {
+            const rem = workingSizes.has(ask) ? (workingSizes.get(ask) ?? 0) : (ask.size ?? 0);
+            if (rem > 0) lpOrdersToInsert.push({ ...ask, size: rem });
+          }
         }
       }
     }
@@ -1870,6 +2250,7 @@ export class MarketEngine {
       const unusedSlotIds: string[] = [];
 
       for (const [stockId, { bids, asks }] of Object.entries(byStock)) {
+        const stockMeta = marketState.stocks?.find((s: any) => s.id === stockId);
         const topAsks = asks.sort((a, b) => a.price - b.price).slice(0, 5);
         const minAskPrice = topAsks.length > 0 ? topAsks[0].price : Infinity;
         const topBids = bids.filter(b => b.price < minAskPrice).sort((a, b) => b.price - a.price).slice(0, 5);
@@ -1893,7 +2274,10 @@ export class MarketEngine {
             };
             const safeOrder = applyLegacyChildOrderSafetyLimits(rawLpOrder, o.price || 1, 0, {
               orderType: 'LP_QUOTE',
-              participantKind: 'LIQUIDITY_PROVIDER'
+              participantKind: 'LIQUIDITY_PROVIDER',
+              market: stockMeta?.market,
+              currency: stockMeta?.currency,
+              ticker: stockMeta?.ticker,
             });
             if (safeOrder) {
               safeOrder.id = rawLpOrder.id;
@@ -1927,7 +2311,10 @@ export class MarketEngine {
             };
             const safeOrder = applyLegacyChildOrderSafetyLimits(rawLpOrder, o.price || 1, 0, {
               orderType: 'LP_QUOTE',
-              participantKind: 'LIQUIDITY_PROVIDER'
+              participantKind: 'LIQUIDITY_PROVIDER',
+              market: stockMeta?.market,
+              currency: stockMeta?.currency,
+              ticker: stockMeta?.ticker,
             });
             if (safeOrder) {
               safeOrder.id = rawLpOrder.id;
@@ -2045,6 +2432,8 @@ export class MarketEngine {
         const batchSummary = await this.settlementService.runDailySettlementBatch();
         if (
           batchSummary.optionSettled > 0 ||
+          (batchSummary.optionOrdersExpired ?? 0) > 0 ||
+          (batchSummary.optionLpLiabilitiesCleared ?? 0) > 0 ||
           batchSummary.bondCouponsPaid > 0 ||
           batchSummary.bondPrincipalRedeemed > 0
         ) {
@@ -2111,8 +2500,9 @@ export class MarketEngine {
           };
         });
         try {
-          if (this.customPersistence?.upsertPortfolios) {
-            await this.customPersistence.upsertPortfolios(portfoliosToUpsert);
+          const customWithPortfolios = this.customPersistence as { upsertPortfolios?: (p: any[]) => Promise<void> } | undefined;
+          if (customWithPortfolios?.upsertPortfolios) {
+            await customWithPortfolios.upsertPortfolios(portfoliosToUpsert);
           } else {
             await this.repositories.participants.upsertPortfolios(portfoliosToUpsert);
           }
@@ -2223,11 +2613,14 @@ export class MarketEngine {
     }
   }
 
-  private alignToTickSize(price: number, market?: string): number {
+  private alignToTickSize(price: number, market?: string, currency?: string, ticker?: string): number {
     if (price <= 0 || isNaN(price)) return 1;
-    if (market === 'bonds' || (price >= 50 && price <= 150 && !Number.isInteger(price))) {
+    if (market === 'bonds') {
       const bPrice = Math.max(80.00, Math.min(120.00, Math.round(price * 100) / 100));
       return Number(bPrice.toFixed(2));
+    }
+    if (isUsdQuotedAsset({ market, currency, ticker })) {
+      return Number(Math.max(0.01, Math.round(price * 100) / 100).toFixed(2));
     }
     let tick = 1;
     if (price < 2000) tick = 1;

@@ -14,6 +14,7 @@ import type {
 
 export interface MarketRepository {
   getMarketSnapshot(): Promise<MarketSnapshot>;
+  isTradingHalted?(): boolean | Promise<boolean>;
   getStocks(): Promise<StockRecord[]>;
   getStockById(id: string): Promise<StockRecord | null>;
   getStockByTicker(ticker: string): Promise<StockRecord | null>;

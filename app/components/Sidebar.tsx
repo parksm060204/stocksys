@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { MARKETS } from "@/lib/constants";
 import { createClient } from "@/lib/db/client";
 import { useAuth } from "@/lib/auth/useAuth";
@@ -126,18 +126,39 @@ export default function Sidebar() {
 
   const db = createClient();
   const { userId, isLoggedIn } = useAuth();
+  const fetchSeqRef = useRef<number>(0);
 
   useEffect(() => {
+    const reqSeq = ++fetchSeqRef.current;
+    if (!isLoggedIn || !userId) {
+      setIsAdmin(false);
+      setUnlockedFeatures([]);
+      return;
+    }
+
+    setIsAdmin(false);
+    setUnlockedFeatures([]);
+
     const fetchProfile = async () => {
-      if (isLoggedIn && userId) {
-        const { data } = await db.from('profiles').select('is_admin, unlocked_features').eq('id', userId).single();
-        if (data) {
-          setIsAdmin(data.is_admin || false);
-          if (data.unlocked_features) setUnlockedFeatures(data.unlocked_features);
-        }
+      const { data } = await db
+        .from('profiles')
+        .select('is_admin, unlocked_features')
+        .eq('id', userId)
+        .maybeSingle();
+      if (reqSeq !== fetchSeqRef.current) return;
+      if (data) {
+        setIsAdmin(Boolean(data.is_admin));
+        setUnlockedFeatures(Array.isArray(data.unlocked_features) ? data.unlocked_features : []);
+      } else {
+        setIsAdmin(false);
+        setUnlockedFeatures([]);
       }
     };
-    fetchProfile();
+    void fetchProfile();
+
+    return () => {
+      fetchSeqRef.current += 1;
+    };
   }, [db, isLoggedIn, userId]);
 
   const handleAdminClick = useCallback(() => {
@@ -149,7 +170,7 @@ export default function Sidebar() {
   }, [isAdmin, router]);
 
   const isActive = (href: string) =>
-    href === "/" ? pathname === "/" : pathname.startsWith(href);
+    href === "/" ? pathname === "/" : Boolean(pathname?.startsWith(href));
 
   return (
     <aside className="flex w-56 shrink-0 flex-col border-r border-border bg-panel">
@@ -176,7 +197,7 @@ export default function Sidebar() {
         <div className="mt-5 mb-1 px-3 text-[10px] font-bold uppercase tracking-wider text-dim">
           MARKETS
         </div>
-        <NavItem href="/stocks" label="주식" icon="stocks" active={pathname === "/stocks" || STOCK_MARKET_IDS.some((id) => pathname.startsWith(`/markets/${id}`))} />
+        <NavItem href="/stocks" label="주식" icon="stocks" active={pathname === "/stocks" || STOCK_MARKET_IDS.some((id) => Boolean(pathname?.startsWith(`/markets/${id}`)))} />
         {NON_STOCK_MARKETS.map((m) => {
           const isCustom = ['commodities', 'options', 'etf'].includes(m.id);
           const href = isCustom ? `/${m.id}` : `/markets/${m.id}`;

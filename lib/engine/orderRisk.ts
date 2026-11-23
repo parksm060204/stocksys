@@ -9,8 +9,62 @@ import { hasActiveFeeBooster } from '../shop/catalog';
 export const OPTION_RESERVATION_FEE_RATE = 0.001;
 export const STOCK_TAKER_FEE_RATE = 0.0025;
 
+/**
+ * 옵션 매수 주문 1건의 총 필요 예약금(체결대금 + 0.1% 예약 수수료)을 서버 정산과 동일하게 계산한다.
+ */
+export function calculateOptionBuyRequiredCashKrw(
+  effectivePrice: number,
+  multiplier: number,
+  qty: number,
+  feeRate: number = OPTION_RESERVATION_FEE_RATE
+): number {
+  if (!Number.isFinite(effectivePrice) || effectivePrice <= 0 || !Number.isFinite(multiplier) || multiplier <= 0 || !Number.isInteger(qty) || qty <= 0) {
+    return 0;
+  }
+  const notional = Math.round(effectivePrice * multiplier * qty);
+  const fee = Math.round(notional * feeRate);
+  return notional + fee;
+}
+
+/**
+ * 가용 예수금(또는 비율 예산) 내에서 0.1% 예약 수수료를 포함해 주문 가능한 최대 옵션 계약 수를 계산한다.
+ * 부동소수점 경계 오차(예: 2.9999999999999996) 및 반올림 1원 경계 초과 거절을 방지한다.
+ */
+export function calculateMaxOptionBuyContracts(
+  availableBalanceKrw: number,
+  effectivePrice: number,
+  multiplier: number,
+  pct: number = 100,
+  feeRate: number = OPTION_RESERVATION_FEE_RATE
+): number {
+  if (
+    !Number.isFinite(availableBalanceKrw) ||
+    availableBalanceKrw <= 0 ||
+    !Number.isFinite(effectivePrice) ||
+    effectivePrice <= 0 ||
+    !Number.isFinite(multiplier) ||
+    multiplier <= 0 ||
+    !Number.isFinite(pct) ||
+    pct <= 0
+  ) {
+    return 0;
+  }
+  const budget = Math.floor(availableBalanceKrw * (pct / 100));
+  const unitWithFee = effectivePrice * multiplier * (1 + feeRate);
+  if (!Number.isFinite(unitWithFee) || unitWithFee <= 0) return 0;
+
+  let qty = Math.max(0, Math.floor((budget + 1) / unitWithFee));
+  while (qty > 0 && calculateOptionBuyRequiredCashKrw(effectivePrice, multiplier, qty, feeRate) > budget) {
+    qty -= 1;
+  }
+  while (calculateOptionBuyRequiredCashKrw(effectivePrice, multiplier, qty + 1, feeRate) <= budget) {
+    qty += 1;
+  }
+  return qty;
+}
+
 export function getEffectiveStockTakerFeeRate(
-  profile?: Pick<ProfileRecord, 'unlocked_features' | 'feature_expiries'> | null,
+  profile?: Pick<ProfileRecord, 'unlocked_features' | 'feature_expiries' | 'acquired_passives'> | null,
   nowMs: number = Date.now()
 ): number {
   return hasActiveFeeBooster(profile, nowMs) ? STOCK_TAKER_FEE_RATE * 0.5 : STOCK_TAKER_FEE_RATE;
@@ -122,7 +176,7 @@ export function calculateUserReservedCashKrw(
       openOrders.push(ord);
     }
   }
-  const stockFeeRate = getEffectiveStockTakerFeeRate(db.profiles.get(userId), db.getNowMs());
+  const stockFeeRate = getEffectiveStockTakerFeeRate(db.resolveProfileByUserId(userId), db.getNowMs());
   return calculateReservedCash(openOrders, excludeOrderId, db.optionsContracts, {
     stocks: db.stocks,
     exchangeRates: db.exchangeRates,
@@ -137,7 +191,7 @@ export function getAvailableCashKrw(
   userId: string,
   excludeOrderId?: string
 ): { cash: number; reservedCash: number; availableCash: number } {
-  const profile = db.profiles.get(userId);
+  const profile = db.resolveProfileByUserId(userId);
   const cash = Number(profile?.cash ?? 0);
   const marginDebt = Math.max(0, Number(profile?.margin_debt_krw ?? 0));
   const reservedCash = calculateUserReservedCashKrw(db, userId, excludeOrderId);
@@ -310,4 +364,29 @@ export function validateOrderCapacity(
       reserved: reservedQty,
     };
   }
+}
+
+/**
+ * 주문 취소 등으로 예약금이 해제된 직후, 미수 부채(margin_debt_krw)가 남아있다면
+ * 미예약 가용 현금(cash - reservedCash)으로 부채를 우선 상환(스윕)한다.
+ */
+export function sweepUnencumberedCashToMarginDebt(
+  db: MemoryDatabase,
+  profile: ProfileRecord
+): number {
+  const currentDebt = Math.max(0, Math.round(Number(profile.margin_debt_krw ?? 0) * 100) / 100);
+  if (currentDebt <= 0) return 0;
+  const reservedCash = calculateUserReservedCashKrw(db, profile.id);
+  const unencumbered = Math.max(0, Math.round((Number(profile.cash ?? 0) - reservedCash) * 100) / 100);
+  const repay = Math.min(currentDebt, unencumbered);
+  if (repay <= 0) return 0;
+
+  profile.cash = Math.round((profile.cash - repay) * 100) / 100;
+  const nextDebt = Math.round((currentDebt - repay) * 100) / 100;
+  if (nextDebt > 0) {
+    profile.margin_debt_krw = nextDebt;
+  } else {
+    delete profile.margin_debt_krw;
+  }
+  return repay;
 }

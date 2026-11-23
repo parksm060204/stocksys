@@ -54,6 +54,14 @@ function computeFullStateFingerprint(engine: MarketEngine, db: MemoryDatabase): 
     fundamentals: (engine as any).fundamentals,
     events: (engine as any).activeEvents,
     prngSnap: (engine as any).simulationContext.random.snapshot(),
+    bots: (engine as any).getAllBotAgents().map((bot: any) => {
+      const runtime = bot.snapshotRuntimeState();
+      return {
+        id: bot.botId,
+        state: runtime.state,
+        randomStreams: Array.from(runtime.randomStreams.entries()).map(([key, value]: any) => [key, value.snapshot]),
+      };
+    }),
   };
 
   // DB state
@@ -90,16 +98,18 @@ async function runTests() {
     clock: clockA,
     idGenerator: new SequentialIdGenerator(777),
   });
-  dbA.stocks.set(STOCK_ID, stock as any);
+  const stockA = { ...stock };
+  dbA.stocks.set(STOCK_ID, stockA as any);
   const bundleA = createInMemoryRepositoryBundle(dbA);
   const engineA = new MarketEngine({
     repositories: bundleA,
-    marketDataSource: new MockMarketDataSource([stock]),
+    marketDataSource: new MockMarketDataSource([stockA]),
     simulationContext: contextA,
     simulationRunId: 'deterministic_run_777',
   });
   await engineA.initializeBots();
 
+  const initialFingerprintA = computeFullStateFingerprint(engineA, dbA);
   // Run 1 tick cleanly on A
   const resA = await engineA.tick();
   assert.strictEqual(resA.success, true);
@@ -112,17 +122,19 @@ async function runTests() {
     clock: clockB,
     idGenerator: new SequentialIdGenerator(777),
   });
-  dbB.stocks.set(STOCK_ID, stock as any);
+  const stockB = { ...stock };
+  dbB.stocks.set(STOCK_ID, stockB as any);
   const bundleB = createInMemoryRepositoryBundle(dbB);
   const engineB = new MarketEngine({
     repositories: bundleB,
-    marketDataSource: new MockMarketDataSource([stock]),
+    marketDataSource: new MockMarketDataSource([stockB]),
     simulationContext: contextB,
     simulationRunId: 'deterministic_run_777',
   });
   await engineB.initializeBots();
 
   const preTickFingerprintB = computeFullStateFingerprint(engineB, dbB);
+  assert.equal(preTickFingerprintB, initialFingerprintA, 'Clean and retry runs must start from independent, identical fixtures');
 
   // Inject failure into settlement repository on first attempt
   let failSettlement = true;

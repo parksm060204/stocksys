@@ -136,9 +136,9 @@ export async function executeCurrencyExchange(params: {
     };
   }
 
-  return withAccountLocks([userId], async () => {
+  return withAccountLocks([db.resolveAccountLockKey(userId)], async () => {
     return runWithCommitGate(onPersist, async () => {
-      const profile = db.profiles.get(userId);
+      const profile = db.resolveProfileByUserId(userId);
       if (!profile) {
         return {
           success: false,

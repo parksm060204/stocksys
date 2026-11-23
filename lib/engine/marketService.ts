@@ -4,6 +4,7 @@ import { submitAndMatchOrder, MatchOrderResult } from './dbMatching';
 import { memoryDb, OrderRecord } from '../memoryDb/memoryStore';
 import { withAccountLocks } from '../memoryDb/accountLocks';
 import { runWithCommitGate } from '../memoryDb/PersistenceManager';
+import { sweepUnencumberedCashToMarginDebt } from './orderRisk';
 
 export interface SubmitOrderParams {
   userId: string;
@@ -164,7 +165,7 @@ export class LocalMarketService {
 
     // 2. 종목 락 + 계좌 락 내부에서 최신 주문 객체를 다시 조회하여 안전하게 취소 및 영속 저장 처리
     return await withStockLock(stockId, async () => {
-      return await withAccountLocks([userId], async () => {
+      return await withAccountLocks([memoryDb.resolveAccountLockKey(userId)], async () => {
         const currentOrder = memoryDb.orders.get(orderId);
         if (!currentOrder) {
           return { success: false, statusCode: 404, message: '주문을 찾을 수 없습니다.' };
@@ -189,11 +190,22 @@ export class LocalMarketService {
         const prevStatus = currentOrder.status;
         return await runWithCommitGate(params.onPersist, async () => {
           currentOrder.status = 'cancelled';
+          const userProfile = memoryDb.resolveProfileByUserId(userId);
+          const prevCash = userProfile?.cash;
+          const prevDebt = userProfile?.margin_debt_krw;
+          if (userProfile) {
+            sweepUnencumberedCashToMarginDebt(memoryDb, userProfile);
+          }
 
           if (params.onPersist) {
             const saved = await params.onPersist();
             if (!saved) {
               currentOrder.status = prevStatus;
+              if (userProfile) {
+                if (prevCash !== undefined) userProfile.cash = prevCash;
+                if (prevDebt !== undefined) userProfile.margin_debt_krw = prevDebt;
+                else delete userProfile.margin_debt_krw;
+              }
               return {
                 success: false,
                 statusCode: 500,
@@ -243,7 +255,7 @@ export class LocalMarketService {
     }
 
     return await withAllStockLocks(Array.from(preliminaryStockIds), async () => {
-      return await withAccountLocks([userId], async () => {
+      return await withAccountLocks([memoryDb.resolveAccountLockKey(userId)], async () => {
         const targetOrders: OrderRecord[] = [];
         for (const id of uniqueIds) {
           const ord = memoryDb.orders.get(id);
@@ -270,12 +282,23 @@ export class LocalMarketService {
           for (const { ord } of snapshots) {
             ord.status = 'cancelled';
           }
+          const userProfile = memoryDb.resolveProfileByUserId(userId);
+          const prevCash = userProfile?.cash;
+          const prevDebt = userProfile?.margin_debt_krw;
+          if (userProfile) {
+            sweepUnencumberedCashToMarginDebt(memoryDb, userProfile);
+          }
 
           if (params.onPersist) {
             const saved = await params.onPersist();
             if (!saved) {
               for (const { ord, prevStatus } of snapshots) {
                 ord.status = prevStatus;
+              }
+              if (userProfile) {
+                if (prevCash !== undefined) userProfile.cash = prevCash;
+                if (prevDebt !== undefined) userProfile.margin_debt_krw = prevDebt;
+                else delete userProfile.margin_debt_krw;
               }
               return {
                 success: false,

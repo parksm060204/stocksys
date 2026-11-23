@@ -1,10 +1,11 @@
 import { BaseAgent } from "./BaseAgent";
+import type { SimulationContext } from "../../../lib/engine/simulation/runtime";
 
 export class WallBreakerAgent extends BaseAgent {
   private huntCooldowns: Record<string, number> = {};
 
-  constructor() {
-    super({ id: 'WALL_BREAKER', baseWeights: { stock: 0, bond: 0, commodity: 0, cash: 1 } } as any, 100000000000); // 1000억 실탄 대기
+  constructor(context?: SimulationContext) {
+    super({ id: 'WALL_BREAKER', baseWeights: { stock: 0, bond: 0, commodity: 0, cash: 1 } } as any, 100000000000, context); // 1000억 실탄 대기
   }
 
   // 이벤트 주도형 호출

@@ -439,11 +439,13 @@ export default function OptionsPanel({ stockId, ticker = "STOCK" }: OptionsPanel
                           </td>
 
                           <td className="py-3 px-4 border-none text-right font-black text-white tabular-nums">
-                            ₩{strike.toLocaleString()}
+                            {opt.asset_class === 'IDX' ? `${strike.toFixed(1)} pt` : `₩${strike.toLocaleString()}`}
                           </td>
 
                           <td className="py-3 px-4 border-none text-right font-black text-up tabular-nums">
-                            ₩{Number(opt.current_price || 1000).toLocaleString()}
+                            {opt.asset_class === 'IDX'
+                              ? `${Number(opt.current_price || 0).toFixed(2)} pt`
+                              : `₩${Number(opt.current_price || 1000).toLocaleString()}`}
                           </td>
 
                           <td className="py-3 px-4 border-none text-right text-white tabular-nums font-bold">

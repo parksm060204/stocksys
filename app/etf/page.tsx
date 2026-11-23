@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { createClient } from '@/lib/db/client';
 import { ETF_CATALOG, isUsdEtf } from '@/lib/engine/etfDefinitions';
@@ -15,20 +15,33 @@ import { ETFStructureCard } from '@/app/components/ETFStructureCard';
 import { ETFUserUnderlyingHoldings } from '@/app/components/ETFUserUnderlyingHoldings';
 import { useAuth } from '@/lib/auth/useAuth';
 
-const db = createClient();
+interface SyncedEtfState {
+  ticker: string;
+  stockId: string;
+  price: number;
+}
 
 export default function ETFPage() {
+  const db = createClient();
   const [selectedTicker, setSelectedTicker] = useState<string>('KODEX200');
   const [activeCategory, setActiveCategory] = useState<'ALL' | 'KOREA' | 'US' | 'GLOBAL' | 'LEVERAGE' | 'SECTOR'>('ALL');
   const [userBalance, setUserBalance] = useState<number | null>(null);
   const [userEtfShares, setUserEtfShares] = useState<number>(0);
-  const [serverStockId, setServerStockId] = useState<string | null>(null);
-  const [serverStockPrice, setServerStockPrice] = useState<number | null>(null);
+  const [syncedEtf, setSyncedEtf] = useState<SyncedEtfState | null>(null);
+  const [etfLoading, setEtfLoading] = useState<boolean>(true);
   const [usdToKrwRate, setUsdToKrwRate] = useState<number>(DEFAULT_USD_TO_KRW_RATE);
   const [tradeSubmitting, setTradeSubmitting] = useState<boolean>(false);
   const [tradeFeedback, setTradeFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
+  const { userId, isLoggedIn } = useAuth();
+  const activeAccountKey = isLoggedIn && userId ? userId : null;
+
   const selectedEtf = ETF_CATALOG.find(e => e.etfTicker === selectedTicker) || ETF_CATALOG[0];
+  const etfSyncSeqRef = useRef<number>(0);
+  const tradeContextSeqRef = useRef<number>(0);
+  const tradeAttemptSeqRef = useRef<number>(0);
+  const selectedTickerRef = useRef<string>(selectedEtf.etfTicker);
+  const activeAccountKeyRef = useRef<string | null>(activeAccountKey);
 
   // Market Prices State (Init with base prices)
   const [marketPrices, setMarketPrices] = useState<Map<string, number>>(() => {
@@ -87,8 +100,6 @@ export default function ETFPage() {
 
   const rebalanceResult = leverageEngine.calculateRebalanceOrders(portfolio, futuresPrice);
 
-  const { userId, isLoggedIn } = useAuth();
-
   const syncServerMarketData = useCallback(async () => {
     const [{ data: allStocks }, { data: fxRow }] = await Promise.all([
       db.from('stocks').select('id, ticker, current_price'),
@@ -130,57 +141,140 @@ export default function ETFPage() {
         return next;
       });
     }
-  }, []);
+  }, [db]);
 
   const targetEtfTicker = selectedEtf.etfTicker;
   const targetBasePrice = selectedEtf.basePrice;
 
   const fetchUserAndEtf = useCallback(async () => {
-    const { data: stockData } = await db
-      .from('stocks')
-      .select('id, current_price')
-      .eq('ticker', targetEtfTicker)
-      .maybeSingle();
+    const reqSeq = ++etfSyncSeqRef.current;
+    const reqTicker = targetEtfTicker;
+    const reqUserId = activeAccountKey;
+    setEtfLoading(true);
 
-    if (stockData) {
-      setServerStockId(stockData.id);
-      setServerStockPrice(Number(stockData.current_price ?? targetBasePrice));
-    } else {
-      setServerStockId(null);
-      setServerStockPrice(null);
+    try {
+      const { data: stockData, error: stockErr } = await db
+        .from('stocks')
+        .select('id, ticker, current_price')
+        .eq('ticker', reqTicker)
+        .maybeSingle();
+
+      if (
+        reqSeq !== etfSyncSeqRef.current ||
+        selectedTickerRef.current !== reqTicker ||
+        activeAccountKeyRef.current !== reqUserId
+      ) {
+        return;
+      }
+
+      const returnedTicker =
+        stockData && typeof stockData.ticker === 'string'
+          ? stockData.ticker.toUpperCase()
+          : reqTicker.toUpperCase();
+      const resolvedPrice = stockData ? Number(stockData.current_price ?? targetBasePrice) : NaN;
+      const isValidStock =
+        !stockErr &&
+        stockData &&
+        typeof stockData.id === 'string' &&
+        stockData.id.length > 0 &&
+        returnedTicker === reqTicker.toUpperCase() &&
+        Number.isFinite(resolvedPrice) &&
+        resolvedPrice > 0;
+
+      if (isValidStock) {
+        setSyncedEtf({
+          ticker: reqTicker,
+          stockId: stockData.id,
+          price: resolvedPrice,
+        });
+      } else {
+        setSyncedEtf(null);
+      }
+
+      if (reqUserId) {
+        const [{ data: profileData }, holdingRes] = await Promise.all([
+          db.from('profiles').select('cash').eq('id', reqUserId).maybeSingle(),
+          isValidStock
+            ? db
+                .from('holdings')
+                .select('quantity')
+                .eq('user_id', reqUserId)
+                .eq('stock_id', stockData.id)
+                .maybeSingle()
+            : Promise.resolve({ data: null }),
+        ]);
+
+        if (
+          reqSeq !== etfSyncSeqRef.current ||
+          selectedTickerRef.current !== reqTicker ||
+          activeAccountKeyRef.current !== reqUserId
+        ) {
+          return;
+        }
+
+        const parsedCash = profileData ? Number(profileData.cash) : NaN;
+        setUserBalance(Number.isFinite(parsedCash) ? parsedCash : null);
+        setUserEtfShares(Number(holdingRes?.data?.quantity ?? 0));
+      } else {
+        setUserBalance(null);
+        setUserEtfShares(0);
+      }
+    } catch {
+      if (
+        reqSeq === etfSyncSeqRef.current &&
+        selectedTickerRef.current === reqTicker &&
+        activeAccountKeyRef.current === reqUserId
+      ) {
+        setSyncedEtf(null);
+      }
+    } finally {
+      if (
+        reqSeq === etfSyncSeqRef.current &&
+        selectedTickerRef.current === reqTicker &&
+        activeAccountKeyRef.current === reqUserId
+      ) {
+        setEtfLoading(false);
+      }
     }
-
-    if (isLoggedIn && userId) {
-      const [{ data: profileData }, holdingRes] = await Promise.all([
-        db.from('profiles').select('cash').eq('id', userId).maybeSingle(),
-        stockData
-          ? db
-              .from('holdings')
-              .select('quantity')
-              .eq('user_id', userId)
-              .eq('stock_id', stockData.id)
-              .maybeSingle()
-          : Promise.resolve({ data: null }),
-      ]);
-
-      setUserBalance(profileData ? Number(profileData.cash ?? 0) : null);
-      setUserEtfShares(Number(holdingRes?.data?.quantity ?? 0));
-    } else {
-      setUserBalance(null);
-      setUserEtfShares(0);
-    }
-  }, [isLoggedIn, userId, targetEtfTicker, targetBasePrice]);
+  }, [db, activeAccountKey, targetEtfTicker, targetBasePrice]);
 
   // Fetch logged-in user portfolio balance and ETF holdings
   useEffect(() => {
+    const tickerChanged = selectedTickerRef.current !== targetEtfTicker;
+    const accountChanged = activeAccountKeyRef.current !== activeAccountKey;
+    if (tickerChanged || accountChanged) {
+      selectedTickerRef.current = targetEtfTicker;
+      activeAccountKeyRef.current = activeAccountKey;
+      tradeContextSeqRef.current += 1;
+      tradeAttemptSeqRef.current += 1;
+      etfSyncSeqRef.current += 1;
+      setTradeSubmitting(false);
+      if (accountChanged) {
+        setUserBalance(null);
+        setUserEtfShares(0);
+        setTradeFeedback(null);
+      }
+    }
     void fetchUserAndEtf();
-  }, [fetchUserAndEtf]);
+    return () => {
+      etfSyncSeqRef.current += 1;
+    };
+  }, [fetchUserAndEtf, targetEtfTicker, activeAccountKey]);
 
   // Switch ETF definition
   const handleSelectETF = (ticker: string) => {
-    setSelectedTicker(ticker);
-    setTradeFeedback(null);
     const target = ETF_CATALOG.find(e => e.etfTicker === ticker) || ETF_CATALOG[0];
+    if (target.etfTicker === selectedTickerRef.current) return;
+    selectedTickerRef.current = target.etfTicker;
+    tradeContextSeqRef.current += 1;
+    tradeAttemptSeqRef.current += 1;
+    etfSyncSeqRef.current += 1;
+    setTradeSubmitting(false);
+    setSelectedTicker(target.etfTicker);
+    setSyncedEtf(null);
+    setEtfLoading(true);
+    setUserEtfShares(0);
+    setTradeFeedback(null);
     setPortfolio({
       etfTicker: target.etfTicker,
       leverageFactor: target.leverageFactor,
@@ -189,6 +283,14 @@ export default function ETFPage() {
       totalUnits: 1_000_000
     });
   };
+
+  const isSelectedEtfReady = Boolean(
+    syncedEtf &&
+      syncedEtf.ticker === selectedEtf.etfTicker &&
+      syncedEtf.stockId &&
+      Number.isFinite(syncedEtf.price) &&
+      syncedEtf.price > 0
+  );
 
   // Authoritative Server Order Execution Handler
   const handleUserTrade = async (side: 'BUY' | 'SELL') => {
@@ -201,26 +303,30 @@ export default function ETFPage() {
       setTradeFeedback({ type: 'error', message: '주문 수량은 1주 이상의 정수여야 합니다.' });
       return;
     }
+    if (!isSelectedEtfReady || !syncedEtf || syncedEtf.ticker !== selectedEtf.etfTicker) {
+      setTradeFeedback({
+        type: 'error',
+        message: '선택한 ETF 종목의 서버 정보를 불러오는 중입니다. 잠시 후 다시 시도해 주세요.',
+      });
+      return;
+    }
+
+    const expectedTicker = syncedEtf.ticker;
+    const expectedEtfName = selectedEtf.name;
+    const expectedAccountKey = activeAccountKey;
+    const stockId = syncedEtf.stockId;
+    const fallbackPrice = syncedEtf.price;
+    const qty = orderQty;
+    const contextSeqAtOrderStart = tradeContextSeqRef.current;
+    const tradeAttemptSeq = ++tradeAttemptSeqRef.current;
+    const isStaleTradeContext = () =>
+      contextSeqAtOrderStart !== tradeContextSeqRef.current ||
+      selectedTickerRef.current !== expectedTicker ||
+      activeAccountKeyRef.current !== expectedAccountKey;
 
     setTradeSubmitting(true);
     setTradeFeedback(null);
     try {
-      let stockId = serverStockId;
-      let fallbackPrice = serverStockPrice ?? currentMarketPrice;
-      if (!stockId) {
-        const { data: stockData } = await db
-          .from('stocks')
-          .select('id, current_price')
-          .eq('ticker', selectedEtf.etfTicker)
-          .maybeSingle();
-        if (!stockData) {
-          setTradeFeedback({ type: 'error', message: `서버에 등록된 ETF 종목(${selectedEtf.etfTicker})을 찾을 수 없습니다.` });
-          return;
-        }
-        stockId = stockData.id;
-        fallbackPrice = Number(stockData.current_price ?? currentMarketPrice);
-      }
-
       // 권위 오더북 최우선 호가 조회 (즉시 체결 가능한 지정가 산정)
       let execPrice = fallbackPrice;
       try {
@@ -229,12 +335,18 @@ export default function ETFPage() {
           p_depth: 5,
         });
         if (side === 'BUY' && Array.isArray(ob?.asks) && ob.asks.length > 0) {
-          execPrice = Number(ob.asks[0].price);
+          const askPx = Number(ob.asks[0].price);
+          if (Number.isFinite(askPx) && askPx > 0) execPrice = askPx;
         } else if (side === 'SELL' && Array.isArray(ob?.bids) && ob.bids.length > 0) {
-          execPrice = Number(ob.bids[0].price);
+          const bidPx = Number(ob.bids[0].price);
+          if (Number.isFinite(bidPx) && bidPx > 0) execPrice = bidPx;
         }
       } catch {
         // fallback to server stock current_price
+      }
+
+      if (isStaleTradeContext()) {
+        return;
       }
 
       const apiRes = await fetch('/api/orders', {
@@ -244,10 +356,14 @@ export default function ETFPage() {
           stock_id: stockId,
           side: side === 'BUY' ? 'buy' : 'sell',
           price: execPrice,
-          size: orderQty,
+          size: qty,
         }),
       });
       const res = await apiRes.json();
+
+      if (isStaleTradeContext()) {
+        return;
+      }
 
       if (!apiRes.ok || !res.success) {
         setTradeFeedback({
@@ -258,17 +374,24 @@ export default function ETFPage() {
       }
 
       await fetchUserAndEtf();
+      if (isStaleTradeContext()) {
+        return;
+      }
       setTradeFeedback({
         type: 'success',
-        message: res.message || `${selectedEtf.name} ${orderQty}주 주문 처리 완료`,
+        message: res.message || `${expectedEtfName} ${qty}주 주문 처리 완료`,
       });
     } catch (err: any) {
-      setTradeFeedback({
-        type: 'error',
-        message: err?.message || 'ETF 주문 통신 중 오류가 발생했습니다.',
-      });
+      if (!isStaleTradeContext()) {
+        setTradeFeedback({
+          type: 'error',
+          message: err?.message || 'ETF 주문 통신 중 오류가 발생했습니다.',
+        });
+      }
     } finally {
-      setTradeSubmitting(false);
+      if (tradeAttemptSeqRef.current === tradeAttemptSeq) {
+        setTradeSubmitting(false);
+      }
     }
   };
 
@@ -283,7 +406,7 @@ export default function ETFPage() {
     return () => clearInterval(interval);
   }, [syncServerMarketData, fetchUserAndEtf]);
 
-  const activeServerPrice = serverStockPrice ?? currentMarketPrice;
+  const activeServerPrice = isSelectedEtfReady && syncedEtf ? syncedEtf.price : currentMarketPrice;
   const orderNotionalQuote = activeServerPrice * orderQty;
   const orderNotionalKrw = isUsOrGlobal
     ? Math.round(orderNotionalQuote * usdToKrwRate)
@@ -515,20 +638,25 @@ export default function ETFPage() {
 
             <div className="grid grid-cols-2 gap-2.5 pt-1">
               <button
-                disabled={tradeSubmitting}
+                disabled={tradeSubmitting || !isSelectedEtfReady}
                 onClick={() => handleUserTrade('BUY')}
                 className="py-3 bg-up hover:bg-[#ff5252] disabled:opacity-50 text-white font-black rounded-full text-xs transition-all shadow-[0_0_15px_rgba(240,68,82,0.35)] cursor-pointer active:scale-[0.98]"
               >
                 {tradeSubmitting ? '처리 중...' : '매수 제출 (BUY)'}
               </button>
               <button
-                disabled={tradeSubmitting}
+                disabled={tradeSubmitting || !isSelectedEtfReady}
                 onClick={() => handleUserTrade('SELL')}
                 className="py-3 bg-down hover:bg-[#4092ff] disabled:opacity-50 text-white font-black rounded-full text-xs transition-all shadow-[0_0_15px_rgba(49,130,246,0.35)] cursor-pointer active:scale-[0.98]"
               >
                 {tradeSubmitting ? '처리 중...' : '매도 제출 (SELL)'}
               </button>
             </div>
+            {etfLoading && !isSelectedEtfReady && (
+              <p className="text-[11px] text-[#8E939D] font-sans" role="status">
+                {selectedEtf.etfTicker} 서버 시세 및 계좌 정보를 동기화하는 중입니다...
+              </p>
+            )}
           </div>
         </div>
       </div>

@@ -48,7 +48,7 @@ export default function AdminPage() {
       const { data: profile } = await db
         .from("profiles")
         .select("is_admin, unlocked_features")
-        .eq("id", userId)
+        .eq("user_id", userId)
         .maybeSingle();
 
       if (reqSeq !== authReqSeqRef.current) return;
@@ -290,6 +290,8 @@ export default function AdminPage() {
                 >
                   <option value="domestic">국내 코스피/코스닥</option>
                   <option value="overseas">미국 나스닥/NYSE</option>
+                  <option value="europe">유럽 유로스톡스</option>
+                  <option value="etf">지수/ETF</option>
                 </select>
               </div>
               <div>

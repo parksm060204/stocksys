@@ -5,6 +5,7 @@ import { resolveAuthenticatedUserId } from "@/lib/auth/sessionAuth";
 import { authorizeNewsRecord, canReadRumor } from "@/lib/news/accessPolicy";
 import { isUsdQuotedAsset } from "@/lib/engine/currency";
 import type { Stock } from "@/lib/types";
+import { PUBLIC_STOCK_SELECT_COLUMNS, toPublicStockDto } from "@/lib/stocks/publicStockDto";
 import StockDetailV2Client from "./StockDetailV2Client";
 
 export const revalidate = 0;
@@ -59,11 +60,11 @@ export default async function StockDetailV2Page({
 
   let { data: row } = await db
     .from("stocks")
-    .select("*")
+    .select(PUBLIC_STOCK_SELECT_COLUMNS)
     .eq("id", id)
     .maybeSingle();
   if (!row) {
-    const { data: rowByTicker } = await db.from("stocks").select("*").eq("ticker", id).maybeSingle();
+    const { data: rowByTicker } = await db.from("stocks").select(PUBLIC_STOCK_SELECT_COLUMNS).eq("ticker", id).maybeSingle();
     row = rowByTicker;
   }
 
@@ -85,20 +86,19 @@ export default async function StockDetailV2Page({
         sector: bondRow.bond_type === "govt" ? "국채" : bondRow.bond_type === "corp_ig" ? "우량회사채" : "투기회사채",
         current_price: curPrice,
         previous_close: prevClose,
-        description: `${bondRow.name} (${bondRow.ticker}) - 잔존만기 ${bondRow.maturity || "2Y"}, 표면금리 ${bondRow.coupon_rate || 3.25}%, 액면가 ${bondRow.face_value || 10000}원 채권 자산입니다.`,
+        description: `${bondRow.name} (${bondRow.ticker}) - 잔존만기 ${bondRow.maturity || "2Y"}, 표면금리 ${bondRow.coupon_rate ?? 3.25}%, 액면가 ${bondRow.face_value || 10000}원 채권 자산입니다.`,
         market_cap: (bondRow.face_value || 10000) * (bondRow.volume || 10000),
         open_price: prevClose,
         high: Math.max(curPrice, prevClose),
         low: Math.min(curPrice, prevClose),
         volume: Number(bondRow.volume) || 15000,
         relevance_weight: 1,
-        target_price: curPrice,
         is_core: true,
         listed_at: "2020-01-01",
       };
       bondMeta = {
         faceValue: 100,
-        couponRate: bondRow.coupon_rate || 3.25,
+        couponRate: bondRow.coupon_rate ?? 3.25,
         maturityYears: bondRow.maturity ? parseInt(bondRow.maturity, 10) || 2 : 2,
         currentYtm: bondRow.ytm || 3.35,
         riskCategory: bondRow.bond_type === "govt" ? "sovereign" : bondRow.bond_type === "corp_ig" ? "corporate_ig" : "high_yield",
@@ -109,31 +109,10 @@ export default async function StockDetailV2Page({
   }
   if (!row) notFound();
 
-  const stock: Stock = {
-    id: row.id,
-    name: row.name,
-    ticker: row.ticker,
-    market: row.market,
-    sector: row.sector,
-    currentPrice: row.current_price,
-    previousClose: row.previous_close,
-    description: row.description || "",
-    marketCap: row.market_cap
-      ? Number(row.market_cap)
-      : row.current_price * 1_000_000,
-    openPrice: row.open_price ? Number(row.open_price) : row.previous_close,
-    high: row.high ? Number(row.high) : row.current_price,
-    low: row.low ? Number(row.low) : row.current_price,
-    volume: row.volume ? Number(row.volume) : 0,
-    relevanceWeight: row.relevance_weight ? Number(row.relevance_weight) : 1,
-    targetPrice: row.target_price
-      ? Number(row.target_price)
-      : row.current_price,
-    isCore: row.is_core || false,
+  const stock: Stock = toPublicStockDto(row, {
     listedAt: formatListedAt(row.ticker, row.listed_at),
-    financials: row.financials || null,
-    bondMeta: bondMeta || (row as any).bondMeta,
-  };
+    bondMeta,
+  });
 
   const isUSD = isUsdQuotedAsset({ market: stock.market, ticker: stock.ticker });
   const tradingValueStr = isUSD
@@ -147,7 +126,7 @@ export default async function StockDetailV2Page({
       const { data: viewerProfile } = await db
         .from("profiles")
         .select("is_admin, news_subscriptions")
-        .eq("id", viewerId)
+        .eq("user_id", viewerId)
         .maybeSingle();
       hasRumorAccess = canReadRumor(viewerProfile);
     }

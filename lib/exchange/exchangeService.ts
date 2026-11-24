@@ -1,6 +1,6 @@
 import type { MemoryDatabase, ProfileRecord } from '@/lib/memoryDb/memoryStore';
 import type { ExchangeRateRecord } from '@/lib/repositories/types';
-import { withAccountLocks } from '@/lib/memoryDb/accountLocks';
+import { withResolvedAccountLocks } from '@/lib/memoryDb/accountLocks';
 import { runWithCommitGate } from '@/lib/memoryDb/PersistenceManager';
 import { getAvailableCashKrw, applyCashCreditWithMarginDebt } from '@/lib/engine/orderRisk';
 
@@ -136,7 +136,7 @@ export async function executeCurrencyExchange(params: {
     };
   }
 
-  return withAccountLocks([db.resolveAccountLockKey(userId)], async () => {
+  return withResolvedAccountLocks(() => [db.resolveAccountLockKey(userId)], async () => {
     return runWithCommitGate(onPersist, async () => {
       const profile = db.resolveProfileByUserId(userId);
       if (!profile) {

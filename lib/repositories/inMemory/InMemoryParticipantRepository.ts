@@ -43,37 +43,59 @@ export class InMemoryParticipantRepository implements ParticipantRepository {
   }
 
   public async getProfile(userId: string): Promise<ProfileRecord | null> {
-    const profileId = this.db.profileUserIdIndex.get(userId) || userId;
-    const profile = this.db.profiles.get(profileId);
+    const profile = this.db.resolveProfileByUserId(userId);
     return profile ? { ...profile } : null;
   }
 
   public async updateProfile(userId: string, updates: Partial<ProfileRecord>): Promise<void> {
-    const profileId = this.db.profileUserIdIndex.get(userId) || userId;
-    let profile = this.db.profiles.get(profileId);
+    if (!userId || typeof userId !== 'string' || !userId.trim()) {
+      throw new Error('updateProfile requires a non-empty userId');
+    }
+    let profile = this.db.resolveProfileByUserId(userId);
     if (profile) {
-      Object.assign(profile, updates);
+      if (updates.id !== undefined && updates.id !== profile.id) {
+        throw new Error(`Profile primary key conflict: cannot reassign PK ${profile.id} to ${updates.id}`);
+      }
+      const existingOwner = profile.user_id || profile.id;
+      if (updates.user_id !== undefined && updates.user_id !== existingOwner) {
+        throw new Error(`Profile ownership conflict: row ${profile.id} belongs to ${existingOwner}`);
+      }
+      Object.assign(profile, updates, { id: profile.id, user_id: profile.user_id ?? (updates.user_id === userId ? userId : undefined) });
+      this.db.addProfileToIndex(profile);
     } else {
+      if (updates.user_id !== undefined && updates.user_id !== userId) {
+        throw new Error(`Profile ownership conflict: updates.user_id (${updates.user_id}) does not match ${userId}`);
+      }
+      const requestedId = typeof updates.id === 'string' && updates.id.trim() ? updates.id : undefined;
+      let pk =
+        requestedId &&
+        !this.db.profiles.has(requestedId) &&
+        (requestedId === userId || !this.db.resolveProfileByUserId(requestedId))
+          ? requestedId
+          : !this.db.profiles.has(userId)
+            ? userId
+            : this.db.generateId('prof');
+      while (this.db.profiles.has(pk) || (pk !== userId && this.db.resolveProfileByUserId(pk))) {
+        pk = this.db.generateId('prof');
+      }
       profile = {
-        id: userId,
+        ...updates,
+        id: pk,
         user_id: userId,
         username: updates.username ?? userId,
         nickname: updates.nickname ?? userId,
         rank_tier: updates.rank_tier ?? 'RETAIL',
-        cash: 0,
-        net_worth: 0,
-        created_at: this.db.getIsoTimestamp(),
-        ...updates,
+        cash: updates.cash ?? 0,
+        net_worth: updates.net_worth ?? 0,
+        created_at: updates.created_at ?? this.db.getIsoTimestamp(),
       };
-      this.db.profiles.set(userId, profile);
-      this.db.profileUserIdIndex.set(userId, userId);
+      this.db.profiles.set(pk, profile);
       this.db.addProfileToIndex(profile);
     }
   }
 
   public async incrementCash(userId: string, delta: number): Promise<number> {
-    const profileId = this.db.profileUserIdIndex.get(userId) || userId;
-    const profile = this.db.profiles.get(profileId);
+    const profile = this.db.resolveProfileByUserId(userId);
     if (!profile) {
       throw new Error(`Profile not found for user: ${userId}`);
     }

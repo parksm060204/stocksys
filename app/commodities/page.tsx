@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { COMMODITY_DEFINITIONS } from "@/lib/commodities/definitions";
 import CommoditiesClientList from "./CommoditiesClientList";
-import { commodityEngineInstance } from "@/app/api/commodities/route";
+import { commodityEngineInstance } from "@/lib/commodities/commodityEngineInstance";
 
 export const revalidate = 0;
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createClient } from "@/lib/db/client";
 import Link from "next/link";
 import { fmtVolume } from "@/lib/format";
@@ -16,7 +16,7 @@ interface OptionsPanelProps {
 }
 
 export default function OptionsPanel({ stockId, ticker = "STOCK" }: OptionsPanelProps) {
-  const [hasLicense, setHasLicense] = useState(false);
+  const [licenseState, setLicenseState] = useState<{ userId: string; hasLicense: boolean } | null>(null);
   const [options, setOptions] = useState<any[]>([]);
   const [spotPrice, setSpotPrice] = useState<number>(50000);
   const [filterClass, setFilterClass] = useState<"ALL" | "IDX" | "STK" | "FUT">("ALL");
@@ -30,26 +30,86 @@ export default function OptionsPanel({ stockId, ticker = "STOCK" }: OptionsPanel
 
   const db = createClient();
   const { userId, isLoggedIn } = useAuth();
+  const activeAccountKey = isLoggedIn && userId ? userId : null;
+  const activeAccountRef = useRef<string | null>(activeAccountKey);
+  const licenseReqSeqRef = useRef<number>(0);
+
+  const hasLicense = Boolean(
+    activeAccountKey &&
+      licenseState &&
+      licenseState.userId === activeAccountKey &&
+      licenseState.hasLicense
+  );
 
   useEffect(() => {
-    async function fetchData() {
-      if (isLoggedIn && userId) {
-        const { data: profile } = await db
+    let cancelled = false;
+    const reqAccountKey = isLoggedIn && userId ? userId : null;
+    activeAccountRef.current = reqAccountKey;
+    const reqSeq = ++licenseReqSeqRef.current;
+
+    // 로그아웃 및 계정 전환 시 이전 계정의 파생 라이선스 상태를 즉시 초기화
+    setLicenseState(null);
+
+    if (!reqAccountKey) {
+      return () => {
+        cancelled = true;
+        licenseReqSeqRef.current += 1;
+      };
+    }
+
+    (async () => {
+      try {
+        const { data: profile, error } = await db
           .from('profiles')
           .select('is_admin, has_options_license')
-          .eq('id', userId)
-          .single();
-        if (profile) {
-          setHasLicense(profile.is_admin || profile.has_options_license || false);
+          .eq('user_id', reqAccountKey)
+          .maybeSingle();
+
+        if (
+          cancelled ||
+          reqSeq !== licenseReqSeqRef.current ||
+          activeAccountRef.current !== reqAccountKey
+        ) {
+          return;
+        }
+
+        if (error || !profile) {
+          setLicenseState(null);
+          return;
+        }
+
+        setLicenseState({
+          userId: reqAccountKey,
+          hasLicense: Boolean(profile.is_admin || profile.has_options_license),
+        });
+      } catch {
+        if (
+          !cancelled &&
+          reqSeq === licenseReqSeqRef.current &&
+          activeAccountRef.current === reqAccountKey
+        ) {
+          setLicenseState(null);
         }
       }
+    })();
 
+    return () => {
+      cancelled = true;
+      licenseReqSeqRef.current += 1;
+    };
+  }, [db, isLoggedIn, userId]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function fetchData() {
       // Fetch stock spot price
       const { data: stockData } = await db
         .from('stocks')
         .select('current_price, ticker, name')
         .eq('id', stockId)
         .single();
+      if (cancelled) return;
 
       const currentSpot = Number(stockData?.current_price || 50000);
       setSpotPrice(currentSpot);
@@ -57,6 +117,7 @@ export default function OptionsPanel({ stockId, ticker = "STOCK" }: OptionsPanel
 
       // Run 50 Institution Bots Options Trading Simulation
       const result = await runOptionBotTradingEngine(stockId, symbol, currentSpot);
+      if (cancelled) return;
       if (result.gammaSqueezeTriggered) {
         setGammaSqueezeNotice(true);
       }
@@ -73,12 +134,13 @@ export default function OptionsPanel({ stockId, ticker = "STOCK" }: OptionsPanel
         .select('*')
         .eq('underlying_stock_id', stockId)
         .order('strike_price', { ascending: true });
+      if (cancelled) return;
 
       setOptions(optionsData || []);
       setLoading(false);
     }
 
-    fetchData();
+    void fetchData();
 
     // Timer Interval for Expiration Countdown
     const timer = setInterval(() => {
@@ -89,11 +151,14 @@ export default function OptionsPanel({ stockId, ticker = "STOCK" }: OptionsPanel
       setCountdownStr(`${Math.max(0, parseInt(h))}:${m}:${s}`);
     }, 1000);
 
-    return () => clearInterval(timer);
-  }, [stockId, ticker, db, isLoggedIn, userId]);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [stockId, ticker, db]);
 
   const handleTradeOption = async (option: any) => {
-    if (!userId || !hasLicense) {
+    if (!isLoggedIn || !userId || !hasLicense) {
       alert("파생상품 옵션 거래 자격증이 필요합니다. 상점에서 해금해 주세요.");
       return;
     }
@@ -146,7 +211,7 @@ export default function OptionsPanel({ stockId, ticker = "STOCK" }: OptionsPanel
   };
 
   const handleExecuteUserRollover = async () => {
-    if (!userId || !hasLicense || options.length < 2) return;
+    if (!isLoggedIn || !userId || !hasLicense || options.length < 2) return;
     const nowMs = Date.now();
     const sorted = [...options]
       .filter((o) => {

@@ -143,7 +143,7 @@ export default function Sidebar() {
       const { data } = await db
         .from('profiles')
         .select('is_admin, unlocked_features')
-        .eq('id', userId)
+        .eq('user_id', userId)
         .maybeSingle();
       if (reqSeq !== fetchSeqRef.current) return;
       if (data) {

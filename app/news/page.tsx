@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createClient } from "@/lib/db/client";
 import Link from "next/link";
 
@@ -27,75 +27,116 @@ export default function NewsPage() {
 
   const db = createClient();
   const { userId, isLoggedIn } = useAuth();
+  const fetchSeqRef = useRef<number>(0);
+  const activeAccountRef = useRef<string | null>(isLoggedIn && userId ? userId : null);
+  const mountedRef = useRef<boolean>(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      fetchSeqRef.current += 1;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
+    const nextAccountKey = isLoggedIn && userId ? userId : null;
+    activeAccountRef.current = nextAccountKey;
+    const reqSeq = ++fetchSeqRef.current;
+
+    // 계정 전환·로그아웃 즉시 이전 계정의 열람 권한/해금 뉴스 상태 초기화
+    setIsAdmin(false);
+    setHasActiveSub(false);
+    setNewsList([]);
 
     const fetchData = async () => {
-      if (isLoggedIn && userId) {
-        const { data: profile } = await db
-          .from('profiles')
-          .select('is_admin, news_subscriptions')
-          .eq('id', userId)
-          .single();
+      const cycleSeq = ++fetchSeqRef.current;
+      const reqAccountKey = nextAccountKey;
+      const isStale = () =>
+        cancelled ||
+        !mountedRef.current ||
+        cycleSeq !== fetchSeqRef.current ||
+        activeAccountRef.current !== reqAccountKey;
 
-        if (!cancelled && profile) {
-          setIsAdmin(Boolean(profile.is_admin));
-          const subs = profile.news_subscriptions && typeof profile.news_subscriptions === 'object'
-            ? Object.values(profile.news_subscriptions as Record<string, string>)
-            : [];
-          const nowMs = Date.now();
-          setHasActiveSub(subs.some((exp) => {
-            const expMs = Date.parse(String(exp || ''));
-            return Number.isFinite(expMs) && expMs > nowMs;
-          }));
+      try {
+        if (reqAccountKey) {
+          const { data: profile } = await db
+            .from('profiles')
+            .select('is_admin, news_subscriptions')
+            .eq('user_id', reqAccountKey)
+            .maybeSingle();
+
+          if (isStale()) return;
+
+          if (profile) {
+            setIsAdmin(Boolean(profile.is_admin));
+            const subs = profile.news_subscriptions && typeof profile.news_subscriptions === 'object'
+              ? Object.values(profile.news_subscriptions as Record<string, string>)
+              : [];
+            const nowMs = Date.now();
+            setHasActiveSub(subs.some((exp) => {
+              const expMs = Date.parse(String(exp || ''));
+              return Number.isFinite(expMs) && expMs > nowMs;
+            }));
+          } else {
+            setIsAdmin(false);
+            setHasActiveSub(false);
+          }
+        } else if (!isStale()) {
+          setIsAdmin(false);
+          setHasActiveSub(false);
         }
-      } else if (!cancelled) {
-        setIsAdmin(false);
-        setHasActiveSub(false);
-      }
 
-      const { data: mNews } = await db
-        .from('market_news')
-        .select('*')
-        .order('created_at', { ascending: false })
-        .limit(50);
+        const { data: mNews } = await db
+          .from('market_news')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .limit(50);
 
-      if (cancelled) return;
+        if (isStale()) return;
 
-      const combined: CombinedNews[] = [];
+        const combined: CombinedNews[] = [];
 
-      if (mNews) {
-        mNews.forEach((row: any) => {
-          combined.push({
-            id: row.id,
-            created_at: row.created_at,
-            type: 'MARKET',
-            category: row.category || row.news_type || (row.sentiment === 'positive' ? 'OFFICIAL' : row.sentiment === 'negative' ? 'RUMOR' : 'CORRECTION'),
-            publisher: row.publisher || 'AI 터미널',
-            title: row.title || row.headline,
-            content: row.content || row.summary || row.title || row.headline,
-            target_sector: row.target_sector || row.related_sector,
-            target_ticker: row.target_ticker || row.related_ticker,
-            impact_score: row.impact_score || 5,
-            locked: Boolean(row.locked),
+        if (mNews) {
+          mNews.forEach((row: any) => {
+            combined.push({
+              id: row.id,
+              created_at: row.created_at,
+              type: 'MARKET',
+              category: row.category || row.news_type || (row.sentiment === 'positive' ? 'OFFICIAL' : row.sentiment === 'negative' ? 'RUMOR' : 'CORRECTION'),
+              publisher: row.publisher || 'AI 터미널',
+              title: row.title || row.headline,
+              content: row.content || row.summary || row.title || row.headline,
+              target_sector: row.target_sector || row.related_sector,
+              target_ticker: row.target_ticker || row.related_ticker,
+              impact_score: row.impact_score || 5,
+              locked: Boolean(row.locked),
+            });
           });
-        });
-      }
+        }
 
-      combined.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-      if (!cancelled) {
-        setNewsList(combined.slice(0, 50));
+        combined.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+        if (!isStale()) {
+          setNewsList(combined.slice(0, 50));
+        }
+      } catch {
+        if (!isStale() && !reqAccountKey) {
+          setIsAdmin(false);
+          setHasActiveSub(false);
+        }
       }
     };
 
-    fetchData();
+    void reqSeq;
+    void fetchData();
 
     // 15초 주기 폴링으로 최신 뉴스 갱신
     const interval = setInterval(fetchData, 15000);
 
     return () => {
       cancelled = true;
+      fetchSeqRef.current += 1;
       clearInterval(interval);
     };
   }, [db, isLoggedIn, userId]);

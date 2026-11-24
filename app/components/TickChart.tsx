@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { createClient } from '@/lib/db/client';
+import { createClient, getTradeDedupKey, subscribeStockTradesWithInitialLoad } from '@/lib/db/client';
 import {
   createChart,
   ColorType,
@@ -48,14 +48,17 @@ function groupToCandles(
 ): CandleData[] {
   const map = new Map<number, CandleData>();
   for (const t of trades) {
-    const ts = floorToInterval(new Date(t.created_at).getTime(), intervalMs) / 1000;
+    const rawMs = Date.parse(t.created_at);
+    const price = Number(t.price);
+    if (!Number.isFinite(rawMs) || !Number.isFinite(price) || price <= 0) continue;
+    const ts = floorToInterval(rawMs, intervalMs) / 1000;
     const c = map.get(ts);
     if (!c) {
-      map.set(ts, { time: ts, open: t.price, high: t.price, low: t.price, close: t.price });
+      map.set(ts, { time: ts, open: price, high: price, low: price, close: price });
     } else {
-      c.close = t.price;
-      if (t.price > c.high) c.high = t.price;
-      if (t.price < c.low) c.low = t.price;
+      c.close = price;
+      if (price > c.high) c.high = price;
+      if (price < c.low) c.low = price;
     }
   }
   return Array.from(map.values()).sort((a, b) => a.time - b.time);
@@ -121,6 +124,13 @@ export default function TickChart({
   const rsiSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
 
   const candleMapRef = useRef<Map<number, CandleData>>(new Map());
+  const seenTradeIdsRef = useRef<Set<string>>(new Set());
+  const hasLoadedInitialTradesRef = useRef(false);
+  const hasPlaceholderCandleRef = useRef(false);
+  const tickerRef = useRef(ticker);
+  useEffect(() => {
+    tickerRef.current = ticker;
+  }, [ticker]);
   const isDisposedRef = useRef(false);
   const [stockId, setStockId] = useState<string | null>(null);
   const [assetMeta, setAssetMeta] = useState<{ market?: string; currency?: string; theme_ids?: string[] }>({
@@ -195,6 +205,24 @@ export default function TickChart({
 
   // 3. 종목 ID 및 통화/시장 메타데이터 조회
   useEffect(() => {
+    let cancelled = false;
+    setStockId(null);
+    hasLoadedInitialTradesRef.current = false;
+    hasPlaceholderCandleRef.current = false;
+    candleMapRef.current.clear();
+    seenTradeIdsRef.current.clear();
+    setOhlcInfo(null);
+    try {
+      candleSeriesRef.current?.setData([]);
+      ma5SeriesRef.current?.setData([]);
+      ma20SeriesRef.current?.setData([]);
+      ma60SeriesRef.current?.setData([]);
+      ma120SeriesRef.current?.setData([]);
+      bbUpperSeriesRef.current?.setData([]);
+      bbMiddleSeriesRef.current?.setData([]);
+      bbLowerSeriesRef.current?.setData([]);
+      rsiSeriesRef.current?.setData([]);
+    } catch {}
     const initialMeta = { market, currency };
     assetMetaRef.current = initialMeta;
     setAssetMeta(initialMeta);
@@ -205,7 +233,8 @@ export default function TickChart({
       .eq('ticker', ticker)
       .maybeSingle()
       .then(({ data }: { data: { id: string; market?: string; currency?: string; theme_ids?: string[] } | null }) => {
-        if (data && !isDisposedRef.current) {
+        if (cancelled || isDisposedRef.current) return;
+        if (data) {
           if (data.id) setStockId(data.id);
           const resolvedMeta = {
             market: data.market ?? market,
@@ -216,6 +245,10 @@ export default function TickChart({
           setAssetMeta(resolvedMeta);
         }
       });
+
+    return () => {
+      cancelled = true;
+    };
   }, [ticker, market, currency]);
 
   // 4. 메인 차트 및 보조지표 라인 시리즈 초기화
@@ -512,30 +545,36 @@ export default function TickChart({
   useEffect(() => {
     if (!stockId || !candleSeriesRef.current || isDisposedRef.current) return;
 
+    let cancelled = false;
+    hasLoadedInitialTradesRef.current = false;
+    hasPlaceholderCandleRef.current = false;
     const series = candleSeriesRef.current;
     const map = candleMapRef.current;
+    const seenIds = seenTradeIdsRef.current;
+    map.clear();
+    seenIds.clear();
     const currentIntervalMs = INTERVAL_MS[timeUnit];
+    const activeTicker = tickerRef.current;
 
-    const lookbackMs: Record<TimeUnit, number> = {
-      '10m': 12 * 60 * 60 * 1000,
-      '1h':  7 * 24 * 60 * 60 * 1000,
-      '1d':  365 * 24 * 60 * 60 * 1000,
-      '1M':  3 * 365 * 24 * 60 * 60 * 1000,
-    };
-    const since = new Date(Date.now() - lookbackMs[timeUnit]).toISOString();
-
-    db
-      .from('trades')
-      .select('price, created_at')
-      .eq('stock_id', stockId)
-      .gte('created_at', since)
-      .order('created_at', { ascending: true })
-      .then(({ data }: { data: Array<{ price: number; created_at: string }> | null }) => {
-        if (isDisposedRef.current || !candleSeriesRef.current) return;
+    const cleanupStream = subscribeStockTradesWithInitialLoad(db, {
+      stockId,
+      selectColumns: 'id, price, created_at, sequence, cursor',
+      initialLimit: 2000,
+      channelName: `candle_${timeUnit}_${stockId}`,
+      onInitial: (rows, error) => {
+        if (cancelled || isDisposedRef.current || !candleSeriesRef.current) return;
         try {
           map.clear();
-          if (data && data.length > 5) {
-            const candles = groupToCandles(data, currentIntervalMs);
+          seenIds.clear();
+          hasPlaceholderCandleRef.current = false;
+          if (error) return;
+
+          const typedRows = rows as Array<{ id?: string; price: number; created_at: string }>;
+          for (const row of typedRows) {
+            seenIds.add(getTradeDedupKey(row as Record<string, unknown>));
+          }
+          const candles = typedRows.length > 0 ? groupToCandles(typedRows, currentIntervalMs) : [];
+          if (candles.length > 0) {
             candles.forEach((c) => map.set(c.time, c));
             series.setData(candles as any);
             updateAllIndicators(candles);
@@ -550,12 +589,13 @@ export default function TickChart({
                 close: last.close,
               });
             }
-          } else {
-            // 합성 캔들: 랜덤 워크 누적 방식, 최소 ±1.5% 진폭 보장
-            const tick = getStockTickSize(currentPrice, ticker, assetMetaRef.current);
+          } else if (Number.isFinite(currentPrice) && currentPrice > 0) {
+            // 실체결이 전혀 없는 초기 상태에서만 임시 캔들을 표시하고 첫 실체결 수신 시 교체한다.
+            hasPlaceholderCandleRef.current = true;
+            const tick = getStockTickSize(currentPrice, activeTicker, assetMetaRef.current);
             const alignP = (v: number) => (tick < 1 ? Number(v.toFixed(2)) : Math.round(v / tick) * tick);
 
-            const candles: CandleData[] = [];
+            const placeholderCandles: CandleData[] = [];
             const nowTs = Math.floor(floorToInterval(Date.now(), currentIntervalMs) / 1000);
 
             // 시작점을 현재가 -1.5% 에서 시작하는 랜덤 워크
@@ -589,12 +629,12 @@ export default function TickChart({
                 low: Math.min(lowP, openP, closeP),
                 close: closeP,
               };
-              candles.push(cData);
+              placeholderCandles.push(cData);
               map.set(candleTime, cData);
               prevClose = closeP;
             }
 
-            series.setData(candles as any);
+            series.setData(placeholderCandles as any);
 
             // autoScale을 강제 재적용하여 전체 범위가 Y축에 반영되도록
             mainChartRef.current?.priceScale('right').applyOptions({
@@ -602,9 +642,9 @@ export default function TickChart({
               scaleMargins: { top: 0.12, bottom: 0.12 },
             });
 
-            updateAllIndicators(candles);
+            updateAllIndicators(placeholderCandles);
             mainChartRef.current?.timeScale().fitContent();
-            const lastCandle = candles[candles.length - 1];
+            const lastCandle = placeholderCandles[placeholderCandles.length - 1];
             if (lastCandle) {
               setOhlcInfo({
                 time: `${TIME_UNIT_LABEL[timeUnit]}봉`,
@@ -614,101 +654,120 @@ export default function TickChart({
                 close: currentPrice,
               });
             }
+          } else {
+            series.setData([]);
+            setOhlcInfo(null);
           }
+          hasLoadedInitialTradesRef.current = true;
         } catch {}
-      });
+      },
+      onInsert: (row) => {
+        if (cancelled || isDisposedRef.current || !candleSeriesRef.current) return;
+        try {
+          const dedupKey = getTradeDedupKey(row);
+          if (seenIds.has(dedupKey)) return;
+          seenIds.add(dedupKey);
 
-    // 실시간 체결 구독
-    const channel = db
-      .channel(`candle_${timeUnit}_${stockId}`)
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'trades', filter: `stock_id=eq.${stockId}` },
-        (payload: { new: Record<string, unknown> }) => {
-          if (isDisposedRef.current || !candleSeriesRef.current) return;
-          try {
-            const t = payload.new as { price: number; created_at: string };
-            const tick = getStockTickSize(t.price, ticker, assetMetaRef.current);
-            const rawP = Number(t.price);
-            const alignedPrice = tick < 1 ? Number(rawP.toFixed(2)) : Math.round(rawP / tick) * tick;
+          const t = row as { id?: string; price: number; created_at: string };
+          const rawMs = Date.parse(t.created_at);
+          if (!Number.isFinite(rawMs)) return;
 
-            const ts = Math.floor(floorToInterval(new Date(t.created_at).getTime(), currentIntervalMs) / 1000);
-            const c = map.get(ts);
-            if (!c) {
-              const nc = { time: ts, open: alignedPrice, high: alignedPrice, low: alignedPrice, close: alignedPrice };
-              map.set(ts, nc);
-              series.update(nc as any);
-              setOhlcInfo({ time: `${TIME_UNIT_LABEL[timeUnit]}봉`, open: nc.open, high: nc.high, low: nc.low, close: nc.close });
-            } else {
-              c.close = alignedPrice;
-              if (alignedPrice > c.high) c.high = alignedPrice;
-              if (alignedPrice < c.low) c.low = alignedPrice;
-              series.update(c as any);
-              setOhlcInfo({ time: `${TIME_UNIT_LABEL[timeUnit]}봉`, open: c.open, high: c.high, low: c.low, close: c.close });
-            }
-            const allCandles = Array.from(map.values()).sort((a, b) => a.time - b.time);
-            updateAllIndicators(allCandles);
-          } catch {}
-        }
-      )
-      .subscribe();
+          const tick = getStockTickSize(t.price, activeTicker, assetMetaRef.current);
+          const rawP = Number(t.price);
+          if (!Number.isFinite(rawP) || rawP <= 0) return;
+          const alignedPrice = tick < 1 ? Number(rawP.toFixed(2)) : Math.round(rawP / tick) * tick;
+
+          let replacedPlaceholder = false;
+          if (hasPlaceholderCandleRef.current) {
+            hasPlaceholderCandleRef.current = false;
+            map.clear();
+            replacedPlaceholder = true;
+          }
+
+          const ts = Math.floor(floorToInterval(rawMs, currentIntervalMs) / 1000);
+          const prevKeys = Array.from(map.keys());
+          const prevLatestTs = prevKeys.length > 0 ? Math.max(...prevKeys) : -Infinity;
+          const c = map.get(ts);
+          let targetCandle: CandleData;
+          if (!c) {
+            targetCandle = { time: ts, open: alignedPrice, high: alignedPrice, low: alignedPrice, close: alignedPrice };
+            map.set(ts, targetCandle);
+          } else {
+            c.close = alignedPrice;
+            if (alignedPrice > c.high) c.high = alignedPrice;
+            if (alignedPrice < c.low) c.low = alignedPrice;
+            targetCandle = c;
+          }
+
+          const allCandles = Array.from(map.values()).sort((a, b) => a.time - b.time);
+          if (replacedPlaceholder || ts < prevLatestTs) {
+            series.setData(allCandles as any);
+          } else {
+            series.update(targetCandle as any);
+          }
+          if (replacedPlaceholder) {
+            mainChartRef.current?.timeScale().scrollToRealTime();
+          }
+          const latestCandle = allCandles[allCandles.length - 1];
+          if (latestCandle) {
+            setOhlcInfo({
+              time: `${TIME_UNIT_LABEL[timeUnit]}봉`,
+              open: latestCandle.open,
+              high: latestCandle.high,
+              low: latestCandle.low,
+              close: latestCandle.close,
+            });
+          }
+          updateAllIndicators(allCandles);
+        } catch {}
+      },
+    });
 
     return () => {
-      db.removeChannel(channel);
+      cancelled = true;
+      cleanupStream();
     };
   }, [stockId, timeUnit, db, updateAllIndicators]);
 
   // ── 5. 호가/체결 주가 변화 0ms 실시간 차트 캔들 즉각 동기화 ──
   useEffect(() => {
-    if (isDisposedRef.current || !candleSeriesRef.current || !currentPrice || currentPrice <= 0) return;
+    if (
+      isDisposedRef.current ||
+      !candleSeriesRef.current ||
+      !stockId ||
+      !hasLoadedInitialTradesRef.current ||
+      !currentPrice ||
+      currentPrice <= 0
+    ) {
+      return;
+    }
 
     try {
-      const currentIntervalMs = INTERVAL_MS[timeUnit];
-      const nowTs = Math.floor(floorToInterval(Date.now(), currentIntervalMs) / 1000);
+      const map = candleMapRef.current;
+      if (map.size === 0) return;
+
       const tick = getStockTickSize(currentPrice, ticker, assetMetaRef.current);
       const alignedPrice = tick < 1 ? Number(currentPrice.toFixed(2)) : Math.round(currentPrice / tick) * tick;
-      const map = candleMapRef.current;
+      const allCandles = Array.from(map.values()).sort((a, b) => a.time - b.time);
+      const latestCandle = allCandles[allCandles.length - 1];
+      if (!latestCandle) return;
 
-      const existing = map.get(nowTs);
-      if (existing) {
-        existing.close = alignedPrice;
-        if (alignedPrice > existing.high) existing.high = alignedPrice;
-        if (alignedPrice < existing.low) existing.low = alignedPrice;
-        candleSeriesRef.current.update(existing as any);
-        setOhlcInfo({
-          time: `${TIME_UNIT_LABEL[timeUnit]}봉`,
-          open: existing.open,
-          high: existing.high,
-          low: existing.low,
-          close: existing.close,
-        });
-      } else {
-        // 새 인터벌 봉 생성
-        const lastCandle = Array.from(map.values()).sort((a, b) => a.time - b.time).pop();
-        const openP = lastCandle ? lastCandle.close : alignedPrice;
-        const newCandle: CandleData = {
-          time: nowTs,
-          open: openP,
-          high: Math.max(openP, alignedPrice),
-          low: Math.min(openP, alignedPrice),
-          close: alignedPrice,
-        };
-        map.set(nowTs, newCandle);
-        candleSeriesRef.current.update(newCandle as any);
-        setOhlcInfo({
-          time: `${TIME_UNIT_LABEL[timeUnit]}봉`,
-          open: newCandle.open,
-          high: newCandle.high,
-          low: newCandle.low,
-          close: newCandle.close,
-        });
-      }
+      latestCandle.close = alignedPrice;
+      if (alignedPrice > latestCandle.high) latestCandle.high = alignedPrice;
+      if (alignedPrice < latestCandle.low) latestCandle.low = alignedPrice;
+      candleSeriesRef.current.update(latestCandle as any);
+      setOhlcInfo({
+        time: `${TIME_UNIT_LABEL[timeUnit]}봉`,
+        open: latestCandle.open,
+        high: latestCandle.high,
+        low: latestCandle.low,
+        close: latestCandle.close,
+      });
 
       // 보조지표 실시간 갱신
-      const allCandles = Array.from(map.values()).sort((a, b) => a.time - b.time);
       updateAllIndicators(allCandles);
     } catch {}
-  }, [currentPrice, ticker, timeUnit, updateAllIndicators]);
+  }, [currentPrice, ticker, stockId, timeUnit, updateAllIndicators]);
 
   // 플로팅 트레이딩뷰 도구 바 상태
   const [showToolsDrawer, setShowToolsDrawer] = useState(false);

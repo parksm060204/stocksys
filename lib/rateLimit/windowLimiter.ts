@@ -55,6 +55,11 @@ export class WindowRateLimiter {
     return removed;
   }
 
+  public clear(): void {
+    this.entries.clear();
+    this.lastPrunedAt = 0;
+  }
+
   public get size(): number {
     return this.entries.size;
   }

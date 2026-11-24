@@ -28,7 +28,7 @@ import {
   CandlestickSeries,
   HistogramSeries,
 } from "lightweight-charts";
-import { createClient } from "@/lib/db/client";
+import { createClient, getTradeDedupKey, subscribeStockTradesWithInitialLoad } from "@/lib/db/client";
 
 /* ─────────────────────────────────────────────────────────
    Constants & Helpers
@@ -68,29 +68,33 @@ type Candle = {
 
 /* ── trades 테이블 → 10분봉 집계 ── */
 function groupToCandles(
-  trades: { price: number; volume?: number; quantity?: number; created_at: string }[]
+  trades: { price: number; size?: number; volume?: number; quantity?: number; created_at: string }[]
 ): Candle[] {
   const map = new Map<
     number,
     { open: number; high: number; low: number; close: number; volume: number }
   >();
   for (const t of trades) {
-    const ts = floorToInterval(new Date(t.created_at).getTime()) / 1000;
-    const vol = Number(t.volume ?? t.quantity ?? 1);
+    const rawMs = Date.parse(t.created_at);
+    const price = Number(t.price);
+    if (!Number.isFinite(rawMs) || !Number.isFinite(price) || price <= 0) continue;
+    const ts = floorToInterval(rawMs) / 1000;
+    const rawVol = Number(t.size ?? t.volume ?? t.quantity ?? 1);
+    const vol = Number.isFinite(rawVol) && rawVol > 0 ? rawVol : 1;
     const c = map.get(ts);
     if (!c) {
       map.set(ts, {
-        open: t.price,
-        high: t.price,
-        low: t.price,
-        close: t.price,
+        open: price,
+        high: price,
+        low: price,
+        close: price,
         volume: vol,
       });
     } else {
-      c.close = t.price;
+      c.close = price;
       c.volume += vol;
-      if (t.price > c.high) c.high = t.price;
-      if (t.price < c.low) c.low = t.price;
+      if (price > c.high) c.high = price;
+      if (price < c.low) c.low = price;
     }
   }
   return Array.from(map.entries())
@@ -212,6 +216,17 @@ export default function StockChartV2({ ticker, currentPrice, isProMode }: Props)
   // Series refs (필요한 것만 저장)
   const mainSeriesRef = useRef<ISeriesApi<"Line"> | ISeriesApi<"Candlestick"> | null>(null);
   const volumeSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+  const bbUpperSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const bbMidSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const bbLowerSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const rsiSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+  const candleMapRef = useRef<Map<number, Candle>>(new Map());
+  const seenTradeIdsRef = useRef<Set<string>>(new Set());
+  const hasPlaceholderCandleRef = useRef(false);
+  const currentPriceRef = useRef(currentPrice);
+  useEffect(() => {
+    currentPriceRef.current = currentPrice;
+  }, [currentPrice]);
 
   const [stockId, setStockId] = useState<string | null>(null);
   const [isFallback, setIsFallback] = useState(false);
@@ -221,17 +236,35 @@ export default function StockChartV2({ ticker, currentPrice, isProMode }: Props)
 
   const db = createClient();
 
-  /* ── 1. ticker → stockId 변환 ── */
+  /* ── 1. ticker → stockId 변환 (종목 전환 시 즉시 이전 차트 잔상 제거) ── */
   useEffect(() => {
+    let cancelled = false;
+    setStockId(null);
+    hasPlaceholderCandleRef.current = false;
+    candleMapRef.current.clear();
+    seenTradeIdsRef.current.clear();
+    setIsFallback(false);
+    try {
+      mainSeriesRef.current?.setData([]);
+      volumeSeriesRef.current?.setData([]);
+      bbUpperSeriesRef.current?.setData([]);
+      bbMidSeriesRef.current?.setData([]);
+      bbLowerSeriesRef.current?.setData([]);
+      rsiSeriesRef.current?.setData([]);
+    } catch { /* disposed */ }
+
     const client = createClient();
     client
       .from("stocks")
       .select("id")
       .eq("ticker", ticker)
-      .single()
+      .maybeSingle()
       .then(({ data }: { data: { id: string } | null }) => {
-        if (data && !isDisposedRef.current) setStockId(data.id);
+        if (!cancelled && data?.id && !isDisposedRef.current) setStockId(data.id);
       });
+    return () => {
+      cancelled = true;
+    };
   }, [ticker]);
 
   /* ── 2. isProMode 변경 → 차트 인스턴스 파괴 & 재생성 ── */
@@ -241,14 +274,19 @@ export default function StockChartV2({ ticker, currentPrice, isProMode }: Props)
     // 기존 차트 완전 파괴
     isDisposedRef.current = true;
     if (chartRef.current) {
-      try {
-        chartRef.current.remove();
-      } catch {
-        // already disposed
-      }
+      const prevChart = chartRef.current;
       chartRef.current = null;
       mainSeriesRef.current = null;
       volumeSeriesRef.current = null;
+      bbUpperSeriesRef.current = null;
+      bbMidSeriesRef.current = null;
+      bbLowerSeriesRef.current = null;
+      rsiSeriesRef.current = null;
+      try {
+        prevChart.remove();
+      } catch {
+        // already disposed
+      }
     }
     isDisposedRef.current = false;
 
@@ -331,6 +369,10 @@ export default function StockChartV2({ ticker, currentPrice, isProMode }: Props)
         chartRef.current = null;
         mainSeriesRef.current = null;
         volumeSeriesRef.current = null;
+        bbUpperSeriesRef.current = null;
+        bbMidSeriesRef.current = null;
+        bbLowerSeriesRef.current = null;
+        rsiSeriesRef.current = null;
         try { chart.remove(); } catch { /* disposed */ }
       };
     }
@@ -432,6 +474,10 @@ export default function StockChartV2({ ticker, currentPrice, isProMode }: Props)
     chartRef.current = chart;
     mainSeriesRef.current = candleSer as unknown as ISeriesApi<"Candlestick">;
     volumeSeriesRef.current = volumeSer as unknown as ISeriesApi<"Histogram">;
+    bbUpperSeriesRef.current = bbUpperSer as unknown as ISeriesApi<"Line">;
+    bbMidSeriesRef.current = bbMidSer as unknown as ISeriesApi<"Line">;
+    bbLowerSeriesRef.current = bbLowerSer as unknown as ISeriesApi<"Line">;
+    rsiSeriesRef.current = rsiSer as unknown as ISeriesApi<"Histogram">;
     setActiveMode("pro");
 
     // ResizeObserver
@@ -507,6 +553,10 @@ export default function StockChartV2({ ticker, currentPrice, isProMode }: Props)
       chartRef.current = null;
       mainSeriesRef.current = null;
       volumeSeriesRef.current = null;
+      bbUpperSeriesRef.current = null;
+      bbMidSeriesRef.current = null;
+      bbLowerSeriesRef.current = null;
+      rsiSeriesRef.current = null;
       try { chart.remove(); } catch { /* disposed */ }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -516,136 +566,254 @@ export default function StockChartV2({ ticker, currentPrice, isProMode }: Props)
   useEffect(() => {
     if (!stockId || isDisposedRef.current || !chartRef.current) return;
 
-    const since = new Date(Date.now() - 8 * 60 * 60 * 1000).toISOString();
+    let cancelled = false;
+    const map = candleMapRef.current;
+    const seenIds = seenTradeIdsRef.current;
+    map.clear();
+    seenIds.clear();
+    hasPlaceholderCandleRef.current = false;
 
-    db
-      .from("trades")
-      .select("price, volume, quantity, created_at")
-      .eq("stock_id", stockId)
-      .gte("created_at", since)
-      .order("created_at", { ascending: true })
-      .then(
-        ({
-          data,
-        }: {
-          data: Array<{
+    const syncProIndicators = (candles: Candle[]) => {
+      const { upper, mid, lower } = calcBollingerBands(candles, 20, 2);
+      bbUpperSeriesRef.current?.setData(upper as any);
+      bbMidSeriesRef.current?.setData(mid as any);
+      bbLowerSeriesRef.current?.setData(lower as any);
+
+      const rsiData = calcRSI(candles, 14);
+      rsiSeriesRef.current?.setData(
+        rsiData.map((d) => ({
+          time: d.time as unknown as import("lightweight-charts").Time,
+          value: d.value,
+          color:
+            d.value >= 70
+              ? "rgba(240,68,82,0.8)"
+              : d.value <= 30
+              ? "rgba(49,130,246,0.8)"
+              : "rgba(107,114,128,0.6)",
+        }))
+      );
+    };
+
+    const cleanupStream = subscribeStockTradesWithInitialLoad(db, {
+      stockId,
+      selectColumns: "id, price, size, created_at, sequence, cursor",
+      initialLimit: 2000,
+      channelName: `chart_v2_${stockId}_${isProMode}`,
+      onInitial: (rows, error) => {
+        if (cancelled || isDisposedRef.current || !chartRef.current) return;
+        try {
+          if (error) {
+            return;
+          }
+          map.clear();
+          seenIds.clear();
+          hasPlaceholderCandleRef.current = false;
+
+          const typedRows = rows as Array<{
+            id?: string;
             price: number;
+            size?: number;
             volume?: number;
             quantity?: number;
             created_at: string;
-          }> | null;
-        }) => {
-          if (isDisposedRef.current || !chartRef.current) return;
-          try {
-            if (data && data.length >= 2) {
-              const candles = groupToCandles(data);
-              setIsFallback(false);
+          }>;
 
-              if (!isProMode) {
-                /* Default 모드: 선 차트에 close 가격만 */
-                const lineSer = mainSeriesRef.current as ISeriesApi<"Line">;
-                lineSer?.setData(
-                  candles.map((c) => ({
-                    time: c.time as unknown as import("lightweight-charts").Time,
-                    value: c.close,
-                  }))
-                );
-              } else {
-                /* Pro 모드: 봉 + 볼밴 + 거래량 + RSI 재주입 */
-                const candleSer = mainSeriesRef.current as ISeriesApi<"Candlestick">;
-                candleSer?.setData(
-                  candles.map((c) => ({
-                    time: c.time as unknown as import("lightweight-charts").Time,
-                    open: c.open,
-                    high: c.high,
-                    low: c.low,
-                    close: c.close,
-                  }))
-                );
-                const volSer = volumeSeriesRef.current;
-                volSer?.setData(
-                  candles.map((c) => ({
-                    time: c.time as unknown as import("lightweight-charts").Time,
-                    value: c.volume,
-                    color:
-                      c.close >= c.open
-                        ? "rgba(240,68,82,0.5)"
-                        : "rgba(49,130,246,0.5)",
-                  }))
-                );
-              }
-              chartRef.current?.timeScale().scrollToRealTime();
-            } else {
-              /* DB 체결 데이터가 아직 없는 경우 현재가 기준 실시간 베이스 캔들 설정 */
-              const nowTs = Math.floor(floorToInterval(Date.now()) / 1000);
-              const baseCandle = {
-                time: nowTs as unknown as import("lightweight-charts").Time,
-                open: currentPrice,
-                high: currentPrice,
-                low: currentPrice,
-                close: currentPrice,
-              };
-              if (!isProMode && mainSeriesRef.current) {
-                const lineSer = mainSeriesRef.current as ISeriesApi<"Line">;
-                lineSer.setData([{ time: baseCandle.time, value: currentPrice }]);
-              } else if (isProMode && mainSeriesRef.current) {
-                const candleSer = mainSeriesRef.current as ISeriesApi<"Candlestick">;
-                candleSer.setData([baseCandle]);
-              }
-              chartRef.current?.timeScale().scrollToRealTime();
-              setIsFallback(false);
-            }
-          } catch { /* disposed */ }
-        }
-      );
+          for (const row of typedRows) {
+            seenIds.add(getTradeDedupKey(row as Record<string, unknown>));
+          }
 
-    // 실시간 구독
-    const channel = db
-      .channel(`chart_v2_${stockId}_${isProMode}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "INSERT",
-          schema: "public",
-          table: "trades",
-          filter: `stock_id=eq.${stockId}`,
-        },
-        (payload: { new: Record<string, unknown> }) => {
-          if (isDisposedRef.current || !mainSeriesRef.current) return;
-          try {
-            const t = payload.new as {
-              price: number;
-              created_at: string;
-              quantity?: number;
-            };
-            const ts = Math.floor(
-              floorToInterval(new Date(t.created_at).getTime()) / 1000
-            ) as unknown as import("lightweight-charts").Time;
+          const candles = typedRows.length > 0 ? groupToCandles(typedRows) : [];
+          if (candles.length > 0) {
+            for (const c of candles) map.set(c.time, c);
+            setIsFallback(false);
 
             if (!isProMode) {
-              (mainSeriesRef.current as ISeriesApi<"Line">).update({
-                time: ts,
-                value: t.price,
-              });
+              /* Default 모드: 선 차트에 close 가격만 */
+              const lineSer = mainSeriesRef.current as ISeriesApi<"Line">;
+              lineSer?.setData(
+                candles.map((c) => ({
+                  time: c.time as unknown as import("lightweight-charts").Time,
+                  value: c.close,
+                }))
+              );
             } else {
-              (mainSeriesRef.current as ISeriesApi<"Candlestick">).update({
-                time: ts,
-                open: t.price,
-                high: t.price,
-                low: t.price,
-                close: t.price,
+              /* Pro 모드: 봉 + 볼밴 + 거래량 + RSI 재주입 */
+              const candleSer = mainSeriesRef.current as ISeriesApi<"Candlestick">;
+              candleSer?.setData(
+                candles.map((c) => ({
+                  time: c.time as unknown as import("lightweight-charts").Time,
+                  open: c.open,
+                  high: c.high,
+                  low: c.low,
+                  close: c.close,
+                }))
+              );
+              const volSer = volumeSeriesRef.current;
+              volSer?.setData(
+                candles.map((c) => ({
+                  time: c.time as unknown as import("lightweight-charts").Time,
+                  value: c.volume,
+                  color:
+                    c.close >= c.open
+                      ? "rgba(240,68,82,0.5)"
+                      : "rgba(49,130,246,0.5)",
+                }))
+              );
+              syncProIndicators(candles);
+            }
+            chartRef.current?.timeScale().scrollToRealTime();
+          } else {
+            /* DB 체결 데이터가 아직 없는 경우 현재가 기준 실시간 베이스 캔들 설정 */
+            const nowTs = Math.floor(floorToInterval(Date.now()) / 1000);
+            const px = currentPriceRef.current;
+            const baseCandle: Candle = {
+              time: nowTs,
+              open: px,
+              high: px,
+              low: px,
+              close: px,
+              volume: 0,
+            };
+            map.set(nowTs, baseCandle);
+            hasPlaceholderCandleRef.current = true;
+            if (!isProMode && mainSeriesRef.current) {
+              const lineSer = mainSeriesRef.current as ISeriesApi<"Line">;
+              lineSer.setData([{
+                time: nowTs as unknown as import("lightweight-charts").Time,
+                value: px,
+              }]);
+            } else if (isProMode && mainSeriesRef.current) {
+              const candleSer = mainSeriesRef.current as ISeriesApi<"Candlestick">;
+              candleSer.setData([{
+                time: nowTs as unknown as import("lightweight-charts").Time,
+                open: px,
+                high: px,
+                low: px,
+                close: px,
+              }]);
+              volumeSeriesRef.current?.setData([]);
+              syncProIndicators([baseCandle]);
+            }
+            chartRef.current?.timeScale().scrollToRealTime();
+            setIsFallback(false);
+          }
+        } catch { /* disposed */ }
+      },
+      onInsert: (row) => {
+        if (cancelled || isDisposedRef.current || !mainSeriesRef.current) return;
+        try {
+          const dedupKey = getTradeDedupKey(row);
+          if (seenIds.has(dedupKey)) return;
+          seenIds.add(dedupKey);
+
+          const t = row as {
+            id?: string;
+            price: number;
+            size?: number;
+            volume?: number;
+            quantity?: number;
+            created_at: string;
+          };
+          const rawMs = Date.parse(t.created_at);
+          if (!Number.isFinite(rawMs)) return;
+
+          const tradePrice = Number(t.price);
+          const rawVol = Number(t.size ?? t.volume ?? t.quantity ?? 1);
+          const tradeVol = Number.isFinite(rawVol) && rawVol > 0 ? rawVol : 1;
+          if (!Number.isFinite(tradePrice) || tradePrice <= 0) return;
+
+          let replacedPlaceholder = false;
+          if (hasPlaceholderCandleRef.current) {
+            hasPlaceholderCandleRef.current = false;
+            map.clear();
+            replacedPlaceholder = true;
+          }
+
+          const ts = Math.floor(floorToInterval(rawMs) / 1000);
+          const prevKeys = Array.from(map.keys());
+          const prevLatestTs = prevKeys.length > 0 ? Math.max(...prevKeys) : -Infinity;
+
+          let candle = map.get(ts);
+          if (!candle) {
+            candle = {
+              time: ts,
+              open: tradePrice,
+              high: tradePrice,
+              low: tradePrice,
+              close: tradePrice,
+              volume: tradeVol,
+            };
+            map.set(ts, candle);
+          } else {
+            candle.high = Math.max(candle.high, tradePrice);
+            candle.low = Math.min(candle.low, tradePrice);
+            candle.close = tradePrice;
+            candle.volume += tradeVol;
+          }
+
+          const allCandles = Array.from(map.values()).sort((a, b) => a.time - b.time);
+          const isOutOfOrder = replacedPlaceholder || ts < prevLatestTs;
+
+          if (!isProMode) {
+            const lineSer = mainSeriesRef.current as ISeriesApi<"Line">;
+            if (isOutOfOrder) {
+              lineSer.setData(
+                allCandles.map((c) => ({
+                  time: c.time as unknown as import("lightweight-charts").Time,
+                  value: c.close,
+                }))
+              );
+            } else {
+              lineSer.update({
+                time: ts as unknown as import("lightweight-charts").Time,
+                value: candle.close,
               });
             }
-            setIsFallback(false);
-          } catch { /* disposed */ }
-        }
-      )
-      .subscribe();
+          } else {
+            const candleSer = mainSeriesRef.current as ISeriesApi<"Candlestick">;
+            if (isOutOfOrder) {
+              candleSer.setData(
+                allCandles.map((c) => ({
+                  time: c.time as unknown as import("lightweight-charts").Time,
+                  open: c.open,
+                  high: c.high,
+                  low: c.low,
+                  close: c.close,
+                }))
+              );
+              volumeSeriesRef.current?.setData(
+                allCandles.map((c) => ({
+                  time: c.time as unknown as import("lightweight-charts").Time,
+                  value: c.volume,
+                  color: c.close >= c.open ? "rgba(240,68,82,0.5)" : "rgba(49,130,246,0.5)",
+                }))
+              );
+            } else {
+              candleSer.update({
+                time: ts as unknown as import("lightweight-charts").Time,
+                open: candle.open,
+                high: candle.high,
+                low: candle.low,
+                close: candle.close,
+              });
+              volumeSeriesRef.current?.update({
+                time: ts as unknown as import("lightweight-charts").Time,
+                value: candle.volume,
+                color: candle.close >= candle.open ? "rgba(240,68,82,0.5)" : "rgba(49,130,246,0.5)",
+              });
+            }
+            syncProIndicators(allCandles);
+          }
+          setIsFallback(false);
+        } catch { /* disposed */ }
+      },
+    });
 
     return () => {
-      db.removeChannel(channel);
+      cancelled = true;
+      cleanupStream();
     };
-  }, [stockId, isProMode, currentPrice, db]);
+  }, [stockId, isProMode, db]);
 
   /* ─────────────────────────────────────────────────────────
      Render

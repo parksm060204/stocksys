@@ -137,7 +137,7 @@ export default function CurrencyExchangePage() {
       const { data: profile, error } = await db
         .from("profiles")
         .select("cash, usd_balance, eur_balance, jpy_balance, cny_balance, gbp_balance")
-        .eq("id", uid)
+        .eq("user_id", uid)
         .maybeSingle();
 
       if (requestSeq !== balanceRequestSeqRef.current || activeAuthUserIdRef.current !== uid) {

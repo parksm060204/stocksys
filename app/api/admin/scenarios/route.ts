@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { scenarioManager, syncScenarioManagerFromDatabase } from '@/lib/scenario/ScenarioManager';
-import { commodityEngineInstance } from '@/app/api/commodities/route';
+import { commodityEngineInstance } from '@/lib/commodities/commodityEngineInstance';
+import { MACRO_COMMODITY_EVENTS } from '@/lib/commodities/eventSystem';
 import { COMMODITY_DEFINITIONS } from '@/lib/commodities/definitions';
 import { verifyAdminSession } from '@/lib/auth/adminAuth';
 import { ensureLocalStandaloneReady, getLocalStandaloneEngine, persistConfirmedState } from '@/lib/engine/localStandaloneServer';
@@ -8,8 +9,15 @@ import { withAllStockLocks } from '@/lib/engine/marketService';
 import { runWithCommitGate, persistenceManager } from '@/lib/memoryDb/PersistenceManager';
 import { memoryDb } from '@/lib/memoryDb/memoryStore';
 
+const SUPPORTED_STOCK_MARKETS = new Set(['domestic', 'overseas', 'europe', 'etf']);
+
 function getAuthoritativeScenarioManager() {
   return commodityEngineInstance?.scenarioManager ?? scenarioManager;
+}
+
+function withScenarioLocks<T>(stockIds: string[], task: () => Promise<T>): Promise<T> {
+  const run = () => commodityEngineInstance.runWithTickLock(() => withAllStockLocks(stockIds, task));
+  return getLocalStandaloneEngine()?.runWithSimulationLock(run) ?? run();
 }
 
 export async function GET(req: Request) {
@@ -20,7 +28,7 @@ export async function GET(req: Request) {
   }
 
   const activeManager = getAuthoritativeScenarioManager();
-  const snapshot = await runWithCommitGate(
+  const snapshot = await withScenarioLocks([], () => runWithCommitGate(
     undefined,
     async () => {
       try {
@@ -38,7 +46,7 @@ export async function GET(req: Request) {
       };
     },
     persistenceManager
-  );
+  ));
   const engine = getLocalStandaloneEngine();
   const diagnostics = engine ? engine.getDiagnosticsSummaryReport() : null;
 
@@ -82,9 +90,9 @@ export async function POST(req: Request) {
 
       if (assetType === 'stock') {
         const targetStock = typeof assetId === 'string' ? memoryDb.stocks.get(assetId) : undefined;
-        if (!targetStock || targetStock.market === 'bonds') {
+        if (!targetStock || targetStock.market === 'bonds' || targetStock.is_listed === false) {
           return NextResponse.json(
-            { success: false, message: '유효한 상장 주식/ETF 종목만 작전 시나리오 대상으로 지정할 수 있습니다. (채권 미지원)' },
+            { success: false, message: '유효한 상장 주식/ETF 종목만 작전 시나리오 대상으로 지정할 수 있습니다. (채권·상장폐지 종목 미지원)' },
             { status: 400 }
           );
         }
@@ -130,34 +138,27 @@ export async function POST(req: Request) {
       const stockIdForLock = assetType === 'stock' && typeof assetId === 'string' && memoryDb.stocks.has(assetId)
         ? [assetId]
         : [];
-      const injectedResult = await withAllStockLocks(stockIdForLock, async () => {
+      const injectedResult = await withScenarioLocks(stockIdForLock, async () => {
         return await runWithCommitGate(persistConfirmedState, async () => {
           syncScenarioManagerFromDatabase(memoryDb, activeManager, { clearOnDbNull: true });
           const prevSnap = activeManager.snapshotState();
           const prevDbSnap = memoryDb.scenarioRuntimeState ? structuredClone(memoryDb.scenarioRuntimeState) : null;
-          const scenario = activeManager.injectScenario(scenarioParams);
-          if (activeManager !== scenarioManager) {
-            try { scenarioManager.restoreState(activeManager.snapshotState()); } catch { /* ignore */ }
-          }
-
           const stk = stockIdForLock.length > 0 ? memoryDb.stocks.get(stockIdForLock[0]!) : undefined;
-          const prevTarget = stk ? (stk as any).target_price : undefined;
-          if (stk) {
-            const targetMultiplier = 1 + safeTargetPct / 100;
-            (stk as any).target_price = Math.max(1, Math.round(safeInitialPrice * targetMultiplier));
+          const prevTarget = stk?.target_price;
+          try {
+            const scenario = activeManager.injectScenario(scenarioParams);
+            if (activeManager !== scenarioManager) scenarioManager.restoreState(activeManager.snapshotState());
+            if (stk) stk.target_price = Math.max(1, Math.round(safeInitialPrice * (1 + safeTargetPct / 100)));
+            memoryDb.scenarioRuntimeState = activeManager.snapshotState();
+            if (await persistConfirmedState()) return scenario;
+          } catch (error) {
+            console.error('[Admin scenarios] Scenario injection failed:', error);
           }
-          memoryDb.scenarioRuntimeState = activeManager.snapshotState();
-          const saved = await persistConfirmedState();
-          if (!saved) {
-            if (stk) (stk as any).target_price = prevTarget;
-            memoryDb.scenarioRuntimeState = prevDbSnap;
-            activeManager.restoreState(prevSnap);
-            if (activeManager !== scenarioManager) {
-              try { scenarioManager.restoreState(prevSnap); } catch { /* ignore */ }
-            }
-            return null;
-          }
-          return scenario;
+          if (stk) stk.target_price = prevTarget;
+          memoryDb.scenarioRuntimeState = prevDbSnap;
+          activeManager.restoreState(prevSnap);
+          if (activeManager !== scenarioManager) scenarioManager.restoreState(prevSnap);
+          return null;
         });
       });
       if (!injectedResult) {
@@ -173,54 +174,47 @@ export async function POST(req: Request) {
     // 2. 거시경제 충격 발동
     if (action === 'trigger_macro_shock') {
       const { shockType } = body;
+      if (typeof shockType !== 'string' || !Object.hasOwn(MACRO_COMMODITY_EVENTS, shockType)) {
+        return NextResponse.json({ success: false, message: '지원하지 않는 거시경제 충격입니다.' }, { status: 400 });
+      }
+      const type = shockType as keyof typeof MACRO_COMMODITY_EVENTS;
 
-      // admin_settings 테이블 매크로 심리 레짐 + 시나리오/원자재 런타임 상태 영속 갱신
-      const shockResult = await runWithCommitGate(persistConfirmedState, async () => {
-        syncScenarioManagerFromDatabase(memoryDb, activeManager, { clearOnDbNull: true });
-        const prevSnap = activeManager.snapshotState();
-        const prevDbSnap = memoryDb.scenarioRuntimeState ? structuredClone(memoryDb.scenarioRuntimeState) : null;
-        const prevEventSnap = commodityEngineInstance.eventSystem.snapshotState();
-        const prevDbEventSnap = memoryDb.commodityEventRuntimeState
-          ? structuredClone(memoryDb.commodityEventRuntimeState)
-          : null;
+      const shockResult = await withScenarioLocks([], async () => {
+        await commodityEngineInstance.reconcileWithDatabase(memoryDb);
+        return await runWithCommitGate(persistConfirmedState, async () => {
+          syncScenarioManagerFromDatabase(memoryDb, activeManager, { clearOnDbNull: true });
+          const prevSnap = activeManager.snapshotState();
+          const prevDbSnap = memoryDb.scenarioRuntimeState ? structuredClone(memoryDb.scenarioRuntimeState) : null;
+          const prevEventSnap = commodityEngineInstance.eventSystem.snapshotState();
+          const prevDbEventSnap = memoryDb.commodityEventRuntimeState
+            ? structuredClone(memoryDb.commodityEventRuntimeState)
+            : null;
+          const setting = memoryDb.adminSettings.get('1') ?? Array.from(memoryDb.adminSettings.values())[0];
+          const prevSentiment = setting?.market_sentiment;
 
-        const shock = activeManager.triggerMacroShock({
-          type: shockType,
-          adminUser,
-        });
-        if (activeManager !== scenarioManager) {
-          try { scenarioManager.restoreState(activeManager.snapshotState()); } catch { /* ignore */ }
-        }
+          try {
+            const shock = activeManager.triggerMacroShock({ type, adminUser });
+            const event = commodityEngineInstance.eventSystem.triggerEventById(
+              MACRO_COMMODITY_EVENTS[type], commodityEngineInstance.currentTick
+            );
+            if (!event) throw new Error('Macro shock commodity template is missing');
+            if (activeManager !== scenarioManager) scenarioManager.restoreState(activeManager.snapshotState());
+            if (setting) setting.market_sentiment = shock.regime;
+            memoryDb.scenarioRuntimeState = activeManager.snapshotState();
+            memoryDb.commodityEventRuntimeState = commodityEngineInstance.eventSystem.snapshotState();
+            if (await persistConfirmedState()) return shock;
+          } catch (error) {
+            console.error('[Admin scenarios] Macro shock failed:', error);
+          }
 
-        // 원자재 시장에도 관련 이벤트 전파
-        if (shockType === 'GEOPOLITICAL_CRISIS') {
-          commodityEngineInstance.eventSystem.triggerEventById('ev_tmpl_hormuz_blockade', commodityEngineInstance.currentTick);
-        } else if (shockType === 'RATE_HIKE_SHOCK') {
-          commodityEngineInstance.eventSystem.triggerEventById('ev_tmpl_recession_pmi_crash', commodityEngineInstance.currentTick);
-        } else if (shockType === 'LIQUIDITY_BOOM') {
-          commodityEngineInstance.eventSystem.triggerEventById('ev_tmpl_green_subsidy_surge', commodityEngineInstance.currentTick);
-        }
-
-        const setting = memoryDb.adminSettings.get('1') ?? Array.from(memoryDb.adminSettings.values())[0];
-        const prevSentiment = setting?.market_sentiment;
-        if (setting) {
-          setting.market_sentiment = shock.regime;
-        }
-        memoryDb.scenarioRuntimeState = activeManager.snapshotState();
-        memoryDb.commodityEventRuntimeState = commodityEngineInstance.eventSystem.snapshotState();
-        const saved = await persistConfirmedState();
-        if (!saved) {
           if (setting) setting.market_sentiment = prevSentiment;
           memoryDb.scenarioRuntimeState = prevDbSnap;
           memoryDb.commodityEventRuntimeState = prevDbEventSnap;
           activeManager.restoreState(prevSnap);
-          if (activeManager !== scenarioManager) {
-            try { scenarioManager.restoreState(prevSnap); } catch { /* ignore */ }
-          }
+          if (activeManager !== scenarioManager) scenarioManager.restoreState(prevSnap);
           commodityEngineInstance.eventSystem.restoreState(prevEventSnap);
           return null;
-        }
-        return shock;
+        });
       });
       if (!shockResult) {
         return NextResponse.json(
@@ -236,9 +230,24 @@ export async function POST(req: Request) {
     if (action === 'list_stock') {
       const ticker = typeof body.ticker === 'string' ? body.ticker.trim().toUpperCase() : '';
       const name = typeof body.name === 'string' ? body.name.trim() : '';
-      const market = typeof body.market === 'string' ? body.market.trim() : 'domestic';
+      const market =
+        body.market === undefined
+          ? 'domestic'
+          : typeof body.market === 'string'
+            ? body.market.trim()
+            : '';
       const sector = typeof body.sector === 'string' ? body.sector.trim() : '반도체';
       const initPrice = Number(body.initialPrice);
+
+      if (!SUPPORTED_STOCK_MARKETS.has(market)) {
+        return NextResponse.json(
+          {
+            success: false,
+            message: `지원하지 않는 시장 구분입니다: ${String(body.market)} (domestic, overseas, europe, etf 중 하나여야 합니다)`,
+          },
+          { status: 400 }
+        );
+      }
 
       if (!ticker || !name || !Number.isFinite(initPrice) || initPrice <= 0) {
         return NextResponse.json(
@@ -307,7 +316,7 @@ export async function POST(req: Request) {
 
       const newsId = memoryDb.generateId('news');
       const createdAt = memoryDb.getIsoTimestamp();
-      const savedOk = await runWithCommitGate(persistConfirmedState, async () => {
+      const savedOk = await withScenarioLocks([], () => runWithCommitGate(persistConfirmedState, async () => {
         const entry: any = {
           id: newsId,
           headline: title,
@@ -321,14 +330,16 @@ export async function POST(req: Request) {
           impact_score: 0.8,
           created_at: createdAt,
         };
-        memoryDb.marketNews.unshift(entry);
-        const saved = await persistConfirmedState();
-        if (!saved) {
-          memoryDb.marketNews.shift();
-          return false;
+        const previousNews = [...memoryDb.marketNews];
+        memoryDb.saveMarketNews(entry);
+        try {
+          if (await persistConfirmedState()) return true;
+        } catch (error) {
+          console.error('[Admin scenarios] News snapshot save failed:', error);
         }
-        return true;
-      });
+        memoryDb.marketNews = previousNews;
+        return false;
+      }));
 
       if (!savedOk) {
         return NextResponse.json({ success: false, message: '이벤트 저장에 실패했습니다.' }, { status: 500 });
@@ -339,7 +350,7 @@ export async function POST(req: Request) {
     // 3. 단일 시나리오 롤백
     if (action === 'rollback_scenario') {
       const { scenarioId } = body;
-      const rollbackOutcome = await runWithCommitGate(persistConfirmedState, async () => {
+      const rollbackOutcome = await withScenarioLocks([], () => runWithCommitGate(persistConfirmedState, async () => {
         syncScenarioManagerFromDatabase(memoryDb, activeManager, { clearOnDbNull: true });
         const prevSnap = activeManager.snapshotState();
         const prevDbSnap = memoryDb.scenarioRuntimeState ? structuredClone(memoryDb.scenarioRuntimeState) : null;
@@ -361,7 +372,7 @@ export async function POST(req: Request) {
           return { persisted: false, success: false };
         }
         return { persisted: true, success: true };
-      });
+      }));
       if (!rollbackOutcome.persisted) {
         return NextResponse.json({ success: false, message: '시나리오 롤백 영속 저장에 실패했습니다.' }, { status: 500 });
       }
@@ -370,7 +381,7 @@ export async function POST(req: Request) {
 
     // 4. 전체 긴급 정지 (EMERGENCY HALT ALL)
     if (action === 'emergency_halt') {
-      const haltResult = await runWithCommitGate(persistConfirmedState, async () => {
+      const haltResult = await withScenarioLocks([], () => runWithCommitGate(persistConfirmedState, async () => {
         syncScenarioManagerFromDatabase(memoryDb, activeManager, { clearOnDbNull: true });
         const prevSnap = activeManager.snapshotState();
         const prevDbSnap = memoryDb.scenarioRuntimeState ? structuredClone(memoryDb.scenarioRuntimeState) : null;
@@ -389,7 +400,7 @@ export async function POST(req: Request) {
           return null;
         }
         return result;
-      });
+      }));
       if (!haltResult) {
         return NextResponse.json({ success: false, message: '긴급 정지 영속 저장에 실패했습니다.' }, { status: 500 });
       }

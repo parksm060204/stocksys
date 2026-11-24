@@ -330,7 +330,17 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
 
       <div className="space-y-4 p-4 flex-1 flex flex-col justify-between">
         <div className="space-y-3.5">
-          <Field label="주문 가격">
+          <div className="flex items-center justify-between rounded-xl border border-border bg-panel2 px-3 py-2 text-xs font-sans">
+            <span className="text-muted font-semibold">주문 유형</span>
+            <span className="inline-flex items-center gap-1.5 font-bold text-tx">
+              <span className="rounded-md border border-border bg-panel px-2 py-0.5 text-[11px] font-bold">
+                지정가
+              </span>
+              <span className="text-[11px] text-muted font-medium">입력 가격으로 주문 접수</span>
+            </span>
+          </div>
+
+          <Field label="지정가 주문 가격">
             <div className="relative">
               <input
                 value={price}
@@ -371,35 +381,44 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
             ))}
           </div>
 
-          {/* 초고속 매매 패널 */}
+          {/* 지정가 수량 입력 보조 패널 */}
           <div className="pt-3 border-t border-border font-sans">
-            <span className="text-[10px] uppercase font-bold tracking-wider text-muted block mb-2 font-mono">
-              QUICK ORDER SCALPING
-            </span>
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <span className="text-[10.5px] font-bold tracking-wider text-muted">
+                비율 수량 입력 보조 (지정가 폼)
+              </span>
+              <span className="text-[10px] text-dim">
+                방향·수량만 입력
+              </span>
+            </div>
             <div className="grid grid-cols-2 gap-2 font-sans">
               <button
+                type="button"
                 onClick={() => handleQuickBuy(10)}
                 className="border border-[#F04452]/40 bg-up/10 text-up hover:bg-up/20 py-2 text-xs font-bold rounded-xl transition-all cursor-pointer"
               >
-                10% 시장가 매수
+                10% 매수 수량 입력
               </button>
               <button
+                type="button"
                 onClick={() => handleQuickBuy(50)}
                 className="border border-[#F04452]/40 bg-up/10 text-up hover:bg-up/20 py-2 text-xs font-bold rounded-xl transition-all cursor-pointer"
               >
-                50% 시장가 매수
+                50% 매수 수량 입력
               </button>
               <button
+                type="button"
                 onClick={() => handleQuickSell(10)}
                 className="border border-[#3182F6]/40 bg-down/10 text-down hover:bg-down/20 py-2 text-xs font-bold rounded-xl transition-all cursor-pointer"
               >
-                10% 시장가 매도
+                10% 매도 수량 입력
               </button>
               <button
+                type="button"
                 onClick={() => handleQuickSell(100)}
                 className="border border-[#3182F6]/40 bg-down/10 text-down hover:bg-down/20 py-2 text-xs font-bold rounded-xl transition-all cursor-pointer"
               >
-                전량(100%) 매도
+                전량(100%) 매도 수량
               </button>
             </div>
           </div>
@@ -413,6 +432,10 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
               <span className="font-mono text-[14.5px] font-black tabular-nums text-tx">
                 {fmtPrice(total, stock.market, stock.ticker)}
               </span>
+            </div>
+            <div className="flex items-center justify-between text-[11px] font-mono text-muted">
+              <span>주문 방식</span>
+              <span className="font-bold text-tx">지정가 ({fmtPrice(Number(price) || 0, stock.market, stock.ticker)})</span>
             </div>
             <div className="flex items-center justify-between text-[11px] font-mono text-muted">
               <span>
@@ -458,7 +481,7 @@ export default function OrderEntry({ stock }: { stock: Stock }) {
                 : "bg-down text-white hover:bg-[#4092ff] shadow-[0_0_20px_rgba(49,130,246,0.35)] cursor-pointer active:scale-[0.98]"
             }`}
           >
-            {isBondAsset ? "채권 직접 주문 미지원" : loading ? "주문 처리 중..." : side === "buy" ? "매수 주문 제출" : "매도 주문 제출"}
+            {isBondAsset ? "채권 직접 주문 미지원" : loading ? "주문 처리 중..." : side === "buy" ? "지정가 매수 주문 제출" : "지정가 매도 주문 제출"}
           </button>
         </div>
       </div>

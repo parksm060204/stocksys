@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useAuth } from '@/lib/auth/useAuth';
 import { useToast } from '@/app/components/ToastProvider';
 
@@ -41,20 +41,61 @@ export default function CommodityActiveOrdersPanel({
   const [loading, setLoading] = useState<boolean>(true);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
 
-  const { isLoggedIn } = useAuth();
+  const { userId, isLoggedIn } = useAuth();
   const { showToast } = useToast();
+  const accountKey = isLoggedIn && userId ? userId : null;
+
+  const mountedRef = useRef<boolean>(true);
+  const fetchSeqRef = useRef<number>(0);
+  const cancelSeqRef = useRef<number>(0);
+  const activeContextRef = useRef<{ accountKey: string | null; commodityId: string }>({
+    accountKey,
+    commodityId,
+  });
+  const onOrdersChangedRef = useRef(onOrdersChanged);
+
+  useEffect(() => {
+    onOrdersChangedRef.current = onOrdersChanged;
+  }, [onOrdersChanged]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      fetchSeqRef.current += 1;
+      cancelSeqRef.current += 1;
+    };
+  }, []);
 
   const fetchOrders = useCallback(async () => {
-    if (!isLoggedIn) {
-      setOrders([]);
-      setPosition(null);
-      setLoading(false);
+    const reqAccountKey = accountKey;
+    const reqCommodityId = commodityId;
+    const reqSeq = ++fetchSeqRef.current;
+
+    if (!reqAccountKey) {
+      if (
+        mountedRef.current &&
+        reqSeq === fetchSeqRef.current &&
+        activeContextRef.current.accountKey === null
+      ) {
+        setOrders([]);
+        setPosition(null);
+        setLoading(false);
+      }
       return;
     }
 
     try {
-      const res = await fetch(`/api/commodities?id=${encodeURIComponent(commodityId)}`);
+      const res = await fetch(`/api/commodities?id=${encodeURIComponent(reqCommodityId)}`);
       const data = await res.json();
+      if (
+        !mountedRef.current ||
+        reqSeq !== fetchSeqRef.current ||
+        activeContextRef.current.accountKey !== reqAccountKey ||
+        activeContextRef.current.commodityId !== reqCommodityId
+      ) {
+        return;
+      }
       if (data.success) {
         setOrders(Array.isArray(data.myOrders) ? data.myOrders : []);
         setPosition(data.myPosition || null);
@@ -62,20 +103,51 @@ export default function CommodityActiveOrdersPanel({
     } catch {
       // 백그라운드 조회 오류 무시
     } finally {
-      setLoading(false);
+      if (
+        mountedRef.current &&
+        reqSeq === fetchSeqRef.current &&
+        activeContextRef.current.accountKey === reqAccountKey &&
+        activeContextRef.current.commodityId === reqCommodityId
+      ) {
+        setLoading(false);
+      }
     }
-  }, [commodityId, isLoggedIn]);
+  }, [commodityId, accountKey]);
 
   useEffect(() => {
+    activeContextRef.current = { accountKey, commodityId };
+    fetchSeqRef.current += 1;
+    cancelSeqRef.current += 1;
+
+    // 계정 전환·로그아웃·종목 전환 시 이전 계정의 미체결/포지션 즉시 초기화
+    setOrders([]);
+    setPosition(null);
+    setCancellingId(null);
+    setLoading(Boolean(accountKey));
+
+    if (!accountKey) {
+      return () => {
+        fetchSeqRef.current += 1;
+        cancelSeqRef.current += 1;
+      };
+    }
+
     void fetchOrders();
     const interval = setInterval(() => {
       void fetchOrders();
     }, 2000);
-    return () => clearInterval(interval);
-  }, [fetchOrders, refreshSignal]);
+    return () => {
+      clearInterval(interval);
+      fetchSeqRef.current += 1;
+      cancelSeqRef.current += 1;
+    };
+  }, [fetchOrders, refreshSignal, accountKey, commodityId]);
 
   const handleCancelOrder = async (order: CommodityOpenOrderItem) => {
-    if (cancellingId) return;
+    const reqAccountKey = accountKey;
+    const reqCommodityId = commodityId;
+    if (!reqAccountKey || cancellingId) return;
+    const reqCancelSeq = cancelSeqRef.current;
     setCancellingId(order.id);
     try {
       const res = await fetch('/api/commodities', {
@@ -84,6 +156,14 @@ export default function CommodityActiveOrdersPanel({
         body: JSON.stringify({ action: 'cancel_order', orderId: order.id }),
       });
       const data = await res.json();
+      if (
+        !mountedRef.current ||
+        reqCancelSeq !== cancelSeqRef.current ||
+        activeContextRef.current.accountKey !== reqAccountKey ||
+        activeContextRef.current.commodityId !== reqCommodityId
+      ) {
+        return;
+      }
       if (!res.ok || !data.success) {
         throw new Error(data.message || '원자재 주문 취소에 실패했습니다.');
       }
@@ -94,28 +174,61 @@ export default function CommodityActiveOrdersPanel({
         description: `증거금 ₩${Number(data.refundedKrw || 0).toLocaleString()} 환불 완료`,
       });
       await fetchOrders();
-      onOrdersChanged?.();
+      if (
+        mountedRef.current &&
+        reqCancelSeq === cancelSeqRef.current &&
+        activeContextRef.current.accountKey === reqAccountKey &&
+        activeContextRef.current.commodityId === reqCommodityId
+      ) {
+        onOrdersChangedRef.current?.();
+      }
     } catch (e: any) {
+      if (
+        !mountedRef.current ||
+        reqCancelSeq !== cancelSeqRef.current ||
+        activeContextRef.current.accountKey !== reqAccountKey ||
+        activeContextRef.current.commodityId !== reqCommodityId
+      ) {
+        return;
+      }
       showToast({
         type: 'error',
         title: '원자재 주문 취소 실패',
         description: e?.message || '취소 요청 중 오류가 발생했습니다.',
       });
     } finally {
-      setCancellingId(null);
+      if (
+        mountedRef.current &&
+        reqCancelSeq === cancelSeqRef.current &&
+        activeContextRef.current.accountKey === reqAccountKey &&
+        activeContextRef.current.commodityId === reqCommodityId
+      ) {
+        setCancellingId(null);
+      }
     }
   };
 
   const handleCancelAll = async () => {
-    if (orders.length === 0 || cancellingId) return;
+    const reqAccountKey = accountKey;
+    const reqCommodityId = commodityId;
+    if (!reqAccountKey || orders.length === 0 || cancellingId) return;
+    const reqCancelSeq = cancelSeqRef.current;
     setCancellingId('ALL');
     try {
       const res = await fetch('/api/commodities', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'cancel_all_orders', commodityId }),
+        body: JSON.stringify({ action: 'cancel_all_orders', commodityId: reqCommodityId }),
       });
       const data = await res.json();
+      if (
+        !mountedRef.current ||
+        reqCancelSeq !== cancelSeqRef.current ||
+        activeContextRef.current.accountKey !== reqAccountKey ||
+        activeContextRef.current.commodityId !== reqCommodityId
+      ) {
+        return;
+      }
       if (!res.ok || !data.success) {
         throw new Error(data.message || '원자재 전체 취소에 실패했습니다.');
       }
@@ -126,15 +239,37 @@ export default function CommodityActiveOrdersPanel({
         description: `${data.cancelledOrderIds?.length ?? 0}건 취소 · 증거금 ₩${Number(data.refundedKrw || 0).toLocaleString()} 환불`,
       });
       await fetchOrders();
-      onOrdersChanged?.();
+      if (
+        mountedRef.current &&
+        reqCancelSeq === cancelSeqRef.current &&
+        activeContextRef.current.accountKey === reqAccountKey &&
+        activeContextRef.current.commodityId === reqCommodityId
+      ) {
+        onOrdersChangedRef.current?.();
+      }
     } catch (e: any) {
+      if (
+        !mountedRef.current ||
+        reqCancelSeq !== cancelSeqRef.current ||
+        activeContextRef.current.accountKey !== reqAccountKey ||
+        activeContextRef.current.commodityId !== reqCommodityId
+      ) {
+        return;
+      }
       showToast({
         type: 'error',
         title: '일괄 취소 실패',
         description: e?.message || '일괄 취소 중 오류가 발생했습니다.',
       });
     } finally {
-      setCancellingId(null);
+      if (
+        mountedRef.current &&
+        reqCancelSeq === cancelSeqRef.current &&
+        activeContextRef.current.accountKey === reqAccountKey &&
+        activeContextRef.current.commodityId === reqCommodityId
+      ) {
+        setCancellingId(null);
+      }
     }
   };
 

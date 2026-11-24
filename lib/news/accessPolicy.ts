@@ -53,6 +53,7 @@ export function authorizeNewsRecord(record: any, hasRumorAccess: boolean): any {
   const {
     is_rumor_fake: _isRumorFakeSnake,
     corrected_at: _correctedAtSnake,
+    correction_due_simulation_time: _correctionDueSimTime,
     ...safe
   } = sanitized;
 

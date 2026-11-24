@@ -75,7 +75,7 @@ export default function ShopPage() {
         const { data: profile } = await db
           .from('profiles')
           .select('cash, is_admin, has_options_license, unlocked_features, feature_expiries, acquired_passives, news_subscriptions')
-          .eq('id', nextAccountKey)
+          .eq('user_id', nextAccountKey)
           .maybeSingle();
         if (reqSeq !== fetchSeqRef.current || activeAccountRef.current !== nextAccountKey) return;
         if (profile) {

@@ -3,7 +3,7 @@
 import { useState, useEffect, useMemo } from "react";
 import type { Stock } from "@/lib/types";
 import { fmtPrice } from "@/lib/format";
-import { createClient } from "@/lib/db/client";
+import { createClient, getTradeDedupKey, subscribeStockTradesWithInitialLoad } from "@/lib/db/client";
 
 interface Candle {
   time: string;
@@ -55,48 +55,56 @@ export default function StockChart({ stock }: { stock: Stock }) {
   useEffect(() => {
     if (!stock?.id) return;
 
-    // 1. 실제 체결 데이터 조회
-    db
-      .from("trades")
-      .select("price, size, created_at")
-      .eq("stock_id", stock.id)
-      .order("created_at", { ascending: true })
-      .then(({ data }: { data: Array<{ price: number; size?: number; created_at: string }> | null }) => {
-        if (data && data.length > 0) {
-          setRealTrades(
-            data.map((t) => ({
-              price: Number(t.price),
-              volume: Number(t.size || 1),
-              created_at: t.created_at,
-            }))
-          );
-        } else {
-          setRealTrades([]);
-        }
-      });
+    let cancelled = false;
+    const seenKeys = new Set<string>();
+    setRealTrades([]);
 
-    // 2. 봇 및 실투자자 체결 실시간 릴레이션 구독
-    const channel = db
-      .channel(`stock_trades_real_${stock.id}`)
-      .on(
-        "postgres_changes",
-        { event: "INSERT", schema: "public", table: "trades", filter: `stock_id=eq.${stock.id}` },
-        (payload: { new: Record<string, unknown> }) => {
-          const newTrade = payload.new as any;
-          setRealTrades((prev) => [
-            ...prev,
-            {
-              price: Number(newTrade.price),
-              volume: Number(newTrade.size || 1),
-              created_at: newTrade.created_at,
-            },
-          ]);
+    const cleanupStream = subscribeStockTradesWithInitialLoad(db, {
+      stockId: stock.id,
+      selectColumns: "id, price, size, created_at, sequence, cursor",
+      initialLimit: 2000,
+      channelName: `stock_trades_real_${stock.id}`,
+      onInitial: (rows, error) => {
+        if (cancelled || error) return;
+        seenKeys.clear();
+        const nextTrades: Array<{ price: number; volume: number; created_at: string }> = [];
+        for (const row of rows) {
+          const price = Number(row.price);
+          const rawMs = Date.parse(String(row.created_at ?? ""));
+          if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(rawMs)) continue;
+          seenKeys.add(getTradeDedupKey(row));
+          const rawVol = Number(row.size ?? 1);
+          nextTrades.push({
+            price,
+            volume: Number.isFinite(rawVol) && rawVol > 0 ? rawVol : 1,
+            created_at: String(row.created_at),
+          });
         }
-      )
-      .subscribe();
+        setRealTrades(nextTrades);
+      },
+      onInsert: (row) => {
+        if (cancelled) return;
+        const key = getTradeDedupKey(row);
+        if (seenKeys.has(key)) return;
+        const price = Number(row.price);
+        const rawMs = Date.parse(String(row.created_at ?? ""));
+        if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(rawMs)) return;
+        seenKeys.add(key);
+        const rawVol = Number(row.size ?? 1);
+        setRealTrades((prev) => [
+          ...prev,
+          {
+            price,
+            volume: Number.isFinite(rawVol) && rawVol > 0 ? rawVol : 1,
+            created_at: String(row.created_at),
+          },
+        ]);
+      },
+    });
 
     return () => {
-      db.removeChannel(channel);
+      cancelled = true;
+      cleanupStream();
     };
   }, [stock.id, db]);
 
@@ -121,8 +129,9 @@ export default function StockChart({ stock }: { stock: Stock }) {
     const map = new Map<number, Candle>();
 
     realTrades.forEach((t) => {
-      const d = new Date(t.created_at);
-      const tsKey = Math.floor(d.getTime() / intervalMs) * intervalMs;
+      const rawMs = Date.parse(t.created_at);
+      if (!Number.isFinite(rawMs) || !Number.isFinite(t.price) || t.price <= 0) return;
+      const tsKey = Math.floor(rawMs / intervalMs) * intervalMs;
       const existing = map.get(tsKey);
 
       if (!existing) {
@@ -142,7 +151,21 @@ export default function StockChart({ stock }: { stock: Stock }) {
       }
     });
 
-    return Array.from(map.values());
+    const sortedKeys = Array.from(map.keys()).sort((a, b) => a - b);
+    if (sortedKeys.length === 0) {
+      const nowStr = formatCandleTime(new Date(), unit);
+      return [
+        {
+          time: nowStr,
+          open: stock.currentPrice,
+          high: stock.currentPrice,
+          low: stock.currentPrice,
+          close: stock.currentPrice,
+          volume: stock.volume || 0,
+        },
+      ];
+    }
+    return sortedKeys.map((k) => map.get(k)!);
   }, [realTrades, unit, stock.currentPrice, stock.volume]);
 
   const activeCandle = candles[candles.length - 1];

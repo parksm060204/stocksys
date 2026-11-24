@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import StrictWidget from "./StrictWidget";
-import { createClient } from "@/lib/db/client";
+import { createClient, getTradeDedupKey, subscribeStockTradesWithInitialLoad } from "@/lib/db/client";
 
 interface FlowData {
   type: string;
@@ -18,23 +18,39 @@ export default function ParticipantFlowWidget({ stockId }: { stockId: string }) 
   ]);
 
   useEffect(() => {
+    if (!stockId) return;
     const db = createClient();
     let isMounted = true;
+    const seenKeys = new Set<string>();
 
-    const loadInitialData = async () => {
-      // 오늘 생성된 체결만 가져오는 로직 (데모를 위해 전체 체결을 가져오되 최적화 필요)
-      const { data } = await db.from('trades').select('price, size, buyer_is_bot, seller_is_bot').eq('stock_id', stockId);
-      if (data && isMounted) {
+    setFlows([
+      { type: "외국계", netAmount: 0, trend: "-" },
+      { type: "기관", netAmount: 0, trend: "-" },
+      { type: "개인", netAmount: 0, trend: "-" },
+    ]);
+
+    const cleanupStream = subscribeStockTradesWithInitialLoad(db, {
+      stockId,
+      selectColumns: "id, price, size, buyer_is_bot, seller_is_bot, created_at, sequence, cursor",
+      initialLimit: 5000,
+      channelName: `flow-${stockId}`,
+      onInitial: (rows, error) => {
+        if (!isMounted || error) return;
+        seenKeys.clear();
         let instNet = 0;
         let retailNet = 0;
-        const foreignNet = 0; // 외국계는 데모용으로 0으로 두거나 랜덤 변동
+        const foreignNet = 0;
 
-        for (const t of data) {
-          const volInEok = (t.price * t.size) / 100000000;
-          if (t.buyer_is_bot) instNet += volInEok;
+        for (const row of rows) {
+          seenKeys.add(getTradeDedupKey(row));
+          const price = Number(row.price);
+          const size = Number(row.size);
+          if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(size) || size <= 0) continue;
+          const volInEok = (price * size) / 100000000;
+          if (row.buyer_is_bot) instNet += volInEok;
           else retailNet += volInEok;
 
-          if (t.seller_is_bot) instNet -= volInEok;
+          if (row.seller_is_bot) instNet -= volInEok;
           else retailNet -= volInEok;
         }
 
@@ -43,36 +59,41 @@ export default function ParticipantFlowWidget({ stockId }: { stockId: string }) 
           { type: "기관", netAmount: instNet, trend: instNet > 0 ? "순매수" : instNet < 0 ? "순매도" : "-" },
           { type: "개인", netAmount: retailNet, trend: retailNet > 0 ? "순매수" : retailNet < 0 ? "순매도" : "-" },
         ]);
-      }
-    };
+      },
+      onInsert: (row) => {
+        if (!isMounted) return;
+        const key = getTradeDedupKey(row);
+        if (seenKeys.has(key)) return;
+        seenKeys.add(key);
 
-    loadInitialData();
+        const price = Number(row.price);
+        const size = Number(row.size);
+        if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(size) || size <= 0) return;
+        const volInEok = (price * size) / 100000000;
 
-    const channel = db
-      .channel(`flow-${stockId}`)
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'trades', filter: `stock_id=eq.${stockId}` }, (payload: { new: { price: number; size: number; buyer_is_bot: boolean; seller_is_bot: boolean } }) => {
-        const t = payload.new;
-        const volInEok = (t.price * t.size) / 100000000;
-        
-        setFlows(prev => {
-          const next = [...prev];
-          
-          if (t.buyer_is_bot) next[1].netAmount += volInEok;
-          else next[2].netAmount += volInEok;
-
-          if (t.seller_is_bot) next[1].netAmount -= volInEok;
-          else next[2].netAmount -= volInEok;
-
-          next[1].trend = next[1].netAmount > 0 ? "순매수" : next[1].netAmount < 0 ? "순매도" : "-";
-          next[2].trend = next[2].netAmount > 0 ? "순매수" : next[2].netAmount < 0 ? "순매도" : "-";
-          return next;
+        setFlows((prev) => {
+          const nextInst = prev[1].netAmount + (row.buyer_is_bot ? volInEok : 0) - (row.seller_is_bot ? volInEok : 0);
+          const nextRetail = prev[2].netAmount + (!row.buyer_is_bot ? volInEok : 0) - (!row.seller_is_bot ? volInEok : 0);
+          return [
+            { ...prev[0] },
+            {
+              ...prev[1],
+              netAmount: nextInst,
+              trend: nextInst > 0 ? "순매수" : nextInst < 0 ? "순매도" : "-",
+            },
+            {
+              ...prev[2],
+              netAmount: nextRetail,
+              trend: nextRetail > 0 ? "순매수" : nextRetail < 0 ? "순매도" : "-",
+            },
+          ];
         });
-      })
-      .subscribe();
+      },
+    });
 
     return () => {
       isMounted = false;
-      db.removeChannel(channel);
+      cleanupStream();
     };
   }, [stockId]);
 

@@ -2,7 +2,7 @@ import Link from "next/link";
 import { fmtPrice } from "@/lib/format";
 import { createClient } from "@/lib/db/server";
 import { getServerSession } from "next-auth";
-import { authOptions } from "@/app/api/auth/[...nextauth]/route";
+import { authOptions } from "@/lib/auth/authOptions";
 import { isDevGuestAuthEnabled } from "@/lib/engine/localDevMode";
 import { GUEST_USER_ID } from "@/lib/memoryDb/memoryStore";
 import {
@@ -61,7 +61,7 @@ export default async function MyPage() {
     db
       .from("profiles")
       .select("cash, margin_debt_krw, usd_balance, eur_balance, jpy_balance, cny_balance, gbp_balance")
-      .eq("id", userId)
+      .eq("user_id", userId)
       .single(),
     db
       .from("holdings")

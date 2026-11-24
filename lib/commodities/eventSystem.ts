@@ -7,10 +7,16 @@ import {
 /**
  * 전역 원자재 시장 이벤트 템플릿 풀
  */
+export const MACRO_COMMODITY_EVENTS = {
+  GEOPOLITICAL_CRISIS: 'EV_MIDDLE_EAST_WAR',
+  RATE_HIKE_SHOCK: 'EV_RECESSION_PMI_CRASH',
+  LIQUIDITY_BOOM: 'EV_LIQUIDITY_BOOM',
+} as const;
+
 export const EVENT_TEMPLATES: CommodityEventTemplate[] = [
   // ── 1. 지정학적 위기 (Geopolitical & War) ──
   {
-    id: 'EV_MIDDLE_EAST_WAR',
+    id: MACRO_COMMODITY_EVENTS.GEOPOLITICAL_CRISIS,
     title: '중동 호르무즈 해협 군사적 긴장 고조',
     headline: '🚨 [긴급속보] 호르무즈 해협 봉쇄 위기… 유조선 통항 중단 선언',
     description: '원유 및 LNG 수송의 핵심 관문 봉쇄 위기로 에너지 공급망에 심각한 차질이 예상됩니다.',
@@ -66,7 +72,7 @@ export const EVENT_TEMPLATES: CommodityEventTemplate[] = [
     probability: 0.005,
   },
   {
-    id: 'EV_RECESSION_PMI_CRASH',
+    id: MACRO_COMMODITY_EVENTS.RATE_HIKE_SHOCK,
     title: '글로벌 제조업 PMI 급락 및 경기 침체 공포',
     headline: '📉 [실물위기] 글로벌 제조업 지수 10년래 최저… 원자재 수요 급랭',
     description: '주요 소비국의 공장 가동률 저하로 산업용 원자재와 에너지 수요 전망이 급격히 냉각되었습니다.',
@@ -74,6 +80,17 @@ export const EVENT_TEMPLATES: CommodityEventTemplate[] = [
     magnitude: -0.040, // -4.0% 급락
     decayTicks: 45,
     probability: 0.004,
+  },
+
+  {
+    id: MACRO_COMMODITY_EVENTS.LIQUIDITY_BOOM,
+    title: '글로벌 유동성 확대',
+    headline: '유동성 확대에 산업금속과 에너지 수요 전망 상승',
+    description: '자금 조달 여건이 개선되면서 제조업과 에너지 수요가 늘어날 것으로 예상됩니다.',
+    targetCategories: ['industrial_metals', 'energy'],
+    magnitude: 0.035,
+    decayTicks: 35,
+    probability: 0,
   },
 
   // ── 4. 산업금속 및 배터리 공급망 (EV / Metals) ──
@@ -121,6 +138,7 @@ export class CommodityEventSystem {
   public activeEvents: ActiveCommodityEvent[] = [];
   public newsFeed: CommodityNewsItem[] = [];
   private eventHistory: ActiveCommodityEvent[] = [];
+  private manualSequence = 0;
   private globalTriggerProbability: number = 0.02; // 틱당 2% 확률
   private readonly random?: SimulationRandomSource;
   private readonly clock?: SimulationTimeSource;
@@ -154,7 +172,7 @@ export class CommodityEventSystem {
 
     // 1. 신규 이벤트 추첨 (이미 활성화된 템플릿은 중복 제외)
     const activeTemplateIds = new Set(this.activeEvents.map((e) => e.templateId));
-    const availableTemplates = EVENT_TEMPLATES.filter((t) => !activeTemplateIds.has(t.id));
+    const availableTemplates = EVENT_TEMPLATES.filter((t) => t.probability > 0 && !activeTemplateIds.has(t.id));
 
     const shouldTrigger = this.random
       ? this.random.nextBoolean(this.globalTriggerProbability)
@@ -206,11 +224,11 @@ export class CommodityEventSystem {
     // 2. 활성 이벤트 틱 감소 및 만료 처리
     const remainingList: ActiveCommodityEvent[] = [];
     for (const ev of this.activeEvents) {
-      ev.remainingTicks -= 1;
-      if (ev.remainingTicks <= 0) {
-        expiredEvents.push(ev);
+      const nextEv: ActiveCommodityEvent = { ...ev, remainingTicks: ev.remainingTicks - 1 };
+      if (nextEv.remainingTicks <= 0) {
+        expiredEvents.push(nextEv);
       } else {
-        remainingList.push(ev);
+        remainingList.push(nextEv);
       }
     }
     this.activeEvents = remainingList;
@@ -225,8 +243,9 @@ export class CommodityEventSystem {
     const template = EVENT_TEMPLATES.find((t) => t.id === templateId);
     if (!template) return null;
 
+    const eventKey = [currentTick, template.id, ++this.manualSequence].join('_');
     const activeEvent: ActiveCommodityEvent = {
-      id: `ev_manual_${currentTick}_${template.id}`,
+      id: 'ev_manual_' + eventKey,
       templateId: template.id,
       title: template.title,
       headline: template.headline,
@@ -242,7 +261,7 @@ export class CommodityEventSystem {
     this.eventHistory.push(activeEvent);
 
     const newsItem: CommodityNewsItem = {
-      id: `news_manual_${currentTick}_${template.id}`,
+      id: 'news_manual_' + eventKey,
       tick: currentTick,
       timestamp: this.clock ? this.clock.now() : currentTick * 1000,
       category: template.targetCategories.join(', '),
@@ -260,18 +279,21 @@ export class CommodityEventSystem {
     this.activeEvents = [];
     this.newsFeed = [];
     this.eventHistory = [];
+    this.manualSequence = 0;
   }
 
   public snapshotState(): {
     activeEvents: ActiveCommodityEvent[];
     newsFeed: CommodityNewsItem[];
     eventHistory: ActiveCommodityEvent[];
+    manualSequence?: number;
     randomSnapshot: ReturnType<NonNullable<CommodityEventSystem['random']>['snapshot']> | null;
   } {
     return {
       activeEvents: this.activeEvents.map((e) => ({ ...e })),
       newsFeed: this.newsFeed.map((n) => ({ ...n })),
       eventHistory: this.eventHistory.map((e) => ({ ...e })),
+      manualSequence: this.manualSequence,
       randomSnapshot: this.random?.snapshot ? this.random.snapshot() : null,
     };
   }
@@ -280,6 +302,7 @@ export class CommodityEventSystem {
     this.activeEvents = snap.activeEvents.map((e) => ({ ...e }));
     this.newsFeed = snap.newsFeed.map((n) => ({ ...n }));
     this.eventHistory = snap.eventHistory.map((e) => ({ ...e }));
+    this.manualSequence = snap.manualSequence ?? 0;
     if (snap.randomSnapshot && this.random?.restore) {
       this.random.restore(snap.randomSnapshot);
     }

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { CommodityDefinition } from '@/lib/commodities/types';
 import { fmtPrice } from '@/lib/format';
 import { useAuth } from '@/lib/auth/useAuth';
@@ -28,16 +28,51 @@ export default function CommodityOrderEntry({
 
   const { userId, isLoggedIn } = useAuth();
   const { showToast } = useToast();
+  const accountKey = isLoggedIn && userId ? userId : null;
+
+  const mountedRef = useRef<boolean>(true);
+  const fetchSeqRef = useRef<number>(0);
+  const submitSeqRef = useRef<number>(0);
+  const activeContextRef = useRef<{ accountKey: string | null; commodityId: string }>({
+    accountKey,
+    commodityId: commodity.id,
+  });
+  const onOrderPlacedRef = useRef(onOrderPlaced);
+
+  useEffect(() => {
+    onOrderPlacedRef.current = onOrderPlaced;
+  }, [onOrderPlaced]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      fetchSeqRef.current += 1;
+      submitSeqRef.current += 1;
+    };
+  }, []);
 
   const fetchAccountState = useCallback(async () => {
+    const reqAccountKey = accountKey;
+    const reqCommodityId = commodity.id;
+    const reqSeq = ++fetchSeqRef.current;
+
     try {
-      const res = await fetch(`/api/commodities?id=${encodeURIComponent(commodity.id)}`);
+      const res = await fetch(`/api/commodities?id=${encodeURIComponent(reqCommodityId)}`);
       const data = await res.json();
+      if (
+        !mountedRef.current ||
+        reqSeq !== fetchSeqRef.current ||
+        activeContextRef.current.accountKey !== reqAccountKey ||
+        activeContextRef.current.commodityId !== reqCommodityId
+      ) {
+        return;
+      }
       if (!data?.success) return;
       if (Number(data.usdToKrwRate) > 0) {
         setUsdToKrwRate(Number(data.usdToKrwRate));
       }
-      if (isLoggedIn && userId) {
+      if (reqAccountKey) {
         setUserCash(data.availableCashKrw !== null && data.availableCashKrw !== undefined ? Number(data.availableCashKrw) : null);
         const rawPosQty = Math.abs(Number(data.myPosition?.quantity ?? 0));
         const posSide = data.myPosition?.side;
@@ -52,11 +87,24 @@ export default function CommodityOrderEntry({
     } catch {
       // 조회 실패 시 기존 상태 유지
     }
-  }, [commodity.id, isLoggedIn, userId]);
+  }, [commodity.id, accountKey]);
 
   useEffect(() => {
+    activeContextRef.current = { accountKey, commodityId: commodity.id };
+    fetchSeqRef.current += 1;
+    submitSeqRef.current += 1;
+
+    setUserCash(null);
+    setPositionQty(0);
+    setPendingOrders([]);
+    setLoading(false);
+
     void fetchAccountState();
-  }, [fetchAccountState]);
+    return () => {
+      fetchSeqRef.current += 1;
+      submitSeqRef.current += 1;
+    };
+  }, [fetchAccountState, accountKey, commodity.id]);
 
   const numContracts = Math.max(1, parseInt(contracts, 10) || 1);
   const numPrice = orderType === 'market' ? commodity.currentPrice : parseFloat(price) || commodity.currentPrice;
@@ -107,6 +155,11 @@ export default function CommodityOrderEntry({
       return;
     }
 
+    const reqAccountKey = accountKey;
+    const reqCommodityId = commodity.id;
+    if (!reqAccountKey) return;
+    const reqSubmitSeq = submitSeqRef.current;
+
     setLoading(true);
     try {
       // 1. 서버 권위 API 주문 제출 (서버에서 계좌 잠금, 증거금 예약 및 정산 처리)
@@ -116,7 +169,7 @@ export default function CommodityOrderEntry({
         body: JSON.stringify({
           action: 'submit_order',
           order: {
-            commodityId: commodity.id,
+            commodityId: reqCommodityId,
             side,
             type: orderType,
             price: numPrice,
@@ -126,9 +179,25 @@ export default function CommodityOrderEntry({
       });
 
       const data = await res.json();
+      if (
+        !mountedRef.current ||
+        reqSubmitSeq !== submitSeqRef.current ||
+        activeContextRef.current.accountKey !== reqAccountKey ||
+        activeContextRef.current.commodityId !== reqCommodityId
+      ) {
+        return;
+      }
       if (!res.ok || !data.success) throw new Error(data.message || '주문 제출 실패');
 
       await fetchAccountState();
+      if (
+        !mountedRef.current ||
+        reqSubmitSeq !== submitSeqRef.current ||
+        activeContextRef.current.accountKey !== reqAccountKey ||
+        activeContextRef.current.commodityId !== reqCommodityId
+      ) {
+        return;
+      }
 
       const confirmedMargin = Number(data.reservedMarginKrw ?? totalRequiredMarginKrw);
       showToast({
@@ -137,15 +206,30 @@ export default function CommodityOrderEntry({
         description: `${numContracts}계약 @ $${numPrice.toLocaleString()} (위탁증거금 ₩${confirmedMargin.toLocaleString()} 예약 완료)`,
       });
 
-      onOrderPlaced?.();
+      onOrderPlacedRef.current?.();
     } catch (e: any) {
+      if (
+        !mountedRef.current ||
+        reqSubmitSeq !== submitSeqRef.current ||
+        activeContextRef.current.accountKey !== reqAccountKey ||
+        activeContextRef.current.commodityId !== reqCommodityId
+      ) {
+        return;
+      }
       showToast({
         type: 'error',
         title: '주문 오류',
         description: e.message || '주문 처리 중 문제가 발생했습니다.',
       });
     } finally {
-      setLoading(false);
+      if (
+        mountedRef.current &&
+        reqSubmitSeq === submitSeqRef.current &&
+        activeContextRef.current.accountKey === reqAccountKey &&
+        activeContextRef.current.commodityId === reqCommodityId
+      ) {
+        setLoading(false);
+      }
     }
   };
 

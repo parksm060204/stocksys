@@ -40,7 +40,7 @@ export default function DashboardGate({ children }: { children: React.ReactNode 
       const { data: profile } = await db
         .from('profiles')
         .select('is_admin, unlocked_features')
-        .eq('id', userId)
+        .eq('user_id', userId)
         .maybeSingle();
 
       if (cancelled || reqSeq !== reqSeqRef.current) return;
@@ -100,17 +100,21 @@ function DashboardContent() {
     let cancelled = false;
     (async () => {
       const [{ data: stocksData }, { data: newsData }] = await Promise.all([
-        db.from('stocks').select('id, name, ticker, market, sector, current_price, previous_close'),
+        db.from('stocks').select('id, name, ticker, market, sector, current_price, previous_close, is_listed').neq('is_listed', false),
         db.from('market_news').select('*').order('created_at', { ascending: false }).limit(5),
       ]);
       if (cancelled) return;
 
       if (stocksData) {
-        setStocks(stocksData.map((row: { id: string; name: string; ticker: string; market: string; sector: string; current_price: number; previous_close: number }) => ({
-          id: row.id, name: row.name, ticker: row.ticker, market: row.market,
-          sector: row.sector, currentPrice: row.current_price, previousClose: row.previous_close,
-          marketCap: row.current_price * 1000000,
-        } as Stock)));
+        setStocks(
+          stocksData
+            .filter((row: { is_listed?: boolean }) => row.is_listed !== false)
+            .map((row: { id: string; name: string; ticker: string; market: string; sector: string; current_price: number; previous_close: number }) => ({
+              id: row.id, name: row.name, ticker: row.ticker, market: row.market,
+              sector: row.sector, currentPrice: row.current_price, previousClose: row.previous_close,
+              marketCap: row.current_price * 1000000,
+            } as Stock))
+        );
       }
       setNews(newsData || []);
       setReady(true);

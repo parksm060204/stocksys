@@ -202,7 +202,7 @@ export class CommodityMarketEngine {
     const snapshot: BotMarketSnapshot = {
       tick,
       commodities: {},
-      activeEvents: [...activeEvents],
+      activeEvents: activeEvents.map((e) => ({ ...e })),
     };
     this.commodities.forEach((c, id) => {
       snapshot.commodities[id] = {
@@ -600,149 +600,175 @@ export class CommodityMarketEngine {
     return changed;
   }
 
-  /**
-   * DB 스냅샷 복원 후 엔진 에포크/시퀀스를 동기화하고,
-   * 미체결 주문을 오더북에 복원하거나 오더북에서 유실된 고아 예약을 안전하게 환불한다.
-   * 동시 호출 시 공유 in-flight Promise를 대기하며 실패 시 다음 호출에서 재시도 가능하다.
-   */
-  public async reconcileWithDatabase(db: MemoryDatabase): Promise<void> {
-    if (
+  private isHoldingTickLock(): boolean {
+    const currentToken = this.tickLockStorage.getStore();
+    return Boolean(currentToken && currentToken === this.activeTickToken);
+  }
+
+  private isReconciledFor(db: MemoryDatabase): boolean {
+    return (
       this.reconciled &&
       this.reconciledDb === db &&
       this.reconciledResetVersion === db.commodityResetVersion &&
       this.reconciledSnapshotVersion === db.commoditySnapshotVersion
-    ) {
+    );
+  }
+
+  private async performReconcile(db: MemoryDatabase): Promise<void> {
+    await this.runWithTickLock(async () => {
+      if (this.isReconciledFor(db)) {
+        return;
+      }
+      this.attachDatabase(db);
+
+      const isSeedReset =
+        this.reconciledResetVersion !== -1 &&
+        this.reconciledResetVersion !== db.commodityResetVersion;
+      const isSnapshotReplacement =
+        this.reconciled &&
+        !isSeedReset &&
+        (this.reconciledDb !== db || this.reconciledSnapshotVersion !== db.commoditySnapshotVersion);
+
+      const candidateUserSet = new Set<string>();
+      for (const ord of db.commodityOpenOrders.values()) {
+        if (ord.userId) candidateUserSet.add(ord.userId);
+      }
+      for (const res of db.commodityMarginReservations.values()) {
+        if (res.status === 'open' || res.status === 'partial') {
+          candidateUserSet.add(res.user_id);
+        }
+      }
+
+      const candidateLockKeys = Array.from(candidateUserSet).map((uid) => db.resolveAccountLockKey(uid));
+
+      await withAccountLocks(candidateLockKeys, async () => {
+        if (isSeedReset) {
+          this.restoreRuntime(this.initialRuntimeSnapshot);
+          this.eventSystem.clear();
+          this.scenarioManager.resetEmpty(true);
+        } else if (isSnapshotReplacement && db.commodityCurrentTick === 0) {
+          this.restoreRuntime(this.initialRuntimeSnapshot);
+        }
+
+        this.engineEpoch = db.commodityNextEpoch;
+        db.commodityNextEpoch += 1;
+        if (this.reconciled) {
+          this.currentTick = db.commodityCurrentTick;
+          this.userOrderSeq = db.commodityUserOrderSeq;
+          this.tradeSeq = db.commodityTradeSeq;
+        } else {
+          this.currentTick = Math.max(this.currentTick, db.commodityCurrentTick);
+          this.userOrderSeq = Math.max(this.userOrderSeq, db.commodityUserOrderSeq);
+          this.tradeSeq = Math.max(this.tradeSeq, db.commodityTradeSeq);
+        }
+
+        syncScenarioManagerFromDatabase(db, this.scenarioManager, { clearOnDbNull: true });
+        if (db.commodityEventRuntimeState && typeof db.commodityEventRuntimeState === 'object') {
+          try {
+            this.eventSystem.restoreState(db.commodityEventRuntimeState);
+          } catch {
+            if (isSeedReset || isSnapshotReplacement) {
+              this.eventSystem.clear();
+            }
+          }
+        } else if (isSeedReset || isSnapshotReplacement) {
+          this.eventSystem.clear();
+        }
+
+        // 스냅샷에 저장된 원자재 가격 복원 (초기 부팅 또는 스냅샷 import 시)
+        if (db.commodityCurrentTick > 0) {
+          this.commodities.forEach((state, cid) => {
+            const dbRec = db.commodities.get(cid);
+            if (dbRec && Number.isFinite(dbRec.current_price) && dbRec.current_price > 0) {
+              state.currentPrice = dbRec.current_price;
+              if (Number.isFinite(dbRec.previous_close) && dbRec.previous_close > 0) {
+                state.previousPrice = dbRec.previous_close;
+              }
+              if (Number.isFinite(dbRec.open_price) && dbRec.open_price > 0) {
+                state.openPrice = dbRec.open_price;
+              }
+              if (Number.isFinite(dbRec.high_price) && dbRec.high_price > 0) {
+                state.high = dbRec.high_price;
+              }
+              if (Number.isFinite(dbRec.low_price) && dbRec.low_price > 0) {
+                state.low = dbRec.low_price;
+              }
+              if (Number.isFinite(dbRec.volume)) {
+                state.volume = dbRec.volume;
+              }
+            }
+          });
+        }
+
+        // 1. 미체결 사용자 주문 오더북 복원 (구세대 잔여 주문 완전 제거)
+        for (const book of this.orderBooks.values()) {
+          book.clear();
+        }
+        for (const [orderId, ord] of db.commodityOpenOrders.entries()) {
+          const res = db.commodityMarginReservations.get(orderId);
+          if (!res || (res.status !== 'open' && res.status !== 'partial') || ord.size - ord.filled <= 0) {
+            db.commodityOpenOrders.delete(orderId);
+            continue;
+          }
+          const book = this.orderBooks.get(ord.commodityId);
+          if (book) {
+            book.addOrder({ ...ord });
+          } else {
+            await releaseCommodityOrderMargin(db, orderId, 'cancelled');
+          }
+        }
+
+        // 2. 오더북에 없는 고아 예약(크래시/구버전 스냅샷) 안전 환불
+        for (const [orderId, res] of db.commodityMarginReservations.entries()) {
+          if ((res.status === 'open' || res.status === 'partial') && !db.commodityOpenOrders.has(orderId)) {
+            await releaseCommodityOrderMargin(db, orderId, 'cancelled');
+          }
+        }
+
+        this.reconciledDb = db;
+        this.reconciled = true;
+        this.reconciledResetVersion = db.commodityResetVersion;
+        this.reconciledSnapshotVersion = db.commoditySnapshotVersion;
+      });
+    });
+  }
+
+  /**
+   * DB 스냅샷 복원 후 엔진 에포크/시퀀스를 동기화하고,
+   * 미체결 주문을 오더북에 복원하거나 오더북에서 유실된 고아 예약을 안전하게 환불한다.
+   * 동시 호출 시 공유 in-flight Promise를 대기하며 실패 시 다음 호출에서 재시도 가능하다.
+   * 이미 tickLock을 보유한 흐름에서는 재진입하여 동시 reconcilePromise 대기로 인한 교착을 방지한다.
+   */
+  public async reconcileWithDatabase(db: MemoryDatabase): Promise<void> {
+    if (this.isReconciledFor(db)) {
       return;
     }
-    if (this.reconcilePromise) {
+
+    if (this.isHoldingTickLock()) {
+      await this.performReconcile(db);
+      return;
+    }
+
+    while (this.reconcilePromise) {
       await this.reconcilePromise;
-      if (
-        this.reconciled &&
-        this.reconciledDb === db &&
-        this.reconciledResetVersion === db.commodityResetVersion &&
-        this.reconciledSnapshotVersion === db.commoditySnapshotVersion
-      ) {
+      if (this.isReconciledFor(db)) {
         return;
       }
     }
 
-    this.reconcilePromise = (async () => {
+    let pending: Promise<void> | null = null;
+    pending = (async () => {
       try {
-        await this.runWithTickLock(async () => {
-          if (
-            this.reconciled &&
-            this.reconciledDb === db &&
-            this.reconciledResetVersion === db.commodityResetVersion &&
-            this.reconciledSnapshotVersion === db.commoditySnapshotVersion
-          ) {
-            return;
-          }
-          this.attachDatabase(db);
-
-          const isSeedReset =
-            this.reconciledResetVersion !== -1 &&
-            this.reconciledResetVersion !== db.commodityResetVersion;
-
-          const candidateUserSet = new Set<string>();
-          for (const ord of db.commodityOpenOrders.values()) {
-            if (ord.userId) candidateUserSet.add(ord.userId);
-          }
-          for (const res of db.commodityMarginReservations.values()) {
-            if (res.status === 'open' || res.status === 'partial') {
-              candidateUserSet.add(res.user_id);
-            }
-          }
-
-          const candidateLockKeys = Array.from(candidateUserSet).map((uid) => db.resolveAccountLockKey(uid));
-
-          await withAccountLocks(candidateLockKeys, async () => {
-            if (isSeedReset) {
-              this.restoreRuntime(this.initialRuntimeSnapshot);
-              this.eventSystem.clear();
-              this.scenarioManager.resetEmpty(true);
-            }
-
-            this.engineEpoch = db.commodityNextEpoch;
-            db.commodityNextEpoch += 1;
-            if (this.reconciled) {
-              this.currentTick = db.commodityCurrentTick;
-              this.userOrderSeq = db.commodityUserOrderSeq;
-              this.tradeSeq = db.commodityTradeSeq;
-            } else {
-              this.currentTick = Math.max(this.currentTick, db.commodityCurrentTick);
-              this.userOrderSeq = Math.max(this.userOrderSeq, db.commodityUserOrderSeq);
-              this.tradeSeq = Math.max(this.tradeSeq, db.commodityTradeSeq);
-            }
-
-            syncScenarioManagerFromDatabase(db, this.scenarioManager, { clearOnDbNull: true });
-            if (db.commodityEventRuntimeState) {
-              try {
-                this.eventSystem.restoreState(db.commodityEventRuntimeState);
-              } catch { /* ignore invalid snapshot */ }
-            }
-
-            // 스냅샷에 저장된 원자재 가격 복원 (초기 부팅 또는 스냅샷 import 시)
-            if (db.commodityCurrentTick > 0) {
-              this.commodities.forEach((state, cid) => {
-                const dbRec = db.commodities.get(cid);
-                if (dbRec && Number.isFinite(dbRec.current_price) && dbRec.current_price > 0) {
-                  state.currentPrice = dbRec.current_price;
-                  if (Number.isFinite(dbRec.previous_close) && dbRec.previous_close > 0) {
-                    state.previousPrice = dbRec.previous_close;
-                  }
-                  if (Number.isFinite(dbRec.open_price) && dbRec.open_price > 0) {
-                    state.openPrice = dbRec.open_price;
-                  }
-                  if (Number.isFinite(dbRec.high_price) && dbRec.high_price > 0) {
-                    state.high = dbRec.high_price;
-                  }
-                  if (Number.isFinite(dbRec.low_price) && dbRec.low_price > 0) {
-                    state.low = dbRec.low_price;
-                  }
-                  if (Number.isFinite(dbRec.volume)) {
-                    state.volume = dbRec.volume;
-                  }
-                }
-              });
-            }
-
-            // 1. 미체결 사용자 주문 오더북 복원 (구세대 잔여 주문 완전 제거)
-            for (const book of this.orderBooks.values()) {
-              book.clear();
-            }
-            for (const [orderId, ord] of db.commodityOpenOrders.entries()) {
-              const res = db.commodityMarginReservations.get(orderId);
-              if (!res || (res.status !== 'open' && res.status !== 'partial') || ord.size - ord.filled <= 0) {
-                db.commodityOpenOrders.delete(orderId);
-                continue;
-              }
-              const book = this.orderBooks.get(ord.commodityId);
-              if (book) {
-                book.addOrder({ ...ord });
-              } else {
-                await releaseCommodityOrderMargin(db, orderId, 'cancelled');
-              }
-            }
-
-            // 2. 오더북에 없는 고아 예약(크래시/구버전 스냅샷) 안전 환불
-            for (const [orderId, res] of db.commodityMarginReservations.entries()) {
-              if ((res.status === 'open' || res.status === 'partial') && !db.commodityOpenOrders.has(orderId)) {
-                await releaseCommodityOrderMargin(db, orderId, 'cancelled');
-              }
-            }
-
-            this.reconciledDb = db;
-            this.reconciled = true;
-            this.reconciledResetVersion = db.commodityResetVersion;
-            this.reconciledSnapshotVersion = db.commoditySnapshotVersion;
-          });
-        });
+        await this.performReconcile(db);
       } finally {
-        this.reconcilePromise = null;
+        if (this.reconcilePromise === pending) {
+          this.reconcilePromise = null;
+        }
       }
     })();
+    this.reconcilePromise = pending;
 
-    return this.reconcilePromise;
+    return pending;
   }
 
   /**
@@ -790,13 +816,18 @@ export class CommodityMarketEngine {
           const prevDbScenarioSnap = this.db?.scenarioRuntimeState
             ? structuredClone(this.db.scenarioRuntimeState)
             : null;
+          const prevDbEventSnap = this.db?.commodityEventRuntimeState
+            ? structuredClone(this.db.commodityEventRuntimeState)
+            : null;
           if (this.db) {
             syncScenarioManagerFromDatabase(this.db, this.scenarioManager);
           }
           const scenarioSnapBeforeTick = JSON.stringify(this.scenarioManager.snapshotState());
+          const eventSnapBeforeTick = JSON.stringify(this.eventSystem.snapshotState());
           const runtimeSnap = this.snapshotRuntime();
           const prevDbTick = this.db?.commodityCurrentTick;
           const prevDbTradeSeq = this.db?.commodityTradeSeq;
+          const prevDbUserOrderSeq = this.db?.commodityUserOrderSeq;
 
           const userSnapshots = new Map<string, any>();
           const posSnapshots = new Map<string, any>();
@@ -845,6 +876,7 @@ export class CommodityMarketEngine {
             if (this.db) {
               this.db.commodityCurrentTick = this.currentTick;
               this.db.commodityTradeSeq = this.tradeSeq;
+              this.db.commodityUserOrderSeq = this.userOrderSeq;
               dbPricesSynced = this.syncPricesToDatabase(this.db);
 
               const nextScenarioSnap = this.scenarioManager.snapshotState();
@@ -858,6 +890,22 @@ export class CommodityMarketEngine {
                 nextScenarioSnap.activeMacroShocks.length > 0
               ) {
                 this.db.scenarioRuntimeState = nextScenarioSnap;
+              }
+
+              const nextEventSnap = this.eventSystem.snapshotState();
+              const hasEventPayload =
+                nextEventSnap.activeEvents.length > 0 ||
+                nextEventSnap.newsFeed.length > 0 ||
+                nextEventSnap.eventHistory.length > 0 ||
+                (nextEventSnap.manualSequence ?? 0) > 0;
+              const shouldSyncDbEventState = prevDbEventSnap !== null || hasEventPayload;
+              const nextEventSnapJson = shouldSyncDbEventState ? JSON.stringify(nextEventSnap) : '';
+              const eventStateChanged =
+                shouldSyncDbEventState &&
+                (nextEventSnapJson !== eventSnapBeforeTick ||
+                  nextEventSnapJson !== JSON.stringify(prevDbEventSnap));
+              if (shouldSyncDbEventState) {
+                this.db.commodityEventRuntimeState = nextEventSnap;
               }
 
               tickTrades = this.tradesHistory.filter((t) => t.tick === this.currentTick);
@@ -899,7 +947,7 @@ export class CommodityMarketEngine {
                 userMutations += liquidatedCount;
               }
 
-              if ((userMutations > 0 || dbPricesSynced || scenarioChanged) && this.onPersist) {
+              if ((userMutations > 0 || dbPricesSynced || scenarioChanged || eventStateChanged) && this.onPersist) {
                 const saved = await this.onPersist();
                 if (!saved) {
                   throw new Error('원자재 틱 정산 영속 저장에 실패했습니다.');
@@ -913,8 +961,10 @@ export class CommodityMarketEngine {
 
             if (this.db) {
               this.db.scenarioRuntimeState = prevDbScenarioSnap;
+              this.db.commodityEventRuntimeState = prevDbEventSnap;
               if (prevDbTick !== undefined) this.db.commodityCurrentTick = prevDbTick;
               if (prevDbTradeSeq !== undefined) this.db.commodityTradeSeq = prevDbTradeSeq;
+              if (prevDbUserOrderSeq !== undefined) this.db.commodityUserOrderSeq = prevDbUserOrderSeq;
 
               if (dbCommoditiesSnapshot) {
                 this.db.commodities = dbCommoditiesSnapshot;

@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import CommodityDetailClient from "./CommodityDetailClient";
-import { commodityEngineInstance } from "@/app/api/commodities/route";
+import { commodityEngineInstance } from "@/lib/commodities/commodityEngineInstance";
 import { COMMODITY_DEFINITIONS } from "@/lib/commodities/definitions";
 
 export const revalidate = 0;

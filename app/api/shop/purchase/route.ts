@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { resolveAuthenticatedUserId } from '@/lib/auth/sessionAuth';
 import { ensureLocalStandaloneReady, persistConfirmedState } from '@/lib/engine/localStandaloneServer';
 import { memoryDb } from '@/lib/memoryDb/memoryStore';
-import { withAccountLocks } from '@/lib/memoryDb/accountLocks';
+import { withResolvedAccountLocks } from '@/lib/memoryDb/accountLocks';
 import { runWithCommitGate } from '@/lib/memoryDb/PersistenceManager';
 import { getAvailableCashKrw } from '@/lib/engine/orderRisk';
 import {
@@ -70,7 +70,7 @@ export async function POST(req: Request) {
           { status: 410 }
         );
       }
-      const result = await withAccountLocks([memoryDb.resolveAccountLockKey(authenticatedUserId)], async () => {
+      const result = await withResolvedAccountLocks(() => [memoryDb.resolveAccountLockKey(authenticatedUserId)], async () => {
         return await runWithCommitGate(persistConfirmedState, async () => {
           const profile = memoryDb.resolveProfileByUserId(authenticatedUserId);
           if (!profile) {
@@ -187,7 +187,7 @@ export async function POST(req: Request) {
         );
       }
 
-      const result = await withAccountLocks([memoryDb.resolveAccountLockKey(authenticatedUserId)], async () => {
+      const result = await withResolvedAccountLocks(() => [memoryDb.resolveAccountLockKey(authenticatedUserId)], async () => {
         return await runWithCommitGate(persistConfirmedState, async () => {
           const profile = memoryDb.resolveProfileByUserId(authenticatedUserId);
           if (!profile) {

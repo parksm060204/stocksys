@@ -873,4 +873,40 @@ export class MarketDiagnostics {
     this.timeSeriesHistory = [];
     this.lastSnapshotSimTime = 0;
   }
+
+  public snapshotState() {
+    return {
+      strategyStats: Array.from(this.strategyStats.entries()).map(([k, v]) => [k, { ...v }] as const),
+      rejectionLog: this.rejectionLog.map((r) => ({ ...r })),
+      timeSeriesHistory: structuredClone(this.timeSeriesHistory),
+      lastSnapshotSimTime: this.lastSnapshotSimTime,
+      emptyBookTicks: Array.from(this.emptyBookTicks.entries()),
+      spreadHistory: Array.from(this.spreadHistory.entries()).map(([k, v]) => [k, [...v]] as const),
+      causalLogs: this.causalLogs.map((l) => ({ ...l })),
+      leaderBoard: this.leaderBoard.map((l) => ({ ...l })),
+      smoothedLeaderScores: Array.from(this.smoothedLeaderScores.entries()),
+      lastLeaderBoardAsOfTime: this.lastLeaderBoardAsOfTime,
+      recordedMarkerEventIds: Array.from(this.recordedMarkerEventIds),
+      lastRegimeApplication: this.lastRegimeApplication
+        ? { ...this.lastRegimeApplication, multipliers: { ...this.lastRegimeApplication.multipliers } }
+        : null,
+    };
+  }
+
+  public restoreState(snap: ReturnType<MarketDiagnostics['snapshotState']>): void {
+    this.strategyStats = new Map(snap.strategyStats.map(([k, v]) => [k, { ...v }]));
+    this.rejectionLog = snap.rejectionLog.map((r) => ({ ...r }));
+    this.timeSeriesHistory = structuredClone(snap.timeSeriesHistory);
+    this.lastSnapshotSimTime = snap.lastSnapshotSimTime;
+    this.emptyBookTicks = new Map(snap.emptyBookTicks);
+    this.spreadHistory = new Map(snap.spreadHistory.map(([k, v]) => [k, [...v]]));
+    this.causalLogs = snap.causalLogs.map((l) => ({ ...l }));
+    this.leaderBoard = snap.leaderBoard.map((l) => ({ ...l }));
+    this.smoothedLeaderScores = new Map(snap.smoothedLeaderScores);
+    this.lastLeaderBoardAsOfTime = snap.lastLeaderBoardAsOfTime;
+    this.recordedMarkerEventIds = new Set(snap.recordedMarkerEventIds);
+    this.lastRegimeApplication = snap.lastRegimeApplication
+      ? { ...snap.lastRegimeApplication, multipliers: { ...snap.lastRegimeApplication.multipliers } }
+      : null;
+  }
 }

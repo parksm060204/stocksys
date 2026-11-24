@@ -184,7 +184,7 @@ export abstract class CommodityBot {
       realizedPnL: this.realizedPnL,
       totalTradesCount: this.totalTradesCount,
       positions: Array.from(this.positions.entries()).map(([k, v]) => [k, { ...v }]),
-      snapshotHistory: [...this.snapshotHistory],
+      snapshotHistory: structuredClone(this.snapshotHistory),
       randomSnapshot: this.random?.snapshot ? this.random.snapshot() : null,
     };
   }
@@ -194,7 +194,7 @@ export abstract class CommodityBot {
     this.realizedPnL = snap.realizedPnL;
     this.totalTradesCount = snap.totalTradesCount;
     this.positions = new Map(snap.positions.map(([k, v]) => [k, { ...v }]));
-    this.snapshotHistory = [...snap.snapshotHistory];
+    this.snapshotHistory = structuredClone(snap.snapshotHistory);
     if (snap.randomSnapshot && this.random?.restore) {
       this.random.restore(snap.randomSnapshot);
     }

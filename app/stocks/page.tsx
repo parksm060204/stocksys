@@ -89,7 +89,8 @@ function StocksContent() {
         // 3초 타임아웃 안전 가드 (DB 지연 시 무한 스켈레톤 방지)
         const fetchPromise = db
           .from('stocks')
-          .select('id, name, ticker, market, sector, current_price, previous_close');
+          .select('id, name, ticker, market, sector, current_price, previous_close, is_listed')
+          .neq('is_listed', false);
         
         const timeoutPromise = new Promise<{ data: any; error: any }>((_, reject) =>
           setTimeout(() => reject(new Error('Network timeout (3s)')), 3000)
@@ -98,7 +99,10 @@ function StocksContent() {
         const { data, error } = await Promise.race([fetchPromise, timeoutPromise]);
         
         if (isMounted && data && !error && data.length > 0) {
-          setAllStocks(data.map((row: { id: string; name: string; ticker: string; market: string; sector: string; current_price: number; previous_close: number }) => ({
+          setAllStocks(
+            data
+              .filter((row: { is_listed?: boolean }) => row.is_listed !== false)
+              .map((row: { id: string; name: string; ticker: string; market: string; sector: string; current_price: number; previous_close: number }) => ({
             id: row.id,
             name: row.name,
             ticker: row.ticker,
@@ -107,7 +111,8 @@ function StocksContent() {
             currentPrice: Number(row.current_price) || 1000,
             previousClose: Number(row.previous_close) || 1000,
             marketCap: (Number(row.current_price) || 1000) * 1000000,
-          } as Stock)));
+          } as Stock))
+          );
         }
       } catch (e) {
         console.warn('[Stocks] Live DB sync notice:', e);

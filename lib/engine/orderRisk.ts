@@ -376,7 +376,8 @@ export function sweepUnencumberedCashToMarginDebt(
 ): number {
   const currentDebt = Math.max(0, Math.round(Number(profile.margin_debt_krw ?? 0) * 100) / 100);
   if (currentDebt <= 0) return 0;
-  const reservedCash = calculateUserReservedCashKrw(db, profile.id);
+  const authUserId = profile.user_id || profile.id;
+  const reservedCash = calculateUserReservedCashKrw(db, authUserId);
   const unencumbered = Math.max(0, Math.round((Number(profile.cash ?? 0) - reservedCash) * 100) / 100);
   const repay = Math.min(currentDebt, unencumbered);
   if (repay <= 0) return 0;

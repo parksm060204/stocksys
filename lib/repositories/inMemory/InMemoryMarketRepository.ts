@@ -146,8 +146,7 @@ export class InMemoryMarketRepository implements MarketRepository {
         id,
         created_at: t.created_at || this.db.getIsoTimestamp(),
       };
-      this.db.trades.push(record);
-      this.db.addTradeToIndex(record);
+      this.db.appendTrade(record);
     }
   }
 

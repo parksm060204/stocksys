@@ -117,6 +117,8 @@ export interface SettlementRepository {
   /**
    * 만기 정산 윈도우 내 기지급 쿠폰 이력 존재 여부를 확인한다.
    */
+  hasBondCouponPaidDuring?(userId: string, bondId: string, fromMs: number, throughMs: number): boolean;
+  hasBondCouponPaymentRecord?(idempotencyKey: string): boolean;
   hasBondCouponPaidInWindow?(
     userId: string,
     bondId: string,

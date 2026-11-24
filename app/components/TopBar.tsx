@@ -39,11 +39,12 @@ export default function TopBar() {
   useEffect(() => {
     let active = true;
     db.from("stocks")
-      .select("id, ticker, name, market")
+      .select("id, ticker, name, market, is_listed")
+      .neq("is_listed", false)
       .then(
-        ({ data }: { data: SearchStockItem[] | null }) => {
+        ({ data }: { data: Array<SearchStockItem & { is_listed?: boolean }> | null }) => {
           if (active && Array.isArray(data)) {
-            setAllStocks(data);
+            setAllStocks(data.filter((s) => s.is_listed !== false));
           }
         },
         () => {}
@@ -80,7 +81,7 @@ export default function TopBar() {
         const res = await db
           .from("profiles")
           .select("cash")
-          .eq("id", userId)
+          .eq("user_id", userId)
           .maybeSingle();
 
         if (cancelled) return;

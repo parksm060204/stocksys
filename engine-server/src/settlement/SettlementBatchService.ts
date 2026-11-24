@@ -54,16 +54,23 @@ export class SettlementBatchService {
   }
 
   /**
-   * [정기 배치 실행] simulation clock 기준 만기 옵션/채권 정산.
+   * [정기 배치 실행] simulation clock(또는 호출자가 고정한 단일 기준시각) 기준 만기 옵션/채권 정산.
    * 오류는 성공으로 위장하지 않고 전파한다.
    */
-  public async runDailySettlementBatch(): Promise<DailySettlementBatchResult> {
+  public async runDailySettlementBatch(fixedNowMs?: number): Promise<DailySettlementBatchResult> {
+    if (fixedNowMs !== undefined && !Number.isFinite(fixedNowMs)) {
+      throw new RangeError(`[SettlementBatchService] fixedNowMs must be finite: ${fixedNowMs}`);
+    }
     if (this.isRunning) {
       return { optionSettled: 0, optionPayout: 0, optionOrdersExpired: 0, bondCouponsPaid: 0, bondPrincipalRedeemed: 0 };
     }
 
     this.isRunning = true;
-    const now = this.clock.now();
+    const now = fixedNowMs !== undefined ? fixedNowMs : this.clock.now();
+    if (!Number.isFinite(now)) {
+      this.isRunning = false;
+      throw new RangeError(`[SettlementBatchService] now must be finite: ${now}`);
+    }
 
     try {
       const expiredOptions: readonly OptionContractRecord[] =

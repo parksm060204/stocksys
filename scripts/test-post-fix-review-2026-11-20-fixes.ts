@@ -428,7 +428,7 @@ async function main() {
       memoryDb.resetToSeedData();
       process.env.ALLOW_DEV_ADMIN = 'true';
       const { GET: adminGet, POST: adminPost } = await import('../app/api/admin/scenarios/route');
-      const { commodityEngineInstance } = await import('../app/api/commodities/route');
+      const { commodityEngineInstance } = await import('../lib/commodities/commodityEngineInstance');
 
       const stock = Array.from(memoryDb.stocks.values())[0]!;
 

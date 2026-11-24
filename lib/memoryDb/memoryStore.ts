@@ -1,3 +1,5 @@
+import type { ClockState } from '../engine/simulation/simClock';
+import type { MarketEvent } from '../engine/simulation/marketEventTypes';
 import { COMMODITY_DEFINITIONS } from '../commodities/definitions';
 import { isUsdQuotedAsset } from '../engine/currency';
 import type { ExchangeRateRecord } from '../repositories/types';
@@ -6,6 +8,7 @@ import type { ExchangeRateRecord } from '../repositories/types';
 export const GUEST_USER_ID = '00000000-0000-4000-8000-000000000001';
 export const K200_INDEX_UNDERLYING_ID = 'idx_k200';
 export const K200_INDEX_BASE_VALUE = 260.0;
+let nextMemoryDbInstanceSeq = 0;
 
 /**
  * 국내 주식(domestic) 시가총액 가중 변동률 기반 KOSPI200 기준 지수(260.0 기준) 산출.
@@ -15,6 +18,7 @@ export function computeK200IndexPrice(stocks: Iterable<StockRecord>): number {
   let currCapSum = 0;
   for (const s of stocks) {
     if (s.market !== 'domestic') continue;
+    if (s.is_listed === false) continue;
     const shares = Number(s.shares_outstanding || 1_000_000);
     const cur = Number(s.current_price);
     const prev = Number(s.previous_close || cur);
@@ -66,6 +70,7 @@ export const STOCK_UUID_MAP: Record<string, string> = {
 };
 
 export interface StockRecord {
+  target_price?: number;
   id: string;
   ticker: string;
   name: string;
@@ -245,6 +250,7 @@ export interface TradeRecord {
   seller_fee?: number;
   created_at: string;
   sequence?: number;
+  cursor?: number;
   simulation_time?: number;
 }
 
@@ -288,6 +294,11 @@ export interface BondRecord {
   volume: number;
 }
 
+function compareMarketNews(a: MarketNewsRecord, b: MarketNewsRecord): number {
+  const time = (news: MarketNewsRecord) => Date.parse(news.created_at ?? '') || 0;
+  return time(a) - time(b) || Number(a.sequence ?? 0) - Number(b.sequence ?? 0);
+}
+
 export interface MarketNewsRecord {
   id: string;
   type: string;
@@ -299,6 +310,8 @@ export interface MarketNewsRecord {
   target_ticker?: string | null;
   impact_score?: number;
   is_fake?: boolean;
+  original_rumor_id?: string | null;
+  correction_due_simulation_time?: number;
   simulation_time?: number;
   sequence?: number;
   created_at: string;
@@ -363,6 +376,16 @@ export class MemoryDatabase {
   public optionsContracts: Map<string, OptionContractRecord> = new Map();
   public bonds: Map<string, BondRecord> = new Map();
   public marketNews: MarketNewsRecord[] = [];
+  public pendingAdminMarketEvents: MarketEvent[] = [];
+  public localSimulationClock: ClockState | null = null;
+
+  public saveMarketNews(record: MarketNewsRecord): void {
+    const index = this.marketNews.findIndex((news) => news.id === record.id);
+    if (index >= 0) this.marketNews.splice(index, 1);
+    this.marketNews.push(record);
+    this.marketNews.sort(compareMarketNews);
+    if (this.marketNews.length > 200) this.marketNews.splice(0, this.marketNews.length - 200);
+  }
   public adminSettings: Map<string, any> = new Map();
   public exchangeRates: ExchangeRateRecord[] = [];
   public institutionalPortfolios: Map<string, any> = new Map();
@@ -399,8 +422,15 @@ export class MemoryDatabase {
   public settledOptionExpiryKeys: Set<string> = new Set();
   public settledOptionExpiryWatermarkYmd: string = '';
   public evictedCustomTradeIds: Set<string> = new Set();
+  private readonly tradeInstanceToken: string = `db_${++nextMemoryDbInstanceSeq}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+  public tradeGenerationCounter: number = 1;
   public tradeEpoch: number = 1;
   public tradeSeq: number = 0;
+  public tradeCursorSeq: number = 0;
+
+  public getTradeStreamGeneration(): string {
+    return `${this.tradeInstanceToken}:${this.tradeEpoch}:${this.tradeGenerationCounter}`;
+  }
   public optionTradeSeq: number = 0;
   public engineNextEpoch: number = 1;
   public engineTickCount: number = 0;
@@ -506,6 +536,7 @@ export class MemoryDatabase {
    * 보조 인덱스 재구축 (초기화 및 스냅샷 복원 시 사용)
    */
   public rebuildIndexes(): void {
+    this.ensureTradeCursors();
     this.tickerIndex.clear();
     this.marketIndex.clear();
     this.commodityTickerIndex.clear();
@@ -563,6 +594,32 @@ export class MemoryDatabase {
     if (o.user_id) this.orderUserIndex.get(o.user_id)?.delete(o.id);
   }
 
+  public appendTrade(t: TradeRecord): TradeRecord {
+    if (typeof t.cursor !== 'number' || !Number.isFinite(t.cursor) || t.cursor <= 0) {
+      this.tradeCursorSeq += 1;
+      t.cursor = this.tradeCursorSeq;
+    } else if (t.cursor > this.tradeCursorSeq) {
+      this.tradeCursorSeq = t.cursor;
+    }
+    this.trades.push(t);
+    this.addTradeToIndex(t);
+    return t;
+  }
+
+  public ensureTradeCursors(): void {
+    for (const t of this.trades) {
+      if (typeof t.cursor === 'number' && Number.isFinite(t.cursor) && t.cursor > this.tradeCursorSeq) {
+        this.tradeCursorSeq = t.cursor;
+      }
+    }
+    for (const t of this.trades) {
+      if (typeof t.cursor !== 'number' || !Number.isFinite(t.cursor) || t.cursor <= 0) {
+        this.tradeCursorSeq += 1;
+        t.cursor = this.tradeCursorSeq;
+      }
+    }
+  }
+
   public addTradeToIndex(t: TradeRecord): void {
     if (!this.tradeStockIndex.has(t.stock_id)) this.tradeStockIndex.set(t.stock_id, []);
     this.tradeStockIndex.get(t.stock_id)!.push(t);
@@ -593,7 +650,7 @@ export class MemoryDatabase {
     const indexedId = this.profileUserIdIndex.get(userId);
     if (indexedId) {
       const indexedProfile = this.profiles.get(indexedId);
-      if (indexedProfile && (indexedProfile.user_id === userId || !indexedProfile.user_id)) {
+      if (indexedProfile && (indexedProfile.user_id === userId || (!indexedProfile.user_id && indexedProfile.id === userId))) {
         return indexedProfile;
       }
     }
@@ -622,12 +679,29 @@ export class MemoryDatabase {
     userId: string,
     initialData?: Partial<ProfileRecord>
   ): ProfileRecord {
+    if (!userId || typeof userId !== 'string' || !userId.trim()) {
+      throw new Error('userId is required to ensure user profile');
+    }
     const existing = this.resolveProfileByUserId(userId);
     if (existing) return existing;
 
     const displayName = initialData?.username || initialData?.nickname || '익명 투자자';
+    const requestedId =
+      initialData?.id && typeof initialData.id === 'string' && initialData.id.trim()
+        ? initialData.id
+        : undefined;
+    let pk =
+      requestedId &&
+      !this.profiles.has(requestedId) &&
+      (requestedId === userId || !this.resolveProfileByUserId(requestedId))
+        ? requestedId
+        : (!this.profiles.has(userId) ? userId : this.generateId('prof'));
+    while (this.profiles.has(pk) || (pk !== userId && this.resolveProfileByUserId(pk))) {
+      pk = this.generateId('prof');
+    }
+
     const profile: ProfileRecord = {
-      id: userId,
+      id: pk,
       user_id: userId,
       username: displayName,
       nickname: displayName,
@@ -644,7 +718,7 @@ export class MemoryDatabase {
       unlocked_features: initialData?.unlocked_features ?? [],
       created_at: initialData?.created_at ?? this.getIsoTimestamp(),
     };
-    this.profiles.set(userId, profile);
+    this.profiles.set(pk, profile);
     this.addProfileToIndex(profile);
     return profile;
   }
@@ -656,6 +730,7 @@ export class MemoryDatabase {
     const prevPromise = this.lockQueues.get(key) || Promise.resolve();
 
     const currentPromise = prevPromise
+      .catch(() => undefined)
       .then(async () => {
         let currentVal: any = null;
         if (key.startsWith('profile:')) {
@@ -1162,8 +1237,7 @@ export class MemoryDatabase {
           seller_fee: 0.0025,
           created_at: new Date(now - t * 3000).toISOString(),
         };
-        this.trades.push(tr);
-        this.addTradeToIndex(tr);
+        this.appendTrade(tr);
       }
     });
   }
@@ -1182,9 +1256,13 @@ export class MemoryDatabase {
     this.optionsContracts.clear();
     this.bonds.clear();
     this.marketNews = [];
+    this.pendingAdminMarketEvents = [];
+    this.localSimulationClock = null;
     this.adminSettings.clear();
     this.exchangeRates = [];
     this.institutionalPortfolios.clear();
+    this.activePlayerEvents = [];
+    this.activeManipulations = [];
     this.settlementLedger.clear();
     this.settlementLedgerCutoffMs = 0;
     this.settledEpochWatermarks.clear();
@@ -1205,6 +1283,7 @@ export class MemoryDatabase {
     this.settledOptionExpiryWatermarkYmd = '';
     this.evictedCustomTradeIds.clear();
     this.tradeEpoch += 1;
+    this.tradeGenerationCounter += 1;
     this.tradeSeq = 0;
     this.optionTradeSeq = 0;
     this.engineNextEpoch += 1;
@@ -1676,6 +1755,8 @@ export class MemoryDatabase {
       optionsContracts: Array.from(this.optionsContracts.entries()),
       bonds: Array.from(this.bonds.entries()),
       marketNews: [...this.marketNews],
+      pendingAdminMarketEvents: this.pendingAdminMarketEvents,
+      localSimulationClock: this.localSimulationClock,
       adminSettings: Array.from(this.adminSettings.entries()),
       exchangeRates: [...this.exchangeRates],
       institutionalPortfolios: Array.from(this.institutionalPortfolios.entries()),
@@ -1703,6 +1784,7 @@ export class MemoryDatabase {
       evictedCustomTradeIds: Array.from(this.evictedCustomTradeIds.values()),
       tradeEpoch: this.tradeEpoch,
       tradeSeq: this.tradeSeq,
+      tradeCursorSeq: this.tradeCursorSeq,
       optionTradeSeq: this.optionTradeSeq,
       fallbackCounter: this.fallbackCounter,
       engineNextEpoch: this.engineNextEpoch,
@@ -1806,7 +1888,11 @@ export class MemoryDatabase {
     this.trades = Array.isArray(data.trades) ? [...data.trades] : [];
     this.optionsContracts = Array.isArray(data.optionsContracts) ? new Map(data.optionsContracts) : new Map();
     this.bonds = Array.isArray(data.bonds) ? new Map(data.bonds) : new Map();
-    this.marketNews = Array.isArray(data.marketNews) ? [...data.marketNews] : [];
+    this.marketNews = Array.isArray(data.marketNews) ? [...data.marketNews].sort(compareMarketNews) : [];
+    this.localSimulationClock = data.localSimulationClock ? { ...data.localSimulationClock } : null;
+    this.pendingAdminMarketEvents = Array.isArray(data.pendingAdminMarketEvents)
+      ? structuredClone(data.pendingAdminMarketEvents)
+      : [];
     this.adminSettings = Array.isArray(data.adminSettings) ? new Map(data.adminSettings) : new Map();
     this.exchangeRates = Array.isArray(data.exchangeRates) ? [...data.exchangeRates] : [];
     this.institutionalPortfolios = Array.isArray(data.institutionalPortfolios)
@@ -1892,12 +1978,16 @@ export class MemoryDatabase {
     if (options.bumpTradeEpoch) {
       // 재시작 시 항상 새 tradeEpoch로 진입해 스냅샷 직전 미저장 구간과의 ID 충돌을 원천 차단한다.
       this.tradeEpoch = restoredEpoch + 1;
+      this.tradeGenerationCounter += 1;
       this.tradeSeq = 0;
       this.optionTradeSeq = 0;
     } else {
       this.tradeEpoch = restoredEpoch;
       this.tradeSeq = typeof data.tradeSeq === 'number' && Number.isFinite(data.tradeSeq) ? data.tradeSeq : 0;
       this.optionTradeSeq = typeof data.optionTradeSeq === 'number' && Number.isFinite(data.optionTradeSeq) ? data.optionTradeSeq : 0;
+    }
+    if (typeof data.tradeCursorSeq === 'number' && Number.isFinite(data.tradeCursorSeq) && data.tradeCursorSeq >= 0) {
+      this.tradeCursorSeq = Math.max(this.tradeCursorSeq, data.tradeCursorSeq);
     }
     if (typeof data.fallbackCounter === 'number' && Number.isFinite(data.fallbackCounter) && data.fallbackCounter >= 0) {
       this.fallbackCounter = data.fallbackCounter;

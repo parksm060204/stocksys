@@ -9,9 +9,14 @@ export class PersistenceManager {
   private commitTail: Promise<void> = Promise.resolve();
   private commitStorage = new AsyncLocalStorage<symbol>();
   private activeCommitToken: symbol | null = null;
+  private committedSnapshotSeq: number = 0;
 
   constructor(adapter?: IStorageAdapter) {
     this.adapter = adapter || new FileStorageAdapter();
+  }
+
+  public getCommittedSnapshotSeq(): number {
+    return this.committedSnapshotSeq;
   }
 
   public acquireWriterLock(): void {
@@ -83,7 +88,11 @@ export class PersistenceManager {
         console.error('[PersistenceManager] Export/serialize snapshot failed:', err);
         return false;
       }
-      return await this.enqueueSerializedSave(serialized);
+      const ok = await this.enqueueSerializedSave(serialized);
+      if (ok) {
+        this.committedSnapshotSeq += 1;
+      }
+      return ok;
     });
   }
 

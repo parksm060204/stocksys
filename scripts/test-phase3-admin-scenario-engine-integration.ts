@@ -11,7 +11,7 @@
 
 import assert from 'node:assert';
 import { CommodityMarketEngine } from '../lib/commodities/CommodityMarketEngine';
-import { commodityEngineInstance } from '../app/api/commodities/route';
+import { commodityEngineInstance } from '../lib/commodities/commodityEngineInstance';
 import { POST as adminScenarioPost } from '../app/api/admin/scenarios/route';
 import { createSimulationContext } from '../lib/engine/simulation/runtime/simulationContext';
 import { StaticTimeSource } from '../lib/engine/simulation/runtime/simulationTimeSource';

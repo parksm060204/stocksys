@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { createClient } from '@/lib/db/client';
 import { useAuth } from '@/lib/auth/useAuth';
 import { useToast } from './ToastProvider';
@@ -44,57 +44,160 @@ export default function ActiveOrdersPanel({
   const { userId, isLoggedIn } = useAuth();
   const { showToast } = useToast();
   const db = createClient();
+  const accountKey = isLoggedIn && userId ? userId : null;
+
+  const mountedRef = useRef<boolean>(true);
+  const fetchSeqRef = useRef<number>(0);
+  const cancelSeqRef = useRef<number>(0);
+  const activeContextRef = useRef<{
+    accountKey: string | null;
+    filterMode: 'CURRENT' | 'ALL';
+    stockId: string | undefined;
+  }>({
+    accountKey,
+    filterMode,
+    stockId: currentStockId,
+  });
+  const onOrderCountChangeRef = useRef(onOrderCountChange);
+  const dbRef = useRef(db);
+
+  useEffect(() => {
+    onOrderCountChangeRef.current = onOrderCountChange;
+    dbRef.current = db;
+  }, [onOrderCountChange, db]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      fetchSeqRef.current += 1;
+      cancelSeqRef.current += 1;
+    };
+  }, []);
 
   const fetchOrders = useCallback(async () => {
-    if (!isLoggedIn || !userId) {
-      setOrders([]);
-      setLoading(false);
-      onOrderCountChange?.(0);
+    const reqAccountKey = accountKey;
+    const reqFilterMode = filterMode;
+    const reqStockId = currentStockId;
+    const reqSeq = ++fetchSeqRef.current;
+
+    if (!reqAccountKey) {
+      if (
+        mountedRef.current &&
+        reqSeq === fetchSeqRef.current &&
+        activeContextRef.current.accountKey === null
+      ) {
+        setOrders([]);
+        setLoading(false);
+        onOrderCountChangeRef.current?.(0);
+      }
       return;
     }
 
     try {
-      let query = db
+      let query = dbRef.current
         .from('orders')
         .select('id, stock_id, side, price, size, filled, status, created_at, stocks(id, ticker, name, market, current_price)')
-        .eq('user_id', userId)
+        .eq('user_id', reqAccountKey)
         .in('status', ['open', 'partial'])
         .order('created_at', { ascending: false });
 
-      if (filterMode === 'CURRENT' && currentStockId) {
-        query = query.eq('stock_id', currentStockId);
+      if (reqFilterMode === 'CURRENT' && reqStockId) {
+        query = query.eq('stock_id', reqStockId);
       }
 
       const { data, error } = await query;
+
+      if (
+        !mountedRef.current ||
+        reqSeq !== fetchSeqRef.current ||
+        activeContextRef.current.accountKey !== reqAccountKey ||
+        activeContextRef.current.filterMode !== reqFilterMode ||
+        activeContextRef.current.stockId !== reqStockId
+      ) {
+        return;
+      }
+
       if (error) throw error;
 
       const list = (data || []) as unknown as OpenOrder[];
       setOrders(list);
-      onOrderCountChange?.(list.length);
+      onOrderCountChangeRef.current?.(list.length);
     } catch (e) {
-      console.error('[ActiveOrdersPanel] fetch error:', e);
+      if (
+        mountedRef.current &&
+        reqSeq === fetchSeqRef.current &&
+        activeContextRef.current.accountKey === reqAccountKey
+      ) {
+        console.error('[ActiveOrdersPanel] fetch error:', e);
+      }
     } finally {
-      setLoading(false);
+      if (
+        mountedRef.current &&
+        reqSeq === fetchSeqRef.current &&
+        activeContextRef.current.accountKey === reqAccountKey &&
+        activeContextRef.current.filterMode === reqFilterMode &&
+        activeContextRef.current.stockId === reqStockId
+      ) {
+        setLoading(false);
+      }
     }
-  }, [isLoggedIn, userId, filterMode, currentStockId, db, onOrderCountChange]);
+  }, [accountKey, filterMode, currentStockId]);
 
   useEffect(() => {
-    fetchOrders();
-    const interval = setInterval(fetchOrders, 3000);
-    return () => clearInterval(interval);
-  }, [fetchOrders]);
+    activeContextRef.current = {
+      accountKey,
+      filterMode,
+      stockId: currentStockId,
+    };
+    fetchSeqRef.current += 1;
+    cancelSeqRef.current += 1;
+
+    // 계정 전환·로그아웃·필터 전환 즉시 이전 계정의 미체결 목록 및 취소 진행 상태 초기화
+    setOrders([]);
+    setCancellingId(null);
+    setLoading(Boolean(accountKey));
+    onOrderCountChangeRef.current?.(0);
+
+    if (!accountKey) {
+      return () => {
+        fetchSeqRef.current += 1;
+        cancelSeqRef.current += 1;
+      };
+    }
+
+    void fetchOrders();
+    const interval = setInterval(() => {
+      void fetchOrders();
+    }, 3000);
+    return () => {
+      clearInterval(interval);
+      fetchSeqRef.current += 1;
+      cancelSeqRef.current += 1;
+    };
+  }, [accountKey, filterMode, currentStockId, fetchOrders]);
 
   // 개별 주문 취소
   const handleCancelOrder = async (order: OpenOrder) => {
-    if (cancellingId) return;
+    const reqAccountKey = accountKey;
+    if (!reqAccountKey || cancellingId) return;
+    const reqCancelSeq = cancelSeqRef.current;
     setCancellingId(order.id);
 
     try {
-      const { error } = await db
+      const { error } = await dbRef.current
         .from('orders')
         .update({ status: 'cancelled' })
         .eq('id', order.id)
-        .eq('user_id', userId);
+        .eq('user_id', reqAccountKey);
+
+      if (
+        !mountedRef.current ||
+        reqCancelSeq !== cancelSeqRef.current ||
+        activeContextRef.current.accountKey !== reqAccountKey
+      ) {
+        return;
+      }
 
       if (error) throw error;
 
@@ -104,34 +207,60 @@ export default function ActiveOrdersPanel({
         description: `${order.side === 'buy' ? '매수' : '매도'} ${(Number(order.size) - Number(order.filled)).toLocaleString()}주 취소 접수`,
       });
 
-      // 낙관적 UI 갱신
-      const remainingList = orders.filter((o) => o.id !== order.id);
-      setOrders(remainingList);
-      onOrderCountChange?.(remainingList.length);
+      // 낙관적 UI 갱신 (현재 활성 계정 컨텍스트에 한해 반영)
+      setOrders((prev) => {
+        const remainingList = prev.filter((o) => o.id !== order.id);
+        onOrderCountChangeRef.current?.(remainingList.length);
+        return remainingList;
+      });
     } catch (e: any) {
+      if (
+        !mountedRef.current ||
+        reqCancelSeq !== cancelSeqRef.current ||
+        activeContextRef.current.accountKey !== reqAccountKey
+      ) {
+        return;
+      }
       showToast({
         type: 'error',
         title: '주문 취소 실패',
         description: e.message || '취소 중 오류가 발생했습니다.',
       });
     } finally {
-      setCancellingId(null);
+      if (
+        mountedRef.current &&
+        reqCancelSeq === cancelSeqRef.current &&
+        activeContextRef.current.accountKey === reqAccountKey
+      ) {
+        setCancellingId(null);
+      }
     }
   };
 
   // 전체 미체결 일괄 취소
   const handleCancelAll = async () => {
-    if (orders.length === 0 || cancellingId) return;
+    const reqAccountKey = accountKey;
+    if (!reqAccountKey || orders.length === 0 || cancellingId) return;
     if (!confirm(`현재 표시된 ${orders.length}건의 미체결 주문을 모두 취소하시겠습니까?`)) return;
+    if (activeContextRef.current.accountKey !== reqAccountKey || !mountedRef.current) return;
 
+    const reqCancelSeq = cancelSeqRef.current;
+    const targetIds = orders.map((o) => o.id);
     setCancellingId('ALL');
     try {
-      const targetIds = orders.map((o) => o.id);
-      const { error } = await db
+      const { error } = await dbRef.current
         .from('orders')
         .update({ status: 'cancelled' })
         .in('id', targetIds)
-        .eq('user_id', userId);
+        .eq('user_id', reqAccountKey);
+
+      if (
+        !mountedRef.current ||
+        reqCancelSeq !== cancelSeqRef.current ||
+        activeContextRef.current.accountKey !== reqAccountKey
+      ) {
+        return;
+      }
 
       if (error) throw error;
 
@@ -141,16 +270,33 @@ export default function ActiveOrdersPanel({
         description: `${targetIds.length}건의 미체결 주문이 취소되었습니다.`,
       });
 
-      setOrders([]);
-      onOrderCountChange?.(0);
+      const cancelledSet = new Set(targetIds);
+      setOrders((prev) => {
+        const remainingList = prev.filter((o) => !cancelledSet.has(o.id));
+        onOrderCountChangeRef.current?.(remainingList.length);
+        return remainingList;
+      });
     } catch (e: any) {
+      if (
+        !mountedRef.current ||
+        reqCancelSeq !== cancelSeqRef.current ||
+        activeContextRef.current.accountKey !== reqAccountKey
+      ) {
+        return;
+      }
       showToast({
         type: 'error',
         title: '일괄 취소 실패',
         description: e.message || '오류가 발생했습니다.',
       });
     } finally {
-      setCancellingId(null);
+      if (
+        mountedRef.current &&
+        reqCancelSeq === cancelSeqRef.current &&
+        activeContextRef.current.accountKey === reqAccountKey
+      ) {
+        setCancellingId(null);
+      }
     }
   };
 

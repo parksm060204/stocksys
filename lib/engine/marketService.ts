@@ -2,7 +2,7 @@ import { ensureLocalStandaloneEngine } from './localStandaloneServer';
 import { createMemoryDbClient } from '../memoryDb/memoryDbClient';
 import { submitAndMatchOrder, MatchOrderResult } from './dbMatching';
 import { memoryDb, OrderRecord } from '../memoryDb/memoryStore';
-import { withAccountLocks } from '../memoryDb/accountLocks';
+import { withResolvedAccountLocks } from '../memoryDb/accountLocks';
 import { runWithCommitGate } from '../memoryDb/PersistenceManager';
 import { sweepUnencumberedCashToMarginDebt } from './orderRisk';
 
@@ -165,7 +165,7 @@ export class LocalMarketService {
 
     // 2. 종목 락 + 계좌 락 내부에서 최신 주문 객체를 다시 조회하여 안전하게 취소 및 영속 저장 처리
     return await withStockLock(stockId, async () => {
-      return await withAccountLocks([memoryDb.resolveAccountLockKey(userId)], async () => {
+      return await withResolvedAccountLocks(() => [memoryDb.resolveAccountLockKey(userId)], async () => {
         const currentOrder = memoryDb.orders.get(orderId);
         if (!currentOrder) {
           return { success: false, statusCode: 404, message: '주문을 찾을 수 없습니다.' };
@@ -255,7 +255,7 @@ export class LocalMarketService {
     }
 
     return await withAllStockLocks(Array.from(preliminaryStockIds), async () => {
-      return await withAccountLocks([memoryDb.resolveAccountLockKey(userId)], async () => {
+      return await withResolvedAccountLocks(() => [memoryDb.resolveAccountLockKey(userId)], async () => {
         const targetOrders: OrderRecord[] = [];
         for (const id of uniqueIds) {
           const ord = memoryDb.orders.get(id);

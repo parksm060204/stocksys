@@ -72,3 +72,43 @@ export async function withAccountLocks<T>(
     }
   }
 }
+
+/**
+ * Re-resolves account lock keys after acquisition so callers that resolved a
+ * pre-creation lock key (userId) before initial profile creation finished
+ * seamlessly transition onto the canonical profile.id lock key.
+ */
+export async function withResolvedAccountLocks<T>(
+  resolveAccountIds: () => Iterable<string>,
+  operation: () => Promise<T>
+): Promise<T> {
+  const alreadyHeld = heldAccountLocksStorage.getStore();
+  if (alreadyHeld && alreadyHeld.size > 0) {
+    return await withAccountLocks(resolveAccountIds(), operation);
+  }
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const initialIds = [...new Set([...resolveAccountIds()].filter(Boolean))].sort();
+    if (initialIds.length === 0) {
+      return await operation();
+    }
+
+    const retryToken = Symbol('retryResolvedAccountLock');
+    const outcome = await withAccountLocks(initialIds, async () => {
+      const currentIds = [...new Set([...resolveAccountIds()].filter(Boolean))].sort();
+      if (
+        currentIds.length !== initialIds.length ||
+        currentIds.some((id, idx) => id !== initialIds[idx])
+      ) {
+        return retryToken;
+      }
+      return await operation();
+    });
+
+    if (outcome !== retryToken) {
+      return outcome as T;
+    }
+  }
+
+  return await withAccountLocks(resolveAccountIds(), operation);
+}

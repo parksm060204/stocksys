@@ -1,5 +1,5 @@
 import { getServerSession } from 'next-auth';
-import { authOptions } from '@/app/api/auth/[...nextauth]/route';
+import { authOptions } from '@/lib/auth/authOptions';
 import { GUEST_USER_ID } from '@/lib/memoryDb/memoryStore';
 import { isDevGuestAuthEnabled } from '@/lib/engine/localDevMode';
 

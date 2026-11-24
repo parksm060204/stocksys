@@ -322,6 +322,14 @@ export class EventIdempotencyTracker {
   public reset(): void {
     this.processedIds.clear();
   }
+
+  public snapshotState(): string[] {
+    return Array.from(this.processedIds);
+  }
+
+  public restoreState(ids: readonly string[]): void {
+    this.processedIds = new Set(ids);
+  }
 }
 
 /**

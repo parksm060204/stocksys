@@ -1,5 +1,5 @@
 import type { MemoryDatabase } from '@/lib/memoryDb/memoryStore';
-import { withAccountLocks } from '@/lib/memoryDb/accountLocks';
+import { withResolvedAccountLocks } from '@/lib/memoryDb/accountLocks';
 import { runWithCommitGate } from '@/lib/memoryDb/PersistenceManager';
 import { getAvailableCashKrw, applyCashCreditWithMarginDebt } from '@/lib/engine/orderRisk';
 
@@ -35,7 +35,7 @@ export async function resolvePlayerEventChoice(
     return { success: false, statusCode: 400, message: '선택지(choice)는 A 또는 B여야 합니다.' };
   }
 
-  return withAccountLocks([db.resolveAccountLockKey(userId)], async () => {
+  return withResolvedAccountLocks(() => [db.resolveAccountLockKey(userId)], async () => {
     return runWithCommitGate(onPersist, async () => {
       const activeEvent = db.activePlayerEvents.find((e: any) => e?.id === activeEventId);
       if (!activeEvent) {

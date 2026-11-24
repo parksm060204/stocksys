@@ -14,8 +14,8 @@ import path from 'node:path';
 import { MemoryDatabase, StockRecord, OptionContractRecord, ProfileRecord, HoldingRecord, OrderRecord, memoryDb } from '../lib/memoryDb/memoryStore';
 import { createInMemoryRepositoryBundle } from '../lib/repositories/inMemory';
 import { createMemoryDbClient } from '../lib/memoryDb/memoryDbClient';
+import { POST as analyzePostHandler } from '../app/api/analyze/route';
 import {
-  POST as analyzePostHandler,
   MAX_TEXT_LENGTH,
   MAX_REQUESTS_PER_WINDOW,
   MAX_BODY_BYTES,
@@ -23,7 +23,7 @@ import {
   setSessionGetter,
   setGeminiFetcher,
   resetRateLimits,
-} from '../app/api/analyze/route';
+} from '../lib/ai/analyzeRouteHelper';
 import {
   defaultPostgresStore,
   defaultUpstashStore,

@@ -254,9 +254,31 @@ export class AgentManager {
   private marketIndexReturns: number[] = [];
   public lastObservation: RegimeObservation | null = null;
   private onPersistCallback?: () => Promise<boolean>;
+  private onStepClockAdvanceCallback?: (clockState: ReturnType<SimulationClock['getState']>) => void;
+  private onEventsEffectiveCallback?: (effectiveEventIds: ReadonlySet<string>) => void;
 
   public setOnPersist(fn?: () => Promise<boolean>): void {
     this.onPersistCallback = fn;
+  }
+
+  public getOnPersist(): (() => Promise<boolean>) | undefined {
+    return this.onPersistCallback;
+  }
+
+  public setOnStepClockAdvance(fn?: (clockState: ReturnType<SimulationClock['getState']>) => void): void {
+    this.onStepClockAdvanceCallback = fn;
+  }
+
+  public getOnStepClockAdvance(): ((clockState: ReturnType<SimulationClock['getState']>) => void) | undefined {
+    return this.onStepClockAdvanceCallback;
+  }
+
+  public setOnEventsEffective(fn?: (effectiveEventIds: ReadonlySet<string>) => void): void {
+    this.onEventsEffectiveCallback = fn;
+  }
+
+  public getOnEventsEffective(): ((effectiveEventIds: ReadonlySet<string>) => void) | undefined {
+    return this.onEventsEffectiveCallback;
   }
 
   private getUserOpenOrders(userId: string): OpenOrderForRisk[] {
@@ -705,6 +727,7 @@ export class AgentManager {
 
   public initFundamentals(): void {
     for (const stock of memoryDb.stocks.values()) {
+      if (stock.is_listed === false) continue;
       if (!this.fundamentals.has(stock.id)) {
         this.fundamentals.set(stock.id, stock.current_price);
       }
@@ -713,6 +736,7 @@ export class AgentManager {
 
   public initAttentionAndUncertainty(): void {
     for (const stock of memoryDb.stocks.values()) {
+      if (stock.is_listed === false) continue;
       const baseLiq = stock.base_liquidity ?? 0.5;
       this.attentionMap.set(stock.id, baseLiq);
       this.uncertaintyMap.set(stock.id, 0.05);
@@ -825,12 +849,7 @@ export class AgentManager {
         simulation_time: event.publishedAt,
         sequence: event.sequence,
       };
-      const existingNewsIndex = memoryDb.marketNews.findIndex((news) => news.id === newsRecord.id);
-      if (existingNewsIndex >= 0) memoryDb.marketNews.splice(existingNewsIndex, 1);
-      memoryDb.marketNews.unshift(newsRecord);
-      if (memoryDb.marketNews.length > 200) {
-        memoryDb.marketNews.pop();
-      }
+      memoryDb.saveMarketNews(newsRecord);
 
       // Record causal trace for official publication
       this.diagnostics.recordCausalTrace({
@@ -871,6 +890,10 @@ export class AgentManager {
         this.attentionMap.set(stockId, Math.min(1, currentAttention + event.attentionShock));
         this.uncertaintyMap.set(stockId, Math.min(1, currentUncertainty + event.uncertaintyShock));
       }
+    }
+
+    if (dueEffects.length > 0) {
+      this.onEventsEffectiveCallback?.(this.effectiveEventIds);
     }
   }
 
@@ -1013,6 +1036,7 @@ export class AgentManager {
 
     // 2. 시계를 t1 = t0 + dt로 전진
     const { time: simTime, step: nextStepId } = this.clock.advance(dt);
+    this.onStepClockAdvanceCallback?.(this.clock.getState());
 
     this.processDuePublications(simTime);
     this.processDueEffects(simTime);
@@ -1034,6 +1058,7 @@ export class AgentManager {
       const currentPriceMap = new Map<string, number>();
 
       for (const stock of memoryDb.stocks.values()) {
+        if (stock.is_listed === false) continue;
         const f = this.fundamentals.get(stock.id) || stock.current_price;
         const vGap = stock.current_price > 0 ? (f - stock.current_price) / stock.current_price : 0;
         currentPriceMap.set(stock.id, stock.current_price);
@@ -1240,6 +1265,7 @@ export class AgentManager {
 
     // ── 1. MJD Latent Fundamental SDE Update ──
     for (const stock of memoryDb.stocks.values()) {
+      if (stock.is_listed === false) continue;
       const f = this.fundamentals.get(stock.id) || stock.current_price;
       const dW = Math.sqrt(dt) * this.fundamentalPrng.nextGaussian();
 
@@ -1265,6 +1291,7 @@ export class AgentManager {
 
     // ── 2. Attention & Uncertainty Exponential Decay ──
     for (const stock of memoryDb.stocks.values()) {
+      if (stock.is_listed === false) continue;
       const curAtt = this.attentionMap.get(stock.id) ?? 0.5;
       const baseLiq = stock.base_liquidity ?? 0.5;
       // Decay towards baseline liquidity (half-life ~20s)
@@ -1284,6 +1311,7 @@ export class AgentManager {
     const lpAgent = this.agents.get('acc_lp_main');
     if (lpAgent) {
       for (const stock of memoryDb.stocks.values()) {
+        if (stock.is_listed === false) continue;
         const obs = buildMarketObservation(
           stock.id,
           lpAgent.accountId,
@@ -1454,7 +1482,7 @@ export class AgentManager {
     }
 
     // ── 5. Bot Trading Strategy Lifecycle (Weighted Selection & Latency) ──
-    const stockList = Array.from(memoryDb.stocks.values());
+    const stockList = Array.from(memoryDb.stocks.values()).filter((s) => s.is_listed !== false);
 
     for (const [accountId, agent] of this.agents.entries()) {
       if (agent.participantType === 'lp') continue;
@@ -2744,5 +2772,87 @@ export class AgentManager {
 
   public applyDueEventEffects(simTime: number): void {
     this.processDueEffects(simTime);
+  }
+
+  public captureStepSnapshot() {
+    return {
+      clock: this.clock.getState(),
+      prng: this.prng.getState(),
+      fundamentalPrng: this.fundamentalPrng.getState(),
+      agentPrngs: Array.from(this.agentPrngs.entries()).map(([k, p]) => [k, p.getState()] as const),
+      agentStats: Array.from(this.agents.entries()).map(([k, a]) => [k, { ...a.stats }] as const),
+      fundamentals: Array.from(this.fundamentals.entries()),
+      attentionMap: Array.from(this.attentionMap.entries()),
+      uncertaintyMap: Array.from(this.uncertaintyMap.entries()),
+      lpDeferrals: Array.from(this.lpDeferrals.entries()).map(([k, v]) => [k, { ...v, unresolvedOrderIds: [...v.unresolvedOrderIds] }] as const),
+      pendingEvents: structuredClone(this.pendingEvents),
+      publishedEvents: structuredClone(this.publishedEvents),
+      publishedEventIds: Array.from(this.publishedEventIds),
+      effectiveEventIds: Array.from(this.effectiveEventIds),
+      idempotencyIds: this.idempotencyTracker.snapshotState(),
+      diagnostics: this.diagnostics.snapshotState(),
+      marketStateEngine: this.marketStateEngine.snapshotState(),
+      crossAssetDiagnostics: this.crossAssetDiagnostics.snapshotState(),
+      macroState: { ...this.macroState },
+      agentMacroBeliefs: Array.from(this.agentMacroBeliefs.entries()).map(([k, v]) => [k, { ...v }] as const),
+      previousTotalTurnover: this.previousTotalTurnover,
+      previousTotalDepth: this.previousTotalDepth,
+      emptyBookAccumulatedSeconds: this.emptyBookAccumulatedSeconds,
+      emptyBookStockRatio: this.emptyBookStockRatio,
+      marketIndexReturns: [...this.marketIndexReturns],
+      lastObservation: this.lastObservation ? { ...this.lastObservation } : null,
+      regimeEffectsMode: this._regimeEffectsMode,
+      pendingEffectsMode: this.pendingEffectsMode,
+      pendingReason: this.pendingReason,
+      modeChangeHistory: this.modeChangeHistory.map((m) => ({ ...m })),
+      recentDeferralCount: this.recentDeferralCount,
+      invariantViolationCount: this.invariantViolationCount,
+      shadowDiagnosticsHistory: structuredClone(this.shadowDiagnosticsHistory),
+      invariantViolations: this.invariantViolations.map((v) => ({ ...v })),
+      reportedInvariantFingerprints: Array.from(this.reportedInvariantFingerprints.entries()),
+    };
+  }
+
+  public restoreStepSnapshot(snap: ReturnType<AgentManager['captureStepSnapshot']>): void {
+    this.clock.restoreState(snap.clock);
+    this.prng.setState(snap.prng);
+    this.fundamentalPrng.setState(snap.fundamentalPrng);
+    for (const [k, s] of snap.agentPrngs) {
+      this.agentPrngs.get(k)?.setState(s);
+    }
+    for (const [k, stats] of snap.agentStats) {
+      const ag = this.agents.get(k);
+      if (ag) ag.stats = { ...stats };
+    }
+    this.fundamentals = new Map(snap.fundamentals);
+    this.attentionMap = new Map(snap.attentionMap);
+    this.uncertaintyMap = new Map(snap.uncertaintyMap);
+    this.lpDeferrals = new Map(snap.lpDeferrals.map(([k, v]) => [k, { ...v, unresolvedOrderIds: [...v.unresolvedOrderIds] }]));
+    this.pendingEvents = structuredClone(snap.pendingEvents);
+    this.publishedEvents = structuredClone(snap.publishedEvents);
+    this.events = this.publishedEvents;
+    this.publishedEventIds = new Set(snap.publishedEventIds);
+    this.effectiveEventIds = new Set(snap.effectiveEventIds);
+    this.idempotencyTracker.restoreState(snap.idempotencyIds);
+    this.diagnostics.restoreState(snap.diagnostics);
+    this.marketStateEngine.restoreState(snap.marketStateEngine);
+    this.crossAssetDiagnostics.restoreState(snap.crossAssetDiagnostics);
+    this.macroState = { ...snap.macroState };
+    this.agentMacroBeliefs = new Map(snap.agentMacroBeliefs.map(([k, v]) => [k, { ...v }]));
+    this.previousTotalTurnover = snap.previousTotalTurnover;
+    this.previousTotalDepth = snap.previousTotalDepth;
+    this.emptyBookAccumulatedSeconds = snap.emptyBookAccumulatedSeconds;
+    this.emptyBookStockRatio = snap.emptyBookStockRatio;
+    this.marketIndexReturns = [...snap.marketIndexReturns];
+    this.lastObservation = snap.lastObservation ? { ...snap.lastObservation } : null;
+    this._regimeEffectsMode = snap.regimeEffectsMode;
+    this.pendingEffectsMode = snap.pendingEffectsMode;
+    this.pendingReason = snap.pendingReason;
+    this.modeChangeHistory = snap.modeChangeHistory.map((m) => ({ ...m }));
+    this.recentDeferralCount = snap.recentDeferralCount;
+    this.invariantViolationCount = snap.invariantViolationCount;
+    this.shadowDiagnosticsHistory = structuredClone(snap.shadowDiagnosticsHistory);
+    this.invariantViolations = snap.invariantViolations.map((v) => ({ ...v }));
+    this.reportedInvariantFingerprints = new Map(snap.reportedInvariantFingerprints);
   }
 }

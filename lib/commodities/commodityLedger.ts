@@ -5,7 +5,7 @@ import type {
   ProfileRecord,
   PersistedCommodityOrder,
 } from '@/lib/memoryDb/memoryStore';
-import { withAccountLocks } from '@/lib/memoryDb/accountLocks';
+import { withAccountLocks, withResolvedAccountLocks } from '@/lib/memoryDb/accountLocks';
 import { runWithCommitGate, persistenceManager } from '@/lib/memoryDb/PersistenceManager';
 import { getAvailableCashKrw, calculateUserReservedCashKrw, sweepUnencumberedCashToMarginDebt } from '@/lib/engine/orderRisk';
 import { getCurrencyRateToKrw } from '@/lib/exchange/exchangeService';
@@ -74,7 +74,7 @@ export async function reserveMarginAndSubmitCommodityOrder(
     };
   }
 
-  const execute = async (): Promise<CommodityOrderReserveResult> => withAccountLocks([db.resolveAccountLockKey(userId)], async () => {
+  const execute = async (): Promise<CommodityOrderReserveResult> => withResolvedAccountLocks(() => [db.resolveAccountLockKey(userId)], async () => {
     return runWithCommitGate(onPersist, async () => {
       if (db.isTradingHalted()) {
         return {
@@ -358,7 +358,8 @@ export function applyCashDeltaWithMarginDebt(
   }
 
   const loss = Math.abs(cashDelta);
-  const reservedCash = calculateUserReservedCashKrw(db, profile.id);
+  const authUserId = profile.user_id || profile.id;
+  const reservedCash = calculateUserReservedCashKrw(db, authUserId);
   const unencumberedCash = Math.max(0, roundMoney(profile.cash - reservedCash));
   const cashDeduct = Math.min(loss, unencumberedCash);
   const shortfall = roundMoney(loss - cashDeduct);
@@ -384,14 +385,20 @@ export async function settleCommodityTradeForUsers(
 ): Promise<void> {
   if (db.isCommodityTradeSettled(trade.id)) return;
 
-  const buyerUser = trade.buyerId && db.profiles.has(trade.buyerId) ? trade.buyerId : null;
-  const sellerUser = trade.sellerId && db.profiles.has(trade.sellerId) ? trade.sellerId : null;
+  const buyerProfile = trade.buyerId ? db.resolveProfileByUserId(trade.buyerId) : undefined;
+  const sellerProfile = trade.sellerId ? db.resolveProfileByUserId(trade.sellerId) : undefined;
+  const buyerUser = buyerProfile ? (trade.buyerId ?? null) : null;
+  const sellerUser = sellerProfile ? (trade.sellerId ?? null) : null;
 
   if (!buyerUser && !sellerUser) {
     return;
   }
 
-  if (buyerUser && sellerUser && buyerUser === sellerUser) {
+  if (
+    buyerUser &&
+    sellerUser &&
+    (buyerUser === sellerUser || buyerProfile!.id === sellerProfile!.id)
+  ) {
     throw new Error(`자기 매매 체결은 허용되지 않습니다 (userId=${buyerUser}, tradeId=${trade.id})`);
   }
 
@@ -546,7 +553,7 @@ export async function releaseCommodityOrderMargin(
   if (!reservation) return false;
   if (reservation.status !== 'open' && reservation.status !== 'partial') return false;
 
-  return withAccountLocks([db.resolveAccountLockKey(reservation.user_id)], async () => {
+  return withResolvedAccountLocks(() => [db.resolveAccountLockKey(reservation.user_id)], async () => {
     const current = db.commodityMarginReservations.get(orderId);
     if (!current || (current.status !== 'open' && current.status !== 'partial')) {
       return false;
@@ -654,7 +661,7 @@ export async function cancelCommodityOrders(
   }
 
   const executeLocked = async (): Promise<CancelCommodityOrdersResult> => {
-    return withAccountLocks([db.resolveAccountLockKey(userId)], async () => {
+    return withResolvedAccountLocks(() => [db.resolveAccountLockKey(userId)], async () => {
       const targetIds: string[] = [];
 
       if (Array.isArray(orderIds) && orderIds.length > 0) {

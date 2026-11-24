@@ -169,6 +169,40 @@ async function runSettlementTestSuite() {
   const bondPos: BondPosition = { userId: 'user_gamma', bondId: 'bond_kr_gov_3y', quantity: 1000, avgPrice: 100 };
 
   const couponResult = bondEngine.calculateCouponPayment({ bond: bondGov, position: bondPos, periodKey: '2026_Q3', paymentsPerYear: 4 });
+  const zeroCoupon = await bondEngine.executeCouponBatch({
+    bonds: [{ ...bondGov, coupon_rate: 0 }],
+    positions: [bondPos],
+    periodKey: '2026_Q3',
+    now: SIM_NOW,
+  });
+  if (zeroCoupon.couponCount !== 0 || zeroCoupon.results.length !== 0) {
+    throw new Error('Zero-coupon bonds must not write a periodic coupon');
+  }
+  const semiannual = bondEngine.calculateCouponPayment({
+    bond: { ...bondGov, payments_per_year: 2 }, position: bondPos, periodKey: '2026_Q3',
+  });
+  if (semiannual.paymentAmount !== Math.round(1000 * 10000 * (0.035 / 2))) {
+    throw new Error('Coupon amount must use the configured frequency');
+  }
+  const legacyDb = new MemoryDatabase();
+  seedSettlementFixtures(legacyDb);
+  const legacyRepositories = createInMemoryRepositoryBundle(legacyDb);
+  const legacyEngine = new BondCouponEngine(legacyRepositories, clock);
+  const semiannualBond = { ...bondGov, maturity_date: '2027-01-01T00:00:00Z', payments_per_year: 2 };
+  const previousPaid = await legacyRepositories.settlement.settleBondCoupon(
+    bondPos.userId, semiannualBond.id, 87500,
+    legacyEngine.generateIdempotencyKey(semiannualBond.id, bondPos.userId, 'period_2026-Q1', 'COUPON'),
+    Date.parse('2026-03-31T00:00:00Z'),
+  );
+  const april = await legacyEngine.executeCouponBatch({
+    bonds: [semiannualBond], positions: [bondPos], periodKey: 'period_2026-Q2', now: Date.parse('2026-04-01T00:00:00Z'),
+  });
+  const july = await legacyEngine.executeCouponBatch({
+    bonds: [semiannualBond], positions: [bondPos], periodKey: 'period_2026-Q3', now: Date.parse('2026-07-01T00:00:00Z'),
+  });
+  if (!previousPaid || april.couponCount !== 0 || july.couponCount !== 1) {
+    throw new Error('Earlier quarterly payment must block only the overlapping semiannual period');
+  }
   const expectedCoupon = Math.round(1000 * 10000 * (0.035 / 4));
   console.log(`  [쿠폰] ₩${couponResult.paymentAmount.toLocaleString()} (expected ₩${expectedCoupon.toLocaleString()})`);
 

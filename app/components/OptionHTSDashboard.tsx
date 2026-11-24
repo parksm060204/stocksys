@@ -39,7 +39,7 @@ export default function OptionHTSDashboard() {
     const reqAccount = isLoggedIn && userId ? userId : null;
     const [{ data: contractList }, { data: stockList }, accountRes] = await Promise.all([
       db.from('options_contracts').select('*'),
-      db.from('stocks').select('market, current_price, previous_close, shares_outstanding, volume').eq('market', 'domestic'),
+      db.from('stocks').select('market, current_price, previous_close, shares_outstanding, volume').eq('market', 'domestic').neq('is_listed', false),
       reqAccount ? fetch('/api/options/account', { cache: 'no-store' }).then((r) => r.json()).catch(() => null) : Promise.resolve(null),
     ]);
     if (reqSeq !== fetchSeqRef.current) return;
@@ -49,6 +49,7 @@ export default function OptionHTSDashboard() {
       let currCap = 0;
       let totalVol = 0;
       for (const s of stockList as any[]) {
+        if (s?.is_listed === false) continue;
         const shares = Number(s.shares_outstanding || 1_000_000);
         const cur = Number(s.current_price || 0);
         const prev = Number(s.previous_close || cur);

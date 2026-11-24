@@ -44,7 +44,7 @@ export default async function MarketPage({
         market_cap: 100000000000,
         bondMeta: {
           faceValue: row.quote_base || 100,
-          couponRate: row.coupon_rate || 3.5,
+          couponRate: row.coupon_rate ?? 3.5,
           maturityYears: row.maturity ? parseInt(row.maturity) || 5 : 5,
           riskCategory: row.bond_type === 'govt' ? 'sovereign' : row.bond_type === 'corp_ig' ? 'corporate_ig' : 'high_yield',
         }
@@ -52,9 +52,10 @@ export default async function MarketPage({
     } else {
       const { data } = await db
         .from('stocks')
-        .select('id, name, ticker, market, sector, current_price, previous_close, volume, market_cap')
-        .eq('market', id);
-      stocksData = data || [];
+        .select('id, name, ticker, market, sector, current_price, previous_close, volume, market_cap, is_listed')
+        .eq('market', id)
+        .neq('is_listed', false);
+      stocksData = (data || []).filter((row: any) => row.is_listed !== false);
     }
   } catch (e) {
     console.warn("Failed to fetch market stocks:", e);

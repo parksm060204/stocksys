@@ -36,7 +36,12 @@ async function main() {
       return true;
     },
   });
-  const eventDirector = new EventDirector(engine, context, repositories.event);
+  const eventDirector = new EventDirector(engine, context, repositories.event, undefined, {
+    onPersist: () => enginePersistence.saveSnapshot(memoryDb),
+    persistence: enginePersistence,
+    epoch: restartRuntime.epoch,
+  });
+  await eventDirector.restorePendingCorrections();
 
   engine.start();
   eventDirector.start();

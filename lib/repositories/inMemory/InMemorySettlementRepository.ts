@@ -609,7 +609,7 @@ export class InMemorySettlementRepository implements SettlementRepository {
     // ── Phase 1.5: 신규 주문 staging 및 참조 주문의 권위 상태·잔량 검증 (과체결/중복정산 차단) ──
     const newlyInsertedOrderIds = new Set<string>();
     const originalOrdersBeforeBatch = new Map<string, OrderRecord>();
-    const newlyCreatedProfileIds = new Set<string>();
+    const newlyCreatedProfileEntries: Array<{ pk: string; userId: string }> = [];
 
     if (batch.newOrders && batch.newOrders.length > 0) {
       for (const ord of batch.newOrders) {
@@ -662,9 +662,9 @@ export class InMemorySettlementRepository implements SettlementRepository {
       for (const [id, snap] of originalOrdersBeforeBatch.entries()) {
         this.db.orders.set(id, snap);
       }
-      for (const id of newlyCreatedProfileIds) {
-        this.db.profiles.delete(id);
-        this.db.profileUserIdIndex.delete(id);
+      for (const entry of newlyCreatedProfileEntries) {
+        this.db.profiles.delete(entry.pk);
+        this.db.profileUserIdIndex.delete(entry.userId);
       }
       if (newlyInsertedOrderIds.size > 0 || originalOrdersBeforeBatch.size > 0) {
         this.db.rebuildIndexes();
@@ -868,8 +868,7 @@ export class InMemorySettlementRepository implements SettlementRepository {
       institutionName?: string;
     }
     const getAccountView = (userId: string): AuthoritativeAccountView | null => {
-      const pid = this.db.profileUserIdIndex.get(userId) || userId;
-      const p = this.db.profiles.get(pid);
+      const p = this.db.resolveProfileByUserId(userId);
       if (p) {
         return {
           id: p.id,
@@ -985,7 +984,7 @@ export class InMemorySettlementRepository implements SettlementRepository {
           error: `PRE_VALIDATION_FAILED: Insufficient cash for user ${userId}. Required delta: ${cashDelta}, Current cash: ${view.cash}`,
         });
       }
-      const existingProfile = this.db.profiles.get(this.db.profileUserIdIndex.get(userId) || userId);
+      const existingProfile = this.db.resolveProfileByUserId(userId);
       if (existingProfile) {
         profileSnapshots.set(existingProfile.id, { ...existingProfile });
       }
@@ -1037,8 +1036,12 @@ export class InMemorySettlementRepository implements SettlementRepository {
         const view = getAccountView(userId)!;
         if (view.needsProfileCreation) {
           const nextCash = roundMoney(view.cash + cashDelta);
+          let newPk = !this.db.profiles.has(userId) ? userId : this.db.generateId('prof');
+          while (this.db.profiles.has(newPk) || (newPk !== userId && this.db.resolveProfileByUserId(newPk))) {
+            newPk = this.db.generateId('prof');
+          }
           const newProfile: ProfileRecord = {
-            id: userId,
+            id: newPk,
             user_id: userId,
             username: view.institutionName || userId,
             nickname: view.institutionName || userId,
@@ -1047,15 +1050,15 @@ export class InMemorySettlementRepository implements SettlementRepository {
             rank_tier: 'INSTITUTION',
             created_at: this.db.getIsoTimestamp(),
           };
-          this.db.profiles.set(userId, newProfile);
-          this.db.profileUserIdIndex.set(userId, userId);
-          newlyCreatedProfileIds.add(userId);
+          this.db.profiles.set(newPk, newProfile);
+          this.db.addProfileToIndex(newProfile);
+          newlyCreatedProfileEntries.push({ pk: newPk, userId });
           const port = this.db.institutionalPortfolios.get(userId);
           if (port) {
             port.current_cash = nextCash;
           }
         } else {
-          const profile = this.db.profiles.get(this.db.profileUserIdIndex.get(userId) || userId)!;
+          const profile = this.db.resolveProfileByUserId(userId)!;
           if (cashDelta > 0) {
             applyCashCreditWithMarginDebt(profile, cashDelta);
           } else {
@@ -1143,8 +1146,7 @@ export class InMemorySettlementRepository implements SettlementRepository {
           sequence: trade.sequence,
           simulation_time: trade.simulation_time,
         };
-        this.db.trades.push(tradeRecord);
-        this.db.addTradeToIndex(tradeRecord);
+        this.db.appendTrade(tradeRecord);
 
         const ledgerEntry: SettlementLedgerEntry = {
           trade_id: v.tradeId,
@@ -1252,9 +1254,9 @@ export class InMemorySettlementRepository implements SettlementRepository {
       });
     } catch (err) {
       // ── Phase 5: 완전 롤백 ──
-      for (const id of newlyCreatedProfileIds) {
-        this.db.profiles.delete(id);
-        this.db.profileUserIdIndex.delete(id);
+      for (const entry of newlyCreatedProfileEntries) {
+        this.db.profiles.delete(entry.pk);
+        this.db.profileUserIdIndex.delete(entry.userId);
       }
       for (const [pid, snap] of profileSnapshots.entries()) {
         const p = this.db.profiles.get(pid);
@@ -1341,8 +1343,7 @@ export class InMemorySettlementRepository implements SettlementRepository {
       // 금액이 유효하지 않으면 원장/현금을 전혀 변경하지 않는다.
       return false;
     }
-    const pid = this.db.profileUserIdIndex.get(userId) || userId;
-    const profile = this.db.profiles.get(pid);
+    const profile = this.db.resolveProfileByUserId(userId);
     if (!profile) return false;
 
     const prevCash = profile.cash;
@@ -1397,7 +1398,7 @@ export class InMemorySettlementRepository implements SettlementRepository {
         const ord = this.db.orders.get(oid);
         if (!ord || (ord.status !== 'open' && ord.status !== 'partial')) continue;
         if (ord.user_id) {
-          accounts.add(this.db.profileUserIdIndex.get(ord.user_id) || ord.user_id);
+          accounts.add(ord.user_id);
         }
       }
     }
@@ -1471,11 +1472,12 @@ export class InMemorySettlementRepository implements SettlementRepository {
     for (const ord of candidateOrders) {
       orderSnapshots.set(ord.id, { ...ord });
       if (ord.user_id) {
-        const pid = this.db.profileUserIdIndex.get(ord.user_id) || ord.user_id;
-        affectedUsers.add(pid);
-        const profile = this.db.profiles.get(pid);
-        if (profile && !profileSnapshots.has(pid)) {
-          profileSnapshots.set(pid, { ...profile });
+        const profile = this.db.resolveProfileByUserId(ord.user_id);
+        if (profile) {
+          affectedUsers.add(profile.id);
+          if (!profileSnapshots.has(profile.id)) {
+            profileSnapshots.set(profile.id, { ...profile });
+          }
         }
       }
     }
@@ -1587,6 +1589,30 @@ export class InMemorySettlementRepository implements SettlementRepository {
         payout_amount: payoutAmount,
         settled_at: this.db.getIsoTimestamp(),
       });
+    });
+  }
+
+  public hasBondCouponPaidDuring(userId: string, bondId: string, fromMs: number, throughMs: number): boolean {
+    return this.db.bondCouponPayments.some((payment) => {
+      if (payment.user_id !== userId || payment.bond_id !== bondId ||
+          payment.payment_type === 'MATURITY_REDEMPTION' || !(Number(payment.coupon_amount) > 0)) return false;
+      const paidMs = Date.parse(payment.paid_at || payment.payment_date || '');
+      return paidMs >= fromMs && paidMs <= throughMs;
+    });
+  }
+
+  public hasBondCouponPaymentRecord(idempotencyKey: string): boolean {
+    if (!isNonEmptyId(idempotencyKey)) return false;
+    return this.db.bondCouponPayments.some((payment) => {
+      if (
+        payment.id !== idempotencyKey ||
+        payment.payment_type === 'MATURITY_REDEMPTION' ||
+        !(Number(payment.coupon_amount) > 0)
+      ) {
+        return false;
+      }
+      const paidMs = Date.parse(payment.paid_at || payment.payment_date || '');
+      return Number.isFinite(paidMs);
     });
   }
 
@@ -1768,8 +1794,7 @@ export class InMemorySettlementRepository implements SettlementRepository {
       };
     }
 
-    const pid = this.db.profileUserIdIndex.get(params.userId) || params.userId;
-    const profile = this.db.profiles.get(pid);
+    const profile = this.db.resolveProfileByUserId(params.userId);
     if (!profile) {
       return { success: false, errorCode: 'USER_NOT_FOUND', error: `User profile not found: ${params.userId}` };
     }
@@ -1916,8 +1941,7 @@ export class InMemorySettlementRepository implements SettlementRepository {
       return { success: false, errorCode: 'INVALID_COUPON_RATE', error: `Invalid bond coupon rate: ${couponRate}` };
     }
 
-    const pid = this.db.profileUserIdIndex.get(params.userId) || params.userId;
-    const profile = this.db.profiles.get(pid);
+    const profile = this.db.resolveProfileByUserId(params.userId);
     if (!profile) {
       return { success: false, errorCode: 'USER_NOT_FOUND', error: `User profile not found: ${params.userId}` };
     }

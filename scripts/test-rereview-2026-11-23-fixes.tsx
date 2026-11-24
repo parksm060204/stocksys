@@ -1003,8 +1003,28 @@ async function testP2LegacyProfileLookupUpdateLockAndIsolation(): Promise<void> 
   const prevDisableGuest = process.env.NEXT_PUBLIC_DISABLE_GUEST_AUTH;
   delete process.env.NEXT_PUBLIC_DISABLE_GUEST_AUTH;
   try {
-    // 1a. authUid1이 .eq('id', authUid1)로 본인 프로필 조회 -> legacyId의 cash 반환
+    // 1a. authUid1이 .eq('user_id', authUid1)로 본인 프로필 조회 -> legacyId의 cash 반환
+    //     반면 명시적 .eq('id', authUid1)은 행 PK(id)로만 해석되어 타인(authUid2) 행을 마스킹 반환해야 함
     const ownSelectRes = await localDbPost(
+      new Request('http://localhost:3000/api/local-db', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'execute',
+          tableName: 'profiles',
+          query: {
+            action: 'select',
+            filters: [{ col: 'user_id', op: 'eq', val: authUid1 }],
+            isSingle: true,
+          },
+        }),
+      })
+    );
+    const ownSelectJson = await ownSelectRes.json();
+    assert.equal(ownSelectJson.data?.id, legacyId);
+    assert.equal(ownSelectJson.data?.cash, 100_000_000);
+
+    const pkSelectRes = await localDbPost(
       new Request('http://localhost:3000/api/local-db', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1019,9 +1039,10 @@ async function testP2LegacyProfileLookupUpdateLockAndIsolation(): Promise<void> 
         }),
       })
     );
-    const ownSelectJson = await ownSelectRes.json();
-    assert.equal(ownSelectJson.data?.id, legacyId);
-    assert.equal(ownSelectJson.data?.cash, 100_000_000);
+    const pkSelectJson = await pkSelectRes.json();
+    assert.equal(pkSelectJson.data?.id, authUid1);
+    assert.equal(pkSelectJson.data?.user_id, authUid2);
+    assert.equal(pkSelectJson.data?.cash, undefined, 'Explicit id filter must not fall back to authUid1 profile');
 
     // 1b. authUid1이 타인(authUid2) 프로필을 id 또는 user_id로 조회 -> cash/is_admin 비노출
     const crossRes = await localDbPost(

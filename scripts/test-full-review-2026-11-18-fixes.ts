@@ -298,7 +298,7 @@ async function main() {
 
       // F14 & F15 & F16 & F17 route handler checks
       const { POST: purchasePost } = await import('../app/api/shop/purchase/route');
-      const { setSessionGetter } = await import('../app/api/analyze/route');
+      const { setSessionGetter } = await import('../lib/ai/analyzeRouteHelper');
       const { GET: marketFlowGet } = await import('../app/api/market-flow/route');
       const { POST: adminScenPost } = await import('../app/api/admin/scenarios/route');
 

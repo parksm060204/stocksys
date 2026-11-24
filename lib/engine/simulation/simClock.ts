@@ -186,6 +186,19 @@ export class SimulationClock {
     };
   }
 
+  public restoreState(state: ClockState): void {
+    if (!Number.isSafeInteger(state.simulationTime) || state.simulationTime <= 0 ||
+        !Number.isSafeInteger(state.simulationStep) || state.simulationStep < 0 ||
+        !Number.isSafeInteger(state.sequence) || state.sequence < 1 ||
+        !Number.isFinite(state.dt) || state.dt <= 0) {
+      throw new RangeError('Invalid simulation clock checkpoint');
+    }
+    this._simulationTime = state.simulationTime;
+    this._simulationStep = state.simulationStep;
+    this._sequence = state.sequence;
+    this._dt = state.dt;
+  }
+
   public reset(startEpochMs?: number): void {
     if (startEpochMs !== undefined) {
       assertFinitePositive(startEpochMs, 'startEpochMs');

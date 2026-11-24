@@ -57,8 +57,9 @@ export interface Stock {
   volume: number;
   marketCap: number;
   relevanceWeight: number;
-  targetPrice: number;
+  targetPrice?: number;
   isCore: boolean;
+  isListed?: boolean;
   listedAt: string;
   financials?: Financials;
   /** 선택 사항: 시장(market)==='bonds'일 때만 존재 */

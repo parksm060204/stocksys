@@ -5,7 +5,7 @@ import type {
   TradeRecord,
 } from '@/lib/memoryDb/memoryStore';
 import { withStockLock, withAllStockLocks } from '@/lib/engine/marketService';
-import { withAccountLocks } from '@/lib/memoryDb/accountLocks';
+import { withResolvedAccountLocks } from '@/lib/memoryDb/accountLocks';
 import { runWithCommitGate, persistenceManager } from '@/lib/memoryDb/PersistenceManager';
 import { calculateSingleBuyOrderReservedCash, getAvailableCashKrw, applyCashCreditWithMarginDebt, sweepUnencumberedCashToMarginDebt } from '@/lib/engine/orderRisk';
 import { pruneExpiredProfileEntitlements } from '@/lib/shop/catalog';
@@ -260,9 +260,10 @@ export async function submitAuthoritativeOptionOrder(
     }
 
     const lockAccounts = Array.from(new Set([userId, ...fills.map((f) => f.counterpartyId)]));
-    const lockKeys = lockAccounts.map((id) => db.resolveAccountLockKey(id));
 
-    return withAccountLocks(lockKeys, async () => {
+    return withResolvedAccountLocks(
+      () => lockAccounts.map((id) => db.resolveAccountLockKey(id)),
+      async () => {
       if (db.isTradingHalted()) {
         return {
           success: false,
@@ -664,8 +665,7 @@ export async function submitAuthoritativeOptionOrder(
             seller_fee: sellerFee,
             created_at: db.getIsoTimestamp(),
           };
-          db.trades.push(tr);
-          db.addTradeToIndex(tr);
+          db.appendTrade(tr);
           db.settlementLedger.set(tradeId, {
             trade_id: tradeId,
             stock_id: contract.id,
@@ -894,7 +894,7 @@ export async function cancelOptionOrder(params: {
   }
 
   return withStockLock(prelim.stock_id, async () => {
-    return withAccountLocks([db.resolveAccountLockKey(userId)], async () => {
+    return withResolvedAccountLocks(() => [db.resolveAccountLockKey(userId)], async () => {
       return runWithCommitGate(onPersist, async () => {
         const current = db.orders.get(orderId);
         if (!current || !db.optionsContracts.has(current.stock_id)) {
@@ -953,7 +953,7 @@ export async function cancelAllOptionOrders(params: {
   }
 
   return withAllStockLocks(prelimIds, async () => {
-    return withAccountLocks([db.resolveAccountLockKey(userId)], async () => {
+    return withResolvedAccountLocks(() => [db.resolveAccountLockKey(userId)], async () => {
       return runWithCommitGate(onPersist, async () => {
         const prevStatuses = new Map<string, OrderRecord['status']>();
         const userOrders = db.orderUserIndex.get(userId);

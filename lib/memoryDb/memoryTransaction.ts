@@ -46,7 +46,7 @@ export function snapshotTradingState(stockId: string, userIds: string[]): Tradin
 
   const profiles = new Map<string, ProfileRecord>();
   for (const uid of userIds) {
-    const profile = db.resolveProfileByUserId(uid) ?? db.profiles.get(uid);
+    const profile = db.resolveProfileByUserId(uid);
     if (profile) profiles.set(profile.id, { ...profile });
   }
 

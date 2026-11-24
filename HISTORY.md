@@ -5540,3 +5540,145 @@ o-explicit-any/set-state-in-effect 경고(비치명적)
   - `lib/memoryDb/memoryStore.ts`, `lib/engine/localStandaloneServer.ts`: `resetStandaloneMarketAtomically`에서 영속 커밋 성공 후에만 `market_reset` 발행.
   - `lib/rateLimit/windowLimiter.ts`, `app/api/{orders,market-flow}/route.ts`: 만료 엔트리 주기 정리 적용.
 - **검증**: 신규 회귀 스위트 `scripts/test-rereview-2026-11-23-fixes.tsx` 및 기존 8개 스위트(`test-r2-01-to-07-fixes.tsx`, `run_settlement_verification.ts`, `test-post-fix-review-2026-11-20-fixes.ts`, `test-order-security-and-atomic.ts`, `test-route-handlers-e2e.ts`, `test-topbar-cash-runtime.tsx`, `test-phase1-settlement-integrity.ts`, `test-reachable-security-fixes.ts`), 루트/`engine-server` `tsc --noEmit`, `eslint . --quiet`, `engine-server` 빌드+alias rewrite, `next build` 모두 격리 환경 `exit 0` 통과 확인.
+
+
+---
+## 2026-11-23 18:41
+
+**요청 요약:** 반복 디버깅 1차 P1·P2 결함 6건(원자재 레거시 프로필 정산, MemoryDbClient PK/user_id 충돌 및 SSR 조회, 예약 현금 인증 키 일치, OptionsPanel 계정 바인딩, is_listed=false 제외 및 list_stock 시장 검증, stocks.target_price 공개 컬럼 정책) 수정 및 회귀 검증
+**수행 결과:**
+- **P1-01 (`lib/commodities/commodityLedger.ts`)**: `settleCommodityTradeForUsers`에서 `db.profiles.has(...)` 대신 `db.resolveProfileByUserId(...)`를 사용해 레거시 프로필(`id !== user_id`)의 양측 신규/청산, 증거금·손익 정산 및 동일 계좌 자전거래 차단을 처리하도록 수정.
+- **P1-02 (`lib/memoryDb/memoryDbClient.ts`, `app/mypage/page.tsx`, `app/stocks/[id]/page.tsx`, `app/v2/stocks/[id]/page.tsx`)**: `MemoryQueryBuilder`에서 `profiles`의 `id` PK 조회와 `user_id` 조회 및 재필터링 의미 충돌을 제거하고, `mypage`·`stocks/[id]`·`v2/stocks/[id]` SSR 세션 프로필 조회를 `.eq('user_id', ...)`로 명확히 전환.
+- **P1-03 (`lib/engine/orderRisk.ts`, `lib/commodities/commodityLedger.ts`)**: `sweepUnencumberedCashToMarginDebt`와 `applyCashDeltaWithMarginDebt`가 `profile.id` 대신 주문 인덱스와 동일한 인증 사용자 키(`profile.user_id || profile.id`)로 `calculateUserReservedCashKrw`를 호출해 미체결 매수 예약금을 보호하도록 수정.
+- **P2-01 (`app/components/OptionsPanel.tsx`)**: `licenseState`를 현재 `userId`에 바인딩하고 로그아웃·계정 전환 시 즉시 초기화하며 요청 순번·활성 계정 검증으로 구계정 지연 응답을 무시하도록 수정.
+- **P2-02 (`app/api/orders/route.ts`, `lib/engine/dbMatching.ts`, `app/api/local-db/route.ts`, `app/api/admin/scenarios/route.ts`, `app/admin/page.tsx`, `app/{stocks,v2/stocks,markets/[market],etf}/page.tsx`, `app/components/{TopBar,DashboardGate,OptionHTSDashboard}.tsx`)**: 명시적 `is_listed === false` 종목을 공개 가용 종목 목록과 신규 주문에서 제외하되 기존 주문 취소·보유/정산·레거시 `undefined` 동작을 보존하고, `list_stock`의 시장 값을 지원 집합(`domestic`, `overseas`, `europe`, `etf`)으로 검증.
+- **P2-03 (`app/api/local-db/route.ts`)**: `stocks` 일반 조회에 `PUBLIC_STOCK_COLUMNS` 필터·정렬 화이트리스트와 `sanitizePublicStockRecord`(`target_price` 제거)를 적용하고, 서버 검증된 관리자 세션(`verifyAdminSession`)에만 `target_price` 조회·연산을 허용.
+- **검증**: 신규 회귀 스위트 `scripts/test-loop1-p1-p2-fixes.tsx` 및 기존 회귀 7종(`test-rereview-2026-11-23-fixes.tsx`, `test-route-handlers-e2e.ts`, `test-full-review-2026-11-19-fixes.ts`, `test-order-risk-and-settlement.ts`, `test-nextauth-safe-handler.ts`, `test-r2-01-to-07-fixes.tsx`, `test-topbar-cash-runtime.tsx`), 더미 테스트 환경 기반 NextAuth HTTP 통합 테스트(`test-nextauth-http-integration.ts`), `npx tsc --noEmit`, `npm run lint`, `npm run build` 모두 통과 확인.
+
+---
+## 2026-11-23 19:17
+
+**요청 요약:** 반복 디버깅 2차 P1·P2 결함 5건(B-01~03, R-01~02) 수정 및 격리 검증
+**수행 결과:**
+- **B-01 (`app/api/{analyze,auth/[...nextauth],market-flow,commodities}/route.ts`, `lib/auth/authOptions.ts`, `lib/ai/analyzeRouteHelper.ts`, `lib/engine/marketFlowHelper.ts`, `lib/commodities/commodityEngineInstance.ts`)**: `route.ts` 비지원 런타임 export를 공유 모듈로 분리하고 NextAuth 동적 `params` 계약을 `Promise<{ nextauth: string[] }>`로 정리하며 싱글턴/import 진입점 보존.
+- **B-02 (`lib/stocks/publicStockDto.ts`, `lib/types.ts`, `app/{stocks,v2/stocks}/[id]/page.tsx`)**: `toPublicStockDto` 및 `PUBLIC_STOCK_SELECT_COLUMNS`로 주식 상세 SSR 직렬화 경계에서 `target_price`·`targetPrice` 제외(관리자 기능·공개 현재가 보존).
+- **B-03 (`app/{admin,etf,exchange,news,shop}/page.tsx`, `app/components/{DashboardGate,Sidebar,TopBar}.tsx`, `app/api/local-db/route.ts`, `lib/memoryDb/{memoryDbClient,memoryStore,memoryTransaction}.ts`, `lib/repositories/inMemory/{InMemoryParticipantRepository,InMemorySettlementRepository}.ts`)**: 세션 기반 프로필 조회를 `user_id`로 통일하고 row PK(`id`)와 인증 계정 키(`user_id`) 의미를 분리(레거시 호환·잠금·소유권·정산 보존).
+- **R-01 (`app/components/ActiveOrdersPanel.tsx`, `app/components/commodities/{CommodityActiveOrdersPanel,CommodityOrderEntry}.tsx`, `app/news/page.tsx`)**: 사용자 주문/포지션/뉴스 권한 상태를 세션 계정에 바인딩하고 계정 전환·로그아웃 즉시 초기화 및 지연 응답/언마운트·취소 Race 차단.
+- **R-02 (`lib/memoryDb/memoryStore.ts`, `lib/index.ts`, `app/components/OptionHTSDashboard.tsx`, `lib/engine/localStandaloneServer.ts`, `lib/engine/simulation/agentManager.ts`, `engine-server/src/MarketEngine.ts`, `app/etf/page.tsx`)**: K200 권위 산정, 로컬/독립 엔진 LP·봇·매칭 후보, ETF 동기화에서 `is_listed=false`를 일관 제외하면서 `undefined` 레거시·취소·보유·만기 정산 보존.
+- **검증**: 신규 `scripts/test-loop2-p1-p2-fixes.tsx` 포함 격리 회귀 10종, `eslint . --quiet`, `tsc --noEmit`, `engine-server` 빌드, Next Turbopack + Webpack 프로덕션 빌드 및 더미 설정 NextAuth HTTP 통합 테스트 모두 통과 확인.
+
+---
+## 2026-11-23 21:33
+
+**요청 요약:** 3차 리뷰 계정 식별 결함 3건(`N-01`~`N-03`) 수정 및 격리 회귀 검증
+**수행 결과:**
+- **N-01 (`lib/memoryDb/memoryStore.ts`, `lib/auth/authOptions.ts`)**: `ensureUserProfile`에서 기존 행 PK(`this.profiles.has(userId)`) 충돌 시 독립 PK(`prof_*`)를 할당해 타인 행 덮어쓰기를 차단하고 `updateAtomic` 큐의 예외 전파 오염을 방지했으며, `ensureRestoredAndPersistUserProfile`에 계정 단위 직렬화·`try/catch` 저장 실패 처리·생성된 행(`createdProfile.id`)과 인덱스만 롤백하는 복구 로직을 적용했다.
+- **N-02 (`lib/memoryDb/memoryDbClient.ts`)**: `update_cash_balance` RPC에서 `GUEST_USER_ID` 자동 대체와 모호/누락 식별자·`p_profile_id` 불일치를 차단(fail-closed)하고, `resolveProfileByUserId` 기반 소유권 검증과 정식 `profile.id` 잠금 키(`withAccountLocks` + `updateAtomic`)로 원자적 현금 갱신만 허용하며, `profiles` `insert`/`upsert`/`update` 및 필터의 `user_id`/`userId` 교차 충돌을 보강했다.
+- **N-03 (`app/api/local-db/route.ts`, `lib/engine/localStandaloneServer.ts`)**: `/api/local-db` `profiles` `select`에서 명시적 `profiles.id` 필터를 PK(`memoryDb.profiles.get`) 전용으로만 해석하고 `user_id` 교차 fallback을 제거했으며, 필터 없는 본인 기본 조회·중복 상충 필터·기존 소유권 마스킹과 정산 락 키(`resolveAccountLockKey`) 일관성을 유지했다.
+- **검증**: 신규 회귀 스위트 `scripts/test-loop3-n01-n03-fixes.ts` 및 `test-loop1-p1-p2-fixes.tsx`, `test-loop2-p1-p2-fixes.tsx`, `test-rereview-2026-11-23-fixes.tsx`, `npx tsc --noEmit`, `npm run lint`(0 errors), `npm --workspace engine-server run build`, `npm run build` 모두 통과 확인.
+
+
+---
+## 2026-11-23 22:07
+
+**요청 요약:** 4차 리뷰 후속 결함 4건(`F-01`~`F-04`) 수정 및 격리 회귀/타입/린트/빌드 검증
+**수행 결과:**
+- **F-01 (`engine-server/src/MarketEngine.ts`, `lib/repositories/inMemory/InMemoryEventRepository.ts`)**: `triggerRandomEvents`에서 돌발 이벤트 소유자(`user_id`)를 프로필 PK가 아닌 canonical 인증 계정 ID(`user.user_id || user.id`)로 귀속하고, `saveActivePlayerEvent`에서 비어 있지 않은 `user_id` 검증과 결정론적 `id`·`created_at` 생성을 보장해 적재·조회·해결 경계를 일관화했다.
+- **F-02 (`app/api/local-db/route.ts`)**: `profiles` `select`가 필터와 OR 조건 그룹(`orFilterGroups`, `or`)이 실제로 모두 비어 있을 때만 기본 본인 조회로 해석되도록 수정하고, 민감/비지원 컬럼·비`eq` 연산자·OR 그룹·허용 외 정렬을 `403`, 빈 값·잘못된 필터/타입을 `400`으로 명시 거절하며 `id`/`user_id` 분리 및 조합 조건 평가를 정합화했다.
+- **F-03 (`app/api/local-db/route.ts`)**: `profiles` `update`에서 `persistConfirmedState()`의 `false` 반환뿐 아니라 예외(`throw`) 경로에서도 `withResolvedAccountLocks`·`runWithCommitGate` 내부에서 `memoryDb.profiles`와 인덱스를 이전 상태로 복원하고 후속 쓰기 간섭 없이 500 JSON을 반환하도록 보완했다.
+- **F-04 (`lib/memoryDb/memoryDbClient.ts`, `lib/memoryDb/memoryStore.ts`, `lib/repositories/inMemory/InMemoryParticipantRepository.ts`, `lib/memoryDb/accountLocks.ts`, `lib/auth/authOptions.ts`, `app/api/shop/purchase/route.ts`, `lib/events/playerEventService.ts`, `lib/exchange/exchangeService.ts`, `lib/engine/marketService.ts`, `lib/options/optionOrderService.ts`, `lib/commodities/commodityLedger.ts`)**: `profiles` `insert`/`upsert`/`update`에서 PK·`user_id` 유일성과 `user_id` 없는 기존 행의 소유권(`existing.user_id || existing.id`)을 검증하고 배치 검증·스테이징으로 중간 실패 시 부분 반영을 차단했으며, 직접 호출부(`InMemoryParticipantRepository.updateProfile`, `ensureUserProfile`) 불변식과 최초 프로필 생성 시 잠금 키 전환(`[userId, candidatePk]` + `withResolvedAccountLocks`) 보호를 보완했다.
+- **검증**: 신규 회귀 스위트 `scripts/test-loop4-f01-f04-fixes.ts` 및 기존 루프/라우트/정산/인증 9종(`test-loop3-n01-n03-fixes.ts`, `test-loop2-p1-p2-fixes.tsx`, `test-loop1-p1-p2-fixes.tsx`, `test-rereview-2026-11-23-fixes.tsx`, `test-route-handlers-e2e.ts`, `test-regression-settlement-auth-ai.ts`, `test-nextauth-safe-handler.ts`, `test-nextauth-http-integration.ts`, `run_settlement_verification.ts`), `npx tsc --noEmit`, `npm run lint`(0 errors), `npm --workspace engine-server run build`, `npm run build` 모두 격리 환경 통과 확인.
+
+
+---
+## 2026-11-23 22:41
+
+**요청 요약:** 5차 검증 후속 결함(`L5-01`, `L5-02`, 인접 P2) 수정 및 P3 두 관찰(`InMemoryParticipantRepository.ts:69-77`, `memoryStore.ts:1193-1256`) 검토·회귀 검증
+**수행 결과:**
+- **L5-01 (`lib/options/optionOrderService.ts`)**: `submitAuthoritativeOptionOrder`의 계좌 잠금을 `withAccountLocks`에서 `withResolvedAccountLocks`로 전환하고 미사용 `withAccountLocks` import를 제거해 최초 프로필 생성·독립 PK 할당 전후 상호배제, 다계좌 정렬, 재진입, 재시도, 영속 실패 롤백 규약을 유지했다. 옵션 주문 타 경로(`cancelOptionOrder`, `cancelAllOptionOrders`, `liquidateAllOptionPositions`) 및 인접 자산 서비스도 동일 불변식을 준수함을 확인했다.
+- **L5-02 (`lib/repositories/inMemory/InMemorySettlementRepository.ts`, `lib/engine/localStandaloneServer.ts`)**: `getOpenOptionOrderAccountIds`가 락 키가 아닌 canonical 주문 `user_id`를 반환하도록 복원해 `runPeriodicSettlementBatch`에서 `resolveAccountLockKey`가 1회만 해석되게 하고, `profileSnaps`가 잠긴 실제 프로필(`profile.id` 및 `resolveProfileByUserId`)을 `structuredClone`으로 확보해 저장 `false`/`throw` 시 주문·현금·마진부채·인덱스가 함께 원복되고 재시도가 정상 동작하도록 수정했다.
+- **인접 P2 (`lib/repositories/inMemory/InMemorySettlementRepository.ts`)**: `commitMatchedBatchAtomically`의 신규 기관 프로필 PK 생성(`needsProfileCreation`)에 `while (this.db.profiles.has(newPk) || (newPk !== userId && this.db.resolveProfileByUserId(newPk)))` 충돌 방지 루프를 추가해 기존 PK·계정 ID 할당 불변식과 일치시켰다.
+- **P3 두 관찰**: `InMemoryParticipantRepository.ts:69-77`의 미존재 계정 생성 시 명시 `updates.id` 충돌 fallback은 `ensureUserProfile` 및 내장 봇 자동 등록 계약과 일치하는 의도된 비파괴 정책으로 유지했고, `memoryStore.ts:1193-1256`의 `resetToSeedData`는 시나리오 상태(`scenarioRuntimeState`, `scenarioResetVersion`, `commodityEventRuntimeState`) 초기화 및 카탈로그(`playerEvents`, `botsConfig`) 보존을 유지하면서 전 실행의 `activePlayerEvents`·`activeManipulations`가 잔존하는 초기화 계약 불일치를 해소하기 위해 두 런타임 배열을 비우도록 수정했다.
+- **검증**: 신규 회귀 스위트 `scripts/test-loop5-l5-fixes.ts` 및 기존 12개 격리 회귀 스위트(`test-loop4-f01-f04-fixes.ts`, `test-loop3-n01-n03-fixes.ts`, `test-loop2-p1-p2-fixes.tsx`, `test-loop1-p1-p2-fixes.tsx`, `test-rereview-2026-11-23-fixes.tsx`, `test-route-handlers-e2e.ts`, `test-r2-01-to-07-fixes.tsx`, `test-phase2-option-expiry-failclosed.ts`, `test-phase1-settlement-atomic.ts`, `test-order-risk-and-settlement.ts`, `test-regression-settlement-auth-ai.ts`, `run_settlement_verification.ts`), `npx tsc --noEmit`, `npm run lint`(0 errors), `npm --workspace=engine-server run build`, `npm run build` 모두 통과 확인.
+
+
+---
+## 2026-11-23 23:05
+
+**요청 요약:** 6차 독립 검증 `P1-01`(L5-02 잔여) 만기 정산 시간 계약 및 계좌 잠금 일관성 결함 수정 및 회귀 검증
+**수행 결과:**
+- **시간 계약 단일화 (`engine-server/src/settlement/SettlementBatchService.ts`, `lib/engine/localStandaloneServer.ts`)**: `SettlementBatchService.runDailySettlementBatch(fixedNowMs?)`가 호출자가 고정한 단일 기준시각(또는 기본 `clock.now()`)을 수용하도록 보완하고, `LocalMarketEngineInstance.runPeriodicSettlementBatch`에서 배치 진입 시 고정한 `batchNow`를 후보 수집(`collectPlan`)과 `runDailySettlementBatch(batchNow)` 양쪽에 동일하게 전달해 대기 중 경계를 넘은 미래 종목이 미잠금 상태로 섞이지 않고 다음 배치에서 처리되도록 수정했다.
+- **잠금 후 불변식 검증 및 재시도/연기 (`lib/engine/localStandaloneServer.ts`)**: `withAllStockLocks` → `withAccountLocks` → `runWithCommitGate` 내부에서 쓰기·스냅샷 전 `collectPlan()`을 재평가해 잠금 대기 중 정규 계좌 키(`resolveAccountLockKey`) 전환, 대상 자산·보유·계좌 집합 변경, 미잠금 신규 만기 자산 추가 여부를 확인하고, 불일치 시 쓰기 없이 잠금을 해제해 재수집·재시도하거나 지속 경합 시 다음 배치로 연기하도록 구현했다. 또한 최종 정산 대상·잠금 계좌·스냅샷(`profileSnaps`, `holdingSnaps`, `orderSnaps`, `lpLiabilitiesSnap`, `settlementLedger`, `lastPeriodKeyBefore`)·롤백 대상이 동일 불변식 아래 일치하도록 정리했다.
+- **회귀 및 통합 검증**: 신규 합성 회귀 `scripts/test-loop6-p1-01-settlement.ts`와 루프 1~5·만기·정산·동시성 회귀 스위트, 타입 검사(`tsc`), 린트(`eslint`), Next 및 `engine-server` 빌드를 격리 환경에서 검증했다.
+
+---
+## 2026-11-23 23:50
+
+**요청 요약:** 최종 전체 리뷰에서 확인한 결함 직접 수정.
+**수행 결과:**
+- 거시 충격의 원자재 이벤트 매핑을 복구하고 관리자 시나리오·이벤트 변경을 틱 및 저장 잠금과 직렬화했다.
+- 구조화된 관리자 뉴스 등록을 영속화하고 최신 뉴스의 적재·조회 순서를 통일했다.
+- 무이표 채권의 표시·지급과 채권별 지급 주기를 바로잡고 HTTP OR 필터 및 일반 주문 자산군 검증을 정리했다.
+- 라우트·정산 회귀에 템플릿, 저장 실패 복원, 뉴스 순서, 무이표 지급, 필터 및 주문 계약 검증을 추가했다.
+
+---
+## 2026-11-24 00:28
+
+**요청 요약:** 재검토 결함 직접 수정 및 워커 리뷰 루프 재개.
+**수행 결과:**
+- 기존 분기 쿠폰 이력과 새 지급 기간의 겹침을 확인해 반기채 중복 지급을 막았다.
+- 예약 뉴스 스냅샷에 시뮬레이션 시계 체크포인트를 저장하고 엔진 시작 시 복원한다.
+- 수동 원자재 이벤트와 뉴스에 스냅샷 복원 후에도 이어지는 고유 순번을 적용했다.
+- 쿠폰 지급 주기, 엔진 재시작 후 발행 시각, 동일 틱 이벤트 ID의 회귀 검증을 추가했다.
+
+---
+## 2026-11-24 00:52
+
+**요청 요약:** #18 1차 독립 재검증 후속 수정 2건(P1 원자재 이벤트 동기화·비복원, P2 채권 레거시 원장 호환) 구현 및 검증
+**수행 결과:**
+- **P1 (`lib/commodities/commodityEngineInstance.ts`, `lib/commodities/CommodityMarketEngine.ts`, `lib/commodities/eventSystem.ts`, `lib/commodities/bots/CommodityBot.ts`)**: `ensureCommodityEngineReady`에서 활성 이벤트 공백 시 과거 `commodityEventRuntimeState`를 재적용하던 분기를 제거해 버전 기반 최초 부팅·리셋·스냅샷 교체 복원 책임을 `reconcileWithDatabase`로 단일화하고, `stepTickAsync`에서 틱의 이벤트 감쇄·만료·뉴스·ID 순번을 `db.commodityEventRuntimeState` 및 `commodityUserOrderSeq`와 원자적으로 동기화·영속화하며 저장 `false`/`throw` 시 봇 스냅샷 앨리어싱 없이 정합 롤백되도록 수정했다.
+- **P2 (`engine-server/src/settlement/BondCouponEngine.ts`, `lib/repositories/settlementRepository.ts`, `lib/repositories/inMemory/InMemorySettlementRepository.ts`)**: `bondCouponPayments`가 비어 있고 `settlementLedger`(또는 압축 구간)에만 레거시 분기/월 키가 있는 v1 스냅샷도 현재 쿠폰 주기 `[startMs, endMs)`와 겹칠 때 증거로 인정하되, 실측 지급 시각(`paid_at`)이 있는 키는 실측 이력 겹침(`[startMs, now]`)을 우선하고 시각이 없는 레거시 키는 해당 달력 구간을 넘는 다음 유효 주기를 차단하지 않도록 호환 정책을 명시·구현했다.
+- **검증 (`scripts/test-followup-18-p1-p2.ts`)**: 격리 환경에서 P1/P2 회귀 테스트, `runSettlementTests.ts`, `test-route-handlers-e2e.ts`, 루프 회귀(`test-loop1`, `test-loop2`, `test-loop5`, `test-loop6`, `test-r2-01-to-07`, `test-rereview-2026-11-23`), `tsc --noEmit`, `eslint`, `engine-server` 빌드 및 `next build` 통과를 확인했다.
+
+---
+## 2026-11-24 08:36
+
+**요청 요약:** #18 2차 독립 검증 P1 결함(콜드 스타트 거시 충격 상태 보존) 수정 및 회귀 검증
+**수행 결과:**
+- **P1 콜드 스타트 상태 보존 (`app/api/admin/scenarios/route.ts`, `app/api/commodities/route.ts`)**: `trigger_macro_shock`가 `withScenarioLocks`(`simulationLock → tickLock → stockLocks`) 내부에서 `runWithCommitGate` 진입 전 `commodityEngineInstance.reconcileWithDatabase(memoryDb)`를 호출하도록 수정해 공개 `/api/commodities` 선행 호출이나 타이머 시작 없이도 기존 영속 이벤트·뉴스·이력·`manualSequence`·틱을 복원한 뒤 새 충격을 누적하고, 저장 실패(`false`/`throw`) 시 `structuredClone` 스냅샷으로 정합 롤백되도록 했다. 동일 원자재 런타임을 사용하는 관리자 `POST /api/commodities` (`trigger_event`)에도 `runWithTickLock` 내부 `reconcileWithDatabase(memoryDb)` 재검증과 `structuredClone` 롤백 스냅샷을 보강했다.
+- **동시 reconcile·락 재진입 보강 (`lib/commodities/CommodityMarketEngine.ts`)**: `reconcileWithDatabase`가 이미 `tickLock`을 보유한 호출 흐름(`isHoldingTickLock()`)에서는 외부 `reconcilePromise`를 대기하거나 덮어쓰지 않고 `performReconcile`로 재진입하도록 분리해, 외부 동시 `reconcileWithDatabase` 호출과의 교착을 방지하고 `simulationLock → tickLock → accountLocks → commitGate` 순서를 유지했다.
+- **회귀 검증 (`scripts/test-followup-18-p1-p2.ts`)**: 격리된 임시 데이터 디렉터리의 별도 자식 프로세스 콜드 스타트에서 원자재 API·타이머 없이 `trigger_macro_shock` 성공 및 저장 실패(`false`/`throw`) 롤백을 검증하고, `tickLock` 보유 중 동시 `reconcileWithDatabase` 무교착 테스트를 추가해 기존 만료·롤백·레거시 채권·라우트·정산 테스트 및 타입·린트·빌드와 함께 검증했다.
+
+
+---
+## 2026-11-24 14:53
+
+**요청 요약:** stock-sys main 작업본(기준 HEAD `8d7d67e` + 기존 미커밋 수정 보존) 리뷰 지적 5건 수정 및 회귀 검증
+**수행 결과:**
+- **1. 관리자 수동 스텝 시계 영속화 (`app/api/market-flow/route.ts`, `lib/engine/localStandaloneServer.ts`, `lib/engine/simulation/agentManager.ts`, `lib/engine/simulation/marketDiagnostics.ts`, `lib/engine/simulation/marketEventTypes.ts`, `lib/engine/simulation/regime/marketStateEngine.ts`, `lib/engine/simulation/crossAsset/crossAssetDiagnostics.ts`)**: `LocalMarketEngineInstance.stepSimulation`이 예약 뉴스 유무와 무관하게 `runWithCommitGate` 하에서 `localSimulationClock`을 저장한 뒤 성공 응답을 반환하도록 수정하고, 스텝 중 체결이 이미 커밋·영속화될 때 `localSimulationClock`이 함께 기록되어 장부와 시계가 어긋나지 않도록 동기화했으며, 스텝 내 체결 커밋이 없는 저장 실패 시에만 원자적으로 롤백해 재시도 일관성과 기존 락 순서를 유지했다.
+- **2. 가짜 뉴스 정정 예약 복원 (`engine-server/src/EventDirector.ts`, `engine-server/src/index.ts`, `lib/memoryDb/memoryStore.ts`, `lib/repositories/eventRepository.ts`, `lib/repositories/inMemory/InMemoryEventRepository.ts`, `lib/news/accessPolicy.ts`)**: 가짜 찌라시 발행 시 원문과 `correction_due_simulation_time`을 함께 저장(공개 API에서는 차단)하고, `EventDirector` 재시작 시 `restorePendingCorrections`로 미정정 예약을 복원(레거시 스냅샷 호환 포함)해 만료 전 미발행, 도달 시 `original_rumor_id` 포함 단회 발행, 저장 실패 시 큐 유지·롤백 후 재시도를 보장했다.
+- **3. 실시간 틱 구독/폴링 및 차트 갱신 (`lib/db/client.ts`, `app/components/TickChart.tsx`, `app/components/v2/StockChartV2.tsx`)**: `HttpMemoryClient.channel`에 중복 제거·필터링·커서 기반 폴링(`HttpRealtimeChannel`)을 구현하고, `TickChart`와 `StockChartV2`에 종목 전환 시 상태 초기화·취소 가드, 중복 체결 무시, Pro 캔들 OHLC/거래량 누적 갱신, 언마운트 시 채널 정리를 적용했다.
+- **4. 시장가/지정가 버튼 UI 명확화 (`app/components/OrderEntry.tsx`)**: 오해를 유발하던 `시장가`·`QUICK ORDER SCALPING` 표기를 `비율 수량 입력 보조 (지정가 폼)` 및 `수량 입력` 라벨로 정정하고, 주문 유형(`지정가`)과 제출 버튼(`지정가 매수/매도 주문 제출`)을 제출 전 명확히 표시했다.
+- **5. 공개 주식 주문 속도 제한 공유 (`lib/rateLimit/windowLimiter.ts`, `lib/rateLimit/stockOrderLimiter.ts`, `app/api/orders/route.ts`, `app/api/local-db/route.ts`)**: `app/api/orders`와 `app/api/local-db` (`submit_and_match_order`)가 인증 계정(`authenticatedUserId`) 기준 단일 공유 `WindowRateLimiter`(1초당 최대 15회)를 사용하도록 통합했다.
+- **검증**: 신규 회귀 스위트 `scripts/test-review-5-fixes.tsx` 및 기존 5종(`test-route-handlers-e2e.ts`, `test-phase1-namespace-registry.ts`, `test-news-lifecycle-and-causal-flow.ts`, `test-reachable-security-fixes.ts`, `test-rereview-2026-11-23-fixes.tsx`), `tsc --noEmit`(루트/`engine-server`), `npm run lint`, `engine-server` 빌드, `next build` 검증.
+
+---
+## 2026-11-24 15:35
+
+**요청 요약:** #24 1차 독립 검증 후속 보완(P1 3건 + P2 3건) 구현 및 검증
+**수행 결과:**
+- **1. 실시간 체결 커서·공유 폴링 및 차트/위젯 일관성 (`lib/memoryDb/memoryStore.ts`, `lib/memoryDb/memoryDbClient.ts`, `app/api/local-db/route.ts`, `lib/db/client.ts`, `app/components/TickChart.tsx`, `app/components/v2/StockChartV2.tsx`, `app/components/StockChart.tsx`, `app/components/ParticipantFlowWidget.tsx`)**: 서버 측 단조 증가 삽입 순서 커서(`TradeRecord.cursor` / `tradeCursorSeq`)를 도입해 벽시계·시뮬레이션 시계 혼합 및 링 버퍼 트리밍/대량 체결/동일 시각 환경에서도 누락·중복 없는 커서 기반 전달을 구현했다. `HttpMemoryClient`에 동일 구독 키 공유 폴링·페이지 단위 상한(`POLL_BATCH_LIMIT=200`)·초기 조회-구독 커서 인계(`subscribeStockTradesWithInitialLoad`)를 적용하고, `TickChart`/`StockChartV2`/`StockChart`/`ParticipantFlowWidget`의 초기 로드 기준 통일, V2 종목 전환 잔상 제거, `NaN` 시각·오류 가드 및 `StrictMode` 불변 누적 갱신을 반영했다.
+- **2. `EventDirector` 동시성·커밋 게이트 격리·레거시 1:1 매칭·ID 충돌 방지 (`engine-server/src/EventDirector.ts`, `engine-server/src/index.ts`)**: `SerialExecutionQueue`와 `isTicking` 가드로 `tickMinute`·`triggerEndogenousNews`·`processDueCorrections`를 직렬화하고, 뉴스 저장·스냅샷 영속화·실패 롤백을 `runWithCommitGate` 내부로 통합해 임시 뉴스가 엔진/자동 저장 스냅샷에 섞이지 않도록 격리했다. 레거시 정정 매칭을 1:1 소비로 수정하고 재시작 시 기존 뉴스 ID 스캔 및 영속 `epoch` 조합으로 고정 `runId`에서도 ID 충돌을 차단했다.
+- **3. 로컬 엔진 예약 뉴스 실패 복원·멱등성·락 안전성 (`lib/memoryDb/PersistenceManager.ts`, `lib/engine/simulation/agentManager.ts`, `lib/engine/localStandaloneServer.ts`)**: `publishQueuedAdminEvents` 저장 실패(`false`/예외) 시 동일 커밋 게이트 내에서 `agentManager` 부수 상태(`publishedEventIds`, `effectiveEventIds`, `pendingEvents`, `idempotencyTracker`, `attentionMap`, `uncertaintyMap`), `marketNews`, `localSimulationClock`, `pendingAdminMarketEvents`를 일괄 롤백하도록 보완했다. `stepSimulation`에서 `committedSnapshotSeq` 추적과 `onStepClockAdvanceCallback` 동기화로 중간 체결 커밋 또는 동시 `/api/orders` 영속화 이후 최종 저장이 실패해도 이미 영속화된 장부·시계·발행을 가역 롤백하거나 큐로 되돌리지 않도록 멱등성을 보장했다.
+- **검증**: 신규 회귀 `scripts/test-followup-24-p1-p2.tsx`와 기존 회귀 7종(`test-review-5-fixes.tsx`, `test-route-handlers-e2e.ts`, `test-phase1-namespace-registry.ts`, `test-news-lifecycle-and-causal-flow.ts`, `test-reachable-security-fixes.ts`, `test-rereview-2026-11-23-fixes.tsx`, `test-news-correction-determinism.ts`), 타입 검사(`tsc --noEmit` 루트/`engine-server`), `npm run lint`, `engine-server` 빌드, `next build` 통과를 격리 환경에서 확인했다.
+
+---
+## 2026-11-24 17:03
+
+**요청 요약:** #24 2차 독립 검증 잔여 정합성 4건(P2 2건, P3 2건) 수정 및 격리 검증 완료
+**수행 결과:**
+- **1. P2-1 자동 `runTick` 및 수동 스텝 예약 뉴스 저장 경계 (`lib/engine/localStandaloneServer.ts`, `lib/engine/simulation/agentManager.ts`)**: `runAgentStepWithCommitBoundary`로 자동 `runTick`과 수동 `stepSimulation`의 스텝 전 스냅샷 캡처·실패 롤백(`false`/예외) 경로를 통합하고, 진입 시 `runWithCommitGate`로 선행 T0 커밋을 정리한 뒤 `preStepCommitSeq`를 확보했으며 `setOnEventsEffective` 콜백으로 발효된 예약 이벤트를 `memoryDb.pendingAdminMarketEvents`에서 동기 제거해 스텝 중 동시 주문 커밋과 재시작 후 충격 단회성을 보장했다.
+- **2. P2-2 공유 구독 세대·재동기화 계약 (`lib/memoryDb/memoryStore.ts`, `lib/memoryDb/memoryDbClient.ts`, `lib/db/client.ts`)**: `trades` 응답 메타데이터(`tradeGeneration`, `serverMaxCursor`)와 `HttpRealtimeChannel`/`subscribeStockTradesWithInitialLoad`의 `onReset` 재동기화 계약을 연동하고, `meta` 생략 목 환경에서도 빈 응답 시 최신 커서 조회 및 부분 페이지(`rows.length < POLL_BATCH_LIMIT`) 최대 커서 역산으로 다중 리스너 그룹의 커서 후퇴를 즉시 감지해 누락·중복 없이 재동기화하도록 보완했다.
+- **3. P3-1 `/api/local-db` 공개 체결 읽기 확정 행 제한 (`app/api/local-db/route.ts`)**: `trades` 공개 SELECT 및 `get_my_recent_trades`·`get_authoritative_orderbook` RPC 조회를 `persistenceManager.withCommitGate`로 직렬화해 저장 대기 중 롤백될 미확정 체결이 노출되지 않도록 차단했다.
+- **4. P3-2 `TickChart` 소량 실체결 우선 및 임시 캔들 교체 (`app/components/TickChart.tsx`)**: 초기 체결 `typedRows.length > 0`이면 소량(1~5건 포함) 실체결을 그대로 렌더링하고 `0`건일 때만 `hasPlaceholderCandleRef` 기반 임시 캔들을 표시한 뒤 첫 실체결 수신 시 전체 교체하도록 수정했다.
+- **검증 (`scripts/test-followup-24-remaining-4.tsx`)**: 신규 회귀(`test-followup-24-remaining-4.tsx`)와 `test-followup-24-p1-p2.tsx`, `test-review-5-fixes.tsx`, 기존 회귀 9종(`test-route-handlers-e2e.ts`, `test-phase1-namespace-registry.ts`, `test-news-lifecycle-and-causal-flow.ts`, `test-reachable-security-fixes.ts`, `test-rereview-2026-11-23-fixes.tsx`, `test-news-correction-determinism.ts`, `test-loop5-l5-fixes.ts`, `test-loop6-p1-01-settlement.ts`, `engine-server/src/settlement/test/runSettlementTests.ts`), 루트/`engine-server` `tsc --noEmit`, `npm run lint`(0 errors / 150 warnings), `engine-server` 빌드, `npm run build`(Next.js 16.3.5 Turbopack) 모두 격리 환경 통과를 확인했다.

@@ -936,9 +936,30 @@ export class MarketEngine {
       const macroData = this.customDataSource?.fetchRealWorldData
         ? await this.customDataSource.fetchRealWorldData()
         : await this.realWorldFetcher.getMacroData();
-      const marketState = this.customDataSource
+      const rawMarketState = this.customDataSource
         ? await this.customDataSource.fetchMarketState(macroData)
         : await this.fetchMarketState(macroData);
+      const delistedStockIds = new Set<string>(
+        rawMarketState?.delistedStockIds instanceof Set
+          ? Array.from(rawMarketState.delistedStockIds)
+          : Array.isArray(rawMarketState?.delistedStockIds)
+            ? rawMarketState.delistedStockIds
+            : []
+      );
+      if (Array.isArray(rawMarketState?.stocks)) {
+        for (const s of rawMarketState.stocks) {
+          if (s?.is_listed === false && s.id) {
+            delistedStockIds.add(s.id);
+          }
+        }
+      }
+      const marketState = {
+        ...rawMarketState,
+        stocks: Array.isArray(rawMarketState?.stocks)
+          ? rawMarketState.stocks.filter((s: any) => s?.is_listed !== false)
+          : [],
+        delistedStockIds,
+      };
       marketState.orderBook = orderBook;
       
       const allOrders: any[] = [];
@@ -1253,14 +1274,19 @@ export class MarketEngine {
     for (const user of users) {
       if (this.eventRandom.nextBoolean(0.1)) {
         const randomEvent = events[this.eventRandom.nextInt(0, events.length)];
-        
-        // Insert active event
+        const accountId =
+          typeof user.user_id === 'string' && user.user_id.trim().length > 0
+            ? user.user_id.trim()
+            : user.id;
+        if (!accountId) continue;
+
+        // Insert active event (canonical 인증 계정 ID 귀속)
         await this.repositories.events.saveActivePlayerEvent({
-          user_id: user.id,
+          user_id: accountId,
           event_id: randomEvent.id,
           status: 'pending'
         });
-        console.log(`[ROGUE-LITE EVENT] Triggered event ${randomEvent.id} for user ${user.id}`);
+        console.log(`[ROGUE-LITE EVENT] Triggered event ${randomEvent.id} for user ${accountId}`);
       }
     }
   }
@@ -1306,9 +1332,21 @@ export class MarketEngine {
       : (snapshot.adminSettings?.base_rate ?? 0.025);
     const sentiment = snapshot.adminSettings?.market_sentiment ?? 'NEUTRAL';
 
+    const allSnapshotStocks = snapshot.stocks || [];
+    const delistedStockIds = new Set<string>();
+    const listedStocks: any[] = [];
+    for (const s of allSnapshotStocks) {
+      if (s?.is_listed === false) {
+        if (s.id) delistedStockIds.add(s.id);
+      } else {
+        listedStocks.push(s);
+      }
+    }
+
     const state = {
       bonds: snapshot.bonds || [],
-      stocks: snapshot.stocks || [],
+      stocks: listedStocks,
+      delistedStockIds,
       commodities: snapshot.commodities || [],
       options_contracts: snapshot.options_contracts || [],
       adminBaseRate,
@@ -1331,8 +1369,10 @@ export class MarketEngine {
   ): Promise<any | null> {
     if (!order || !order.stock_id) return null;
     if (marketState.options_contracts?.some((o: any) => o.id === order.stock_id)) return null;
+    if (marketState.delistedStockIds?.has?.(order.stock_id)) return null;
 
     const stock = marketState.stocks?.find((s: any) => s.id === order.stock_id);
+    if (stock?.is_listed === false) return null;
     const bond = !stock ? marketState.bonds?.find((b: any) => b.id === order.stock_id) : undefined;
     const currentPrice = Number(order.price || stock?.current_price || bond?.current_price || 1);
     const assetMarket = stock?.market ?? (bond ? 'bonds' : undefined);
@@ -2235,7 +2275,11 @@ export class MarketEngine {
     }
 
     if (lpOrdersToInsert.length > 0) {
-      const validStockIds = new Set(marketState.stocks?.map((s: any) => s.id) || []);
+      const validStockIds = new Set(
+        (marketState.stocks || [])
+          .filter((s: any) => s?.is_listed !== false)
+          .map((s: any) => s.id)
+      );
       const byStock: Record<string, { bids: any[], asks: any[] }> = {};
       for (const o of lpOrdersToInsert) {
         if (!validStockIds.has(o.stock_id)) continue;

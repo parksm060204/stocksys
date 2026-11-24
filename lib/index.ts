@@ -58,7 +58,7 @@ function getMovers(stocks: Stock[], count: number, direction: "up" | "down") {
 }
 
 export function getKOSPIIndex(stocks: Stock[], baseValue: number = 2500): MarketIndex {
-  const domesticStocks = stocks.filter((s) => s.market === "domestic");
+  const domesticStocks = stocks.filter((s) => s.market === "domestic" && s.isListed !== false);
   const { indexValue, totalCap } = calcIndex(domesticStocks, baseValue);
 
   const previousClose = baseValue;
@@ -83,7 +83,7 @@ export function getKOSPIIndex(stocks: Stock[], baseValue: number = 2500): Market
 }
 
 export function getSP50Index(stocks: Stock[], baseValue: number = 5000): MarketIndex {
-  const overseasStocks = stocks.filter((s) => s.market === "overseas" && s.sector !== "commodity");
+  const overseasStocks = stocks.filter((s) => s.market === "overseas" && s.sector !== "commodity" && s.isListed !== false);
   const { indexValue, totalCap } = calcIndex(overseasStocks, baseValue);
 
   const previousClose = baseValue;
@@ -108,7 +108,7 @@ export function getSP50Index(stocks: Stock[], baseValue: number = 5000): MarketI
 }
 
 export function getEuroStoxx50Index(stocks: Stock[], baseValue: number = 4000): MarketIndex {
-  const euroStocks = stocks.filter((s) => s.market === "europe");
+  const euroStocks = stocks.filter((s) => s.market === "europe" && s.isListed !== false);
   const { indexValue, totalCap } = calcIndex(euroStocks, baseValue);
 
   const previousClose = baseValue;

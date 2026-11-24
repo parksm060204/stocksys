@@ -154,6 +154,18 @@ export class CrossAssetDiagnosticsManager {
     this.orderGateHolds = [];
   }
 
+  public snapshotState() {
+    return {
+      history: this.history.map((h) => this.cloneSnapshot(h)),
+      orderGateHolds: this.orderGateHolds.map((h) => ({ ...h })),
+    };
+  }
+
+  public restoreState(snap: ReturnType<CrossAssetDiagnosticsManager['snapshotState']>): void {
+    this.history = snap.history.map((h) => this.cloneSnapshot(h));
+    this.orderGateHolds = snap.orderGateHolds.map((h) => ({ ...h }));
+  }
+
   private cloneSnapshot(s: CrossAssetStepSnapshot): CrossAssetStepSnapshot {
     return {
       agentId: s.agentId,

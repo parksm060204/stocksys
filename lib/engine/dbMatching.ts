@@ -109,11 +109,19 @@ export async function submitAndMatchOrder(
     };
   }
 
-  if (!memoryDb.stocks.has(stock_id)) {
+  const targetStock = memoryDb.stocks.get(stock_id);
+  if (!targetStock) {
     return {
       success: false,
       filledQty: 0,
       message: '등록되지 않은 주식/ETF 종목입니다.',
+    };
+  }
+  if (targetStock.is_listed === false) {
+    return {
+      success: false,
+      filledQty: 0,
+      message: '상장 폐지되었거나 거래가 중단된 종목입니다.',
     };
   }
 

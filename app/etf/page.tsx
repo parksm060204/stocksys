@@ -102,7 +102,7 @@ export default function ETFPage() {
 
   const syncServerMarketData = useCallback(async () => {
     const [{ data: allStocks }, { data: fxRow }] = await Promise.all([
-      db.from('stocks').select('id, ticker, current_price'),
+      db.from('stocks').select('id, ticker, current_price, is_listed').neq('is_listed', false),
       db.from('exchange_rates').select('rate_to_krw').eq('currency_code', 'USD').maybeSingle(),
     ]);
 
@@ -111,9 +111,10 @@ export default function ETFPage() {
     }
 
     if (Array.isArray(allStocks) && allStocks.length > 0) {
+      const listedStocks = allStocks.filter((s: { is_listed?: boolean }) => s?.is_listed !== false);
       setMarketPrices((prev) => {
         const next = new Map(prev);
-        for (const s of allStocks) {
+        for (const s of listedStocks) {
           if (s?.ticker && Number(s.current_price) > 0) {
             next.set(s.ticker, Number(s.current_price));
           }
@@ -132,7 +133,7 @@ export default function ETFPage() {
       };
       setUnderlyingPrices((prev) => {
         const next = new Map(prev);
-        for (const s of allStocks) {
+        for (const s of listedStocks) {
           const alias = underlyingAlias[String(s?.ticker || '')];
           if (alias && Number(s.current_price) > 0) {
             next.set(alias, Number(s.current_price));
@@ -155,8 +156,9 @@ export default function ETFPage() {
     try {
       const { data: stockData, error: stockErr } = await db
         .from('stocks')
-        .select('id, ticker, current_price')
+        .select('id, ticker, current_price, is_listed')
         .eq('ticker', reqTicker)
+        .neq('is_listed', false)
         .maybeSingle();
 
       if (
@@ -175,6 +177,7 @@ export default function ETFPage() {
       const isValidStock =
         !stockErr &&
         stockData &&
+        stockData.is_listed !== false &&
         typeof stockData.id === 'string' &&
         stockData.id.length > 0 &&
         returnedTicker === reqTicker.toUpperCase() &&
@@ -193,7 +196,7 @@ export default function ETFPage() {
 
       if (reqUserId) {
         const [{ data: profileData }, holdingRes] = await Promise.all([
-          db.from('profiles').select('cash').eq('id', reqUserId).maybeSingle(),
+          db.from('profiles').select('cash').eq('user_id', reqUserId).maybeSingle(),
           isValidStock
             ? db
                 .from('holdings')

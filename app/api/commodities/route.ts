@@ -1,62 +1,20 @@
 import { NextResponse } from 'next/server';
-import { CommodityMarketEngine } from '@/lib/commodities/CommodityMarketEngine';
 import { COMMODITY_DEFINITIONS } from '@/lib/commodities/definitions';
 import { verifyAdminSession } from '@/lib/auth/adminAuth';
 import { resolveAuthenticatedUserId } from '@/lib/auth/sessionAuth';
 import { memoryDb } from '@/lib/memoryDb/memoryStore';
-import { ensureLocalStandaloneReady, persistConfirmedState } from '@/lib/engine/localStandaloneServer';
-import { runWithCommitGate, persistenceManager } from '@/lib/memoryDb/PersistenceManager';
-import { syncScenarioManagerFromDatabase } from '@/lib/scenario/ScenarioManager';
+import { persistConfirmedState } from '@/lib/engine/localStandaloneServer';
+import { runWithCommitGate } from '@/lib/memoryDb/PersistenceManager';
+import {
+  commodityEngineInstance,
+  ensureCommodityEngineReady,
+} from '@/lib/commodities/commodityEngineInstance';
 import {
   cancelCommodityOrders,
   getUsdToKrwRate,
   reserveMarginAndSubmitCommodityOrder,
 } from '@/lib/commodities/commodityLedger';
 import { getAvailableCashKrw } from '@/lib/engine/orderRisk';
-
-// 글로벌 싱글톤 인스턴스 (Next.js HMR 안전)
-const globalForCommodities = globalThis as unknown as {
-  commodityEngine?: CommodityMarketEngine;
-};
-
-export const commodityEngineInstance: CommodityMarketEngine =
-  globalForCommodities.commodityEngine ||
-  new CommodityMarketEngine({
-    totalBots: 50,
-    eventProbability: 0.02,
-    db: memoryDb,
-  });
-
-commodityEngineInstance.attachDatabase(memoryDb);
-
-if (!globalForCommodities.commodityEngine) {
-  globalForCommodities.commodityEngine = commodityEngineInstance;
-}
-
-async function ensureCommodityEngineReady(): Promise<void> {
-  await ensureLocalStandaloneReady();
-  await commodityEngineInstance.reconcileWithDatabase(memoryDb);
-  if (
-    memoryDb.commodityEventRuntimeState &&
-    commodityEngineInstance.eventSystem.activeEvents.length === 0
-  ) {
-    try {
-      commodityEngineInstance.eventSystem.restoreState(memoryDb.commodityEventRuntimeState);
-    } catch { /* ignore invalid snapshot */ }
-  }
-  await runWithCommitGate(
-    undefined,
-    async () => {
-      try {
-        syncScenarioManagerFromDatabase(memoryDb, commodityEngineInstance.scenarioManager, {
-          clearOnDbNull: true,
-        });
-      } catch { /* ignore invalid snapshot */ }
-    },
-    persistenceManager
-  );
-  commodityEngineInstance.start(1500, persistConfirmedState);
-}
 
 export async function GET(req: Request) {
   await ensureCommodityEngineReady();
@@ -144,27 +102,30 @@ export async function POST(req: Request) {
         return NextResponse.json({ success: false, message: '유효한 templateId가 필요합니다.' }, { status: 400 });
       }
 
-      const prevEventSnap = commodityEngineInstance.eventSystem.snapshotState();
-      const prevDbEventSnap = memoryDb.commodityEventRuntimeState;
-      const event = commodityEngineInstance.eventSystem.triggerEventById(
-        templateId,
-        commodityEngineInstance.currentTick
-      );
+      const event = await commodityEngineInstance.runWithTickLock(async () => {
+        await commodityEngineInstance.reconcileWithDatabase(memoryDb);
+        return await runWithCommitGate(persistConfirmedState, async () => {
+          const prevEventSnap = commodityEngineInstance.eventSystem.snapshotState();
+          const prevDbEventSnap = memoryDb.commodityEventRuntimeState
+            ? structuredClone(memoryDb.commodityEventRuntimeState)
+            : null;
+          try {
+            const result = commodityEngineInstance.eventSystem.triggerEventById(
+              templateId, commodityEngineInstance.currentTick
+            );
+            if (!result) return null;
+            memoryDb.commodityEventRuntimeState = commodityEngineInstance.eventSystem.snapshotState();
+            if (!await persistConfirmedState()) throw new Error('원자재 이벤트 영속 저장에 실패했습니다.');
+            return result;
+          } catch (error) {
+            memoryDb.commodityEventRuntimeState = prevDbEventSnap;
+            commodityEngineInstance.eventSystem.restoreState(prevEventSnap);
+            throw error;
+          }
+        });
+      });
       if (!event) {
         return NextResponse.json({ success: false, message: '존재하지 않는 이벤트 템플릿입니다.' }, { status: 404 });
-      }
-      const persisted = await runWithCommitGate(persistConfirmedState, async () => {
-        memoryDb.commodityEventRuntimeState = commodityEngineInstance.eventSystem.snapshotState();
-        const saved = await persistConfirmedState();
-        if (!saved) {
-          memoryDb.commodityEventRuntimeState = prevDbEventSnap;
-          commodityEngineInstance.eventSystem.restoreState(prevEventSnap);
-          return false;
-        }
-        return true;
-      });
-      if (!persisted) {
-        return NextResponse.json({ success: false, message: '원자재 이벤트 영속 저장에 실패하여 롤백되었습니다.' }, { status: 500 });
       }
       return NextResponse.json({ success: true, event });
     }

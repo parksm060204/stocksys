@@ -8,6 +8,7 @@ import { snapshotTradingState, rollbackTradingState, TradingSnapshot } from '../
 import { calculateTradeFees, executeSettlement, SettlementTrade } from './settlement';
 import { getEffectiveStockTakerFeeRate } from './orderRisk';
 import { AgentManager, AgentManagerOptions } from './simulation/agentManager';
+import { validateMarketEvent } from './simulation/marketEventTypes';
 import { SerialExecutionQueue } from './simulation/executionQueue';
 import { createInMemoryRepositoryBundle } from '../repositories/inMemory';
 import { SettlementBatchService } from '../../engine-server/src/settlement/SettlementBatchService';
@@ -125,11 +126,33 @@ export class LocalMarketEngineInstance {
   );
 
   // 국면 효과(Stage 2) 운용 모드는 안전 기본값 'OFF'로 시작.
-  private agentManager: AgentManager = new AgentManager(42, 1773500000000);
+  private agentManager: AgentManager;
+
+  constructor() {
+    const checkpoint = memoryDb.localSimulationClock;
+    this.agentManager = new AgentManager(42, checkpoint?.simulationTime ?? 1773500000000);
+    if (checkpoint) this.agentManager.clock.restoreState(checkpoint);
+  }
+
+  private checkpointSimulationClock(): void {
+    memoryDb.localSimulationClock = this.agentManager.clock.getState();
+  }
+
+  public hasOnPersist(): boolean {
+    return typeof this.onPersist === 'function';
+  }
 
   public setOnPersist(fn?: () => Promise<boolean>): void {
     this.onPersist = fn;
-    this.agentManager.setOnPersist(fn);
+    if (!fn) {
+      this.agentManager.setOnPersist(undefined);
+      return;
+    }
+    this.agentManager.setOnPersist(async () => {
+      // Sync simulation clock inside the active commit gate before any in-step fill persists!
+      this.checkpointSimulationClock();
+      return await fn();
+    });
   }
 
 
@@ -176,11 +199,213 @@ export class LocalMarketEngineInstance {
     }, delayMs);
   }
 
+  private rollbackUnpersistedStep(
+    agentSnap: ReturnType<AgentManager['captureStepSnapshot']>,
+    prevDbClock: typeof memoryDb.localSimulationClock,
+    prevMarketNews: typeof memoryDb.marketNews,
+    prevPendingAdminEvents: typeof memoryDb.pendingAdminMarketEvents,
+    prevBotOrders: Map<string, OrderRecord>
+  ): void {
+    this.agentManager.restoreStepSnapshot(agentSnap);
+    memoryDb.localSimulationClock = prevDbClock ? { ...prevDbClock } : null;
+    memoryDb.marketNews = structuredClone(prevMarketNews);
+    memoryDb.pendingAdminMarketEvents = structuredClone(prevPendingAdminEvents);
+
+    // Revert only bot/LP orders that were NOT matched by any concurrent external order
+    for (const [id, ord] of Array.from(memoryDb.orders.entries())) {
+      if (!this.isBotOrLpOrder(ord)) continue;
+      const prevOrd = prevBotOrders.get(id);
+      if (!prevOrd) {
+        if ((ord.filled || 0) === 0) {
+          memoryDb.orders.delete(id);
+          memoryDb.removeOrderFromIndex(ord);
+        }
+      } else if ((ord.filled || 0) === (prevOrd.filled || 0) && ord.status !== prevOrd.status) {
+        const restored = structuredClone(prevOrd);
+        memoryDb.orders.set(id, restored);
+        memoryDb.addOrderToIndex(restored);
+      }
+    }
+    for (const [id, prevOrd] of prevBotOrders.entries()) {
+      if (!memoryDb.orders.has(id)) {
+        const restored = structuredClone(prevOrd);
+        memoryDb.orders.set(id, restored);
+        memoryDb.addOrderToIndex(restored);
+      }
+    }
+  }
+
+  private async runAgentStepWithCommitBoundary(
+    dt: number,
+    activePersist: (() => Promise<boolean>) | undefined,
+    options: { alwaysPersist: boolean; throwOnPersistFailure: boolean }
+  ): Promise<boolean> {
+    // Drain any in-flight T0 snapshot commit before capturing rollback baseline & preStepCommitSeq
+    // so an earlier save finishing mid-step is never mistaken for a T1 commit.
+    const preStepCommitSeq = await runWithCommitGate(
+      activePersist,
+      async () => persistenceManager.getCommittedSnapshotSeq(),
+      activePersist ? undefined : persistenceManager
+    );
+    const captureRollbackState = Boolean(activePersist);
+    const agentSnap = captureRollbackState ? this.agentManager.captureStepSnapshot() : null;
+    const prevDbClock = memoryDb.localSimulationClock ? { ...memoryDb.localSimulationClock } : null;
+    const prevMarketNews = captureRollbackState ? structuredClone(memoryDb.marketNews) : null;
+    const prevPendingAdminEvents = captureRollbackState ? structuredClone(memoryDb.pendingAdminMarketEvents) : null;
+    const prevBotOrders = captureRollbackState
+      ? new Map(
+          Array.from(memoryDb.orders.entries())
+            .filter(([, ord]) => this.isBotOrLpOrder(ord))
+            .map(([id, ord]) => [id, structuredClone(ord)])
+        )
+      : null;
+
+    let committedFillInStep = false;
+    const previousAgentPersist = this.agentManager.getOnPersist();
+    const previousClockSync = this.agentManager.getOnStepClockAdvance();
+    const previousEventsEffective = this.agentManager.getOnEventsEffective();
+
+    this.agentManager.setOnStepClockAdvance((clockState) => {
+      memoryDb.localSimulationClock = clockState;
+    });
+    this.agentManager.setOnEventsEffective((effectiveIds) => {
+      // Remove effective scheduled events synchronously before any mid-step fill or concurrent order persists.
+      memoryDb.pendingAdminMarketEvents = memoryDb.pendingAdminMarketEvents.filter(
+        (event) => !effectiveIds.has(event.eventId)
+      );
+    });
+    if (activePersist) {
+      this.agentManager.setOnPersist(async () => {
+        this.checkpointSimulationClock();
+        const saved = await activePersist();
+        if (saved) {
+          committedFillInStep = true;
+        }
+        return saved;
+      });
+    }
+
+    const hasPersistedInStep = () =>
+      committedFillInStep || persistenceManager.getCommittedSnapshotSeq() > preStepCommitSeq;
+
+    try {
+      await this.agentManager.step(dt);
+    } catch (err) {
+      if (captureRollbackState && !hasPersistedInStep() && agentSnap) {
+        this.rollbackUnpersistedStep(
+          agentSnap,
+          prevDbClock,
+          prevMarketNews!,
+          prevPendingAdminEvents!,
+          prevBotOrders!
+        );
+      } else {
+        this.checkpointSimulationClock();
+      }
+      throw err;
+    } finally {
+      this.agentManager.setOnPersist(previousAgentPersist);
+      this.agentManager.setOnStepClockAdvance(previousClockSync);
+      this.agentManager.setOnEventsEffective(previousEventsEffective);
+    }
+
+    const commitOutcome = await runWithCommitGate(
+      activePersist,
+      async () => {
+        const preCommitPending = structuredClone(memoryDb.pendingAdminMarketEvents);
+        for (const event of preCommitPending) {
+          if (
+            !this.agentManager.publishedEventIds.has(event.eventId) &&
+            !this.agentManager.pendingEvents.some((item) => item.eventId === event.eventId)
+          ) {
+            this.agentManager.registerEvent(event);
+          }
+        }
+        const nextPending = preCommitPending.filter(
+          (event) => !this.agentManager.effectiveEventIds.has(event.eventId)
+        );
+        memoryDb.pendingAdminMarketEvents = nextPending;
+        this.checkpointSimulationClock();
+
+        const prevPublishedSet = new Set(agentSnap?.publishedEventIds ?? []);
+        const prevEffectiveSet = new Set(agentSnap?.effectiveEventIds ?? []);
+        const hadAdminEventProgression =
+          prevMarketNews !== null &&
+          prevPendingAdminEvents !== null &&
+          (
+            memoryDb.marketNews.length !== prevMarketNews.length ||
+            nextPending.length !== prevPendingAdminEvents.length ||
+            Array.from(this.agentManager.publishedEventIds).some((id) => !prevPublishedSet.has(id)) ||
+            Array.from(this.agentManager.effectiveEventIds).some((id) => !prevEffectiveSet.has(id))
+          );
+
+        const shouldPersist = options.alwaysPersist || hadAdminEventProgression;
+        if (!activePersist || !shouldPersist) {
+          return { ok: true as const };
+        }
+
+        let saved = false;
+        let errorMsg = '';
+        try {
+          saved = await activePersist();
+          if (!saved) {
+            errorMsg = 'Simulation step snapshot save failed';
+          }
+        } catch (err: any) {
+          saved = false;
+          errorMsg = err?.message || String(err);
+        }
+
+        if (!saved) {
+          this.lastPersistOk = false;
+          this.lastPersistError = errorMsg || 'Simulation step snapshot save failed';
+
+          if (!hasPersistedInStep() && agentSnap) {
+            this.rollbackUnpersistedStep(
+              agentSnap,
+              prevDbClock,
+              prevMarketNews!,
+              prevPendingAdminEvents!,
+              prevBotOrders!
+            );
+          } else {
+            // An in-step fill or concurrent order already persisted the step's state/news/clock to disk.
+            // Keep memory aligned with the persisted disk snapshot instead of rolling back to T0.
+            memoryDb.pendingAdminMarketEvents = nextPending;
+            this.checkpointSimulationClock();
+          }
+          return { ok: false as const, errorMsg: this.lastPersistError };
+        }
+
+        this.lastPersistOk = true;
+        this.lastPersistError = null;
+        return { ok: true as const };
+      },
+      activePersist ? undefined : persistenceManager
+    );
+
+    if (!commitOutcome.ok) {
+      if (options.throwOnPersistFailure) {
+        throw new Error(commitOutcome.errorMsg || 'Simulation step snapshot save failed');
+      }
+      return false;
+    }
+    return true;
+  }
+
   /**
-   * Advances the simulation deterministically through the serialized execution queue.
+   * Advances the simulation deterministically through the serialized execution queue
+   * and persists the advanced simulation clock before resolving when persistence is configured.
    */
-  public async stepSimulation(dt: number = 1.0): Promise<void> {
-    await this.enqueueSimulation(() => this.agentManager.step(dt));
+  public async stepSimulation(dt: number = 1.0, persistFn?: () => Promise<boolean>): Promise<void> {
+    const activePersist = persistFn ?? this.onPersist;
+    await this.enqueueSimulation(async () => {
+      await this.publishQueuedAdminEvents(activePersist, true);
+      await this.runAgentStepWithCommitBoundary(dt, activePersist, {
+        alwaysPersist: Boolean(activePersist),
+        throwOnPersistFailure: true,
+      });
+    });
   }
 
   public async tick(): Promise<void> {
@@ -191,8 +416,100 @@ export class LocalMarketEngineInstance {
     return this.enqueueSimulation(() => Promise.resolve(this.agentManager.registerEvent(event)));
   }
 
+  public async runWithSimulationLock<T>(task: () => Promise<T>): Promise<T> {
+    return this.enqueueSimulation(task);
+  }
+
   public async publishEvent(event: Parameters<AgentManager['publishEvent']>[0]): Promise<boolean> {
-    return this.enqueueSimulation(() => Promise.resolve(this.agentManager.publishEvent(event)));
+    return this.enqueueSimulation(async () => {
+      const queued = await runWithCommitGate(persistConfirmedState, async () => {
+        if (!event || validateMarketEvent(event) ||
+            !Number.isFinite(new Date(event.publishedAt).getTime()) ||
+            !Number.isFinite(new Date(event.effectiveFrom).getTime())) return false;
+        const previous = memoryDb.pendingAdminMarketEvents;
+        if (
+          previous.some((item) => item.eventId === event.eventId) ||
+          memoryDb.marketNews.some((item) => item.id === event.eventId) ||
+          this.agentManager.publishedEventIds.has(event.eventId) ||
+          this.agentManager.pendingEvents.some((item) => item.eventId === event.eventId)
+        ) return false;
+
+        const previousClock = memoryDb.localSimulationClock;
+        memoryDb.pendingAdminMarketEvents = [...previous, structuredClone(event)];
+        this.checkpointSimulationClock();
+        try {
+          if (!await persistConfirmedState()) throw new Error('Market event snapshot save failed');
+        } catch (error) {
+          memoryDb.pendingAdminMarketEvents = previous;
+          memoryDb.localSimulationClock = previousClock;
+          throw error;
+        }
+        return true;
+      });
+      if (queued) await this.publishQueuedAdminEvents();
+      return queued;
+    });
+  }
+
+  private async publishQueuedAdminEvents(
+    persistFn?: () => Promise<boolean>,
+    throwOnPersistFailure: boolean = false
+  ): Promise<boolean> {
+    if (memoryDb.pendingAdminMarketEvents.length === 0) return true;
+    const effectivePersist = persistFn ?? this.onPersist ?? persistConfirmedState;
+    let persistError: Error | null = null;
+    let persistedOk = true;
+    await runWithCommitGate(effectivePersist, async () => {
+      const previous = structuredClone(memoryDb.pendingAdminMarketEvents);
+      const previousClock = memoryDb.localSimulationClock ? { ...memoryDb.localSimulationClock } : null;
+      const previousMarketNews = structuredClone(memoryDb.marketNews);
+      const agentSnap = this.agentManager.captureStepSnapshot();
+      const prevPublishedSet = new Set(agentSnap.publishedEventIds);
+
+      for (const event of previous) {
+        if (!this.agentManager.publishedEventIds.has(event.eventId) &&
+            !this.agentManager.pendingEvents.some((item) => item.eventId === event.eventId)) {
+          this.agentManager.registerEvent(event);
+        }
+      }
+
+      this.checkpointSimulationClock();
+      const pending = previous.filter((event) => !this.agentManager.effectiveEventIds.has(event.eventId));
+      const hasNewPublications =
+        memoryDb.marketNews.length !== previousMarketNews.length ||
+        previous.some(
+          (event) =>
+            this.agentManager.publishedEventIds.has(event.eventId) && !prevPublishedSet.has(event.eventId)
+        );
+      if (pending.length === previous.length && !hasNewPublications) {
+        return;
+      }
+
+      memoryDb.pendingAdminMarketEvents = pending;
+      try {
+        if (await effectivePersist()) {
+          this.lastPersistOk = true;
+          this.lastPersistError = null;
+          return;
+        }
+        persistError = new Error('Market event snapshot save failed');
+      } catch (error: any) {
+        console.error('[LocalMarketEngine] Market event snapshot save failed:', error);
+        persistError = error instanceof Error ? error : new Error(String(error));
+      }
+      // Roll back queue, clock, public news, and agentManager event state together within the same commit gate.
+      this.agentManager.restoreStepSnapshot(agentSnap);
+      memoryDb.localSimulationClock = previousClock;
+      memoryDb.marketNews = previousMarketNews;
+      memoryDb.pendingAdminMarketEvents = previous;
+      this.lastPersistOk = false;
+      this.lastPersistError = persistError.message;
+      persistedOk = false;
+    });
+    if (throwOnPersistFailure && persistError) {
+      throw persistError;
+    }
+    return persistedOk;
   }
 
   public async resetSimulation(persistFn?: () => Promise<boolean>): Promise<boolean> {
@@ -205,6 +522,7 @@ export class LocalMarketEngineInstance {
         return false;
       }
       this.agentManager.reset();
+      this.checkpointSimulationClock();
       this.settlementService = new SettlementBatchService(
         createInMemoryRepositoryBundle(memoryDb),
         { now: () => memoryDb.getNowMs() }
@@ -331,137 +649,235 @@ export class LocalMarketEngineInstance {
   }
 
   private async runPeriodicSettlementBatch(persistFn: () => Promise<boolean>): Promise<void> {
-    const allAssetIds = Array.from(
-      new Set([
-        ...memoryDb.stocks.keys(),
-        ...memoryDb.optionsContracts.keys(),
-        ...memoryDb.bonds.keys(),
-      ])
-    );
+    const batchNow = memoryDb.getNowMs();
+    const repo = this.settlementService.getRepositories();
 
-    await withAllStockLocks(allAssetIds, async () => {
-      const now = memoryDb.getNowMs();
-      const repo = this.settlementService.getRepositories();
-      const expiredOptions = repo.settlement.getExpiredOptionContracts(now);
-      const bonds = repo.settlement.getBonds(now);
-      const targetAssetIds = [
-        ...expiredOptions.map((o) => o.id),
-        ...bonds.map((b) => b.id),
-      ];
-      const targetHoldings = repo.settlement.getPositionsForAssetIds(targetAssetIds);
-      const openOrderAccountIds =
-        repo.settlement.getOpenOptionOrderAccountIds?.(expiredOptions.map((o) => o.id)) ?? [];
-      const accountIds = Array.from(
+    const collectAllAssetIds = (): string[] =>
+      Array.from(
         new Set([
-          ...targetHoldings.map((h) => memoryDb.profileUserIdIndex.get(h.user_id) || h.user_id),
-          ...openOrderAccountIds.map((uid) => memoryDb.profileUserIdIndex.get(uid) || uid),
+          ...memoryDb.stocks.keys(),
+          ...memoryDb.optionsContracts.keys(),
+          ...memoryDb.bonds.keys(),
         ])
       ).sort();
 
-      await withAccountLocks(accountIds, async () => {
-        await runWithCommitGate(persistFn, async () => {
-          const profileSnaps = new Map<string, ProfileRecord>();
-          for (const pid of accountIds) {
-            const p = memoryDb.profiles.get(pid);
-            if (p) profileSnaps.set(pid, { ...p });
-          }
-          const holdingSnaps = new Map<string, HoldingRecord>();
-          for (const h of targetHoldings) {
-            const hid = `${h.user_id}_${h.stock_id}`;
-            const cur = memoryDb.holdings.get(hid);
-            if (cur) holdingSnaps.set(hid, { ...cur });
-          }
-          const orderSnaps = new Map<string, OrderRecord>();
-          for (const opt of expiredOptions) {
-            const orderIds = memoryDb.orderStockIndex.get(opt.id);
-            if (orderIds) {
-              for (const oid of orderIds) {
-                const ord = memoryDb.orders.get(oid);
-                if (ord) orderSnaps.set(oid, { ...ord });
-              }
-            }
-          }
-          const optCountBefore = memoryDb.optionSettlements.length;
-          const bondCountBefore = memoryDb.bondCouponPayments.length;
-          const ledgerKeysBefore = new Set(memoryDb.settlementLedger.keys());
-          const lpLiabilitiesSnap = new Map(memoryDb.lpLiabilities);
-          const lastPeriodKeyBefore = this.settlementService.getLastRunPeriodKey();
+    const collectPlan = () => {
+      const expiredOptions = repo.settlement.getExpiredOptionContracts(batchNow);
+      const bonds = repo.settlement.getBonds(batchNow);
+      const expiredOptionIds = Array.from(new Set(expiredOptions.map((o) => o.id))).sort();
+      const bondIds = Array.from(new Set(bonds.map((b) => b.id))).sort();
+      const targetAssetIds = Array.from(new Set([...expiredOptionIds, ...bondIds])).sort();
+      const targetHoldings = repo.settlement.getPositionsForAssetIds(targetAssetIds);
+      const openOrderAccountIds =
+        repo.settlement.getOpenOptionOrderAccountIds?.(expiredOptionIds) ?? [];
+      const accountUserIds = Array.from(
+        new Set([
+          ...targetHoldings.map((h) => h.user_id),
+          ...openOrderAccountIds,
+        ])
+      ).sort();
+      const lockKeys = Array.from(
+        new Set(accountUserIds.map((uid) => memoryDb.resolveAccountLockKey(uid)))
+      ).sort();
+      const targetHoldingKeys = Array.from(
+        new Set(targetHoldings.map((h) => `${h.user_id}_${h.stock_id}`))
+      ).sort();
 
-          const rollbackSettlement = () => {
-            for (const [pid, pSnap] of profileSnaps.entries()) {
-              const live = memoryDb.profiles.get(pid);
-              if (live) {
-                for (const k of Object.keys(live)) {
-                  if (!(k in pSnap)) delete (live as any)[k];
+      return {
+        expiredOptions,
+        expiredOptionIds,
+        bonds,
+        targetAssetIds,
+        targetHoldings,
+        targetHoldingKeys,
+        openOrderAccountIds,
+        accountUserIds,
+        lockKeys,
+      };
+    };
+
+    const sameStringArray = (a: readonly string[], b: readonly string[]): boolean =>
+      a.length === b.length && a.every((v, i) => v === b[i]);
+
+    const MAX_LOCK_RETRIES = 5;
+    for (let assetAttempt = 0; assetAttempt <= MAX_LOCK_RETRIES; assetAttempt++) {
+      const allAssetIds = collectAllAssetIds();
+      const lockedAssetSet = new Set(allAssetIds);
+
+      const assetOutcome = await withAllStockLocks(allAssetIds, async () => {
+        for (let accountAttempt = 0; accountAttempt <= MAX_LOCK_RETRIES; accountAttempt++) {
+          const planBefore = collectPlan();
+          if (planBefore.targetAssetIds.some((id) => !lockedAssetSet.has(id))) {
+            return 'retry_assets' as const;
+          }
+
+          const lockedAccountSet = new Set(planBefore.lockKeys);
+
+          const accountOutcome = await withAccountLocks(planBefore.lockKeys, async () => {
+            return await runWithCommitGate(persistFn, async () => {
+              const planAfter = collectPlan();
+
+              if (planAfter.targetAssetIds.some((id) => !lockedAssetSet.has(id))) {
+                return 'retry_assets' as const;
+              }
+
+              const lockKeysMatch =
+                sameStringArray(planAfter.lockKeys, planBefore.lockKeys) &&
+                planAfter.lockKeys.every((k) => lockedAccountSet.has(k));
+              const targetsMatch =
+                sameStringArray(planAfter.targetAssetIds, planBefore.targetAssetIds) &&
+                sameStringArray(planAfter.accountUserIds, planBefore.accountUserIds) &&
+                sameStringArray(planAfter.targetHoldingKeys, planBefore.targetHoldingKeys);
+
+              if (!lockKeysMatch || !targetsMatch) {
+                return 'retry_accounts' as const;
+              }
+
+              const profileSnaps = new Map<string, ProfileRecord>();
+              for (const pid of planAfter.lockKeys) {
+                const p = memoryDb.profiles.get(pid);
+                if (p) profileSnaps.set(pid, structuredClone(p));
+              }
+              for (const uid of planAfter.accountUserIds) {
+                const p = memoryDb.resolveProfileByUserId(uid);
+                if (p && !profileSnaps.has(p.id)) {
+                  profileSnaps.set(p.id, structuredClone(p));
                 }
-                Object.assign(live, pSnap);
-              } else {
-                memoryDb.profiles.set(pid, { ...pSnap });
               }
-            }
-            for (const [hid, hSnap] of holdingSnaps.entries()) {
-              memoryDb.holdings.set(hid, { ...hSnap });
-              memoryDb.addHoldingToIndex(hSnap);
-            }
-            for (const [oid, oSnap] of orderSnaps.entries()) {
-              memoryDb.orders.set(oid, { ...oSnap });
-              memoryDb.addOrderToIndex(oSnap);
-            }
-            memoryDb.optionSettlements = memoryDb.optionSettlements.slice(0, optCountBefore);
-            memoryDb.bondCouponPayments = memoryDb.bondCouponPayments.slice(0, bondCountBefore);
-            for (const k of Array.from(memoryDb.settlementLedger.keys())) {
-              if (!ledgerKeysBefore.has(k)) {
-                memoryDb.settlementLedger.delete(k);
+
+              const holdingSnaps = new Map<string, HoldingRecord>();
+              const targetAssetSet = new Set(planAfter.targetAssetIds);
+              for (const [hid, h] of memoryDb.holdings.entries()) {
+                if (targetAssetSet.has(h.stock_id) && Number.isFinite(h.quantity) && h.quantity > 0) {
+                  holdingSnaps.set(hid, structuredClone(h));
+                }
               }
-            }
-            memoryDb.lpLiabilities = new Map(lpLiabilitiesSnap);
-            this.settlementService.restoreLastRunPeriodKey(lastPeriodKeyBefore);
-          };
 
-          try {
-            const summary = await this.settlementService.runDailySettlementBatch();
-            const hasChanges =
-              summary.optionSettled > 0 ||
-              summary.optionOrdersExpired > 0 ||
-              (summary.optionLpLiabilitiesCleared ?? 0) > 0 ||
-              summary.bondCouponsPaid > 0 ||
-              summary.bondPrincipalRedeemed > 0;
-            if (!hasChanges) return;
+              const orderSnaps = new Map<string, OrderRecord>();
+              for (const opt of planAfter.expiredOptions) {
+                const orderIds = memoryDb.orderStockIndex.get(opt.id);
+                if (orderIds) {
+                  for (const oid of orderIds) {
+                    const ord = memoryDb.orders.get(oid);
+                    if (ord) orderSnaps.set(oid, structuredClone(ord));
+                  }
+                }
+              }
 
-            const saved = await persistFn();
-            if (!saved) {
-              rollbackSettlement();
-              this.lastPersistOk = false;
-              this.lastPersistError = `Settlement batch snapshot save failed at tick ${this.tickCount}`;
-              console.error(`❌ [LocalMarketEngine] ${this.lastPersistError}`);
-            } else {
-              this.lastPersistOk = true;
-              this.lastPersistError = null;
-            }
-          } catch (err: any) {
-            rollbackSettlement();
-            this.lastPersistOk = false;
-            this.lastPersistError = `Settlement batch failed at tick ${this.tickCount}: ${err?.message || String(err)}`;
-            console.error(`❌ [LocalMarketEngine] ${this.lastPersistError}`);
+              const optCountBefore = memoryDb.optionSettlements.length;
+              const bondCountBefore = memoryDb.bondCouponPayments.length;
+              const ledgerKeysBefore = new Set(memoryDb.settlementLedger.keys());
+              const lpLiabilitiesSnap = new Map(memoryDb.lpLiabilities);
+              const lastPeriodKeyBefore = this.settlementService.getLastRunPeriodKey();
+
+              const rollbackSettlement = () => {
+                for (const [pid, pSnap] of profileSnaps.entries()) {
+                  const live = memoryDb.profiles.get(pid);
+                  if (live) {
+                    for (const k of Object.keys(live)) {
+                      if (!(k in pSnap)) delete (live as any)[k];
+                    }
+                    Object.assign(live, structuredClone(pSnap));
+                  } else {
+                    memoryDb.profiles.set(pid, structuredClone(pSnap));
+                  }
+                  memoryDb.addProfileToIndex(memoryDb.profiles.get(pid)!);
+                }
+                for (const [hid, hSnap] of holdingSnaps.entries()) {
+                  const restored = structuredClone(hSnap);
+                  memoryDb.holdings.set(hid, restored);
+                  memoryDb.addHoldingToIndex(restored);
+                }
+                for (const [oid, oSnap] of orderSnaps.entries()) {
+                  const restored = structuredClone(oSnap);
+                  memoryDb.orders.set(oid, restored);
+                  memoryDb.addOrderToIndex(restored);
+                }
+                memoryDb.optionSettlements = memoryDb.optionSettlements.slice(0, optCountBefore);
+                memoryDb.bondCouponPayments = memoryDb.bondCouponPayments.slice(0, bondCountBefore);
+                for (const k of Array.from(memoryDb.settlementLedger.keys())) {
+                  if (!ledgerKeysBefore.has(k)) {
+                    memoryDb.settlementLedger.delete(k);
+                  }
+                }
+                memoryDb.lpLiabilities = new Map(lpLiabilitiesSnap);
+                this.settlementService.restoreLastRunPeriodKey(lastPeriodKeyBefore);
+              };
+
+              try {
+                const summary = await this.settlementService.runDailySettlementBatch(batchNow);
+                const hasChanges =
+                  summary.optionSettled > 0 ||
+                  summary.optionOrdersExpired > 0 ||
+                  (summary.optionLpLiabilitiesCleared ?? 0) > 0 ||
+                  summary.bondCouponsPaid > 0 ||
+                  summary.bondPrincipalRedeemed > 0;
+                if (!hasChanges) return 'done' as const;
+
+                const saved = await persistFn();
+                if (!saved) {
+                  rollbackSettlement();
+                  this.lastPersistOk = false;
+                  this.lastPersistError = `Settlement batch snapshot save failed at tick ${this.tickCount}`;
+                  console.error(`❌ [LocalMarketEngine] ${this.lastPersistError}`);
+                } else {
+                  this.lastPersistOk = true;
+                  this.lastPersistError = null;
+                }
+              } catch (err: any) {
+                rollbackSettlement();
+                this.lastPersistOk = false;
+                this.lastPersistError = `Settlement batch failed at tick ${this.tickCount}: ${err?.message || String(err)}`;
+                console.error(`❌ [LocalMarketEngine] ${this.lastPersistError}`);
+              }
+              return 'done' as const;
+            });
+          });
+
+          if (accountOutcome === 'done') {
+            return 'done' as const;
           }
-        });
+          if (accountOutcome === 'retry_assets') {
+            return 'retry_assets' as const;
+          }
+        }
+        return 'deferred' as const;
       });
-    });
+
+      if (assetOutcome === 'done') {
+        return;
+      }
+      if (assetOutcome === 'deferred') {
+        console.warn(
+          `⚠️ [LocalMarketEngine] Deferred settlement batch at tick ${this.tickCount}: target/account lock set changed continuously`
+        );
+        return;
+      }
+    }
+
+    console.warn(
+      `⚠️ [LocalMarketEngine] Deferred settlement batch at tick ${this.tickCount}: asset set changed continuously`
+    );
   }
 
   private async runTick(): Promise<void> {
     this.tickCount++;
     const persistFn = this.onPersist || (() => persistenceManager.saveSnapshot(memoryDb));
+    const prePublishOk = await this.publishQueuedAdminEvents(persistFn, false);
 
     // ── 1. 에이전트 기반 시장(ABM) 1스텝 실행 (긴급 거래 동결 시 거래 중지) ──
-    if (!memoryDb.isTradingHalted()) {
+    if (prePublishOk && !memoryDb.isTradingHalted()) {
       const hadActiveStockScenarios = this.prepareActiveStockScenarios();
+      let stepOk = false;
       try {
-        await this.agentManager.step(1.0);
+        stepOk = await this.runAgentStepWithCommitBoundary(1.0, persistFn, {
+          alwaysPersist: false,
+          throwOnPersistFailure: false,
+        });
       } finally {
         this.agentManager.scenarioBiases.clear();
       }
-      if (hadActiveStockScenarios) {
+      if (stepOk && hadActiveStockScenarios) {
         await this.commitStockScenarioStep();
       }
     }
@@ -557,7 +973,7 @@ export class LocalMarketEngineInstance {
       await withStockLock(stockId, async () => {
         // 락 내부에서 현재 DB에 존재하는 최신 종목 객체 조회 (대기 중 교체/삭제 방어)
         const stk = memoryDb.stocks.get(stockId);
-        if (!stk) return;
+        if (!stk || stk.is_listed === false) return;
 
         const cp = stk.current_price;
         const tick = this.getTickSize(cp);
@@ -654,19 +1070,21 @@ export class LocalMarketEngineInstance {
    * - 확정된 상태만 외부에 발행
    */
   public async processMatching(botOrders: any[]): Promise<void> {
-    // 1. 봇 주문을 stock_id별로 분류
+    // 1. 봇 주문을 stock_id별로 분류 (상장 폐지 종목 제외)
     const botOrdersByStock = new Map<string, any[]>();
     for (const b of botOrders) {
+      if (memoryDb.stocks.get(b.stock_id)?.is_listed === false) continue;
       if (!botOrdersByStock.has(b.stock_id)) {
         botOrdersByStock.set(b.stock_id, []);
       }
       botOrdersByStock.get(b.stock_id)!.push(b);
     }
 
-    // 활성화된 주문이 있는 모든 종목 수집
+    // 활성화된 주문이 있는 모든 종목 수집 (상장 폐지 종목 신규 매칭 제외, 기존 주문 취소는 별도 경로로 보존)
     const targetStockIds = new Set<string>(botOrdersByStock.keys());
     for (const ord of memoryDb.orders.values()) {
       if (ord.status === 'open' || ord.status === 'partial') {
+        if (memoryDb.stocks.get(ord.stock_id)?.is_listed === false) continue;
         targetStockIds.add(ord.stock_id);
       }
     }
@@ -674,9 +1092,9 @@ export class LocalMarketEngineInstance {
     for (const stockId of targetStockIds) {
       // 종목 락으로 사용자 주문과의 동시성 완전 직렬화
       await withStockLock(stockId, async () => {
-        // 락 획득 후 현재 DB에 존재하는 최신 종목 객체 조회 (대기 중 교체/삭제 방어)
+        // 락 획득 후 현재 DB에 존재하는 최신 종목 객체 조회 (대기 중 교체/삭제/상장폐지 방어)
         const stock = memoryDb.stocks.get(stockId);
-        if (!stock) return;
+        if (!stock || stock.is_listed === false) return;
 
         // 2. 해당 종목의 봇 주문 등록
         const pendingBots = botOrdersByStock.get(stockId) || [];

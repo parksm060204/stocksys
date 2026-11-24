@@ -42,6 +42,7 @@ export interface BondItem {
   maturity: string;
   maturity_date?: string | undefined;
   coupon_rate: number;
+  payments_per_year?: number;
   face_value: number;
   current_price: number;
 }

@@ -325,6 +325,118 @@ async function main() {
   const actualCashAfterSpy = memoryDb.profiles.get(GUEST_USER_ID)!.cash;
   assert(actualCashAfterSpy === 2_000_000 - expectedKrwCost, `SPY KRW deduction includes FX 1380 & 0.25% fee (${actualCashAfterSpy} === ${2_000_000 - expectedKrwCost})`);
 
+  const postJson = (handler: (req: Request) => Promise<Response>, body: object) =>
+    handler(new Request('http://localhost:3000/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }));
+  const { commodityEngineInstance } = await import('../lib/commodities/commodityEngineInstance');
+  const { MACRO_COMMODITY_EVENTS } = await import('../lib/commodities/eventSystem');
+  const { persistenceManager } = await import('../lib/memoryDb/PersistenceManager');
+  commodityEngineInstance.stop();
+  process.env.ALLOW_DEV_ADMIN = 'true';
+  for (const [shockType, templateId] of Object.entries(MACRO_COMMODITY_EVENTS)) {
+    const response = await postJson(adminScenarioPOST, { action: 'trigger_macro_shock', shockType });
+    assert(response.status === 200, 'Every supported macro shock is accepted');
+    assert(commodityEngineInstance.eventSystem.snapshotState().activeEvents.some(
+      (event) => event.templateId === templateId
+    ), 'Macro shock creates the corresponding commodity event');
+  }
+
+  const queuedEvent = { ...futureNews1, eventId: 'future_admin_news_durable', publishedAt: futurePubTime + 60_000,
+    effectiveFrom: futurePubTime + 60_000 };
+  const queuedResponse = await postJson(adminScenarioPOST, { action: 'inject_news_event', event: queuedEvent });
+  assert(queuedResponse.status === 200 && (await queuedResponse.json()).success, 'Future admin event is accepted');
+  const persisted = JSON.parse(fs.readFileSync(path.join(ISOLATED_DATA_DIR, 'snapshot.json'), 'utf8'));
+  assert(persisted.pendingAdminMarketEvents.some((event: MarketEvent) => event.eventId === queuedEvent.eventId),
+    'Accepted future event is durable before the response');
+  assert(!persisted.marketNews.some((news: { id: string }) => news.id === queuedEvent.eventId),
+    'Future admin event is not public in the saved snapshot');
+
+  const { InMemoryEventRepository } = await import('../lib/repositories/inMemory/InMemoryEventRepository');
+  const repository = new InMemoryEventRepository(memoryDb);
+  await repository.saveMarketNews({
+    id: 'repo_newer', type: 'MARKET', category: 'OFFICIAL', publisher: 'test',
+    title: 'newer', content: 'newer', created_at: '2030-01-01T00:00:00.000Z',
+  });
+  await repository.saveMarketNews({
+    id: 'repo_late_arrival', type: 'MARKET', category: 'OFFICIAL', publisher: 'test',
+    title: 'older', content: 'older', created_at: '2029-01-01T00:00:00.000Z',
+  });
+  assert((await repository.getRecentMarketNews(1))[0]?.id === 'repo_newer',
+    'Recent news uses publication time even when older news arrives later');
+
+  const previousEventState = commodityEngineInstance.eventSystem.snapshotState();
+  const previousNews = [...memoryDb.marketNews];
+  const originalSave = persistenceManager.saveSnapshot;
+  persistenceManager.saveSnapshot = async () => { throw new Error('test storage failure'); };
+  try {
+    const failedShock = await postJson(adminScenarioPOST, { action: 'trigger_macro_shock', shockType: 'LIQUIDITY_BOOM' });
+    assert(failedShock.status === 500, 'Macro shock reports snapshot failure');
+    assert(JSON.stringify(commodityEngineInstance.eventSystem.snapshotState()) === JSON.stringify(previousEventState),
+      'Failed macro shock restores commodity events and news');
+    const failedQueue = await postJson(adminScenarioPOST, { action: 'inject_news_event',
+      event: { ...queuedEvent, eventId: 'discard_failed_admin_event' } });
+    assert(failedQueue.status === 500 && !memoryDb.pendingAdminMarketEvents.some(
+      (event) => event.eventId === 'discard_failed_admin_event'
+    ), 'Failed event registration leaves no pending entry');
+    const failedNews = await postJson(adminScenarioPOST, { action: 'trigger_ai_event', title: 'discard', rawText: 'discard me' });
+    assert(failedNews.status === 500 && JSON.stringify(memoryDb.marketNews) === JSON.stringify(previousNews),
+      'Failed admin news write restores the feed');
+  } finally {
+    persistenceManager.saveSnapshot = originalSave;
+  }
+
+  const invalidAsset = await postJson(localDbPOST, {
+    action: 'rpc', fnName: 'submit_and_match_order',
+    params: { p_stock_id: 'bond_us_2y', p_side: 'buy', p_price: 100, p_size: 1 },
+  });
+  assert(invalidAsset.status === 400, 'General order RPC rejects bonds with 400');
+
+  const query = (orFilterGroups: string[]) => postJson(localDbPOST, {
+    action: 'execute', tableName: 'stocks', query: { orFilterGroups },
+  });
+  delete process.env.ALLOW_DEV_ADMIN;
+  const matched = await query(['ticker.eq.SPY,ticker.eq.__missing__']);
+  const matchedBody = await matched.json();
+  assert(matched.status === 200 && matchedBody.data.length === 1 && matchedBody.data[0].ticker === 'SPY',
+    'Public OR query applies its filters');
+  assert((await query(['ticker.eq.SPY,target_price.eq.100'])).status === 403,
+    'OR filters respect the public stock column allowlist');
+
+  const { CommodityEventSystem } = await import('../lib/commodities/eventSystem');
+  const eventSystem = new CommodityEventSystem(0);
+  const template = MACRO_COMMODITY_EVENTS.LIQUIDITY_BOOM;
+  eventSystem.triggerEventById(template, 42);
+  eventSystem.triggerEventById(template, 42);
+  const restoredSystem = new CommodityEventSystem(0);
+  restoredSystem.restoreState(eventSystem.snapshotState());
+  restoredSystem.triggerEventById(template, 42);
+  assert(new Set(restoredSystem.activeEvents.map((event) => event.id)).size === 3,
+    'Same-tick administrator event IDs stay unique across snapshot restore');
+  assert(new Set(restoredSystem.newsFeed.map((news) => news.id)).size === 3,
+    'Same-tick commodity news IDs stay unique across snapshot restore');
+
+  await engine.stepSimulation(3);
+  const beforeRestart = engine.getSimulationTime();
+  const restartNews = {
+    ...queuedEvent, eventId: 'restart_clock_news', publishedAt: beforeRestart + 2_000, effectiveFrom: beforeRestart + 2_000,
+  };
+  process.env.ALLOW_DEV_ADMIN = 'true';
+  const restartQueued = await postJson(adminScenarioPOST, { action: 'inject_news_event', event: restartNews });
+  assert(restartQueued.status === 200 && (await restartQueued.json()).success, 'Restart test event accepted');
+  stopLocalStandaloneEngine();
+  await ensureLocalStandaloneReady();
+  const restartedEngine = getLocalStandaloneEngine()!;
+  restartedEngine.stop();
+  assert(restartedEngine.getSimulationTime() === beforeRestart, 'Engine reload restores the saved simulation time');
+  await restartedEngine.stepSimulation(1);
+  assert(!memoryDb.marketNews.some((item) => item.id === restartNews.eventId), 'Restored news remains hidden before its deadline');
+  await restartedEngine.stepSimulation(1);
+  assert(memoryDb.marketNews.filter((item) => item.id === restartNews.eventId).length === 1,
+    'Restored news publishes once at its original simulation deadline');
+  commodityEngineInstance.stop();
   stopLocalStandaloneEngine();
   console.log('\n════════════════════════════════════════════════════════════════');
   console.log('🎉 ALL ROUTE HANDLER VERIFICATIONS PASSED PERFECTLY!');

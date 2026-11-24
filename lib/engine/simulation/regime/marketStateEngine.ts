@@ -838,4 +838,48 @@ export class MarketStateEngine {
     // 리셋 후 초기 완성 스냅샷 원자적 재게시
     this.publishSnapshot(initialEpochMs);
   }
+
+  public snapshotState() {
+    return {
+      prngState: this.prng.getState(),
+      currentRegime: this.currentRegime,
+      previousRegime: this.previousRegime,
+      regimeStartedAt: this.regimeStartedAt,
+      transitionId: this.transitionId,
+      lastTransitionReason: this.lastTransitionReason,
+      lastTransitionEvaluatedAt: this.lastTransitionEvaluatedAt,
+      pendingTransition: this.pendingTransition ? deepClone(this.pendingTransition) : null,
+      currentSession: this.currentSession,
+      sessionStartedAt: this.sessionStartedAt,
+      nextSession: this.nextSession,
+      nextTransitionAt: this.nextTransitionAt,
+      sessionTransitionId: this.sessionTransitionId,
+      lastProcessedBoundaryMs: this.lastProcessedBoundaryMs,
+      regimeHistory: deepClone(this.regimeHistory),
+      sessionHistory: deepClone(this.sessionHistory),
+      stateVersion: this.stateVersion,
+      publishedSnapshot: deepClone(this.publishedSnapshot),
+    };
+  }
+
+  public restoreState(snap: ReturnType<MarketStateEngine['snapshotState']>): void {
+    this.prng.setState(snap.prngState);
+    this.currentRegime = snap.currentRegime;
+    this.previousRegime = snap.previousRegime;
+    this.regimeStartedAt = snap.regimeStartedAt;
+    this.transitionId = snap.transitionId;
+    this.lastTransitionReason = snap.lastTransitionReason;
+    this.lastTransitionEvaluatedAt = snap.lastTransitionEvaluatedAt;
+    this.pendingTransition = snap.pendingTransition ? deepClone(snap.pendingTransition) : null;
+    this.currentSession = snap.currentSession;
+    this.sessionStartedAt = snap.sessionStartedAt;
+    this.nextSession = snap.nextSession;
+    this.nextTransitionAt = snap.nextTransitionAt;
+    this.sessionTransitionId = snap.sessionTransitionId;
+    this.lastProcessedBoundaryMs = snap.lastProcessedBoundaryMs;
+    this.regimeHistory = deepClone(snap.regimeHistory);
+    this.sessionHistory = deepClone(snap.sessionHistory);
+    this.stateVersion = snap.stateVersion;
+    this.publishedSnapshot = deepFreeze(deepClone(snap.publishedSnapshot));
+  }
 }

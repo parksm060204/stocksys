@@ -33,15 +33,27 @@ export class InMemoryEventRepository implements EventRepository {
 
   public async saveMarketNews(news: MarketNewsRecord): Promise<void> {
     const id = news.id || this.db.generateId('news');
-    this.db.marketNews.push({
+    this.db.saveMarketNews({
       ...news,
       id,
       created_at: news.created_at || this.db.getIsoTimestamp(),
     });
   }
 
+  public async removeMarketNews(id: string): Promise<void> {
+    const index = this.db.marketNews.findIndex((n) => n.id === id);
+    if (index >= 0) {
+      this.db.marketNews.splice(index, 1);
+    }
+  }
+
   public async getRecentMarketNews(limit: number = 20): Promise<MarketNewsRecord[]> {
+    if (limit <= 0) return [];
     return this.db.marketNews.slice(-limit).map((n) => ({ ...n }));
+  }
+
+  public getMarketNewsSync(): MarketNewsRecord[] {
+    return this.db.marketNews.map((n) => ({ ...n }));
   }
 
   public async getPlayerEvents(): Promise<PlayerEventRecord[]> {
@@ -49,6 +61,18 @@ export class InMemoryEventRepository implements EventRepository {
   }
 
   public async saveActivePlayerEvent(event: any): Promise<void> {
-    this.db.activePlayerEvents.push({ ...event });
+    const rawUserId = typeof event?.user_id === 'string' ? event.user_id.trim() : '';
+    if (!rawUserId) {
+      throw new Error('saveActivePlayerEvent requires a non-empty canonical user_id');
+    }
+    const id = typeof event?.id === 'string' && event.id.trim().length > 0
+      ? event.id.trim()
+      : this.db.generateId('ape');
+    this.db.activePlayerEvents.push({
+      ...event,
+      id,
+      user_id: rawUserId,
+      created_at: event?.created_at || this.db.getIsoTimestamp(),
+    });
   }
 }

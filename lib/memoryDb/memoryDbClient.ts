@@ -14,6 +14,7 @@ import { MEDIA_OUTLETS } from '../shop/catalog';
 import { getAssetSettlementPriceMultiplierToKrw } from '../engine/currency';
 import { executeCurrencyExchange } from '../exchange/exchangeService';
 import { applyCashCreditWithMarginDebt } from '../engine/orderRisk';
+import { withAccountLocks } from './accountLocks';
 
 
 type FilterOp = {
@@ -139,10 +140,27 @@ export class MemoryQueryBuilder {
   /**
    * 쿼리 실행 및 Promise 호환 처리 (인덱스 스캔 최적화 적용)
    */
-  public async execute(): Promise<{ data: any; error: any }> {
+  public async execute(): Promise<{
+    data: any;
+    error: any;
+    meta?: { tradeGeneration?: string; serverMaxCursor?: number };
+  }> {
     try {
       let targetList: any[] = [];
       const db = this.db;
+
+      if (this.tableName === 'trades' && db.trades.length > 0) {
+        const lastTrade = db.trades[db.trades.length - 1];
+        const firstTrade = db.trades[0];
+        if (
+          typeof lastTrade?.cursor !== 'number' ||
+          !Number.isFinite(lastTrade.cursor) ||
+          typeof firstTrade?.cursor !== 'number' ||
+          !Number.isFinite(firstTrade.cursor)
+        ) {
+          db.ensureTradeCursors();
+        }
+      }
 
       // ── 1. 인덱스 기반 고속 스캔 ──
       const eqTicker = this.filters.find((f) => f.col === 'ticker' && f.op === 'eq')?.val;
@@ -174,13 +192,14 @@ export class MemoryQueryBuilder {
       } else if (this.tableName === 'trades' && eqStockId) {
         targetList = db.tradeStockIndex.get(String(eqStockId)) || [];
       } else if (this.tableName === 'profiles' && (eqUserId || eqId)) {
-        let profile: ProfileRecord | undefined;
-        if (eqUserId) {
-          profile = db.resolveProfileByUserId(String(eqUserId));
-        } else if (eqId) {
-          profile = db.profiles.get(String(eqId)) ?? db.resolveProfileByUserId(String(eqId));
+        if (eqId) {
+          // PK(id) 조회는 primary key로만 조회해 user_id 조회 의미와 충돌하지 않도록 보장
+          const profile = db.profiles.get(String(eqId));
+          targetList = profile ? [profile] : [];
+        } else if (eqUserId) {
+          const profile = db.resolveProfileByUserId(String(eqUserId));
+          targetList = profile ? [profile] : [];
         }
-        targetList = profile ? [profile] : [];
       } else {
         // 인덱스가 없는 경우 기본 전체 테이블 스캔
         switch (this.tableName) {
@@ -254,6 +273,59 @@ export class MemoryQueryBuilder {
       // ── 2. DML 연산 처리 ──
       if (this.action === 'insert') {
         const items = Array.isArray(this.payloadData) ? this.payloadData : [this.payloadData];
+
+        if (this.tableName === 'profiles') {
+          const stagedByPk = new Map<string, ProfileRecord>();
+          const stagedByOwner = new Map<string, ProfileRecord>();
+          const stagedList: ProfileRecord[] = [];
+
+          for (const item of items) {
+            if (!item || typeof item !== 'object' || Array.isArray(item)) {
+              return { data: null, error: { message: 'Invalid profile insert payload' } };
+            }
+            if (item.id !== undefined && item.id !== null && (typeof item.id !== 'string' || !item.id.trim())) {
+              return { data: null, error: { message: 'Invalid profile id for insert' } };
+            }
+            if (item.user_id !== undefined && item.user_id !== null && (typeof item.user_id !== 'string' || !item.user_id.trim())) {
+              return { data: null, error: { message: 'Invalid profile user_id for insert' } };
+            }
+
+            let id = typeof item.id === 'string' ? item.id : db.generateId('id');
+            if (typeof item.id !== 'string') {
+              while (db.profiles.has(id) || stagedByPk.has(id) || db.resolveProfileByUserId(id) || stagedByOwner.has(id)) {
+                id = db.generateId('id');
+              }
+            }
+            if (db.profiles.has(id) || stagedByPk.has(id)) {
+              return { data: null, error: { message: `Duplicate profile id: ${id}` } };
+            }
+
+            const explicitUserId = typeof item.user_id === 'string' ? item.user_id : undefined;
+            const effectiveOwner = explicitUserId || id;
+            if (stagedByOwner.has(effectiveOwner) || db.resolveProfileByUserId(effectiveOwner)) {
+              return { data: null, error: { message: `Duplicate profile user_id: ${effectiveOwner}` } };
+            }
+
+            const record = {
+              ...item,
+              id,
+              created_at: item.created_at || db.getIsoTimestamp(),
+            } as ProfileRecord;
+
+            stagedByPk.set(id, record);
+            stagedByOwner.set(effectiveOwner, record);
+            stagedList.push(record);
+          }
+
+          for (const record of stagedList) {
+            db.profiles.set(record.id, record);
+            db.addProfileToIndex(record);
+            db.publish(`${this.tableName}_changes`, { eventType: 'INSERT', new: record });
+          }
+
+          return { data: Array.isArray(this.payloadData) ? stagedList : (stagedList[0] ?? null), error: null };
+        }
+
         const insertedItems: any[] = [];
 
         for (const item of items) {
@@ -272,8 +344,7 @@ export class MemoryQueryBuilder {
             db.orders.set(id, record as OrderRecord);
             db.addOrderToIndex(record as OrderRecord);
           } else if (this.tableName === 'trades') {
-            db.trades.push(record as TradeRecord);
-            db.addTradeToIndex(record as TradeRecord);
+            db.appendTrade(record as TradeRecord);
           } else if (this.tableName === 'holdings') {
             db.holdings.set(id, record as HoldingRecord);
             db.addHoldingToIndex(record as HoldingRecord);
@@ -283,11 +354,8 @@ export class MemoryQueryBuilder {
             db.activePlayerEvents.push(record);
           } else if (this.tableName === 'active_manipulations') {
             db.activeManipulations.push(record);
-          } else if (this.tableName === 'profiles') {
-            db.profiles.set(id, record as ProfileRecord);
-            db.addProfileToIndex(record as ProfileRecord);
           } else if (this.tableName === 'market_news' || this.tableName === 'news' || this.tableName === 'news_v2') {
-            db.marketNews.push(record);
+            db.saveMarketNews(record);
           }
 
           insertedItems.push(record);
@@ -299,7 +367,116 @@ export class MemoryQueryBuilder {
 
       if (this.action === 'upsert') {
         const items = Array.isArray(this.payloadData) ? this.payloadData : [this.payloadData];
-        const _conflictKey = this.upsertOptions?.onConflict || 'id';
+        const conflictKey = this.upsertOptions?.onConflict || 'id';
+
+        if (this.tableName === 'profiles') {
+          const stagedByPk = new Map<string, ProfileRecord>();
+          const stagedByOwner = new Map<string, ProfileRecord>();
+          const stagedCommits: ProfileRecord[] = [];
+
+          const getOwner = (p: ProfileRecord): string =>
+            typeof p.user_id === 'string' && p.user_id.trim().length > 0 ? p.user_id : p.id;
+          const findByPk = (pk: string): ProfileRecord | undefined =>
+            stagedByPk.has(pk) ? stagedByPk.get(pk) : db.profiles.get(pk);
+          const findByOwner = (uid: string): ProfileRecord | undefined => {
+            if (stagedByOwner.has(uid)) return stagedByOwner.get(uid);
+            const resolved = db.resolveProfileByUserId(uid);
+            if (!resolved) return undefined;
+            const staged = stagedByPk.get(resolved.id);
+            if (staged) return getOwner(staged) === uid ? staged : undefined;
+            return resolved;
+          };
+
+          for (const item of items) {
+            if (!item || typeof item !== 'object' || Array.isArray(item)) {
+              return { data: null, error: { message: 'Invalid profile upsert payload' } };
+            }
+            if (item.id !== undefined && item.id !== null && (typeof item.id !== 'string' || !item.id.trim())) {
+              return { data: null, error: { message: 'Invalid profile id for upsert' } };
+            }
+            if (item.user_id !== undefined && item.user_id !== null && (typeof item.user_id !== 'string' || !item.user_id.trim())) {
+              return { data: null, error: { message: 'Invalid profile user_id for upsert' } };
+            }
+
+            const reqId = typeof item.id === 'string' ? item.id : undefined;
+            const reqUserId = typeof item.user_id === 'string' ? item.user_id : undefined;
+            const existingByPk = reqId ? findByPk(reqId) : undefined;
+            const existingByOwner = reqUserId ? findByOwner(reqUserId) : undefined;
+
+            let targetExisting: ProfileRecord | undefined;
+            let key: string;
+            let resolvedUserId: string;
+
+            if (existingByPk) {
+              const pkOwner = getOwner(existingByPk);
+              if (reqUserId && pkOwner !== reqUserId) {
+                return {
+                  data: null,
+                  error: { message: `Profile primary key conflict: row ${existingByPk.id} belongs to another user_id` },
+                };
+              }
+              if (existingByOwner && existingByOwner.id !== existingByPk.id) {
+                return {
+                  data: null,
+                  error: { message: `Profile user_id conflict: user ${reqUserId} already has profile ${existingByOwner.id}` },
+                };
+              }
+              if (!reqUserId) {
+                const ownerRow = findByOwner(pkOwner);
+                if (ownerRow && ownerRow.id !== existingByPk.id) {
+                  return {
+                    data: null,
+                    error: { message: `Profile ownership conflict: owner ${pkOwner} already has profile ${ownerRow.id}` },
+                  };
+                }
+              }
+              targetExisting = existingByPk;
+              key = existingByPk.id;
+              resolvedUserId = reqUserId || existingByPk.user_id || existingByPk.id;
+            } else if (existingByOwner) {
+              if (reqId && conflictKey !== 'user_id') {
+                return {
+                  data: null,
+                  error: { message: `Profile user_id conflict: user ${reqUserId} already has profile ${existingByOwner.id}` },
+                };
+              }
+              targetExisting = existingByOwner;
+              key = existingByOwner.id;
+              resolvedUserId = reqUserId!;
+            } else {
+              if (reqId && !reqUserId && findByOwner(reqId)) {
+                return {
+                  data: null,
+                  error: { message: `Profile user_id conflict: user ${reqId} already has another profile` },
+                };
+              }
+              key = reqId || (reqUserId && !findByPk(reqUserId) ? reqUserId : db.generateId('prof'));
+              while (findByPk(key) || (!reqUserId && findByOwner(key))) {
+                key = db.generateId('prof');
+              }
+              resolvedUserId = reqUserId || key;
+            }
+
+            const merged = {
+              ...(targetExisting || {}),
+              ...item,
+              id: key,
+              user_id: resolvedUserId,
+              created_at: item.created_at || targetExisting?.created_at || db.getIsoTimestamp(),
+            } as ProfileRecord;
+
+            stagedByPk.set(key, merged);
+            stagedByOwner.set(resolvedUserId, merged);
+            stagedCommits.push(merged);
+          }
+
+          for (const merged of stagedCommits) {
+            db.profiles.set(merged.id, merged);
+            db.addProfileToIndex(merged);
+          }
+
+          return { data: items, error: null };
+        }
 
         for (const item of items) {
           if (this.tableName === 'stocks') {
@@ -314,12 +491,6 @@ export class MemoryQueryBuilder {
             const merged = { ...existing, ...item, id: key } as CommodityRecord;
             db.commodities.set(key, merged);
             db.addCommodityToIndex(merged);
-          } else if (this.tableName === 'profiles') {
-            const key = item.id || item.user_id;
-            const existing = db.profiles.get(key) || ({} as ProfileRecord);
-            const merged = { ...existing, ...item, id: key, user_id: item.user_id || existing.user_id || key } as ProfileRecord;
-            db.profiles.set(key, merged);
-            db.addProfileToIndex(merged);
           } else if (this.tableName === 'holdings') {
             const key = item.id || `${item.user_id}_${item.stock_id}`;
             const rec = { ...item, id: key } as HoldingRecord;
@@ -336,6 +507,38 @@ export class MemoryQueryBuilder {
       if (this.action === 'update') {
         // 필터 조건에 매칭되는 레코드 수정
         const matched = this.applyFilters(targetList);
+        if (this.tableName === 'profiles') {
+          if (this.payloadData?.id !== undefined) {
+            for (const item of matched) {
+              if (this.payloadData.id !== item.id) {
+                return { data: null, error: { message: `Profile primary key cannot be changed from ${item.id} to ${this.payloadData.id}` } };
+              }
+            }
+          }
+          if (this.payloadData?.user_id !== undefined) {
+            if (typeof this.payloadData.user_id !== 'string' || !this.payloadData.user_id.trim()) {
+              return { data: null, error: { message: 'Invalid profile user_id for update' } };
+            }
+            const nextUid = this.payloadData.user_id;
+            if (matched.length > 1) {
+              return { data: null, error: { message: `Duplicate profile user_id across multiple updated rows: ${nextUid}` } };
+            }
+            const existingOwner = db.resolveProfileByUserId(nextUid);
+            if (matched.length === 1 && existingOwner && existingOwner.id !== matched[0].id) {
+              return { data: null, error: { message: `Profile user_id conflict: user ${nextUid} already has profile ${existingOwner.id}` } };
+            }
+          }
+          for (const item of matched) {
+            const prevUid = item.user_id;
+            Object.assign(item, this.payloadData);
+            if (prevUid && prevUid !== item.user_id && db.profileUserIdIndex.get(prevUid) === item.id) {
+              db.profileUserIdIndex.delete(prevUid);
+            }
+            db.addProfileToIndex(item as ProfileRecord);
+            db.publish(`${this.tableName}_changes`, { eventType: 'UPDATE', new: item });
+          }
+          return { data: matched, error: null };
+        }
         for (const item of matched) {
           Object.assign(item, this.payloadData);
           db.publish(`${this.tableName}_changes`, { eventType: 'UPDATE', new: item });
@@ -400,18 +603,39 @@ export class MemoryQueryBuilder {
         });
       }
 
+      let tradeMeta: { tradeGeneration: string; serverMaxCursor: number } | undefined;
+      if (this.tableName === 'trades') {
+        const scopedTrades = eqStockId
+          ? (db.tradeStockIndex.get(String(eqStockId)) || [])
+          : db.trades;
+        let serverMaxCursor = 0;
+        for (const t of scopedTrades) {
+          if (typeof t.cursor === 'number' && Number.isFinite(t.cursor) && t.cursor > serverMaxCursor) {
+            serverMaxCursor = t.cursor;
+          }
+        }
+        tradeMeta = {
+          tradeGeneration: db.getTradeStreamGeneration(),
+          serverMaxCursor,
+        };
+      }
+
       if (this.isSingle) {
         if (result.length === 0) {
-          return { data: null, error: { message: 'Row not found (PGRST116)' } };
+          return { data: null, error: { message: 'Row not found (PGRST116)' }, ...(tradeMeta ? { meta: tradeMeta } : {}) };
         }
-        return { data: result[0], error: null };
+        return { data: result[0], error: null, ...(tradeMeta ? { meta: tradeMeta } : {}) };
       }
 
       if (this.isMaybeSingle) {
-        return { data: result.length > 0 ? result[0] : null, error: null };
+        return {
+          data: result.length > 0 ? result[0] : null,
+          error: null,
+          ...(tradeMeta ? { meta: tradeMeta } : {}),
+        };
       }
 
-      return { data: result, error: null };
+      return { data: result, error: null, ...(tradeMeta ? { meta: tradeMeta } : {}) };
     } catch (err: any) {
       console.error(`[MemoryQueryBuilder] Query error on ${this.tableName}:`, err);
       return { data: null, error: { message: err?.message || String(err) } };
@@ -427,7 +651,10 @@ export class MemoryQueryBuilder {
     if (secondDot <= 0) return false;
     const op = rest.slice(0, secondDot).trim().toLowerCase();
     const rawVal = rest.slice(secondDot + 1);
-    const itemVal = item?.[col];
+    const itemVal =
+      this.tableName === 'profiles' && (col === 'user_id' || col === 'userId')
+        ? (item?.user_id || item?.id)
+        : item?.[col];
 
     switch (op) {
       case 'eq':
@@ -471,7 +698,10 @@ export class MemoryQueryBuilder {
   private applyFilters(list: any[]): any[] {
     return list.filter((item) => {
       for (const f of this.filters) {
-        const itemVal = item[f.col];
+        const itemVal =
+          this.tableName === 'profiles' && (f.col === 'user_id' || f.col === 'userId')
+            ? (item.user_id || item.id)
+            : item[f.col];
         switch (f.op) {
           case 'eq':
             if (itemVal != f.val) return false;
@@ -531,33 +761,87 @@ export class MemoryDbClient {
     const db = this.db;
 
     if (fnName === 'update_cash_balance') {
-      const userId = params?.p_user_id || params?.user_id || GUEST_USER_ID;
-      const delta = Number(params?.p_delta || params?.amount || 0);
-      const lockProfileId = db.resolveAccountLockKey(userId);
+      const hasPUserId = params?.p_user_id !== undefined && params?.p_user_id !== null;
+      const hasUserId = params?.user_id !== undefined && params?.user_id !== null;
+      if (hasPUserId && typeof params.p_user_id !== 'string') {
+        return { data: null, error: { message: 'Invalid p_user_id for update_cash_balance' } };
+      }
+      if (hasUserId && typeof params.user_id !== 'string') {
+        return { data: null, error: { message: 'Invalid user_id for update_cash_balance' } };
+      }
+      if (hasPUserId && hasUserId && params.p_user_id !== params.user_id) {
+        return { data: null, error: { message: 'Ambiguous user identifier: p_user_id and user_id mismatch' } };
+      }
 
-      const updatedProfile = await db.updateAtomic<ProfileRecord>(`profile:${lockProfileId}`, (prev) => {
-        const user = prev || db.resolveProfileByUserId(userId);
-        if (!user) {
-          const newUser: ProfileRecord = {
-            id: userId,
-            user_id: userId,
-            username: '새 사용자',
-            nickname: '새 사용자',
-            cash: 5000000 + delta,
-            net_worth: 5000000 + delta,
-            rank_tier: 'Bronze',
-            created_at: this.getIsoTimestamp(),
-          };
-          return newUser;
-        }
+      const rawUserId = hasPUserId ? params.p_user_id : (hasUserId ? params.user_id : undefined);
+      if (typeof rawUserId !== 'string' || !rawUserId.trim()) {
+        return { data: null, error: { message: 'Missing or invalid user_id for update_cash_balance' } };
+      }
+      const userId = rawUserId;
+
+      const requestedProfileIds = [params?.p_profile_id, params?.profile_id, params?.id]
+        .filter((v) => v !== undefined && v !== null);
+      if (requestedProfileIds.some((v) => typeof v !== 'string' || !v.trim())) {
+        return { data: null, error: { message: 'Invalid profile_id for update_cash_balance' } };
+      }
+      if (new Set(requestedProfileIds as string[]).size > 1) {
+        return { data: null, error: { message: 'Ambiguous profile_id parameters for update_cash_balance' } };
+      }
+      const requestedProfileId = requestedProfileIds[0] as string | undefined;
+
+      const hasPDelta = params?.p_delta !== undefined && params?.p_delta !== null;
+      const hasAmount = params?.amount !== undefined && params?.amount !== null;
+      if (hasPDelta && hasAmount && Number(params.p_delta) !== Number(params.amount)) {
+        return { data: null, error: { message: 'Ambiguous delta parameters: p_delta and amount mismatch' } };
+      }
+      const rawDelta = hasPDelta ? params.p_delta : (hasAmount ? params.amount : undefined);
+      const delta = Number(rawDelta);
+      if (rawDelta === undefined || rawDelta === '' || !Number.isFinite(delta)) {
+        return { data: null, error: { message: 'Invalid cash delta for update_cash_balance' } };
+      }
+
+      const initialProfile = db.resolveProfileByUserId(userId);
+      if (!initialProfile) {
+        return { data: null, error: { message: `Profile not found for user ${userId}` } };
+      }
+      if (requestedProfileId !== undefined && initialProfile.id !== requestedProfileId) {
         return {
-          ...user,
-          cash: user.cash + delta,
-          net_worth: user.net_worth + delta,
+          data: null,
+          error: { message: `Profile ownership verification failed for user ${userId}` },
         };
-      });
+      }
 
-      return { data: updatedProfile?.cash ?? 0, error: null };
+      const lockProfileId = initialProfile.id;
+      try {
+        const updatedProfile = await withAccountLocks([lockProfileId], async () => {
+          return await db.updateAtomic<ProfileRecord>(`profile:${lockProfileId}`, (prev) => {
+            const target = prev ?? db.resolveProfileByUserId(userId);
+            const isOwned = Boolean(
+              target && (target.user_id === userId || (!target.user_id && target.id === userId))
+            );
+            if (!target || !isOwned || target.id !== lockProfileId) {
+              throw new Error(`Profile ownership verification failed for user ${userId}`);
+            }
+            if (requestedProfileId !== undefined && target.id !== requestedProfileId) {
+              throw new Error(`Profile ID mismatch for user ${userId}`);
+            }
+            const currentCash = Number(target.cash);
+            const currentNetWorth = Number(target.net_worth ?? currentCash);
+            if (!Number.isFinite(currentCash) || !Number.isFinite(currentNetWorth)) {
+              throw new Error(`Invalid profile cash balance for user ${userId}`);
+            }
+            return {
+              ...target,
+              cash: currentCash + delta,
+              net_worth: currentNetWorth + delta,
+            };
+          });
+        });
+
+        return { data: updatedProfile.cash, error: null };
+      } catch (err: any) {
+        return { data: null, error: { message: err?.message || String(err) } };
+      }
     }
 
     if (fnName === 'bulk_settle_trades') {
@@ -781,8 +1065,7 @@ export class MemoryDbClient {
           }
         }
         for (const tradeRecord of tradeRecords) {
-          db.trades.push(tradeRecord);
-          db.addTradeToIndex(tradeRecord);
+          db.appendTrade(tradeRecord);
         }
       } catch (commitError) {
         for (const [userId, original] of originalProfiles.entries()) {
@@ -1006,7 +1289,7 @@ export class MemoryDbClient {
   public get auth(): any {
     return {
       getUser: async () => {
-        const user = this.db.profiles.get(GUEST_USER_ID);
+        const user = this.db.resolveProfileByUserId(GUEST_USER_ID);
         return {
           data: {
             user: user

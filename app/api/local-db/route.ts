@@ -8,8 +8,9 @@ import { resolveAuthenticatedUserId } from '@/lib/auth/sessionAuth';
 import { authorizeNewsRecord, canReadRumor } from '@/lib/news/accessPolicy';
 import { pruneExpiredProfileEntitlements } from '@/lib/shop/catalog';
 import { executeCurrencyExchange } from '@/lib/exchange/exchangeService';
-import { withAccountLocks } from '@/lib/memoryDb/accountLocks';
-import { runWithCommitGate } from '@/lib/memoryDb/PersistenceManager';
+import { withResolvedAccountLocks } from '@/lib/memoryDb/accountLocks';
+import { persistenceManager, runWithCommitGate } from '@/lib/memoryDb/PersistenceManager';
+import { allowStockOrderRequest } from '@/lib/rateLimit/stockOrderLimiter';
 
 // 공개 시장 데이터 테이블 (SELECT 전용)
 const PUBLIC_READ_TABLES = new Set([
@@ -28,6 +29,43 @@ const PUBLIC_READ_TABLES = new Set([
   'trades',
 ]);
 const ADMIN_ONLY_READ_TABLES = new Set(['active_manipulations', 'admin_settings']);
+const PUBLIC_STOCK_COLUMNS = new Set([
+  'id',
+  'ticker',
+  'name',
+  'market',
+  'currency',
+  'current_price',
+  'previous_close',
+  'open_price',
+  'high',
+  'low',
+  'high_price',
+  'low_price',
+  'volume',
+  'change_rate',
+  'market_cap',
+  'pe_ratio',
+  'dividend_yield',
+  'sector',
+  'sector_id',
+  'theme_ids',
+  'is_listed',
+  'is_core',
+  'shares_outstanding',
+  'floating_shares',
+  'base_liquidity',
+  'base_spread_bps',
+  'base_depth_shares',
+  'institutional_fit',
+  'macro_exposure',
+  'description',
+  'listed_at',
+  'financials',
+  'relevance_weight',
+  'created_at',
+  'updated_at',
+]);
 const PUBLIC_TRADE_COLUMNS = new Set([
   'id',
   'stock_id',
@@ -37,6 +75,7 @@ const PUBLIC_TRADE_COLUMNS = new Set([
   'seller_is_bot',
   'created_at',
   'sequence',
+  'cursor',
 ]);
 const NEWS_TABLES = new Set(['market_news', 'news', 'news_v2']);
 const PUBLIC_NEWS_COLUMNS = new Set([
@@ -73,6 +112,15 @@ const SUBSCRIBER_NEWS_COLUMNS = new Set([
 ]);
 const USER_SCOPED_READ_TABLES = new Set(['option_settlements', 'bond_coupon_payments', 'active_player_events']);
 const ALLOWED_PROFILE_UPDATE_FIELDS = new Set(['username', 'nickname']);
+const PUBLIC_PROFILE_COLUMNS = new Set([
+  'id',
+  'user_id',
+  'username',
+  'nickname',
+  'rank_tier',
+  'created_at',
+]);
+const SUPPORTED_PROFILE_FILTER_COLUMNS = new Set(['id', 'user_id', 'userId']);
 
 function findProfileByAuthId(userId: string | null): ProfileRecord | undefined {
   if (!userId) return undefined;
@@ -85,6 +133,9 @@ function hasDisallowedQueryColumns(query: any, allowedCols: Set<string>): boolea
     if (query.filters.some((f: any) => typeof f?.col !== 'string' || !allowedCols.has(f.col))) {
       return true;
     }
+  }
+  if (query?.orFilterGroups?.some((group: string) => group.split(',').some((clause) => !allowedCols.has(clause.split('.', 1)[0].trim())))) {
+    return true;
   }
   if (query?.orderCol !== undefined && query?.orderCol !== null && query?.orderCol !== '') {
     if (typeof query.orderCol !== 'string' || !allowedCols.has(query.orderCol)) {
@@ -100,6 +151,17 @@ function hasDisallowedQueryColumns(query: any, allowedCols: Set<string>): boolea
   return false;
 }
 
+function sanitizePublicStockRecord(stock: any) {
+  if (!stock || typeof stock !== 'object') return stock;
+  const safeStock: Record<string, any> = {};
+  for (const col of PUBLIC_STOCK_COLUMNS) {
+    if (stock[col] !== undefined) {
+      safeStock[col] = stock[col];
+    }
+  }
+  return safeStock;
+}
+
 function sanitizePublicTradeRecord(trade: any) {
   if (!trade || typeof trade !== 'object') return trade;
   const safeTrade: Record<string, any> = {
@@ -113,6 +175,9 @@ function sanitizePublicTradeRecord(trade: any) {
   };
   if (trade.sequence !== undefined) {
     safeTrade.sequence = trade.sequence;
+  }
+  if (trade.cursor !== undefined) {
+    safeTrade.cursor = trade.cursor;
   }
   return safeTrade;
 }
@@ -157,6 +222,13 @@ export async function POST(request: Request) {
           );
         }
 
+        if (!allowStockOrderRequest(authenticatedUserId)) {
+          return NextResponse.json(
+            { data: null, error: { message: '주문 요청이 너무 빈번합니다. 잠시 후 다시 시도해주세요.' } },
+            { status: 429 }
+          );
+        }
+
         const stockId = params?.p_stock_id || params?.stock_id;
         const side = params?.p_side || params?.side;
         const price = Number(params?.p_price ?? params?.price);
@@ -176,10 +248,23 @@ export async function POST(request: Request) {
           );
         }
 
-        if (!memoryDb.stocks.has(stockId)) {
+        if (memoryDb.commodities.has(stockId) || memoryDb.bonds.has(stockId)) {
+          return NextResponse.json(
+            { data: null, error: { message: '해당 자산군은 일반 주식 주문 경로로 거래할 수 없습니다.' } },
+            { status: 400 }
+          );
+        }
+        const targetStock = memoryDb.stocks.get(stockId);
+        if (!targetStock) {
           return NextResponse.json(
             { data: null, error: { message: '등록되지 않은 주식/ETF 종목입니다.' } },
             { status: 404 }
+          );
+        }
+        if (targetStock.is_listed === false) {
+          return NextResponse.json(
+            { data: null, error: { message: '상장 폐지되었거나 거래가 중단된 종목입니다.' } },
+            { status: 400 }
           );
         }
 
@@ -251,16 +336,21 @@ export async function POST(request: Request) {
           );
         }
         const mockClient = createMemoryDbClient();
-        const result = await mockClient.rpc(fnName, {
-          ...params,
-          p_user_id: authenticatedUserId,
-        });
+        const result = await persistenceManager.withCommitGate(() =>
+          mockClient.rpc(fnName, {
+            ...params,
+            p_user_id: authenticatedUserId,
+          })
+        );
         return NextResponse.json(result);
       }
 
-      // 기타 허용된 RPC 실행
+      // 기타 허용된 RPC 실행 (체결/호가 스냅샷 조회도 커밋 게이트 직렬화로 미확정 행 노출 차단)
       const mockClient = createMemoryDbClient();
-      const result = await mockClient.rpc(fnName, params);
+      const result =
+        fnName === 'get_authoritative_orderbook'
+          ? await persistenceManager.withCommitGate(() => mockClient.rpc(fnName, params))
+          : await mockClient.rpc(fnName, params);
       return NextResponse.json(result);
     }
 
@@ -296,6 +386,21 @@ export async function POST(request: Request) {
       }
 
       const qAction = query?.action || 'select';
+      const orGroups: unknown = query?.orFilterGroups;
+      if (orGroups !== undefined && (
+        !Array.isArray(orGroups) || orGroups.some((group) =>
+          typeof group !== 'string' || !group.split(',').every((clause) =>
+            /^\s*\w+\.(?:eq|neq|gt|gte|lt|lte|is|like|ilike)\..+$/i.test(clause)
+          )
+        )
+      )) {
+        return NextResponse.json({ data: null, error: { message: 'Invalid OR filter.' } }, { status: 400 });
+      }
+      if (Array.isArray(orGroups) && orGroups.length > 0 && (
+        qAction !== 'select' || !PUBLIC_READ_TABLES.has(tableName)
+      )) {
+        return NextResponse.json({ data: null, error: { message: 'OR filters are unavailable for this query.' } }, { status: 403 });
+      }
 
       // ── [A] 공개 시장 테이블 (SELECT 전용) ──
       if (PUBLIC_READ_TABLES.has(tableName)) {
@@ -304,6 +409,18 @@ export async function POST(request: Request) {
             { data: null, error: { message: `공개 시장 테이블(${tableName})은 수정할 수 없습니다.` } },
             { status: 403 }
           );
+        }
+
+        let isStockAdmin = false;
+        if (tableName === 'stocks') {
+          const adminAuth = await verifyAdminSession(request);
+          isStockAdmin = adminAuth.isAdmin;
+          if (!isStockAdmin && hasDisallowedQueryColumns(query, PUBLIC_STOCK_COLUMNS)) {
+            return NextResponse.json(
+              { data: null, error: { message: '공개 종목 조회에서는 허용된 공개 컬럼 외의 필터/정렬(target_price 등)을 사용할 수 없습니다.' } },
+              { status: 403 }
+            );
+          }
         }
 
         if (tableName === 'trades' && hasDisallowedQueryColumns(query, PUBLIC_TRADE_COLUMNS)) {
@@ -335,9 +452,24 @@ export async function POST(request: Request) {
           }
         }
 
-        const qb = createMemoryDbClient().from(tableName);
-        applyQueryOptions(qb, query);
-        const result = await qb.execute();
+        const executeRead = async () => {
+          const qb = createMemoryDbClient().from(tableName);
+          applyQueryOptions(qb, query);
+          if (Array.isArray(orGroups)) for (const group of orGroups) qb.or(group);
+          return await qb.execute();
+        };
+        const result =
+          tableName === 'trades'
+            ? await persistenceManager.withCommitGate(executeRead)
+            : await executeRead();
+        if (tableName === 'stocks' && result.data && !isStockAdmin) {
+          return NextResponse.json({
+            ...result,
+            data: Array.isArray(result.data)
+              ? result.data.map(sanitizePublicStockRecord)
+              : sanitizePublicStockRecord(result.data),
+          });
+        }
         if (NEWS_TABLES.has(tableName) && result.data) {
           return NextResponse.json({
             ...result,
@@ -462,31 +594,150 @@ export async function POST(request: Request) {
       // ── [C] Profiles 테이블 (개인 프로필 조회 및 안전한 갱신) ──
       if (tableName === 'profiles') {
         if (qAction === 'select') {
-          // 조회: 특정 유저 ID 필터 확인
-          const eqFilter = query?.filters?.find((f: any) => (f.col === 'id' || f.col === 'user_id') && f.op === 'eq');
-          const targetId = eqFilter?.val ? String(eqFilter.val) : authenticatedUserId;
-
-          if (!targetId) {
-            return NextResponse.json({ data: null, error: { message: '인증이 필요합니다.' } }, { status: 401 });
+          if (query?.filters !== undefined && !Array.isArray(query.filters)) {
+            return NextResponse.json(
+              { data: null, error: { message: '올바르지 않은 프로필 조회 필터 형식입니다.' } },
+              { status: 400 }
+            );
           }
+          if (query?.orFilterGroups !== undefined) {
+            if (!Array.isArray(query.orFilterGroups) || query.orFilterGroups.some((g: any) => typeof g !== 'string')) {
+              return NextResponse.json(
+                { data: null, error: { message: '올바르지 않은 OR 조건 형식입니다.' } },
+                { status: 400 }
+              );
+            }
+            if (query.orFilterGroups.some((g: any) => g.trim().length > 0)) {
+              return NextResponse.json(
+                { data: null, error: { message: '프로필 조회에서는 OR 조건 그룹을 지원하지 않습니다.' } },
+                { status: 403 }
+              );
+            }
+          }
+          if (query?.or !== undefined && query?.or !== null) {
+            if (typeof query.or === 'string') {
+              if (query.or.trim().length > 0) {
+                return NextResponse.json(
+                  { data: null, error: { message: '프로필 조회에서는 OR 조건 그룹을 지원하지 않습니다.' } },
+                  { status: 403 }
+                );
+              }
+            } else if (Array.isArray(query.or)) {
+              if (query.or.length > 0) {
+                return NextResponse.json(
+                  { data: null, error: { message: '프로필 조회에서는 OR 조건 그룹을 지원하지 않습니다.' } },
+                  { status: 403 }
+                );
+              }
+            } else {
+              return NextResponse.json(
+                { data: null, error: { message: '올바르지 않은 OR 조건 형식입니다.' } },
+                { status: 400 }
+              );
+            }
+          }
+          if (hasDisallowedQueryColumns({ orderCol: query?.orderCol, orderSpecs: query?.orderSpecs }, PUBLIC_PROFILE_COLUMNS)) {
+            return NextResponse.json(
+              { data: null, error: { message: '프로필 조회에서는 허용된 공개 컬럼 외의 정렬을 사용할 수 없습니다.' } },
+              { status: 403 }
+            );
+          }
+          if (
+            query?.limitCount !== undefined &&
+            (typeof query.limitCount !== 'number' || !Number.isFinite(query.limitCount) || query.limitCount < 0)
+          ) {
+            return NextResponse.json(
+              { data: null, error: { message: '올바르지 않은 limitCount 값입니다.' } },
+              { status: 400 }
+            );
+          }
+
+          const filters = Array.isArray(query?.filters) ? query.filters : [];
+          for (const f of filters) {
+            if (!f || typeof f !== 'object' || Array.isArray(f) || typeof f.col !== 'string' || typeof f.op !== 'string') {
+              return NextResponse.json(
+                { data: null, error: { message: '올바르지 않은 프로필 필터 항목입니다.' } },
+                { status: 400 }
+              );
+            }
+            if (!SUPPORTED_PROFILE_FILTER_COLUMNS.has(f.col)) {
+              return NextResponse.json(
+                { data: null, error: { message: '프로필 조회에서는 id 또는 user_id 필터만 사용할 수 있습니다. 민감한 속성이나 지원되지 않는 컬럼 조회는 허용되지 않습니다.' } },
+                { status: 403 }
+              );
+            }
+            if (f.op !== 'eq') {
+              return NextResponse.json(
+                { data: null, error: { message: '프로필 조회에서는 eq 연산자만 지원됩니다.' } },
+                { status: 403 }
+              );
+            }
+            if (
+              f.val === null ||
+              f.val === undefined ||
+              (typeof f.val !== 'string' && typeof f.val !== 'number') ||
+              String(f.val).trim().length === 0
+            ) {
+              return NextResponse.json(
+                { data: null, error: { message: '프로필 조회 필터 값이 비어 있거나 올바르지 않습니다.' } },
+                { status: 400 }
+              );
+            }
+          }
+
+          // 조회: row PK(id)와 인증 계정 키(user_id) 의미를 명확히 분리하여 교차 fallback 차단
+          const idEqFilters = filters.filter((f: any) => f.col === 'id' && f.op === 'eq');
+          const userIdEqFilters = filters.filter((f: any) => (f.col === 'user_id' || f.col === 'userId') && f.op === 'eq');
 
           let profile: ProfileRecord | undefined;
-          if (eqFilter?.col === 'user_id') {
-            profile = memoryDb.resolveProfileByUserId(targetId);
-          } else if (targetId === authenticatedUserId) {
-            profile = memoryDb.resolveProfileByUserId(targetId) ?? memoryDb.profiles.get(targetId);
+          if (idEqFilters.length > 0 && userIdEqFilters.length > 0) {
+            const pks = Array.from(new Set<string>(idEqFilters.map((f: any) => String(f.val))));
+            const uids = Array.from(new Set<string>(userIdEqFilters.map((f: any) => String(f.val))));
+            if (pks.length === 1 && uids.length === 1) {
+              const byPk = memoryDb.profiles.get(pks[0]!);
+              const byUid = memoryDb.resolveProfileByUserId(uids[0]!);
+              if (
+                byPk &&
+                byUid &&
+                byPk.id === byUid.id &&
+                (byPk.user_id === uids[0] || (!byPk.user_id && byPk.id === uids[0]))
+              ) {
+                profile = byPk;
+              }
+            }
+          } else if (userIdEqFilters.length > 0) {
+            const uids = Array.from(new Set<string>(userIdEqFilters.map((f: any) => String(f.val))));
+            if (uids.length === 1) {
+              profile = memoryDb.resolveProfileByUserId(uids[0]!);
+            }
+          } else if (idEqFilters.length > 0) {
+            const pks = Array.from(new Set<string>(idEqFilters.map((f: any) => String(f.val))));
+            // 명시적 profiles.id 필터는 행 기본 키(PK)로만 해석
+            if (pks.length === 1) {
+              profile = memoryDb.profiles.get(pks[0]!);
+            }
           } else {
-            profile = memoryDb.profiles.get(targetId) ?? memoryDb.resolveProfileByUserId(targetId);
+            // 필터와 OR 그룹이 실제로 전혀 없을 때만 기본 본인 조회로 해석
+            if (!authenticatedUserId) {
+              return NextResponse.json({ data: null, error: { message: '인증이 필요합니다.' } }, { status: 401 });
+            }
+            profile = memoryDb.resolveProfileByUserId(authenticatedUserId);
           }
+
+          if (query?.limitCount === 0) {
+            profile = undefined;
+          }
+
           if (!profile) {
-            return NextResponse.json({ data: null, error: null });
+            return NextResponse.json({
+              data: query?.isSingle || query?.isMaybeSingle ? null : [],
+              error: query?.isSingle ? { message: 'Row not found (PGRST116)' } : null,
+            });
           }
 
           // 본인이 아닌 경우 민감 자산 정보(cash 등) 보호 및 SELECT 경로 무잠금 상태 변이 금지(복제본 기준 만료 정리)
-          const isOwner = Boolean(
-            authenticatedUserId &&
-              (profile.user_id === authenticatedUserId || (!profile.user_id && profile.id === authenticatedUserId))
-          );
+          const canonicalOwnProfile = authenticatedUserId ? memoryDb.resolveProfileByUserId(authenticatedUserId) : undefined;
+          const isOwner = Boolean(canonicalOwnProfile && canonicalOwnProfile.id === profile.id);
           let safeData: Record<string, any>;
           if (isOwner) {
             const ownerProfileCopy = { ...profile };
@@ -551,20 +802,37 @@ export async function POST(request: Request) {
             sanitizedUpdate[key] = val.trim();
           }
 
-          return await withAccountLocks([memoryDb.resolveAccountLockKey(authenticatedUserId)], async () => {
+          return await withResolvedAccountLocks(() => [memoryDb.resolveAccountLockKey(authenticatedUserId)], async () => {
             return await runWithCommitGate(persistConfirmedState, async () => {
               const existing = memoryDb.resolveProfileByUserId(authenticatedUserId);
               if (!existing) {
                 return NextResponse.json({ data: null, error: { message: '프로필을 찾을 수 없습니다.' } }, { status: 404 });
               }
 
-              const updated = { ...existing, ...sanitizedUpdate };
+              const updated: ProfileRecord = { ...existing, ...sanitizedUpdate };
               memoryDb.profiles.set(existing.id, updated);
-              const saved = await persistConfirmedState();
+              let saved = false;
+              let persistError: unknown = null;
+              try {
+                saved = await persistConfirmedState();
+              } catch (err) {
+                persistError = err;
+              }
               if (!saved) {
-                memoryDb.profiles.set(existing.id, existing);
+                if (memoryDb.profiles.get(existing.id) === updated) {
+                  memoryDb.profiles.set(existing.id, existing);
+                }
+                memoryDb.addProfileToIndex(existing);
                 return NextResponse.json(
-                  { data: null, error: { message: '프로필 저장에 실패했습니다.' } },
+                  {
+                    data: null,
+                    error: {
+                      message:
+                        persistError instanceof Error && persistError.message
+                          ? persistError.message
+                          : '프로필 저장에 실패했습니다.',
+                    },
+                  },
                   { status: 500 }
                 );
               }

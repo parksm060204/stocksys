@@ -3,13 +3,10 @@ import { LocalMarketService } from '@/lib/engine/marketService';
 import { resolveAuthenticatedUserId } from '@/lib/auth/sessionAuth';
 import { ensureLocalStandaloneReady, persistConfirmedState } from '@/lib/engine/localStandaloneServer';
 import { memoryDb } from '@/lib/memoryDb/memoryStore';
-import { WindowRateLimiter } from '@/lib/rateLimit/windowLimiter';
-
-// 인메모리 윈도우 Rate Limiter (유저당 1초 최대 15회 요청 허용 + 만료 엔트리 주기 정리)
-const orderRateLimiter = new WindowRateLimiter(15, 1000);
+import { allowStockOrderRequest } from '@/lib/rateLimit/stockOrderLimiter';
 
 function checkRateLimit(userId: string): boolean {
-  return orderRateLimiter.allow(userId);
+  return allowStockOrderRequest(userId);
 }
 
 export async function POST(request: Request) {
@@ -58,10 +55,17 @@ export async function POST(request: Request) {
       );
     }
 
-    if (!memoryDb.stocks.has(stock_id)) {
+    const targetStock = memoryDb.stocks.get(stock_id);
+    if (!targetStock) {
       return NextResponse.json(
         { success: false, filledQty: 0, message: '등록되지 않은 주식/ETF 종목입니다.' },
         { status: 404 }
+      );
+    }
+    if (targetStock.is_listed === false) {
+      return NextResponse.json(
+        { success: false, filledQty: 0, message: '상장 폐지되었거나 거래가 중단된 종목입니다.' },
+        { status: 400 }
       );
     }
 

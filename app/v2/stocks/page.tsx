@@ -15,11 +15,14 @@ export default function V2StocksPage() {
     db
       .from("stocks")
       .select("*")
+      .neq("is_listed", false)
       .order("market_cap", { ascending: false })
       .then(({ data }: { data: any[] | null }) => {
         if (data) {
           setStocks(
-            data.map((row) => ({
+            data
+              .filter((row) => row.is_listed !== false)
+              .map((row) => ({
               id: row.id,
               name: row.name,
               ticker: row.ticker,

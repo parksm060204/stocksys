@@ -6,7 +6,7 @@ import { OrderRecord } from '../../memoryDb/memoryStore';
 import type { AgentMacroProfile } from './crossAsset/crossAssetTypes';
 
 export type ParticipantType = 'human' | 'bot' | 'lp';
-export type StrategyType = 'value' | 'trend' | 'market_maker';
+export type StrategyType = 'value' | 'trend' | 'market_maker' | 'mean_reversion';
 
 export interface AgentStats {
   ordersSubmitted: number;
@@ -80,4 +80,16 @@ export interface LpStrategyConfig {
   inventorySkewKappa: number; // Reservation price skew parameter in tick units
   quoteLifetimeSteps: number; // Max steps before refreshing resting quotes
   baseLevelSize: number;      // Base size per level (e.g. 50 shares)
+}
+
+export interface MeanReversionStrategyConfig {
+  reversionWeight: number;    // Weight for z-score reversion signal (e.g. 1.0)
+  exposureWeight: number;     // Split execution intensity (e.g. 0.4)
+  lookbackSteps: number;      // Rolling SMA / stdDev window (e.g. 20)
+  minWarmupSteps: number;     // Minimum observations before acting (e.g. 5)
+  entryZScore: number;        // Base z-score threshold scaled by realized volatility (e.g. 1.5)
+  zScale: number;             // Normalization denominator for tanh(-z / zScale) (e.g. 2.0)
+  participationRate: number;  // Max % of rolling volume per order (e.g. 0.20)
+  buyThreshold: number;       // Minimum normalized signal to buy (e.g. 0.2)
+  sellThreshold: number;      // Maximum normalized signal to sell (e.g. -0.2)
 }

@@ -134,9 +134,23 @@ export interface BotConfig {
   random?: SimulationRandomSource;
 }
 
+export interface BotCommoditySnapshotItem {
+  currentPrice: number;
+  high: number;
+  low: number;
+  volume: number;
+  bestBid?: number | null;
+  bestAsk?: number | null;
+  spread?: number | null;
+  obi?: number;
+  bidDepth?: number;
+  askDepth?: number;
+  volatility?: number;
+}
+
 export interface BotMarketSnapshot {
   tick: number;
-  commodities: Record<string, { currentPrice: number; high: number; low: number; volume: number }>;
+  commodities: Record<string, BotCommoditySnapshotItem>;
   activeEvents: ActiveCommodityEvent[];
 }
 

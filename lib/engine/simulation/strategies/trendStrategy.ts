@@ -19,13 +19,20 @@ import {
   clamp01,
 } from '../regime/regimeEffects';
 import type { CrossAssetSignal } from '../crossAsset/crossAssetTypes';
+import {
+  computeMicrostructureSignal,
+  resolveExecutionPlacement,
+} from './orderbookMicrostructure';
+import { computeMeanReversionSignal } from './meanReversionStrategy';
+import type { DrawdownRiskOutput } from './adaptiveRiskControl';
 
 export function evaluateTrendStrategy(
   obs: MarketObservation,
   agent: AgentAccount,
   config: TrendStrategyConfig,
   effectParams?: BotEffectParams,
-  crossAssetSignal?: CrossAssetSignal
+  crossAssetSignal?: CrossAssetSignal,
+  riskAdjustment?: DrawdownRiskOutput
 ): AgentOrderIntent {
   const effects = effectParams ?? NEUTRAL_BOT_EFFECT_PARAMS;
   const trendSensitivity = effects.trendSensitivity;
@@ -71,14 +78,16 @@ export function evaluateTrendStrategy(
 
   const rollingReturn = (currentPrice - pastPrice) / pastPrice;
 
-  // 3. Incorporate price return + taker signed order flow into trend signal
-  let flowSignal = 0;
-  if (obs.windowStats && obs.windowStats.volume > 0) {
-    flowSignal = Math.tanh(obs.windowStats.signedFlow / Math.max(10, obs.windowStats.volume * 0.5));
-  }
+  // 3. Incorporate price return + taker signed order flow + OBI microstructure pressure
+  const micro = computeMicrostructureSignal(obs);
+  const mrSignal = computeMeanReversionSignal(obs.priceHistory, obs.returns, config.lookbackSteps);
+  const hasBookDepth = micro.bidDepthWeighted + micro.askDepthWeighted > 0;
+  const priceMomentum = Math.tanh(rollingReturn / config.trendScale);
 
-  // Combined momentum: 70% price return + 30% signed taker order flow
-  let rawSignal = 0.70 * Math.tanh(rollingReturn / config.trendScale) + 0.30 * flowSignal;
+  // When order book depth is present: 55% price momentum + 25% signed taker flow + 20% OBI
+  let rawSignal = hasBookDepth
+    ? 0.55 * priceMomentum + 0.25 * micro.signedFlowPressure + 0.20 * micro.obi
+    : 0.70 * priceMomentum + 0.30 * micro.signedFlowPressure;
   if (crossAssetSignal && agent.macroProfile) {
     const macroDir = crossAssetSignal.direction * crossAssetSignal.confidence;
     const macroSens = agent.macroProfile.macroSensitivity;
@@ -105,15 +114,20 @@ export function evaluateTrendStrategy(
     return { action: 'hold', stockId: obs.stockId, reason };
   }
 
-  // 5. Target exposure calculation
-  const baseTarget = agent.targetPositions[obs.stockId] ?? 1000;
-  // Upward trend: expand target up to maxPosition
+  // 5. Target exposure calculation (with adaptive drawdown position cap & volatility sizing)
+  const effectiveMaxPos = Math.max(
+    1,
+    Math.round(agent.maxPosition * (riskAdjustment?.positionLimitMultiplier ?? 1.0))
+  );
+  const baseTarget = Math.min(effectiveMaxPos, agent.targetPositions[obs.stockId] ?? 1000);
+  // Upward trend: expand target up to effectiveMaxPos
   // Downward trend: scale target down towards 0
   const baseAdjustedTarget = normTrend > 0
-    ? Math.min(agent.maxPosition, Math.round(baseTarget + (agent.maxPosition - baseTarget) * normTrend))
+    ? Math.min(effectiveMaxPos, Math.round(baseTarget + (effectiveMaxPos - baseTarget) * normTrend))
     : Math.max(0, Math.round(baseTarget * (1 + normTrend))); // normTrend is negative
-  // 국면 riskToleranceMultiplier: 목표 노출에 적용하되 절대 상한(maxPosition)은 상향하지 않음
-  const adjustedTarget = applyRiskToleranceToTarget(baseAdjustedTarget, riskToleranceMultiplier, agent.maxPosition);
+  // 국면 riskToleranceMultiplier: 목표 노출에 적용하되 절대 상한(effectiveMaxPos)은 상향하지 않음
+  const adjustedTarget = applyRiskToleranceToTarget(baseAdjustedTarget, riskToleranceMultiplier, effectiveMaxPos);
+  const volSizeScale = mrSignal ? mrSignal.volatilitySizeScale : 1.0;
 
   let openBuyQty = 0;
   let openSellQty = 0;
@@ -138,14 +152,15 @@ export function evaluateTrendStrategy(
       return { action: 'hold', stockId: obs.stockId, reason: 'trend_target_reached' };
     }
 
+    const riskBuyMult = riskAdjustment ? riskAdjustment.buySizeMultiplier : 1.0;
     let orderSize: number;
     if (!effectParams) {
-      // 효과 OFF: 변경 전 수량 계산 보존 (절대 한도 최솟값)
-      orderSize = Math.max(1, Math.min(needed, agent.maxOrderSize, participationCap));
+      const rawDesired = Math.max(1, Math.round(needed * volSizeScale * riskBuyMult));
+      orderSize = Math.max(1, Math.min(rawDesired, needed, agent.maxOrderSize, participationCap));
     } else {
       // 효과 ON: 전략의 기본 희망 수량(분할 실행 계수 exposureWeight 반영)에 국면 배수를 1회 곱한 뒤 절대 한도로 제한
       const executionIntensity = Math.max(0.01, Math.min(1.0, config.exposureWeight ?? 1.0));
-      const baseDesiredShares = Math.round(needed * executionIntensity);
+      const baseDesiredShares = Math.max(1, Math.round(needed * executionIntensity * volSizeScale * riskBuyMult));
       orderSize = applyOrderSizeMultiplier(
         baseDesiredShares,
         orderSizeMultiplier,
@@ -159,15 +174,21 @@ export function evaluateTrendStrategy(
       return { action: 'hold', stockId: obs.stockId, reason: 'insufficient_size' };
     }
 
-    // Urgency pricing: if trend is confirmed and urgency high, take liquidity at best ask (IOC)
-    const isUrgent = normTrend >= effectiveBuyThreshold && agent.urgency >= 0.5 && obs.bestAsk !== null;
-    let targetPrice = isUrgent
-      ? obs.bestAsk!
-      : (obs.bestBid !== null ? obs.bestBid : currentPrice);
-
-    targetPrice = isUsdAsset
-      ? Math.max(0.01, Math.round(targetPrice * 100) / 100)
-      : Math.max(tickSize, Math.round(targetPrice / tickSize) * tickSize);
+    // Urgency + microstructure OBI placement (passive limit vs aggressive IOC)
+    const placement = resolveExecutionPlacement({
+      side: 'buy',
+      signalMagnitude: Math.min(1, Math.abs(normTrend)),
+      agentUrgency: agent.urgency,
+      micro,
+      midPrice: currentPrice,
+      bestBid: obs.bestBid,
+      bestAsk: obs.bestAsk,
+      tickSize,
+      isUsdAsset,
+      urgencyThreshold: 0.56,
+    });
+    const isUrgent = placement.mode === 'aggressive' && obs.bestAsk !== null;
+    const targetPrice = placement.price;
 
     const costPerShare = targetPrice * fxRate * 1.0025;
     let maxAffordable: number;
@@ -218,14 +239,15 @@ export function evaluateTrendStrategy(
       return { action: 'hold', stockId: obs.stockId, reason: 'trend_target_reached' };
     }
 
+    const riskSellMult = riskAdjustment ? riskAdjustment.sellSizeMultiplier : 1.0;
     let orderSize: number;
     if (!effectParams) {
-      // 효과 OFF: 변경 전 수량 계산 보존
-      orderSize = Math.max(1, Math.min(surplus, agent.maxOrderSize, participationCap));
+      const rawDesired = Math.max(1, Math.round(surplus * volSizeScale * riskSellMult));
+      orderSize = Math.max(1, Math.min(rawDesired, surplus, agent.maxOrderSize, participationCap));
     } else {
       // 효과 ON: 기본 희망 수량에 배수 적용 후 절대 한도로 제한
       const executionIntensity = Math.max(0.01, Math.min(1.0, config.exposureWeight ?? 1.0));
-      const baseDesiredShares = Math.round(surplus * executionIntensity);
+      const baseDesiredShares = Math.max(1, Math.round(surplus * executionIntensity * volSizeScale * riskSellMult));
       orderSize = applyOrderSizeMultiplier(
         baseDesiredShares,
         orderSizeMultiplier,
@@ -244,12 +266,20 @@ export function evaluateTrendStrategy(
       return { action: 'hold', stockId: obs.stockId, reason: 'insufficient_holding' };
     }
 
-    const isUrgent = normTrend <= activeSellThreshold && agent.urgency >= 0.5 && obs.bestBid !== null;
-    let targetPrice = isUrgent
-      ? obs.bestBid!
-      : (obs.bestAsk !== null ? obs.bestAsk : currentPrice);
-
-    targetPrice = Math.max(tickSize, Math.round(targetPrice / tickSize) * tickSize);
+    const placementSell = resolveExecutionPlacement({
+      side: 'sell',
+      signalMagnitude: Math.min(1, Math.abs(normTrend)),
+      agentUrgency: agent.urgency,
+      micro,
+      midPrice: currentPrice,
+      bestBid: obs.bestBid,
+      bestAsk: obs.bestAsk,
+      tickSize,
+      isUsdAsset,
+      urgencyThreshold: 0.56,
+    });
+    const isUrgent = placementSell.mode === 'aggressive' && obs.bestBid !== null;
+    const targetPrice = placementSell.price;
 
     if (!isUrgent) {
       const existing = obs.activeOrders.find(

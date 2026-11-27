@@ -17,6 +17,8 @@ import {
   NEUTRAL_LP_EFFECT_PARAMS,
   applyUncertaintyMultiplier,
 } from '../regime/regimeEffects';
+import { computeMicrostructureSignal } from './orderbookMicrostructure';
+import type { DrawdownRiskOutput } from './adaptiveRiskControl';
 
 export interface LpQuotePlan {
   cancels: OrderRecord[];
@@ -29,7 +31,8 @@ export function evaluateLpStrategy(
   obs: MarketObservation,
   agent: AgentAccount,
   config: LpStrategyConfig,
-  effectParams?: LpEffectParams
+  effectParams?: LpEffectParams,
+  riskAdjustment?: DrawdownRiskOutput
 ): LpQuotePlan {
   const effects = effectParams ?? NEUTRAL_LP_EFFECT_PARAMS;
   const fxRate = obs.fxRateToKrw ?? 1;
@@ -44,14 +47,18 @@ export function evaluateLpStrategy(
   const currentInv = obs.account.holdingQty;
   const q = currentInv - targetInv; // positive = excess inventory, negative = shortage
 
-  // 2. Quote center with inventory skew (Avellaneda-Stoikov heuristic)
+  // 2. Quote center with inventory skew (Avellaneda-Stoikov heuristic) + OBI adverse-selection shift
+  const micro = computeMicrostructureSignal(obs);
   // When q > 0 (excess inventory), quote center shifts downward to attract buyers and discourage sellers
   const skewTicks = (q / 100) * config.inventorySkewKappa;
-  const inventorySkew = skewTicks * tickSize;
+  // Positive composite pressure shifts LP quotes slightly upward to mitigate toxic buying sweep (and vice versa)
+  const microToxicityTicks =
+    Math.abs(micro.compositePressure) > 0.2 ? micro.compositePressure * 1.25 : 0;
+  const inventorySkew = (skewTicks - microToxicityTicks) * tickSize;
   const rawCenter = midPrice - inventorySkew;
   const quoteCenter = Math.max(tickSize * 2, rawCenter);
 
-  // 3. Dynamic spread & depth calculation using stock structural profile & uncertainty shock
+  // 3. Dynamic spread & depth calculation using stock structural profile, OBI toxicity & uncertainty shock
   const baseSpreadBps = obs.structural?.baseSpreadBps ?? config.baseSpreadBps;
   const baseDepthShares = obs.structural?.baseDepthShares ?? config.baseLevelSize;
   // 국면 uncertaintyMultiplier: 원본 불확실성 상태는 덮어쓰지 않고 유효 불확실성에만 1회 적용
@@ -59,7 +66,7 @@ export function evaluateLpStrategy(
 
   // Base spread scales with stock profile, volatility, and uncertainty shock
   const baseSpread = midPrice * (baseSpreadBps / 10000);
-  const uncertaintySpreadMultiplier = 1.0 + uncertainty * 2.5; // Uncertainty significantly widens spread
+  const uncertaintySpreadMultiplier = 1.0 + uncertainty * 2.5 + Math.abs(micro.obi) * 0.35; // Widens under uncertainty & OBI imbalance
   const volPremium = midPrice * (obs.volatility * config.volatilityAlpha);
   const invRiskRatio = Math.min(1.0, Math.abs(q) / config.inventoryLimit);
   const invRiskPremium = midPrice * (invRiskRatio * config.inventoryRiskBeta);
@@ -70,8 +77,9 @@ export function evaluateLpStrategy(
   const totalSpread = Math.max(tickSize * 2, rawTotalSpread * effects.lpSpreadMultiplier);
   const halfSpread = totalSpread / 2;
 
-  // Uncertainty contracts quote depth to protect LP from adverse selection
-  const depthScale = Math.max(0.2, 1.0 - uncertainty * 0.7);
+  // Uncertainty & drawdown risk contract quote depth to protect LP from adverse selection
+  const ddSizeScale = riskAdjustment ? riskAdjustment.orderSizeMultiplier : 1.0;
+  const depthScale = Math.max(0.15, (1.0 - uncertainty * 0.7) * ddSizeScale);
   // 국면 lpDepthMultiplier: 종목 구조적 깊이에 1회 적용 (이후 계좌 예산으로 제한)
   const effectiveBaseDepth = baseDepthShares * effects.lpDepthMultiplier;
 

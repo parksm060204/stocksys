@@ -2,10 +2,15 @@ import {
   BotConfig,
   BotType,
   BotMarketSnapshot,
+  BotCommoditySnapshotItem,
   CommodityOrder,
   CommodityTrade,
   BotState,
 } from '../types';
+import {
+  computeAdaptiveRiskMultipliers,
+  type DrawdownRiskOutput,
+} from '../../engine/simulation/strategies/adaptiveRiskControl';
 
 export abstract class CommodityBot {
   public readonly id: string;
@@ -26,6 +31,12 @@ export abstract class CommodityBot {
   public realizedPnL: number = 0;
   public totalTradesCount: number = 0;
 
+  // 적응형 드로우다운·성과 추적 상태
+  public peakEquity: number;
+  public lastEquity: number;
+  public maxDrawdownPct: number = 0;
+  public consecutiveLossTicks: number = 0;
+
   // 정보 지연 큐 (reaction_delay 구현용)
   private snapshotHistory: BotMarketSnapshot[] = [];
 
@@ -35,6 +46,8 @@ export abstract class CommodityBot {
     this.type = config.type;
     this.initialCapital = config.capital;
     this.currentCapital = config.capital;
+    this.peakEquity = config.capital;
+    this.lastEquity = config.capital;
     this.riskTolerance = config.riskTolerance;
     this.positionLimit = config.positionLimit;
     this.reactionDelay = Math.max(0, config.reactionDelay || 0);
@@ -45,13 +58,38 @@ export abstract class CommodityBot {
   }
 
   /**
-   * 매 틱 시장 스냅샷 수신 및 지연 큐에 저장
+   * 매 틱 시장 스냅샷 수신, 마크투마켓 자산 고점(peakEquity)/드로우다운 갱신 및 지연 큐 저장
    */
   public receiveMarketSnapshot(snapshot: BotMarketSnapshot): void {
     this.snapshotHistory.push(snapshot);
     // 최대 지연 틱 수 + 50틱까지만 보관
     if (this.snapshotHistory.length > this.reactionDelay + 100) {
       this.snapshotHistory.shift();
+    }
+
+    let positionMtm = 0;
+    this.positions.forEach((pos, commodityId) => {
+      if (pos.quantity !== 0) {
+        const markPrice = snapshot.commodities?.[commodityId]?.currentPrice ?? pos.avgEntryPrice;
+        if (Number.isFinite(markPrice) && markPrice > 0) {
+          positionMtm += pos.quantity * markPrice;
+        }
+      }
+    });
+    const equity = this.currentCapital + positionMtm;
+    if (Number.isFinite(equity)) {
+      this.peakEquity = Math.max(this.peakEquity, equity);
+      const dd =
+        this.peakEquity > 0 && equity < this.peakEquity
+          ? (this.peakEquity - equity) / this.peakEquity
+          : 0;
+      this.maxDrawdownPct = Math.max(this.maxDrawdownPct, dd);
+      if (equity < this.lastEquity - 1e-6) {
+        this.consecutiveLossTicks = Math.min(20, this.consecutiveLossTicks + 1);
+      } else if (equity > this.lastEquity + 1e-6) {
+        this.consecutiveLossTicks = 0;
+      }
+      this.lastEquity = equity;
     }
   }
 
@@ -62,6 +100,30 @@ export abstract class CommodityBot {
     if (this.snapshotHistory.length === 0) return null;
     const targetIndex = Math.max(0, this.snapshotHistory.length - 1 - this.reactionDelay);
     return this.snapshotHistory[targetIndex] || null;
+  }
+
+  /**
+   * 드로우다운 및 재고 편중도 기반 동적 포지션 한도/주문 수량 배수 산출
+   */
+  protected getAdaptiveRiskScale(commodityId: string): DrawdownRiskOutput {
+    const pos = this.positions.get(commodityId) || { quantity: 0, avgEntryPrice: 0 };
+    return computeAdaptiveRiskMultipliers({
+      currentEquity: this.lastEquity,
+      peakEquity: this.peakEquity,
+      currentPosition: pos.quantity,
+      maxPosition: this.positionLimit,
+      realizedPnl: this.realizedPnL,
+      consecutiveLossSteps: this.consecutiveLossTicks,
+      baseRiskTolerance: this.riskTolerance,
+    });
+  }
+
+  /**
+   * 변동성 기반 주문 수량 축소 계수 (0.25 ~ 1.0)
+   */
+  protected getVolatilitySizeScale(info?: BotCommoditySnapshotItem): number {
+    const vol = typeof info?.volatility === 'number' && Number.isFinite(info.volatility) ? Math.max(0, info.volatility) : 0;
+    return Math.max(0.25, Math.min(1.0, 1.0 / (1.0 + vol * 15.0)));
   }
 
   /**
@@ -133,10 +195,33 @@ export abstract class CommodityBot {
           createdAtTime: this.clock ? this.clock.now() : 0,
         };
       }
+    } else if (pos.quantity < 0) {
+      // 숏 포지션 손절/익절 (가격 하락 시 이익, 상승 시 손실)
+      const shortReturnPct = (pos.avgEntryPrice - currentPrice) / pos.avgEntryPrice;
+      if (shortReturnPct <= this.stopLossPct || shortReturnPct >= this.takeProfitPct) {
+        return {
+          id: `exit_cov_${this.id}_${commodityId}_${currentTick}`,
+          commodityId,
+          botId: this.id,
+          side: 'buy',
+          type: 'market',
+          price: currentPrice,
+          size: Math.abs(pos.quantity),
+          filled: 0,
+          createdAtTick: currentTick,
+          createdAtTime: this.clock ? this.clock.now() : 0,
+        };
+      }
     }
 
     return null;
   }
+
+  protected snapshotStrategyState(): Record<string, unknown> | undefined {
+    return undefined;
+  }
+
+  protected restoreStrategyState(_state?: Record<string, unknown>): void {}
 
   /**
    * 각 봇 고유의 주문 의사결정 추상 메서드
@@ -175,17 +260,28 @@ export abstract class CommodityBot {
     currentCapital: number;
     realizedPnL: number;
     totalTradesCount: number;
+    peakEquity: number;
+    lastEquity: number;
+    maxDrawdownPct: number;
+    consecutiveLossTicks: number;
     positions: Array<[string, { quantity: number; avgEntryPrice: number }]>;
     snapshotHistory: BotMarketSnapshot[];
     randomSnapshot: ReturnType<NonNullable<CommodityBot['random']>['snapshot']> | null;
+    strategyState?: Record<string, unknown>;
   } {
+    const strategyState = this.snapshotStrategyState();
     return {
       currentCapital: this.currentCapital,
       realizedPnL: this.realizedPnL,
       totalTradesCount: this.totalTradesCount,
+      peakEquity: this.peakEquity,
+      lastEquity: this.lastEquity,
+      maxDrawdownPct: this.maxDrawdownPct,
+      consecutiveLossTicks: this.consecutiveLossTicks,
       positions: Array.from(this.positions.entries()).map(([k, v]) => [k, { ...v }]),
       snapshotHistory: structuredClone(this.snapshotHistory),
       randomSnapshot: this.random?.snapshot ? this.random.snapshot() : null,
+      ...(strategyState !== undefined ? { strategyState: structuredClone(strategyState) } : {}),
     };
   }
 
@@ -193,10 +289,15 @@ export abstract class CommodityBot {
     this.currentCapital = snap.currentCapital;
     this.realizedPnL = snap.realizedPnL;
     this.totalTradesCount = snap.totalTradesCount;
+    this.peakEquity = typeof snap.peakEquity === 'number' ? snap.peakEquity : snap.currentCapital;
+    this.lastEquity = typeof snap.lastEquity === 'number' ? snap.lastEquity : snap.currentCapital;
+    this.maxDrawdownPct = typeof snap.maxDrawdownPct === 'number' ? snap.maxDrawdownPct : 0;
+    this.consecutiveLossTicks = typeof snap.consecutiveLossTicks === 'number' ? snap.consecutiveLossTicks : 0;
     this.positions = new Map(snap.positions.map(([k, v]) => [k, { ...v }]));
     this.snapshotHistory = structuredClone(snap.snapshotHistory);
     if (snap.randomSnapshot && this.random?.restore) {
       this.random.restore(snap.randomSnapshot);
     }
+    this.restoreStrategyState(snap.strategyState ? structuredClone(snap.strategyState) : undefined);
   }
 }

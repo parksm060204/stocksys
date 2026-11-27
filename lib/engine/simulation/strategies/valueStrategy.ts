@@ -22,6 +22,12 @@ import {
   clamp01,
 } from '../regime/regimeEffects';
 import type { CrossAssetSignal } from '../crossAsset/crossAssetTypes';
+import {
+  computeMicrostructureSignal,
+  resolveExecutionPlacement,
+} from './orderbookMicrostructure';
+import { computeMeanReversionSignal } from './meanReversionStrategy';
+import type { DrawdownRiskOutput } from './adaptiveRiskControl';
 
 /**
  * 순수 함수: 관측 가능한 시장 이벤트 목록으로부터 특정 종목의 유효 뉴스 가치평가 신호(delta)를 산출합니다.
@@ -60,7 +66,8 @@ export function evaluateValueStrategy(
   trueFundamental: number,
   prng: SimPrng,
   effectParams?: BotEffectParams,
-  crossAssetSignal?: CrossAssetSignal
+  crossAssetSignal?: CrossAssetSignal,
+  riskAdjustment?: DrawdownRiskOutput
 ): AgentOrderIntent {
   const effects = effectParams ?? NEUTRAL_BOT_EFFECT_PARAMS;
   const valueSensitivity = effects.valueSensitivity;
@@ -146,15 +153,26 @@ export function evaluateValueStrategy(
     return { action: 'hold', stockId: obs.stockId, reason: 'within_deadband' };
   }
 
-  // 5. Position & Exposure Gap
-  const baseTarget = agent.targetPositions[obs.stockId] ?? 1000;
-  // 국면 valueSensitivity: 가치 괴리에 대한 반응 강도 (원본 펀더멘털/시장가격은 변경하지 않음)
-  const normValGap = Math.tanh((valGap * valueSensitivity) / 0.05); // Scales 5% gap to ~0.76
+  // 5. Position & Exposure Gap + Multi-Factor Microstructure / Mean-Reversion / Drawdown Integration
+  const micro = computeMicrostructureSignal(obs);
+  const mrSignal = computeMeanReversionSignal(obs.priceHistory, obs.returns, 20, 1.5, 2.0);
+  const mrBoost = mrSignal ? mrSignal.reversionSignal * 0.12 : 0;
+  const microBoost = micro.compositePressure * 0.08;
 
-  // Target position dynamically adjusted based on valuation gap
-  const baseAdjustedTarget = Math.max(0, Math.min(agent.maxPosition, Math.round(baseTarget * (1 + normValGap))));
-  // 국면 riskToleranceMultiplier: 목표 노출에 적용하되 절대 상한(maxPosition)은 상향하지 않음
-  const adjustedTarget = applyRiskToleranceToTarget(baseAdjustedTarget, riskToleranceMultiplier, agent.maxPosition);
+  const effectiveMaxPos = Math.max(
+    1,
+    Math.round(agent.maxPosition * (riskAdjustment?.positionLimitMultiplier ?? 1.0))
+  );
+  const baseTarget = Math.min(effectiveMaxPos, agent.targetPositions[obs.stockId] ?? 1000);
+  // 국면 valueSensitivity: 가치 괴리에 대한 반응 강도 (원본 펀더멘털/시장가격은 변경하지 않음)
+  const rawSignalStrength = Math.tanh((valGap * valueSensitivity) / 0.05) + mrBoost + microBoost;
+  const normValGap = Math.max(-1, Math.min(1, rawSignalStrength));
+
+  // Target position dynamically adjusted based on valuation gap + statistical reversion + OBI pressure
+  const baseAdjustedTarget = Math.max(0, Math.min(effectiveMaxPos, Math.round(baseTarget * (1 + normValGap))));
+  // 국면 riskToleranceMultiplier: 목표 노출에 적용하되 절대 상한(effectiveMaxPos)은 상향하지 않음
+  const adjustedTarget = applyRiskToleranceToTarget(baseAdjustedTarget, riskToleranceMultiplier, effectiveMaxPos);
+  const volSizeScale = mrSignal ? mrSignal.volatilitySizeScale : 1.0;
 
   // Open buy/sell commitments
   let openBuyQty = 0;
@@ -183,14 +201,16 @@ export function evaluateValueStrategy(
       return { action: 'hold', stockId: obs.stockId, reason: 'target_position_reached' };
     }
 
+    const riskBuyMult = riskAdjustment ? riskAdjustment.buySizeMultiplier : 1.0;
     let orderSize: number;
     if (!effectParams) {
-      // 효과 OFF: 변경 전 수량 계산 보존 (절대 한도 최솟값)
-      orderSize = Math.max(1, Math.min(neededShares, agent.maxOrderSize, participationCap));
+      // 효과 OFF: 변동성·드로우다운·재고 편중 적응 배수 적용 후 절대 한도 제한
+      const rawDesired = Math.max(1, Math.round(neededShares * volSizeScale * riskBuyMult));
+      orderSize = Math.max(1, Math.min(rawDesired, neededShares, agent.maxOrderSize, participationCap));
     } else {
       // 효과 ON: 전략의 기본 희망 수량(분할 실행 계수 exposureWeight 반영)에 국면 배수를 1회 곱한 뒤 절대 한도로 제한
       const executionIntensity = Math.max(0.01, Math.min(1.0, config.exposureWeight ?? 1.0));
-      const baseDesiredShares = Math.round(neededShares * executionIntensity);
+      const baseDesiredShares = Math.max(1, Math.round(neededShares * executionIntensity * volSizeScale * riskBuyMult));
       orderSize = applyOrderSizeMultiplier(
         baseDesiredShares,
         orderSizeMultiplier,
@@ -204,18 +224,29 @@ export function evaluateValueStrategy(
       return { action: 'hold', stockId: obs.stockId, reason: 'insufficient_size' };
     }
 
-    // Pricing:
-    // If valuation is clearly above bestAsk and agent has urgency or large valuation gap,
-    // take available liquidity at best ask (marketable limit / IOC).
-    // Otherwise, place a passive maker limit order at best bid.
+    // Pricing: combine valuation edge with OBI microstructure aggressiveness (passive vs aggressive placement)
     const canCrossSpread = obs.bestAsk !== null && estimatedValue >= obs.bestAsk;
-    const shouldTakeLiquidity = canCrossSpread && (agent.urgency >= 0.2 || valGap >= 0.05);
+    const placement = resolveExecutionPlacement({
+      side: 'buy',
+      signalMagnitude: Math.min(1, Math.abs(normValGap)),
+      agentUrgency: agent.urgency,
+      micro,
+      midPrice,
+      bestBid: obs.bestBid,
+      bestAsk: obs.bestAsk,
+      tickSize,
+      isUsdAsset,
+      urgencyThreshold: 0.58,
+    });
+    const shouldTakeLiquidity =
+      canCrossSpread && (placement.mode === 'aggressive' || agent.urgency >= 0.2 || valGap >= 0.05);
 
     const idealPrice = shouldTakeLiquidity
       ? obs.bestAsk!
-      : (obs.bestBid !== null 
-          ? Math.min(obs.bestBid, Math.floor(estimatedValue / tickSize) * tickSize)
-          : Math.floor((midPrice - tickSize) / tickSize) * tickSize);
+      : Math.min(
+          placement.price,
+          Math.floor(estimatedValue / tickSize) * tickSize || placement.price
+        );
 
     const alignedPrice = isUsdAsset
       ? Math.max(0.01, Math.round(idealPrice * 100) / 100)
@@ -275,14 +306,15 @@ export function evaluateValueStrategy(
       return { action: 'hold', stockId: obs.stockId, reason: 'target_position_reached' };
     }
 
+    const riskSellMult = riskAdjustment ? riskAdjustment.sellSizeMultiplier : 1.0;
     let orderSize: number;
     if (!effectParams) {
-      // 효과 OFF: 변경 전 수량 계산 보존
-      orderSize = Math.max(1, Math.min(surplusShares, agent.maxOrderSize, participationCap));
+      const rawDesired = Math.max(1, Math.round(surplusShares * volSizeScale * riskSellMult));
+      orderSize = Math.max(1, Math.min(rawDesired, surplusShares, agent.maxOrderSize, participationCap));
     } else {
       // 효과 ON: 기본 희망 수량에 배수 적용 후 절대 한도로 제한
       const executionIntensity = Math.max(0.01, Math.min(1.0, config.exposureWeight ?? 1.0));
-      const baseDesiredShares = Math.round(surplusShares * executionIntensity);
+      const baseDesiredShares = Math.max(1, Math.round(surplusShares * executionIntensity * volSizeScale * riskSellMult));
       orderSize = applyOrderSizeMultiplier(
         baseDesiredShares,
         orderSizeMultiplier,
@@ -301,18 +333,28 @@ export function evaluateValueStrategy(
       return { action: 'hold', stockId: obs.stockId, reason: 'insufficient_holding' };
     }
 
-    // Pricing:
-    // If valuation is clearly below bestBid and agent has urgency or large valuation gap,
-    // take available liquidity at best bid (marketable limit / IOC).
-    // Otherwise, place a passive maker limit order at best ask.
     const canCrossSpreadSell = obs.bestBid !== null && estimatedValue <= obs.bestBid;
-    const shouldTakeLiquiditySell = canCrossSpreadSell && (agent.urgency >= 0.2 || valGap <= -0.05);
+    const placementSell = resolveExecutionPlacement({
+      side: 'sell',
+      signalMagnitude: Math.min(1, Math.abs(normValGap)),
+      agentUrgency: agent.urgency,
+      micro,
+      midPrice,
+      bestBid: obs.bestBid,
+      bestAsk: obs.bestAsk,
+      tickSize,
+      isUsdAsset,
+      urgencyThreshold: 0.58,
+    });
+    const shouldTakeLiquiditySell =
+      canCrossSpreadSell && (placementSell.mode === 'aggressive' || agent.urgency >= 0.2 || valGap <= -0.05);
 
     const idealPrice = shouldTakeLiquiditySell
       ? obs.bestBid!
-      : (obs.bestAsk !== null
-          ? Math.max(obs.bestAsk, Math.ceil(estimatedValue / tickSize) * tickSize)
-          : Math.ceil((midPrice + tickSize) / tickSize) * tickSize);
+      : Math.max(
+          placementSell.price,
+          Math.ceil(estimatedValue / tickSize) * tickSize
+        );
 
     const alignedPrice = Math.max(tickSize, Math.round(idealPrice / tickSize) * tickSize);
 

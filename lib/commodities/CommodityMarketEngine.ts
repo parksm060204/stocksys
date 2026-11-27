@@ -15,6 +15,7 @@ import { CommodityOrderBook, MatchResult } from './CommodityOrderBook';
 import { CommodityEventSystem } from './eventSystem';
 import { CommodityBot, createBotSwarm, BotRatios } from './bots';
 import { ScenarioManager, syncScenarioManagerFromDatabase } from '../scenario/ScenarioManager';
+import { computeOrderBookImbalance } from '../engine/simulation/strategies/orderbookMicrostructure';
 import type { SimulationContext } from '../engine/simulation/runtime/simulationContext';
 import { createSimulationContext } from '../engine/simulation/runtime/simulationContext';
 import type { SimulationTimeSource } from '../engine/simulation/runtime/simulationTimeSource';
@@ -205,11 +206,48 @@ export class CommodityMarketEngine {
       activeEvents: activeEvents.map((e) => ({ ...e })),
     };
     this.commodities.forEach((c, id) => {
+      const book = this.orderBooks.get(id);
+      const depth = book ? book.getDepth(5) : { bids: [], asks: [] };
+      const bestBid = depth.bids.length > 0 ? depth.bids[0].price : null;
+      const bestAsk = depth.asks.length > 0 ? depth.asks[0].price : null;
+      const spread = bestBid !== null && bestAsk !== null && bestAsk >= bestBid ? bestAsk - bestBid : null;
+      const { obi, bidDepthWeighted, askDepthWeighted } = computeOrderBookImbalance(
+        depth.bids,
+        depth.asks,
+        5
+      );
+
+      // 최근 20틱 수익률 기반 실현 변동성 계산 (순수 수학, lookahead 없음)
+      const hist = c.priceHistory.slice(-21);
+      let volatility = c.baseVolatility;
+      if (hist.length >= 3) {
+        const rets: number[] = [];
+        for (let i = 1; i < hist.length; i++) {
+          const prevP = hist[i - 1].price;
+          const curP = hist[i].price;
+          if (prevP > 0 && curP > 0) {
+            rets.push((curP - prevP) / prevP);
+          }
+        }
+        if (rets.length >= 2) {
+          const meanR = rets.reduce((a, b) => a + b, 0) / rets.length;
+          const varR = rets.reduce((acc, r) => acc + (r - meanR) * (r - meanR), 0) / rets.length;
+          volatility = Math.max(0.0005, Math.sqrt(varR));
+        }
+      }
+
       snapshot.commodities[id] = {
         currentPrice: c.currentPrice,
         high: c.high,
         low: c.low,
         volume: c.volume,
+        bestBid,
+        bestAsk,
+        spread,
+        obi,
+        bidDepth: bidDepthWeighted,
+        askDepth: askDepthWeighted,
+        volatility,
       };
     });
 

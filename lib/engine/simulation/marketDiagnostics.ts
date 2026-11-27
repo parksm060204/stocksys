@@ -167,6 +167,7 @@ export class MarketDiagnostics {
     this.strategyStats.set('value', this.createEmptyMetrics());
     this.strategyStats.set('trend', this.createEmptyMetrics());
     this.strategyStats.set('market_maker', this.createEmptyMetrics());
+    this.strategyStats.set('mean_reversion', this.createEmptyMetrics());
     this.strategyStats.set('human', this.createEmptyMetrics());
   }
 

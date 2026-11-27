@@ -23,11 +23,18 @@ import {
   TrendStrategyConfig,
   LpStrategyConfig,
   AgentOrderIntent,
+  MeanReversionStrategyConfig,
 } from './agentTypes';
-import { buildMarketObservation, MarketObservation } from './marketObservation';
+import {
+  buildMarketObservation,
+  calculateAuthoritativePortfolioValuation,
+  MarketObservation,
+} from './marketObservation';
 import { evaluateValueStrategy } from './strategies/valueStrategy';
 import { evaluateTrendStrategy } from './strategies/trendStrategy';
 import { evaluateLpStrategy } from './strategies/lpStrategy';
+import { evaluateMeanReversionStrategy } from './strategies/meanReversionStrategy';
+import { AdaptiveRiskManager } from './strategies/adaptiveRiskControl';
 import { MarketDiagnostics, WindowStatistics } from './marketDiagnostics';
 import {
   MarketEvent,
@@ -183,6 +190,20 @@ export class AgentManager {
     quoteLifetimeSteps: 5,
     baseLevelSize: 50,
   };
+
+  public meanReversionConfig: MeanReversionStrategyConfig = {
+    reversionWeight: 1.0,
+    exposureWeight: 0.4,
+    lookbackSteps: 20,
+    minWarmupSteps: 5,
+    entryZScore: 1.5,
+    zScale: 2.0,
+    participationRate: 0.2,
+    buyThreshold: 0.2,
+    sellThreshold: -0.2,
+  };
+
+  public readonly adaptiveRiskManager: AdaptiveRiskManager = new AdaptiveRiskManager();
 
   public readonly enableRegimeEngine: boolean;
   private _regimeEffectsMode: RegimeEffectsMode = DEFAULT_REGIME_EFFECTS_MODE;
@@ -1307,6 +1328,14 @@ export class AgentManager {
     // ── 3. Rolling Window Statistics (Read-Only during decision phase) ──
     const windowStatsMap = this.diagnostics.computeWindowStatistics(simTime, 10, 50);
 
+    // ── 3-c. 봇별 순자산(NAV) 고점 및 드로우다운 적응형 리스크 상태 갱신 (OFF/SHADOW 동일 순서·PRNG 무소비) ──
+    for (const [accId, ag] of this.agents.entries()) {
+      const profile = memoryDb.resolveProfileByUserId(accId);
+      const rawCash = Number(profile?.cash ?? 0);
+      const valuation = calculateAuthoritativePortfolioValuation(accId, rawCash);
+      this.adaptiveRiskManager.updateAgentEquity(accId, valuation.nav, ag.stats.realizedPnl, simTime);
+    }
+
     // ── 4. Two-Phase LP (Market Maker) Quoting Lifecycle ──
     const lpAgent = this.agents.get('acc_lp_main');
     if (lpAgent) {
@@ -1326,11 +1355,13 @@ export class AgentManager {
 
         this.diagnostics.recordMarketQuality(stock.id, obs.spread, obs.hasTwoSidedBook);
 
+        const lpRiskAdj = this.adaptiveRiskManager.evaluateAgentRisk(lpAgent.accountId, obs, lpAgent);
+
         if (effectsActive) {
           const failedCancelOrderIds = new Set<string>();
 
           // 1. 취소 대상 계산 (Phase 1)
-          const initialPlan = evaluateLpStrategy(obs, lpAgent, this.lpConfig, lpEffectParams);
+          const initialPlan = evaluateLpStrategy(obs, lpAgent, this.lpConfig, lpEffectParams, lpRiskAdj);
           if (initialPlan.cancels.length > 0) {
             // 2. 실제 취소 결과 확인: cancelLpOrders 내부에서 성공 건만 반영하며, 취소 실패 주문의 예약 자산은 유지된다.
             const cancelRes1 = await this.cancelLpOrders(lpAgent, initialPlan.cancels);
@@ -1363,7 +1394,8 @@ export class AgentManager {
           }
 
           // 4. 최종 신규 주문 수량 계산
-          let currentPlan = evaluateLpStrategy(freshObs, lpAgent, this.lpConfig, lpEffectParams);
+          const freshLpRiskAdj = this.adaptiveRiskManager.evaluateAgentRisk(lpAgent.accountId, freshObs, lpAgent);
+          let currentPlan = evaluateLpStrategy(freshObs, lpAgent, this.lpConfig, lpEffectParams, freshLpRiskAdj);
 
           // 재계산 후 추가 취소가 남아있거나 이전 실패 건 중 여전히 활성인 주문이 있으면 1회 한정 재시도 (무한 루프 방지)
           const retryCancelsMap = new Map<string, OrderRecord>();
@@ -1406,7 +1438,8 @@ export class AgentManager {
               console.warn(`[LP Deferral] Stock ${stock.id}: Failed to refetch final market observation. Deferring new LP quotes.`);
               continue;
             }
-            currentPlan = evaluateLpStrategy(finalObs, lpAgent, this.lpConfig, lpEffectParams);
+            const finalLpRiskAdj = this.adaptiveRiskManager.evaluateAgentRisk(lpAgent.accountId, finalObs, lpAgent);
+            currentPlan = evaluateLpStrategy(finalObs, lpAgent, this.lpConfig, lpEffectParams, finalLpRiskAdj);
           }
 
           // 미해결 취소 대상 주문 ID 전체 집합 수집
@@ -1455,7 +1488,7 @@ export class AgentManager {
           await this.submitLpOrders(lpAgent, stock.id, currentPlan.newOrders, simTime);
         } else {
           // 기존 실행 경로 (효과 OFF): 단일 장부 기준 계획으로 취소 후 제출 (동작 보존)
-          const plan = evaluateLpStrategy(obs, lpAgent, this.lpConfig);
+          const plan = evaluateLpStrategy(obs, lpAgent, this.lpConfig, undefined, lpRiskAdj);
           if (isShadow) {
             lpEvaluatedStockCount++;
             actualLpDepthSum += plan.newOrders.reduce((sum, o) => sum + o.size, 0);
@@ -1466,7 +1499,7 @@ export class AgentManager {
             }
 
             // 가상 LP 주문 산출 (PRNG 소비 없음, 장부 미반영)
-            const virtualPlan = evaluateLpStrategy(obs, lpAgent, this.lpConfig, virtualLpEffectParams);
+            const virtualPlan = evaluateLpStrategy(obs, lpAgent, this.lpConfig, virtualLpEffectParams, lpRiskAdj);
             virtualLpDepthSum += virtualPlan.newOrders.reduce((sum, o) => sum + o.size, 0);
             const vBuys = virtualPlan.newOrders.filter((o) => o.side === 'buy');
             const vSells = virtualPlan.newOrders.filter((o) => o.side === 'sell');
@@ -1521,6 +1554,7 @@ export class AgentManager {
           let intent: AgentOrderIntent = { action: 'hold', stockId: stock.id };
           const agentSignals = agentSignalsMap.get(accountId);
           const crossAssetSig = this._crossAssetMode === 'EXPERIMENTAL_ON' ? agentSignals?.get(stock.id) : undefined;
+          const riskAdj = this.adaptiveRiskManager.evaluateAgentRisk(accountId, obs, agent);
 
           if (agent.strategyType === 'value') {
             const trueF = this.fundamentals.get(stock.id) || stock.current_price;
@@ -1531,13 +1565,24 @@ export class AgentManager {
               trueF,
               agentPrng,
               botEffectParams,
-              crossAssetSig
+              crossAssetSig,
+              riskAdj
             );
           } else if (agent.strategyType === 'trend') {
             intent = evaluateTrendStrategy(
               obs,
               agent,
               this.trendConfig,
+              botEffectParams,
+              crossAssetSig,
+              riskAdj
+            );
+          } else if (agent.strategyType === 'mean_reversion') {
+            intent = evaluateMeanReversionStrategy(
+              obs,
+              agent,
+              this.meanReversionConfig,
+              riskAdj,
               botEffectParams,
               crossAssetSig
             );
@@ -1620,6 +1665,7 @@ export class AgentManager {
           let intent: AgentOrderIntent = { action: 'hold', stockId: stock.id };
           const agentSignals = agentSignalsMap.get(accountId);
           const crossAssetSig = this._crossAssetMode === 'EXPERIMENTAL_ON' ? agentSignals?.get(stock.id) : undefined;
+          const riskAdj = this.adaptiveRiskManager.evaluateAgentRisk(accountId, obs, agent);
 
           if (agent.strategyType === 'value') {
             const trueF = this.fundamentals.get(stock.id) || stock.current_price;
@@ -1630,13 +1676,24 @@ export class AgentManager {
               trueF,
               agentPrng,
               undefined,
-              crossAssetSig
+              crossAssetSig,
+              riskAdj
             );
           } else if (agent.strategyType === 'trend') {
             intent = evaluateTrendStrategy(
               obs,
               agent,
               this.trendConfig,
+              undefined,
+              crossAssetSig,
+              riskAdj
+            );
+          } else if (agent.strategyType === 'mean_reversion') {
+            intent = evaluateMeanReversionStrategy(
+              obs,
+              agent,
+              this.meanReversionConfig,
+              riskAdj,
               undefined,
               crossAssetSig
             );
@@ -1736,11 +1793,14 @@ export class AgentManager {
             }
 
             let intent: AgentOrderIntent = { action: 'hold', stockId: stock.id };
+            const actualRiskAdj = this.adaptiveRiskManager.evaluateAgentRisk(accountId, obs, agent);
             if (agent.strategyType === 'value') {
               const trueF = this.fundamentals.get(stock.id) || stock.current_price;
-              intent = evaluateValueStrategy(obs, agent, this.valueConfig, trueF, agentPrng);
+              intent = evaluateValueStrategy(obs, agent, this.valueConfig, trueF, agentPrng, undefined, undefined, actualRiskAdj);
             } else if (agent.strategyType === 'trend') {
-              intent = evaluateTrendStrategy(obs, agent, this.trendConfig);
+              intent = evaluateTrendStrategy(obs, agent, this.trendConfig, undefined, undefined, actualRiskAdj);
+            } else if (agent.strategyType === 'mean_reversion') {
+              intent = evaluateMeanReversionStrategy(obs, agent, this.meanReversionConfig, actualRiskAdj);
             }
 
             const actAction = intent.action === 'buy' || intent.action === 'sell' ? intent.action : 'hold';
@@ -1807,6 +1867,7 @@ export class AgentManager {
               }
 
               let vIntent: AgentOrderIntent = { action: 'hold', stockId: vStock.id };
+              const vRiskAdj = this.adaptiveRiskManager.evaluateAgentRisk(accountId, vObs, agent);
               if (agent.strategyType === 'value') {
                 const trueF = this.fundamentals.get(vStock.id) || vStock.current_price;
                 vIntent = evaluateValueStrategy(
@@ -1815,10 +1876,27 @@ export class AgentManager {
                   this.valueConfig,
                   trueF,
                   shadowPrng,
-                  virtualBotEffectParams
+                  virtualBotEffectParams,
+                  undefined,
+                  vRiskAdj
                 );
               } else if (agent.strategyType === 'trend') {
-                vIntent = evaluateTrendStrategy(vObs, agent, this.trendConfig, virtualBotEffectParams);
+                vIntent = evaluateTrendStrategy(
+                  vObs,
+                  agent,
+                  this.trendConfig,
+                  virtualBotEffectParams,
+                  undefined,
+                  vRiskAdj
+                );
+              } else if (agent.strategyType === 'mean_reversion') {
+                vIntent = evaluateMeanReversionStrategy(
+                  vObs,
+                  agent,
+                  this.meanReversionConfig,
+                  vRiskAdj,
+                  virtualBotEffectParams
+                );
               }
 
               let vAction: 'buy' | 'sell' | 'hold' = 'hold';
@@ -2692,6 +2770,7 @@ export class AgentManager {
     this.emptyBookAccumulatedSeconds = 0;
     this.marketIndexReturns = [];
     this.diagnostics.reset();
+    this.adaptiveRiskManager.restoreState([]);
     this.agents.clear();
     this.agentPrngs.clear();
     this.fundamentals.clear();
@@ -2810,6 +2889,7 @@ export class AgentManager {
       shadowDiagnosticsHistory: structuredClone(this.shadowDiagnosticsHistory),
       invariantViolations: this.invariantViolations.map((v) => ({ ...v })),
       reportedInvariantFingerprints: Array.from(this.reportedInvariantFingerprints.entries()),
+      adaptiveRiskState: this.adaptiveRiskManager.snapshotState(),
     };
   }
 
@@ -2854,5 +2934,6 @@ export class AgentManager {
     this.shadowDiagnosticsHistory = structuredClone(snap.shadowDiagnosticsHistory);
     this.invariantViolations = snap.invariantViolations.map((v) => ({ ...v }));
     this.reportedInvariantFingerprints = new Map(snap.reportedInvariantFingerprints);
+    this.adaptiveRiskManager.restoreState(snap.adaptiveRiskState);
   }
 }
